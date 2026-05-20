@@ -1,0 +1,63 @@
+gap_id: TEST-GAP-764
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java TagController controller-class:TagController"
+pillars_affected: [P-01, P-08, P-11]
+surfaced_by:
+  - "TagController.md:bugs_limitations_corner_cases.[Status-code drift on createTag — controller returns 200 via ResponseEntity::ok (line 27); OpenAPI declares 201 (openapi.yaml:372: '201': The resource has been successfully created)]"
+  - "TagController.md:bugs_limitations_corner_cases.[Status-code drift on updateTag — controller returns 200 (line 51); OpenAPI declares 201 (openapi.yaml:400)]"
+  - "TagController.md:tests_coverage_semantic.uncovered_behaviours.[createTag status-code drift — assert the controller returns 200 with the body (the de facto behaviour) NOT 201 (the OpenAPI's declaration). The test would document the drift and pin the controller's behaviour against accidental future correction in either direction without coordinated spec update]"
+  - "TagController.md:feature_hint.drift_class_facets.[Status-code drift on createTag + updateTag — controller returns 200, OpenAPI declares 201 (same drift class as TermController.createTerm / updateTerm batch-U; same as AlertController findings)]"
+behaviour: |-
+  **MEDIUM — `POST /api/tags` and `PUT /api/tags/{tag_id}` return HTTP 200 OK (`ResponseEntity::ok`) but the OpenAPI spec declares HTTP 201 Created (`openapi.yaml:372` for create, `:400` for update). Consumers driving against the spec (e.g., generated SDK clients that check `if (response.status == 201)`) will see the wrong status code.** Primary-source confirmed in batch-W TagController sidecar:
+
+  - `TagController.createTag` (line 27): `.collectList().flatMap(tagService::bulkCreate).map(ResponseEntity::ok)` — returns 200.
+  - `TagController.updateTag` (line 51): `.flatMap(fd -> tagService.update(tagId, fd)).map(ResponseEntity::ok)` — returns 200.
+  - `openapi.yaml:372` (createTag): declares `'201': description: The resource has been successfully created`.
+  - `openapi.yaml:400` (updateTag): declares `'201': description: The resource has been successfully updated` — NOTE: 201 for an UPDATE is itself non-canonical (201 = created); the controller's 200 is more semantically correct but the spec is published as 201.
+
+  **The drift class** — this is the same architectural drift class as:
+  - TermController.createTerm + updateTerm (batch-U finding — declared 201, returns 200).
+  - AlertController findings (batch-S — drift on alerts surface).
+  - The systemic pattern across the controller package: `.map(ResponseEntity::ok)` is the conventional shape for ALL endpoints, regardless of whether the operation is a CREATE / UPDATE / DELETE / READ. The spec writers chose 201 for create/update; the implementers chose 200 uniformly.
+
+  **Operator-visible consequences**:
+  - **Generated SDK clients**: customers using `openapi-generator-cli` to generate clients against the published spec get methods that throw on unexpected status. A consumer checking `if (response.status != HttpStatus.CREATED) throw new RuntimeException(...)` fails.
+  - **API consumer documentation**: an integrator reading the docs at `https://docs.opendatadiscovery.org/developer-guides/api-reference` and writing curl scripts that check the status code gets the wrong answer.
+  - **Tooling-level drift**: post-generation client compilation passes; runtime fails. The failure is silent in CI (tests pass; SDK works against a mock); appears at first real API call.
+
+  **Why MEDIUM not LOW**:
+  - The functional impact is zero (the response body is correct, the action is performed).
+  - The contract impact is non-zero (consumers reading the spec build wrong expectations).
+  - The drift is silent (no test catches it; the spec and the code don't reconcile at any layer).
+
+  **Test gap shape**: regression-pin asserting: (a) `POST /api/tags` returns HTTP 200; (b) `PUT /api/tags/{id}` returns HTTP 200; (c) the OpenAPI spec declares 201 for both. The test documents the drift as the current state. The current state is PINNED — failures land if a future maintainer either (a) changes the controller to return 201 (breaking long-standing consumers that may have adapted to 200), or (b) changes the spec to 200 (breaking spec-driven consumers).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/TagControllerStatusCodeDriftTest.java"
+  name: "createAndUpdateTag_return200_specDeclares201_pinsCurrentDrift"
+evidence:
+  - "TagController.md says (bugs_limitations_corner_cases.[createTag-drift]): 'Status-code drift on createTag — controller returns 200 via ResponseEntity::ok (line 27); OpenAPI declares 201 (openapi.yaml:372: 201: The resource has been successfully created). Any consumer expecting response.status == HttpStatus.CREATED per the spec would fail on actual responses. Same drift class as TermController.createTerm (batch-U) and AlertController.changeAlertStatus.' — evidence: TagController.java:27 + openapi.yaml:372 — severity: MEDIUM"
+  - "TagController.md says (bugs_limitations_corner_cases.[updateTag-drift]): 'Status-code drift on updateTag — controller returns 200 (line 51); OpenAPI declares 201 (openapi.yaml:400: 201: The resource has been successfully updated). The OpenAPI's use of 201 for an update endpoint is itself non-canonical (201 = created); the controller's 200 is more semantically correct but the spec is published.' — evidence: TagController.java:51 + openapi.yaml:400 — severity: MEDIUM"
+  - "TagController.md says (feature_hint.drift_class_facets): 'Status-code drift on createTag + updateTag — controller returns 200, OpenAPI declares 201 (same drift class as TermController.createTerm / updateTerm batch-U; same as AlertController findings)'"
+  - "Verified at primary source: TagController.java:27, 51 (both .map(ResponseEntity::ok)) + openapi.yaml:372, 400 (both declared 201)"
+cross_references:
+  - "TEST-GAP-NNN (TermController status-code drift — batch-U sister gap)"
+  - "AlertController batch-S status-code drift findings"
+  - "TEST-GAP-762 (NEW batch W — sister TagController cascade-asymmetry gap)"
+  - "TEST-GAP-763 (NEW batch W — sister TagController directory bypass gap)"
+  - "DOC-NNN candidate: reconcile the spec + the code at the API Reference docs page (Tags sub-page); pick 201 OR 200 consistently"
+related_features: [F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging", "P-11:F-001-api-reference"]
+proposed_action: |-
+  Add `TagControllerStatusCodeDriftTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Three test methods:
+  1. `createTag_returns200_pinsCurrentControllerBehaviour` — POST `/api/tags` with valid form; assert HTTP status == 200 (not 201). PIN the current drift.
+  2. `updateTag_returns200_pinsCurrentControllerBehaviour` — PUT `/api/tags/{id}`; assert HTTP status == 200.
+  3. `openApiSpec_declares201ForCreateAndUpdateTag_documentsDriftWithCode` — parse `openapi.yaml`; assert createTag declares 201 AND updateTag declares 201. Use this to surface the spec-vs-code drift to maintainers.
+
+  Pair with a follow-up backlog item: decide whether to fix the controller (return 201) OR fix the spec (declare 200). Coordinate the change across the spec, the code, the docs, and the published API reference page. When the fix lands, the test inverts to assert the coherent direction.
+
+  Cross-pair with DOC-NNN: reconcile the spec + the code at the API Reference docs page (Tags sub-page).
+batch: 2026-05-20-W
+feature_id: F-018

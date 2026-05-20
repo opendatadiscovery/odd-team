@@ -1,0 +1,302 @@
+name: |-
+  Soft-delete reincarnation via partial-unique-index — general pattern beyond Tag (Namespace + 5 sister tables, batch W explicit framing)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-08
+  - P-09
+description: |-
+  NEW INVARIANT, batch 2026-05-20W — EXPLICITLY NAMES a platform-wide
+  schema pattern previously surfaced as a single-entity observation
+  (the Tag-name-reuse-after-soft-delete via the V0_0_64 partial
+  unique index). Batch W confirms the SAME pattern at the Namespace
+  layer (via V0_0_31) AND identifies it as a general convention
+  applied to multiple sister tables. The pattern enables 'delete then
+  recreate with same name' semantics by ANY table that uses the
+  partial-unique-index-WHERE-deleted_at-IS-NULL idiom.
+
+  THE GENERAL PATTERN — the canonical schema shape:
+
+    For a table T with a name-unique constraint and a deleted_at
+    soft-delete column, the platform consistently authors the unique
+    index as:
+
+      CREATE UNIQUE INDEX IF NOT EXISTS T_name_unique
+        ON T (name)
+        WHERE deleted_at IS NULL;
+
+    The PARTIAL clause `WHERE deleted_at IS NULL` is the load-bearing
+    architectural decision. It means:
+      - Two ACTIVE rows with the same name → constraint violation.
+      - A soft-deleted row AND an active row with the same name →
+        OK (the constraint only scans live rows).
+      - Two soft-deleted rows with the same name → OK (neither is
+        constrained).
+
+    Consequence: deleting a row (soft-delete sets deleted_at = NOW())
+    REMOVES it from the unique-index scope; a subsequent insert with
+    the SAME name succeeds and creates a NEW id with NEW history.
+
+  THE FOUR CONFIRMED INSTANCES (batch trail):
+
+    Instance 1 — Tag (batch F + batch N):
+      V0_0_64:105 — `CREATE UNIQUE INDEX IF NOT EXISTS tag_name_unique
+      ON tag(name) WHERE deleted_at IS NULL`
+      Operator-facing: a deleted tag's name becomes reusable; the
+      new tag has a NEW id; historical tag assignments still
+      reference the OLD id.
+
+    Instance 2 — Namespace (batch W primary source, NEW):
+      V0_0_31__add_deleted_at_field.sql:25 — `CREATE UNIQUE INDEX
+      IF NOT EXISTS namespace_unique ON namespace (name)
+      WHERE deleted_at IS NULL`
+      Operator-facing: identical lifecycle. Deleting 'finance'
+      lets the operator recreate 'finance' with a NEW id. Any
+      operator-side bookmarks or external references using the
+      OLD id break silently.
+
+    Instance 3 — Owner (batch H + batch N):
+      The owner table uses deleted_at; partial unique index on
+      owner_name_unique applies the same WHERE deleted_at IS NULL
+      clause. Confirmed at batches H + N as part of the
+      `three-soft-delete-mechanisms-across-the-repository-layer`
+      master invariant.
+
+    Instance 4 — Role (batch N):
+      V0_0_55:42 / V0_0_58 / V0_0_64 — role_name_unique
+      partial-unique-index. Same shape.
+
+    Instance 5 — Policy (batch H):
+      V0_0_55:30 — policy_name_unique partial-unique-index.
+
+    Instance 6 — Term (batch N):
+      V0_0_35:16 — `term_name_namespace_unique ON term(name,
+      namespace_id) WHERE deleted_at IS NULL`. Two-column variant
+      but same pattern.
+
+  THE TWO INSTANCES THAT DEVIATE — the V0_0_64-incomplete-convergence
+  outliers:
+
+    Outlier 1 — Collector (per batch-R `three-soft-delete-mechanisms`):
+      V0_0_29__add_collector.sql:4 — `collector.name UNIQUE` is a
+      FULL unique constraint, NOT scoped by `WHERE deleted_at IS
+      NULL`. A soft-deleted collector's name CANNOT be reused
+      without first hard-deleting the row.
+
+    Outlier 2 — metadata_field (per batch-R `metadata-field-soft-delete-partial-unique-index-mismatch`):
+      The metadata_field partial unique indexes filter only by
+      origin (`WHERE origin = 'INTERNAL'` AND `WHERE origin <>
+      'INTERNAL'`), NOT by deleted_at. Same bug class — V0_0_64
+      convergence was applied INCOMPLETELY.
+
+  WHY THIS MATTERS BEYOND TAG:
+
+    1. The soft-delete reincarnation is NOT a tag-specific quirk —
+       it is the DEFAULT lifecycle for every table that uses the
+       canonical schema. Operators must reason about it for ALL
+       6 confirmed instances (Tag, Namespace, Owner, Role, Policy,
+       Term) plus any future sister tables.
+
+    2. The lifecycle is UNDOCUMENTED at the operator-facing doc
+       pages for every instance. WebFetch 2026-05-20 of
+       /features/management/namespaces returned 404 — the
+       Namespace lifecycle has no doc anchor at all. The
+       /features/data-discovery/tagging page describes tag deletion
+       but does NOT describe the recreation semantic.
+
+    3. The lifecycle has audit-log implications. An entity that
+       was deleted and recreated has THREE possible 'visible'
+       states from the operator's perspective:
+         - Soft-deleted (deleted_at IS NOT NULL, invisible to reads)
+         - Recreated under a new id (deleted_at IS NULL, the same
+           name reads as a fresh entity)
+         - Historical bindings to the OLD id (still in the DB,
+           filtered out of reads but persistent)
+       NO audit-log entry distinguishes these; the activity feed
+       does NOT emit `*_DELETED` + `*_RECREATED` events.
+
+    4. The 'restore-from-soft-delete' operation IS NOT SUPPORTED
+       by the platform for these tables. The soft-delete is a
+       one-way state from operator's perspective. The
+       deleted_at-IS-NULL filter applies everywhere; the only way
+       to undo is direct SQL access (UPDATE x SET deleted_at = NULL
+       WHERE id = ?), which BREAKS the unique-index invariant if
+       another live row already uses the name.
+
+    5. The pattern's CONSISTENCY across 6 tables is the load-bearing
+       architectural commitment — but the TWO OUTLIERS (Collector,
+       metadata_field) reveal the convergence is incomplete. A
+       maintainer reading the Namespace schema would infer the
+       pattern applies to Collector; the reality is different.
+
+  COMPOUND WITH CASCADE-APP-TIER-GUARD (cross-link to THIS BATCH
+  sibling invariant):
+
+    Every table with the partial-unique-index + cascade-app-tier-guard
+    pattern shares the SAME architectural shape. Namespace's
+    cascade-on-delete guards 4 referent classes (DataSource,
+    Collector, Term, DataEntity); Tag's cascade-on-delete guards 2
+    of 3 (tag_to_data_entity + tag_to_term but NOT tag_to_dataset_field
+    — the deletetag-cascade-asymmetric bug). The cascade-guard +
+    soft-delete-reincarnation are SISTER patterns — the cascade
+    prevents 'delete with live children'; the reincarnation enables
+    'recreate after children are gone'. Together they form the
+    canonical lifecycle for catalog primitives.
+
+  SEVERITY LOW (the pattern is intentional and benign for most
+  cases) but with MEDIUM operator-confusion potential at the doc
+  layer + LOW unmaintained-cleanup-paths.
+
+nodes:
+  - odd-platform java NamespaceController controller-class:NamespaceController
+  - odd-platform java repository reactive repository:ReactiveTagRepositoryImpl
+  - odd-platform java repository reactive repository:ReactiveRoleRepositoryImpl
+  - odd-platform java repository reactive repository:ReactiveUserOwnerMappingRepositoryImpl
+  - odd-platform java repository reactive repository:ReactiveTermRepositoryImpl
+
+contributors:
+  - |-
+    NamespaceController batch W (PRIMARY SOURCE — explicit framing
+    of the pattern at the Namespace tier):
+    concepts.invariants[Soft-delete with reincarnation: a deleted
+    namespace name becomes available again (the partial unique
+    index only constrains WHERE deleted_at IS NULL rows); recreating
+    'finance' after deletion yields a NEW id with a NEW history] +
+    implicit_adrs.[3] (Name uniqueness via PARTIAL unique index
+    keyed on (name) WHERE deleted_at IS NULL — DELIBERATE pattern
+    repeated across data_source_name_unique / collector_name_unique /
+    data_source_oddrn_unique at the same migration lines 27, 29, 31) +
+    bugs_limitations_corner_cases.[5] LOW (Soft-delete reincarnation
+    is undocumented)
+  - |-
+    Cross-batch trail (existing PRIMARY SOURCES at other tiers):
+    - ReactiveTagRepositoryImpl batch N — Tag partial unique index
+      V0_0_64:105
+    - ReactiveRoleRepositoryImpl batch N — Role partial unique
+      index V0_0_55:42 / V0_0_58 / V0_0_64
+    - ReactiveTermRepositoryImpl batch N — Term + namespace
+      partial unique index V0_0_35:16
+    - ReactiveUserOwnerMappingRepositoryImpl batch N — 2-dimensional
+      partial unique indexes V0_0_89
+    - ReactivePolicyRepositoryImpl batch H — Policy partial unique
+      index V0_0_55:30
+
+evidence:
+  - |-
+    NamespaceController.md:concepts.invariants[4] (Soft-delete
+    with reincarnation: a deleted namespace name becomes available
+    again — the partial unique index only constrains WHERE
+    deleted_at IS NULL rows) — evidence: V0_0_31__add_deleted_at_field.sql:25
+  - |-
+    NamespaceController.md:implicit_adrs.[3] (Name uniqueness via
+    PARTIAL unique index — DELIBERATE pattern repeated across
+    sister tables) — evidence: V0_0_31:25, 27, 29, 31 (4
+    partial-unique indexes in the same migration)
+  - |-
+    NamespaceController.md:bugs_limitations_corner_cases.[5]
+    (Soft-delete reincarnation is undocumented at the operator
+    layer)
+  - |-
+    Cross-references concept three-soft-delete-mechanisms-across-the-repository-layer
+    (the master invariant — names the soft-delete-via-deleted_at
+    timestamp as the canonical pattern; THIS invariant adds the
+    PARTIAL-UNIQUE-INDEX consequence — enabling reincarnation —
+    as the operator-facing facet)
+
+axes_present:
+  - controllers
+  - repositories_reactive
+  - schema_migrations
+
+triangulation_count: 6
+cross_batch: true
+cross_batch_refs:
+  - batch-F (Tag — initial soft-delete observation)
+  - batch-H (Policy — soft-delete + partial unique index)
+  - batch-N (Tag + Role + Term + UserOwnerMapping — multi-table primary-source confirmation)
+  - batch-R (Collector + metadata_field — the OUTLIERS that REVEAL the convergence is incomplete)
+  - batch-W (Namespace — THIS INVARIANT primary source, plus explicit pattern framing)
+
+severity: LOW
+severity_dim: architecture+documentation
+
+mitigations_unimplemented:
+  - |-
+    Document the lifecycle on the
+    /features/management/{namespace,tag,owner,role,policy}
+    operator-facing pages. The text:
+      'Deleting a {entity} marks it as inactive but preserves
+       historical bindings. Subsequent creates with the same name
+       produce a NEW entity with a new id; historical bindings
+       are NOT migrated to the new entity.'
+    Five DOC-NNN candidates (one per entity type).
+  - |-
+    Add a /developer-guides/api-reference/lifecycle-semantics
+    cross-cutting page. Single anchor for the soft-delete-reincarnation
+    pattern; cross-link from every entity's per-feature page.
+  - |-
+    Add a 'restore' API surface for entities that ARE
+    soft-delete-recoverable in principle. Currently the only restore
+    path is direct SQL. A `POST /api/{entity}/{id}/restore` endpoint
+    would surface the lifecycle as a first-class operation; would
+    require new permissions (`{ENTITY}_RESTORE`); would need
+    cascade-aware logic if children were soft-deleted in the same
+    operation.
+  - |-
+    Fix the V0_0_64 convergence outliers (Collector, metadata_field).
+    For each, add a migration converting the FULL unique to a
+    PARTIAL unique keyed by `deleted_at IS NULL`. Operator-facing
+    change: collector + metadata_field names become reusable after
+    soft-delete (cross-link to metadata-field-soft-delete-partial-unique-index-mismatch
+    invariant).
+  - |-
+    Add a housekeeping job that hard-deletes soft-deleted rows
+    older than HOUSEKEEPING.TTL.SOFT_DELETED_DAYS (default 90?).
+    The pattern currently has unbounded growth in the deleted_at
+    IS NOT NULL portion of every table. Bounds the storage cost
+    + matches the GDPR / data-retention contracts deployments
+    typically need.
+
+notes: |-
+  This invariant captures the FIRST explicit framing of the
+  soft-delete-reincarnation pattern as a platform-wide convention.
+  Previous batches established the pattern at individual entities
+  (Tag in batch F, Policy in batch H, Term in batch N, etc.);
+  batch W (NamespaceController + the cross-batch trail) NAMES it
+  as a general pattern AND identifies the deviations (Collector
+  + metadata_field).
+
+  The architectural commitment is uniform 'soft-delete with
+  name-reuse' for 6 of the 8 catalogued tables. The two outliers
+  are EITHER bugs (the V0_0_64 convergence missed them) OR
+  intentional (collector + metadata_field are exempt from the
+  reincarnation pattern for some reason). The maintainer's call —
+  the V0_0_64 commit message would clarify, but the cross-batch
+  evidence frames this as a code-omission BUG class (the outliers
+  cluster with the no-deleted_at + outlier-FK pattern that all the
+  other tables ultimately corrected).
+
+  Cross-cutting connections:
+    - Pairs with three-soft-delete-mechanisms-across-the-repository-layer
+      (THIS invariant adds the PARTIAL-UNIQUE-INDEX consequence
+      as a separate facet; the master invariant focuses on the
+      DELETION mechanism, this one on the RECREATION semantic)
+    - Pairs with cascade-on-delete-application-tier-guarded-across-n-referent-classes
+      (THIS BATCH sibling) — the cascade-guard and the reincarnation
+      together form the canonical lifecycle
+    - Pairs with metadata-field-soft-delete-partial-unique-index-mismatch
+      (the metadata_field outlier — same class as the Collector
+      outlier; both V0_0_64 misses)
+    - Pairs with datasource-name-partial-unique-silent-rollback-on-collector-rename
+      (the data_source-side variant of the pattern — partial unique
+      on data_source.name + the collector-vs-operator mutation
+      asymmetry)
+
+  Three DOC-NNN candidates (one for each surface that should
+  describe the lifecycle):
+    (a) Per-entity operator-facing docs — admonition on each
+        Management → {Tab} page
+    (b) Cross-cutting lifecycle-semantics page — single anchor
+        in /developer-guides
+    (c) Operator playbook for the restore-from-soft-delete edge
+        case — direct SQL with the unique-index caveat

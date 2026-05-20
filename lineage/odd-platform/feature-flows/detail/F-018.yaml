@@ -14,6 +14,12 @@ drift_class_summary:
 - partial_unique_index_hardcoded_where_clause_predicate_coupling
 - onduplicatekeyignore_idempotent_relation_create
 - triple_fetch_list_data_entity_dtos_per_request
+- delete_tag_cascade_asymmetric_tag_to_dataset_field_rows_orphaned_after_soft_delete
+- get_popular_tag_list_no_security_rule_open_read_to_any_authenticated_user
+- tag_service_tier_zero_permission_checks_controller_perimeter_sole_authorization
+- tag_status_code_drift_controller_200_vs_spec_201_create_and_update
+- external_tag_guard_protects_collector_pushed_tags_from_ui_overwrite_positive_invariant
+- tag_controller_write_paths_no_activity_log_asymmetric_with_per_entity_tag_assignment_path
 batch_origin: N
 created_in_batch: N
 feature_name: Manual Object Tagging — operator + ingestion-driven Tag directory with side-channel mint paths
@@ -508,6 +514,137 @@ control_summary: |-
   docker-compose probe stack: ODD platform + Postgres + two seeded Owners +
   collector-mock pushing tags via /ingestion/entities + curl scripts for the
   UI-side endpoints.
+batch_extensions:
+- batch: W
+  entry_point_added: |-
+    controller-class:TagController — the CONTROLLER-TIER PRIMARY
+    SOURCE closing the F-018 directory-side write surface. The 4
+    endpoints (createTag bulk-write / deleteTag soft-delete-with-cascade
+    / getPopularTagList ungated read / updateTag rename-or-Important-flag)
+    complete the user-observable Tag-directory CRUD picture; prior
+    batches (N repository, presumably earlier service) carried the
+    persistence + service-tier evidence — THIS batch closes the
+    controller-perimeter where the SOLE authorisation defence lives
+    AND surfaces a new asymmetry: `deleteTag` cascade covers
+    `tag_to_data_entity` + `tag_to_term` but NOT `tag_to_dataset_field`.
+  contributing_nodes_added:
+  - odd-platform java TagController controller-class:TagController
+  notes: |-
+    The controller-class sidecar STRENGTHENS existing F-018 facets at
+    the controller-perimeter layer AND surfaces FIVE new drift facets.
+    Listed in order of architectural leverage:
+
+    (1) `deleteTag` CASCADE IS ASYMMETRIC — `tag_to_dataset_field`
+    ROWS ORPHANED (MEDIUM, NEW FINDING) — TagServiceImpl.delete (lines
+    57-70, @ReactiveTransactional) HARD-deletes `tag_to_data_entity`
+    + `tag_to_term` via `Flux.zip(deleteTermRelations + deleteDataEntityRelations)`
+    (lines 64-65) but does NOT call `reactiveTagRepository.deleteDatasetFieldRelations(tagId)`
+    (which EXISTS at ReactiveTagRepositoryImpl.java:299-306 but has
+    NO caller from TagServiceImpl.delete). A tag attached to dataset
+    fields via the side-door `DATASET_FIELD_TAGS_UPDATE` path, when
+    deleted via this controller, leaves orphaned `tag_to_dataset_field`
+    rows referencing the soft-deleted tag id. Reads via
+    `listDatasetFieldDtos` filter these out via `addSoftDeleteFilter`
+    on the join (lines 84-98) so the orphans are UI-invisible — but
+    they persist in the DB indefinitely. Future garbage-collection
+    migrations would need to address this; right now no cleanup job
+    exists. NEW drift facet:
+    `delete_tag_cascade_asymmetric_tag_to_dataset_field_rows_orphaned_after_soft_delete`.
+
+    (2) GET /api/tags HAS NO RBAC GATE — CONTROLLER-TIER PRIMARY
+    SOURCE (HIGH, STRENGTHENS F-018 batch-N
+    `list_most_popular_globally_scoped_no_per_owner_filter`) —
+    SecurityConstants.java:138-142 contains ONLY POST/PUT/DELETE rules
+    for /api/tags; NO GET entry. Any authenticated user (including
+    a user with ONLY the per-entity DATA_ENTITY_TAGS_UPDATE permission)
+    can enumerate the entire global Tag directory regardless of any
+    TAG_* permission. Combined with the side-door write paths catalogued
+    in F-018 batch-N
+    (`data_entity_tags_update_side_channel_into_global_tag_directory`),
+    a per-entity-tag-editor can both READ and WRITE the global tag
+    namespace without holding any vocabulary-level permission. The
+    live tagging doc page (WebFetched 2026-05-20 status 200) does NOT
+    document the open-read posture. NEW drift facet:
+    `get_popular_tag_list_no_security_rule_open_read_to_any_authenticated_user`.
+
+    (3) SERVICE-TIER ZERO-PERMISSION-CHECKS POSTURE (MEDIUM, PRIMARY
+    SOURCE) — TagServiceImpl (lines 1-167) has ZERO @PreAuthorize
+    annotations and ZERO programmatic permission checks. The four
+    SecurityRule entries at the controller perimeter are the SOLE
+    authorisation defence; any future path-drift bug (a path-pattern
+    mismatch like REFACTOR-217 on the term-tags surface) would silently
+    bypass authorisation. Cross-link to F-002 batch-K
+    `second_security_constants_misrouted_path` finding. NEW drift
+    facet: `tag_service_tier_zero_permission_checks_controller_perimeter_sole_authorization`.
+
+    (4) STATUS-CODE DRIFT — CONTROLLER VS OPENAPI (MEDIUM, NEW)
+    — TagController.java:27 createTag returns 200 via
+    `.map(ResponseEntity::ok)` vs openapi.yaml:372 declares 201;
+    line 51 updateTag returns 200 vs openapi.yaml:400 declares 201.
+    Same drift class as TermController.createTerm / .updateTerm
+    (batch-U) and CollectorController.registerCollector / .updateCollector
+    (batch-W THIS BATCH). THREE controller pairs ship the same
+    200-vs-201 drift; cross-batch pattern. NEW drift facet:
+    `tag_status_code_drift_controller_200_vs_spec_201_create_and_update`.
+
+    (5) `!external` GUARD PROTECTS COLLECTOR-PUSHED TAGS FROM UI
+    OVERWRITE — POSITIVE INVARIANT (PRIMARY SOURCE; STRENGTHENS) —
+    TagServiceImpl.update (lines 49-50) and TagServiceImpl.delete
+    (lines 62-63) both reject tags with any `external = true` usage
+    via BadUserRequestException ("Can't update tag which has external
+    relations" / "Can't delete tag which has external relations").
+    The intent: a Collector that pushes a tag via
+    ExternalTagIngestionRequestProcessor claims ownership; UI mutations
+    would silently override the Collector-side semantics on next push.
+    POSITIVE case-law that constrains REFACTOR-223 — the side-door
+    creates Collector-owned tags that the UI CANNOT subsequently
+    delete or rename until the operator removes all external relations.
+    Cross-link to F-020 (the collector lifecycle producing these
+    external = true rows) + F-008 (the ingestion path stamping
+    external = true). NEW drift facet (positive case-law shaped):
+    `external_tag_guard_protects_collector_pushed_tags_from_ui_overwrite_positive_invariant`.
+
+    (6) NO @ActivityLog ON ANY TagController WRITE PATH — CONTROLLER-TIER
+    PRIMARY SOURCE (MEDIUM, STRENGTHENS the 9-SIDECAR audit-silence
+    pattern) — TagController createTag / updateTag / deleteTag carry
+    NO @ActivityLog annotation; TagServiceImpl mutations also do NOT.
+    Contrast with DataEntityServiceImpl.java:358 which DOES carry
+    @ActivityLog(event = TAG_ASSIGNMENT_UPDATED) on the PER-ENTITY
+    tag-assignment path. The asymmetry: directory-vocabulary mutations
+    (create/update/delete via this controller) are NOT audited;
+    per-entity tag-assignment mutations ARE audited. An operator using
+    Management → Tags tab to delete or rename a tag produces no audit
+    trace. STRENGTHENS the cross-batch 9-SIDECAR audit-silence pattern
+    (batches E/H/N/Q/R/P/S/T audit-silence pattern extends to
+    Tags-directory controller-tier in this batch). NEW drift facet:
+    `tag_controller_write_paths_no_activity_log_asymmetric_with_per_entity_tag_assignment_path`.
+
+    (7) REQUEST-BODY VALIDATION ABSENT (LOW, STRENGTHENS) —
+    TagController.createTag accepts `BulkTagFormData` declared in
+    openapi.yaml:370 as `type: string` only (no pattern, no minLength,
+    no maxLength on the `name` field); no DB CHECK constraint visible
+    in the migration suite (per batch-N invariant). An operator with
+    TAG_CREATE can mint tag rows with empty names, whitespace-only
+    names, control-character names, or names of unbounded length. The
+    popular-tags surface then renders these to every other user.
+    STRENGTHENS F-018 batch-N `tag_name_no_validation_no_length_cap_no_charset_filter`.
+
+    Coherence: STRENGTHENS=6 across F-018 existing drift facets +
+    9-SIDECAR audit-silence pattern (per cross-batch tracking). NEW
+    drift facets ADDED to F-018's drift_class_summary (5 net-new):
+    `delete_tag_cascade_asymmetric_tag_to_dataset_field_rows_orphaned_after_soft_delete`,
+    `get_popular_tag_list_no_security_rule_open_read_to_any_authenticated_user`,
+    `tag_service_tier_zero_permission_checks_controller_perimeter_sole_authorization`,
+    `tag_status_code_drift_controller_200_vs_spec_201_create_and_update`,
+    `external_tag_guard_protects_collector_pushed_tags_from_ui_overwrite_positive_invariant`.
+    NO conflicts surfaced; NO supersedes. The HIGHEST-LEVERAGE
+    finding is the `tag_to_dataset_field` cascade omission — a
+    one-line fix at TagServiceImpl.delete adding the missing
+    `deleteDatasetFieldRelations` call closes the orphan-row
+    accumulation; the regression-test that PINs the orphan rows
+    BEFORE the fix is a high-leverage probe candidate (configure tag
+    attached to a dataset field via DATASET_FIELD_TAGS_UPDATE, DELETE
+    via TagController, raw-SQL query the join table for the orphan).
 related_refactoring_scopes:
 - REFACTOR-223
 related_test_gaps:
@@ -522,6 +659,12 @@ related_concepts:
 - Audit-log Presence Asymmetry
 related_retrospectives:
 - LSN-017
+- LSN-018
 related_probes: null
 probe_verifications: []
+related_features:
+- F-002   # Term-to-Entity Linkage — TERM_TAGS_UPDATE / TermServiceImpl.upsertTags is the SECOND side-door into the Tag directory
+- F-008   # Batch Ingestion — ExternalTagIngestionRequestProcessor is the THIRD side-door; produces external = true rows
+- F-020   # Collector Lifecycle Management — collectors produce the external = true tags; F-018 batch-W !external positive invariant guards them
+- F-028   # batch-W Namespace Lifecycle — structurally identical side-door bypass pattern (NAMESPACE_CREATE via 4 sister services); cross-pillar pattern match
 maintainer_curated: false

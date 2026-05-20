@@ -1,0 +1,69 @@
+name: Get Popular Tag List
+canonical_in_docs: false
+canonical_candidate: true
+description: |-
+  GET /api/tags?page=&size=&query=&ids= — returns popularity-ranked
+  paginated global tag directory. NO SecurityRule entry at
+  SecurityConstants.java:138-142 (only POST/PUT/DELETE entries on
+  /api/tags exist); falls through to the catch-all
+  pathMatchers('/**').authenticated() rule at
+  AuthorizationCustomizer.java:29-30. ANY authenticated user under
+  LOGIN_FORM/OAUTH2/LDAP can enumerate the entire global tag
+  directory regardless of `TAG_*` permissions or Management-scope
+  role.
+
+  Implementation: TagController.java:36-44 → TagServiceImpl.listMostPopular
+  → ReactiveTagRepositoryImpl.listMostPopular (lines 137-167). The
+  query is a UNION-ALL CTE over tag_to_data_entity + tag_to_dataset_field
+  usage counts, ORDER BY descending count, paginated via paginate(...).
+
+  Three load-bearing properties:
+
+    (1) OPEN READ: Any authenticated user enumerates. The
+        read-collaborative posture extension. See
+        read-collaborative-cross-owner-enumeration master invariant.
+
+    (2) COMPOUND WITH WRITE-SIDE-DOOR: A per-entity-tag-editor
+        (DATA_ENTITY_TAGS_UPDATE, TERM_TAGS_UPDATE,
+        DATASET_FIELD_TAGS_UPDATE) can BOTH read this list AND
+        mint new tag rows via the side-door — without holding any
+        TAG_* permission. See
+        getpopulartaglist-open-read-plus-side-door-compose-to-write-read-directory-bypass
+        invariant THIS BATCH.
+
+    (3) NO SIZE CLAMP: `size` parameter is passed straight through
+        the controller, service, and repository tiers. A request
+        for `size=100000` performs a full-directory aggregate.
+        Severity LOW because tag count is typically bounded
+        operationally; severity rises for adversarial enumeration
+        scenarios.
+
+  The query parameter is name-substring filter (case-insensitive
+  per ReactiveAbstractCRUDRepository.java:242-243); ids is an
+  optional id-set filter.
+axes_present:
+  - controllers
+nodes:
+  - odd-platform java TagController controller-class:TagController
+contributors:
+  - |-
+    TagController batch W (PRIMARY SOURCE):
+    concepts.operations[get-popular-tag-list] +
+    bugs_limitations_corner_cases.[3] MEDIUM (open-read posture) +
+    security.known_security_gaps.[1] MEDIUM (open-read) +
+    implicit_adrs.[1] (intentional read-collaborative posture)
+evidence:
+  - TagController.md:concepts.operations[getPopularTagList]
+  - TagController.md:bugs_limitations_corner_cases.[3] (MEDIUM — open-read)
+  - TagController.md:bugs_limitations_corner_cases.[7] (LOW — no size clamp)
+notes: |-
+  Pairs with create-tag (the operator-explicit + gated entry-point;
+  TAG_CREATE permission).
+  Pairs with delete-tag (the GUARD-by-app-tier-cascade endpoint
+  with the asymmetric tag_to_dataset_field bug — see
+  deletetag-cascade-asymmetric-orphans-tag-to-dataset-field invariant
+  THIS BATCH).
+  Pairs with getpopulartaglist-open-read-plus-side-door-compose-to-write-read-directory-bypass
+  (THIS BATCH master invariant — the compound WRITE+READ bypass).
+  Pairs with read-collaborative-cross-owner-enumeration (the 24+
+  sidecar pattern).

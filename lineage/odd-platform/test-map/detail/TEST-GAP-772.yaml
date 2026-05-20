@@ -1,0 +1,62 @@
+gap_id: TEST-GAP-772
+category: missing-edge-case
+criticality: LOW
+node_ids:
+  - "odd-platform java DatasetController controller-class:DatasetController"
+pillars_affected: [P-01]
+surfaced_by:
+  - "DatasetController.md:bugs_limitations_corner_cases.[Parent-field cascade DELETE+CREATE amplification in diff — undocumented. DatasetVersionServiceImpl.getParentOddrnChangedPojos (lines 156-180) propagates a parent-rename through every descendant; the diff payload size grows non-linearly with struct depth. Operators comparing nested-struct datasets see amplified diff output with no doc-side text explaining why. Behaviour intentional (encodes the versioning-by-reference invariant) but unsurfaced to API consumers]"
+  - "DatasetController.md:implicit_adrs.[Diff semantics encode the column-level versioning-by-reference model — a parent-field rename cascades DELETE+CREATE rows for every nested child field. Lines 156-180 implement a recursive fixed-point algorithm that propagates parentFieldChanged from any field whose parent oddrn was renamed to ALL its descendants. The downstream calculateVersionDiff (lines 110-134) then emits TWO rows for every descendant: one DELETED + one CREATED]"
+  - "DatasetController.md:tests_coverage_semantic.uncovered_behaviours.[GET /api/datasets/{id}/structure/diff with a parent-field rename cascades DELETE+CREATE rows for every nested field (parent-cascade semantic)]"
+behaviour: |-
+  **LOW — `GET /api/datasets/{id}/structure/diff` for two versions where a parent struct field has been RENAMED produces DELETE+CREATE rows for EVERY descendant of that parent. The diff payload size grows non-linearly with struct depth — a single rename of a top-level struct can yield 2N rows for an N-leaf subtree. Behaviour is intentional (encodes the column-level versioning-by-reference invariant) but unsurfaced to API consumers.** Primary-source confirmed in batch-W DatasetController sidecar:
+
+  - `DatasetVersionServiceImpl.getParentOddrnChangedPojos` (lines 156-180): a recursive fixed-point algorithm that propagates `parentFieldChanged` from any field whose parent oddrn was renamed to ALL its descendants.
+  - `DatasetVersionServiceImpl.calculateVersionDiff` (lines 110-134): branches on `parentOddrnChanged`. When TRUE, emits TWO rows per descendant: line 121 (DELETED with minVersionDiff) + line 129 (CREATED with maxVersionDiff).
+  - **The intent** (per implicit_adrs.[2]): "a struct rename invalidates every nested column's identity at the dataset_field row level (consistent with the versioning-by-reference invariant in ReactiveDatasetFieldRepositoryImpl batch-R + concept dataset-field-versioning-by-reference-no-soft-delete-orphan-accumulation)."
+
+  **Amplification scenario**:
+  - Dataset's V1 schema: struct `user { id, name, email, address { street, city, zip } }` — 6 leaves under `user`.
+  - V2 schema: same shape, but `user` renamed to `customer`.
+  - Diff between V1 and V2: 12 rows emitted (6 DELETED + 6 CREATED — one per leaf). NOT 1 row (the parent rename) or 2 rows (the rename as DELETED+CREATED on the parent only).
+  - For deeply nested struct types (e.g., a 5-level deep schema with 10 leaves per level = 100,000 leaves), a single parent rename produces 200,000 diff rows.
+
+  **Operator-visible consequences**:
+  - **Diff payload size**: an operator comparing two versions of a complex nested-struct dataset sees an amplified diff. The UI's diff visualization may render slowly or be visually noisy.
+  - **API consumer confusion**: a custom BI tool integrating against the diff endpoint sees more rows than expected for a "simple rename" — the tool's deduplication logic (if any) may misclassify the rename as wholesale schema replacement.
+  - **Unbounded payload**: there is NO pagination on the diff endpoint (per the sidecar's performance.known_performance_gaps.[no-pagination]) — pathological cases produce > 10K rows in a single response.
+
+  **Why LOW not MEDIUM**:
+  - The behaviour is INTENTIONAL (encodes the versioning-by-reference invariant).
+  - The amplification is bounded by struct depth + width — practical schemas have modest amplification (typical: < 100 rows for a typical rename).
+  - The functional impact is "visual noise / payload size" not "incorrect data" — the diff is accurate at the per-field level.
+  - LOW is consistent with the sidecar's own rating.
+
+  **Test gap shape**: regression-pin asserting: (a) seed V1 with `user { id, name }` and V2 with `customer { id, name }` (same structure, parent renamed); (b) GET diff; assert the response contains FOUR rows: `user.id DELETED`, `user.name DELETED`, `customer.id CREATED`, `customer.name CREATED` (NOT 2 rows or 1 row); (c) for a 3-level deep struct with 4 leaves, a single parent rename produces 8 rows (4 DELETED + 4 CREATED). The current state is PINNED — failures land if a future maintainer changes the cascade semantic.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/ReactiveDatasetVersionRepositoryImplTest.java (does NOT exercise parent-cascade amplification)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DatasetVersionDiffParentCascadeAmplificationTest.java"
+  name: "getDataSetStructureDiff_parentFieldRenamed_cascadesDeleteCreateToEveryDescendant_pinsAmplificationSemantic"
+evidence:
+  - "DatasetController.md says (bugs_limitations_corner_cases.[parent-cascade-amplification]): 'Parent-field cascade DELETE+CREATE amplification in diff — undocumented. DatasetVersionServiceImpl.getParentOddrnChangedPojos (lines 156-180) propagates a parent-rename through every descendant; the diff payload size grows non-linearly with struct depth. Operators comparing nested-struct datasets see amplified diff output with no doc-side text explaining why. Behaviour intentional (encodes the versioning-by-reference invariant) but unsurfaced to API consumers.' — evidence: DatasetVersionServiceImpl.java:156-180 + 110-147 — severity: LOW"
+  - "DatasetController.md says (implicit_adrs.[diff-encodes-versioning-by-reference]): 'Diff semantics encode the column-level versioning-by-reference model — a parent-field rename cascades DELETE+CREATE rows for every nested child field. evidence: DatasetVersionServiceImpl.java:156-180 (getParentOddrnChangedPojos) + 110-147 (calculateVersionDiff branches on parentOddrnChanged) — intent_anchor: Lines 156-180 implement a recursive fixed-point algorithm that propagates parentFieldChanged from any field whose parent oddrn was renamed to ALL its descendants. The downstream calculateVersionDiff (lines 110-134) then emits TWO rows for every descendant: one DELETED (line 121, minVersionDiff) + one CREATED (line 129, maxVersionDiff). The intent is explicit: a struct rename invalidates every nested column's identity at the dataset_field row level (consistent with the versioning-by-reference invariant in ReactiveDatasetFieldRepositoryImpl batch-R + concept dataset-field-versioning-by-reference-no-soft-delete-orphan-accumulation).' — confidence: HIGH"
+  - "Verified at primary source: DatasetVersionServiceImpl.java:156-180 (the fixed-point algorithm) + DatasetVersionServiceImpl.java:110-134 (the calculateVersionDiff branches)"
+cross_references:
+  - "TEST-GAP-768 (NEW batch W — sister diff endpoint per-entity-scoping bypass)"
+  - "TEST-GAP-769 (NEW batch W — sister diff endpoint missing-version 500 contract)"
+  - "TEST-GAP-771 (NEW batch W — sister diff endpoint identical-versions 400 contract)"
+  - "concepts: dataset-field-versioning-by-reference-no-soft-delete-orphan-accumulation (existing concept)"
+  - "DOC-NNN candidate: surface the parent-cascade amplification semantic on the dataset structure / diff doc — explain why operators see N×2 rows for a single rename"
+related_features: []
+related_pillar_features: ["P-01:F-NN-dataset-structure-diff"]
+proposed_action: |-
+  Add `DatasetVersionDiffParentCascadeAmplificationTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Four test methods:
+  1. `parentFieldRenamed_cascadesDeleteCreateToTwoLeafDescendants_pinsAmplificationOf4` — seed V1 `user { id, name }`, V2 `customer { id, name }`; GET diff; assert response contains 4 rows (user.id DELETED, user.name DELETED, customer.id CREATED, customer.name CREATED).
+  2. `parentFieldRenamed_threeLevelNestingFourLeaves_amplifiesTo8_pinsAmplificationOf8` — seed V1 with 3-level struct `a.b.c { x1, x2, x3, x4 }`, V2 with `a.b.renamed { x1, x2, x3, x4 }`; GET diff; assert 8 rows.
+  3. `nonParentFieldRenamed_singleLeafRename_amplifiesTo2_pinsNonCascadeBaseline` — seed V1 `user { id, name }`, V2 `user { id, full_name }` (only the leaf renamed); GET diff; assert 2 rows (name DELETED + full_name CREATED). Establishes the baseline (no cascade).
+  4. `parentFieldRenamed_diffPayloadSizeGrowsLinearlyWithLeafCount_pinsLowSeverityAmplification` — for leaf counts {1, 10, 100, 1000} under a renamed parent; GET diff; assert the response row count is `2 × leaf_count`. Document the growth shape.
+
+  Cross-pair with DOC-NNN: surface the parent-cascade amplification semantic on the dataset structure / diff doc — explain that struct renames produce N×2 diff rows for an N-leaf subtree.
+batch: 2026-05-20-W
+feature_id: null

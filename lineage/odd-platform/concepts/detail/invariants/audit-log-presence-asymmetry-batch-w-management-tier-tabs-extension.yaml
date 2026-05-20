@@ -1,0 +1,317 @@
+name: |-
+  Audit-log presence asymmetry — batch W extends Tier-2 unaudited surface to Management-tier tabs (DataSource + Collector + Tag + Namespace + Dataset structure mutations silent)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-07
+  - P-08
+  - P-09
+description: |-
+  STRENGTHENED INVARIANT, batch 2026-05-20W — extends the existing
+  audit-log-presence-asymmetry-2-tier-audit-story canonical_candidate
+  (and the related no-audit-log-on-rbac-mutations-... master
+  invariant) by confirming Tier-2 (unaudited) at 4 NEW Management-tier
+  controllers from batch W. The audit-log gap is broader than
+  RBAC mutations alone — it extends across the Management-tier
+  admin surfaces uniformly.
+
+  THE EXPANDED ENUMERATION — Tier 2 (Unaudited):
+
+    Previously (per the existing master at batch E + H + L + N +
+    P + Q + R + V):
+      - Role mutations (RoleServiceImpl)
+      - Policy mutations (PolicyServiceImpl)
+      - Owner-directory mutations (OwnerServiceImpl)
+
+    NEW THIS BATCH:
+      - DataSource mutations (DataSourceServiceImpl) — all 4 paths
+        (create / update / delete / regenerate-token) emit NO
+        Activity events. Verified by Grep across the file +
+        cross-confirmed at the batch S sidecar.
+      - Collector mutations (CollectorServiceImpl) — all 5 paths
+        (list / register / update / delete / regenerate-token)
+        emit NO Activity events. NO @Slf4j, NO @ActivityLog, NO
+        programmatic emission. Confirmed at batch W primary source.
+      - Tag directory mutations (TagServiceImpl) — createTag /
+        updateTag / deleteTag emit NO Activity events. The
+        @ActivityLog(event = TAG_ASSIGNMENT_UPDATED) annotation
+        exists at DataEntityServiceImpl.java:358 (per-entity
+        tag-assignment) but NOT at the controller-side
+        directory-vocabulary path. Confirmed at batch W primary
+        source.
+      - Namespace mutations (NamespaceServiceImpl) — create /
+        update / delete emit NO Activity events. Confirmed at
+        batch W primary source.
+      - Dataset structure mutations (DatasetController doesn't
+        write directly, but cross-link: dataset_field.internal_description
+        writes via DatasetFieldController PUT at batch V emit
+        @ActivityLog(event = DATASET_FIELD_INTERNAL_DESCRIPTION_UPDATED)
+        — this IS Tier 1; the asymmetry is per-mutation-type, not
+        per-controller).
+
+    Updated Tier 2 enumeration: 7+ surfaces (3 previously + 4 new)
+    confirmed unaudited.
+
+  THE EXPANDED ENUMERATION — Tier 1 (Audited):
+
+    Previously confirmed:
+      - DataEntity status updates (DATA_ENTITY_STATUS_UPDATED)
+      - DataEntity ownership creates (OWNERSHIP_CREATED)
+      - DataEntity description updates (DATA_ENTITY_INTERNAL_DESCRIPTION_UPDATED)
+      - DataEntity tag assignments (TAG_ASSIGNMENT_UPDATED at the
+        per-entity scope)
+      - DataEntity term-link mutations (TERM_ASSIGNMENT_UPDATED)
+      - DataEntity DEG-membership flips (per batch L) — partial
+        (see note in master)
+      - DataEntity custom-metadata mutations (per batch L)
+      - DataEntity halt-config mutations
+      - Dataset-field internal_description (batch V — Tier-1c
+        sibling)
+
+  THE NEW ARCHITECTURAL PATTERN OBSERVATION:
+
+    Tier 1 (Audited) = DataEntity-mutating endpoints. The
+    @ActivityLog AOP framework + programmatic emission patterns
+    are concentrated at DataEntityServiceImpl + DataEntityAttachmentServiceImpl
+    + OwnershipServiceImpl + DatasetFieldServiceImpl.
+
+    Tier 2 (Unaudited) = Management-tier admin surfaces +
+    RBAC-tier mutations. NamespaceServiceImpl, DataSourceServiceImpl,
+    CollectorServiceImpl, TagServiceImpl, OwnerServiceImpl,
+    RoleServiceImpl, PolicyServiceImpl — all 7 SERVICES are
+    Tier 2 unaudited.
+
+    The pattern's PRINCIPLE: 'audit follows the data, not the
+    config'. The Activity Feed records changes to CATALOG DATA
+    (entities + their attached metadata); it does NOT record
+    changes to the CATALOG CONFIG (namespaces + datasources +
+    collectors + tags + roles + policies + owners). This is the
+    INVERSE of what a security-conscious operator would expect —
+    config changes (RBAC roles, ownership of datasources, tag
+    vocabulary) are precisely the changes a security audit would
+    need to reconstruct.
+
+  THE COMPOUND WITH F-006 AUDIT-SILENCE-ENUM-ROOTED (cross-link):
+
+    Per the f-006-audit-silence-enum-rooted-deeper-than-schema-rooted
+    invariant (batch U), the underlying ActivityEventTypeDto enum
+    has NO values defined for:
+      - TAG_CREATED / TAG_UPDATED / TAG_DELETED
+      - NAMESPACE_CREATED / NAMESPACE_UPDATED / NAMESPACE_DELETED
+      - DATA_SOURCE_CREATED / DATA_SOURCE_UPDATED / DATA_SOURCE_DELETED
+      - COLLECTOR_CREATED / COLLECTOR_UPDATED / COLLECTOR_DELETED
+      - COLLECTOR_TOKEN_REGENERATED / DATA_SOURCE_TOKEN_REGENERATED
+
+    Adding @ActivityLog to the Tier-2 services WITHOUT ALSO
+    adding the corresponding enum values would not help — the
+    schema-rooted constraint precludes the row insertion. The
+    fix is FIVE LAYERS deep:
+      1. Add enum values to ActivityEventTypeDto.
+      2. Add the FK-valid rows to the activity_event_type table.
+      3. Add @ActivityLog annotations to the 7 Tier-2 services.
+      4. Add corresponding ActivityHandler classes for each new
+         event type.
+      5. Update the Activity Feed UI to surface the new event types
+         (no UI-tier filter mechanism for config-mutation events
+         currently).
+
+  THE OPERATOR-FACING CONSEQUENCE:
+
+    Operator-facing question: 'Who deleted the production namespace
+    yesterday at 3am?' — currently UNANSWERABLE. Operator-facing
+    question: 'Who rotated the staging collector token after the
+    incident?' — currently UNANSWERABLE. Operator-facing question:
+    'Which user created the tag-vocabulary entry "DEPRECATED" that
+    shows up on every entity now?' — currently UNANSWERABLE.
+
+    The TOKEN.updated_by column does capture the LAST actor on
+    rotation (single-state, not append-only); but the moment the
+    operator rotates AGAIN, the prior actor's identity is lost.
+    No append-only history exists for any of the 7 Tier-2 services.
+
+  SEVERITY MEDIUM (cross-pillar) — the audit-log gap is intentional
+  in the platform's design (per ADR-CANDIDATE-003 + the doc-side
+  framing); the cross-pillar consequence for Tier-2 services is
+  not enumerated anywhere; operators must read the source code
+  to discover the gap.
+
+nodes:
+  - odd-platform java DataSourceController controller-class:DataSourceController
+  - odd-platform java CollectorController controller-class:CollectorController
+  - odd-platform java NamespaceController controller-class:NamespaceController
+  - odd-platform java TagController controller-class:TagController
+
+contributors:
+  - |-
+    DataSourceController batch W (PRIMARY SOURCE — Tier-2
+    extension to data_source mutations):
+    bugs_limitations_corner_cases.[7] MEDIUM (NO Activity Event
+    emission for ANY data_source mutation; same gap as the S2S
+    path)
+  - |-
+    CollectorController batch W (PRIMARY SOURCE — Tier-2 extension
+    to collector mutations):
+    bugs_limitations_corner_cases.[4] HIGH severity (No audit
+    logging on any mutating endpoint — Grep against the file
+    returns zero log statements; forensic investigation
+    unanswerable from production data alone)
+  - |-
+    TagController batch W (PRIMARY SOURCE — Tier-2 extension to
+    tag-directory mutations):
+    security.known_security_gaps.[4] MEDIUM (No audit log on this
+    controller's write paths — createTag / updateTag / deleteTag
+    produce NO entries in the Activity Feed; the @ActivityLog
+    annotation exists at DataEntityServiceImpl.java:358 for the
+    per-entity scope but NOT at this directory-vocabulary path)
+  - |-
+    NamespaceController batch W (CORROBORATING — Tier-2 extension
+    to namespace mutations); NamespaceServiceImpl mutations
+    produce no Activity Feed entry. Cross-referenced in batch W
+    cross-cutting findings.
+
+evidence:
+  - |-
+    DataSourceController.md:bugs_limitations_corner_cases.[7] —
+    evidence: DataSourceServiceImpl.java entire file (verified
+    by Grep — no activityEventEmitter import, no Activity write);
+    cross-path with IngestionController (batch-P sidecar — also
+    no Activity emission)
+  - |-
+    CollectorController.md:bugs_limitations_corner_cases.[4] HIGH
+    severity — evidence: CollectorController.java:1-52 (no
+    @Slf4j, no log imports) + CollectorServiceImpl.java:1-110
+    (no log statements at any severity) + TokenGeneratorImpl.java:1-53
+  - |-
+    TagController.md:security.known_security_gaps.[4] MEDIUM —
+    evidence: TagController.java:22-52 (no @ActivityLog) +
+    TagServiceImpl.java:31-167 (no @ActivityLog on bulkCreate /
+    update / delete) + DataEntityServiceImpl.java:358 (the only
+    @ActivityLog entry related to tags — per-entity scope only)
+  - |-
+    Cross-references master concept audit-log-presence-asymmetry-2-tier-audit-story
+    (the 2-tier framing; THIS invariant extends to 7 confirmed
+    Tier-2 services)
+  - |-
+    Cross-references concept f-006-audit-silence-enum-rooted-deeper-than-schema-rooted
+    (the SCHEMA-rooted root cause; the @ActivityLog absence is
+    compounded by the enum absence)
+  - |-
+    Cross-references concept no-audit-log-on-rbac-mutations-audit-log-presence-asymmetry-refined-in-batch-f
+    (the RBAC-specific framing; this invariant extends BEYOND
+    RBAC to all Management-tier admin surfaces)
+
+axes_present:
+  - controllers
+  - services
+
+triangulation_count: 4
+cross_batch: true
+cross_batch_refs:
+  - batch-E (initial RBAC Tier-2 finding — Role + Policy + Owner)
+  - batch-F (Tier-1 confirmation — DataEntity audit)
+  - batch-H (cross-batch corroboration)
+  - batch-N (Role-repo PRIMARY SOURCE)
+  - batch-P (deleteOwner FIFTH RBAC-primary-surface)
+  - batch-Q (UI-tier 7th corroborating sidecar)
+  - batch-R (SCHEMA-rooted root cause via F-006 invariant)
+  - batch-U (F-006 enum-rooted deeper-than-schema-rooted)
+  - batch-V (DatasetField Tier-1c sibling)
+  - batch-W (THIS INVARIANT — 4 NEW Tier-2 services + the architectural pattern observation)
+
+severity: MEDIUM
+severity_dim: security+forensics
+
+mitigations_unimplemented:
+  - |-
+    Five-layer remediation (per f-006-audit-silence-enum-rooted
+    cross-link):
+      1. ActivityEventTypeDto — add enum values for the missing
+         event types.
+      2. activity_event_type DB table — add the corresponding rows.
+      3. @ActivityLog annotations on the 7 Tier-2 services'
+         mutating methods.
+      4. ActivityHandler classes for each new event type to capture
+         before/after state.
+      5. UI surface — extend the Activity Feed to surface the new
+         event types; add filters per category (DataEntity vs
+         Catalog-Config vs RBAC).
+  - |-
+    Document the audit-log gap on the
+    /configuration-and-deployment/enable-security/authorization
+    live doc page. Explicit text: 'The Activity Feed records
+    DataEntity-mutating events (descriptions, ownerships, statuses,
+    tags-on-entities). It does NOT record Management-tier admin
+    events (namespace / data-source / collector / tag-directory
+    mutations) or RBAC events (role / policy / owner-directory
+    mutations). Operators requiring forensic audit of
+    config-mutating events should configure external audit logging
+    at the database or load-balancer layer.' Single DOC-NNN
+    candidate.
+  - |-
+    Add an /features/active-platform-features/activity-feed
+    sub-page that explicitly enumerates which event types ARE and
+    are NOT captured. The list would be: Tier 1 (8 captured
+    event-types) + Tier 2 (12+ uncaptured event-types). Operator-facing
+    transparency.
+  - |-
+    Build-time scanner: enumerate every service-tier mutating
+    method (POST/PUT/DELETE controller handlers + their service
+    methods) AND verify each emits an Activity event (either via
+    @ActivityLog or programmatic). The current silent gap is too
+    easy to grow as new endpoints land.
+  - |-
+    Regression test: for each Tier-2 service, write a test asserting
+    NO @ActivityLog annotation exists (pins the current state) +
+    Grep-confirmed absence of activityEventEmitter calls. After
+    the fix lands, the assertion flips to confirm the
+    @ActivityLog presence.
+
+notes: |-
+  This invariant captures the FIRST cross-Management-tier
+  enumeration of the Tier-2 unaudited surface. Previous batches
+  framed the pattern as RBAC-specific (Role + Policy + Owner);
+  batch W's 5 Management-tier controller class-level sidecars
+  reveal the pattern is CROSS-PILLAR — Tier-2 spans ALL Management-tier
+  admin surfaces, not just RBAC.
+
+  The architectural pattern's load-bearing observation: the
+  Activity Feed is designed for DATA mutations, not CONFIG
+  mutations. This is a DELIBERATE design choice per the platform's
+  documented architecture (ADR-CANDIDATE-003). The operator-facing
+  consequence is the inverse of security-conscious expectation:
+  the AUTHORIZATION model is precisely the surface a security
+  audit would need to reconstruct, and it is precisely the surface
+  with no audit log.
+
+  Cross-cutting connections:
+    - STRENGTHENS the master no-audit-log-on-rbac-mutations-audit-log-presence-asymmetry-refined-in-batch-f
+      (extends from RBAC-only to all Management-tier admin
+      surfaces; 4 NEW Tier-2 services confirmed)
+    - STRENGTHENS the canonicalisation candidate
+      audit-log-presence-asymmetry-2-tier-audit-story
+      (extends the 2-tier framing to 7 confirmed Tier-2 services)
+    - Pairs with f-006-audit-silence-enum-rooted-deeper-than-schema-rooted
+      (the SCHEMA-rooted root cause; THIS invariant adds the
+      cross-pillar surface enumeration)
+    - Pairs with collector-plaintext-token-chain-controller-tier-closure
+      (THIS BATCH — the token rotation is forensically dark per
+      THIS invariant; operators investigating an incident cannot
+      reconstruct rotation history)
+    - Pairs with namespace-create-side-doors-cross-pillar-4-sister-services
+      (THIS BATCH — the side-door namespace creations are
+      forensically dark; the side-door bypasses NAMESPACE_CREATE
+      gate AND emits no Activity event)
+    - Pairs with deletetag-cascade-asymmetric-orphans-tag-to-dataset-field
+      (THIS BATCH — the tag deletion is forensically dark; orphan
+      rows persist with no audit trail of when the parent tag
+      was deleted)
+
+  Three DOC-NNN candidates:
+    (a) /configuration-and-deployment/enable-security/authorization
+        — explicit text on the audit-log gap + recommended
+        external audit logging
+    (b) /features/active-platform-features/activity-feed — explicit
+        enumeration of captured vs uncaptured event types
+    (c) /features/management — admonition on each Management tab
+        page: 'Mutations on this tab do NOT produce Activity Feed
+        entries.'

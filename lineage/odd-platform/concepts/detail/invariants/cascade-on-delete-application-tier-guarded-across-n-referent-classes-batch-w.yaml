@@ -1,0 +1,368 @@
+name: |-
+  Cascade-on-delete is APPLICATION-tier-guarded across N referent classes — uniform pattern + Tag asymmetric outlier (Namespace 4 referents + Tag 2 of 3, batch W primary source)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-08
+  - P-09
+description: |-
+  NEW INVARIANT, batch 2026-05-20W — captures a platform-wide
+  architectural pattern: cascade-on-delete behavior for catalog
+  primitives (Namespace, Tag, Owner, Role, Policy, Collector,
+  DataSource, Term) is APPLICATION-TIER-GUARDED at the service
+  layer, NOT FK-cascade-DB-tier. The FK definitions in the
+  migration suite use `REFERENCES` with NO `ON DELETE CASCADE`
+  clause; the cascade behaviour is enforced by service-tier checks
+  before the delete proceeds. The pattern is consistent across 5+
+  confirmed entities, but Tag deviates asymmetrically (2 of 3
+  relation tables cleaned up, 1 NOT) — a bug surfaced THIS BATCH.
+
+  THE CANONICAL PATTERN — what the service tier does:
+
+    For an entity E with N referent tables {R1, R2, ..., Rn}, the
+    service-tier delete method:
+
+      Step 1: Fetch the entity DTO.
+      Step 2: Mono.zip the N existsByE checks across {R1, R2, ..., Rn}.
+      Step 3: If ANY existsByE returns true → throw CascadeDeleteException
+              ("E cannot be deleted: there are still resources attached").
+              → HTTP 400 via ControllerAdvice.
+      Step 4: Otherwise → soft-delete (or hard-delete) the entity row.
+      Step 5: Update search vectors as needed.
+
+    The pattern is consistent. The FK definitions in V0_0_1__init.sql
+    and subsequent migrations REFERENCE the parent table without
+    `ON DELETE CASCADE` — the application is the authority on
+    cascade behaviour, not the database.
+
+  THE FIVE CONFIRMED INSTANCES (batch trail):
+
+    Instance 1 — Namespace (batch W primary source, NEW):
+      NamespaceServiceImpl.java:73-90 — Mono.zip of 4
+      existsByNamespace checks across:
+        - DataSource (existsByNamespace in ReactiveDataSourceRepository)
+        - Collector (existsByNamespace in ReactiveCollectorRepository)
+        - Term (existsByNamespace in ReactiveTermRepository)
+        - DataEntity (existsNonDeletedByNamespace in
+          ReactiveDataEntityRepository)
+      If ANY returns true → CascadeDeleteException("Namespace
+      cannot be deleted: there are still resources attached").
+      FK definitions: V0_0_1__init.sql:84 (DataEntity FK), V0_0_11:1-2
+      (DataSource FK), V0_0_29:14 (Collector FK), V0_0_35:12
+      (Term FK) — ALL FOUR FKs have NO ON DELETE clause.
+
+    Instance 2 — DataSource (batch S service + batch W controller):
+      DataSourceServiceImpl.java:85-96 — existsNonDeletedByDataSourceId
+      check against ReactiveDataEntityRepository. If true, throws
+      CascadeDeleteException("Data source cannot be deleted: there
+      are still data entities attached"). FK at V0_0_1__init.sql
+      data_entity.data_source_id REFERENCES data_source(id), NO
+      ON DELETE.
+
+    Instance 3 — Collector (batch B + batch W primary source):
+      CollectorServiceImpl.java:71-80 — dataSourceRepository
+      .existsByCollector(id) check. If true, throws
+      CascadeDeleteException("Collector has associated data
+      sources"). FK at V0_0_29__add_collector.sql data_source
+      .collector_id REFERENCES collector(id), NO ON DELETE.
+
+    Instance 4 — Tag (batch W primary source, ASYMMETRIC outlier):
+      TagServiceImpl.java:57-70 — performs 3 distinct operations
+      under @ReactiveTransactional:
+        (1) Fetch the tag DTO + validate !external (line 62-63).
+        (2) HARD-delete tag_to_term + tag_to_data_entity rows
+            concurrently via Flux.zip.
+        (3) Soft-delete the tag row + update term-side search vectors.
+      BUT: the third relation table — tag_to_dataset_field — is
+      NOT cleaned up. ReactiveTagRepositoryImpl.deleteDatasetFieldRelations
+      exists at :299-306 but is NEVER CALLED. Orphan rows persist
+      indefinitely.
+
+      The Tag pattern DIFFERS from the canonical pattern in TWO
+      ways:
+        - Cascade is HARD-DELETE of relation rows (Namespace's
+          cascade is GUARD-ONLY: throws on first existing referent;
+          Tag PROCEEDS through the relation tables and deletes
+          them).
+        - The asymmetry — cleans 2 of 3 — is a code-omission bug
+          (see deletetag-cascade-asymmetric-orphans-tag-to-dataset-field
+          THIS BATCH sibling invariant).
+
+    Instance 5 — Owner (batch P + batch W cross-check):
+      The Owner-side cascade guard exists at OwnerServiceImpl
+      (batch P deleteOwner primary source). Similar shape: throws
+      on existing ownership rows + RBAC associations.
+
+  THE TAG ASYMMETRY EXPLAINED:
+
+    Why does Tag use HARD-DELETE-of-relations and Namespace use
+    GUARD-THROW-ON-EXISTS? Because the semantic differs:
+
+      Namespace's children (DataSource, Collector, Term,
+      DataEntity) are FIRST-CLASS ENTITIES with their own lifecycle.
+      Deleting the namespace would orphan them; the platform
+      forces the operator to delete the children first.
+
+      Tag's children (tag_to_term, tag_to_data_entity,
+      tag_to_dataset_field) are JOIN ROWS — they bind the tag to
+      its referents but have no independent lifecycle. Deleting
+      the tag should naturally cascade-delete the joins. The HARD-
+      DELETE of joins + SOFT-DELETE of the parent tag is the
+      pattern.
+
+    The two patterns are architecturally different but related —
+    both are application-tier cascades. The Tag bug is that the
+    HARD-DELETE-of-joins is INCOMPLETE (only 2 of 3 join tables).
+
+  COMPOUND WITH SOFT-DELETE REINCARNATION (cross-link to THIS
+  BATCH sibling):
+
+    The cascade-guard prevents 'delete namespace finance' while
+    children exist. Once children are gone, 'delete namespace
+    finance' succeeds (soft-delete). The partial-unique-index
+    pattern then allows 'create namespace finance' to succeed
+    with a NEW id. The two patterns compose: cascade-guard
+    enforces the precondition; partial-unique-index enables the
+    recreation.
+
+  THE BENEFITS — why the architecture is this way:
+
+    1. The application is the authority on cascade behaviour,
+       not the database. Operators reasoning about cascade do
+       so by reading SERVICE-tier code, not by inferring from
+       FK definitions.
+
+    2. Cascade BEHAVIOUR can vary per entity (Namespace blocks;
+       Tag cascades-with-cleanup; DataSource blocks; Collector
+       blocks). The application tier allows this nuance; the
+       FK-cascade approach would force one behaviour.
+
+    3. Cascade ERRORS can be operator-friendly (CascadeDeleteException
+       carries a meaningful message); FK-cascade errors are
+       Postgres-level constraint violations.
+
+    4. The pattern is amenable to operator-facing audit (e.g.,
+       'what's blocking my delete?' could be surfaced by a separate
+       endpoint enumerating live children; currently NOT
+       implemented).
+
+  THE DOWNSIDES — what this architecture costs:
+
+    1. TOCTOU race class. The existsByNamespace checks + the
+       soft-delete UPDATE are NOT inside a SELECT FOR UPDATE
+       on the namespace row. A concurrent
+       dataSourceService.createDataSource against the namespace
+       could insert AFTER the existsByNamespace check returns
+       false and BEFORE the namespace soft-delete commits. The
+       delete proceeds; the new datasource references a soft-deleted
+       namespace. Surfaced batch W bugs_limitations_corner_cases.[2]
+       MEDIUM.
+
+    2. Error messages are GENERIC. CascadeDeleteException carries
+       'there are still resources attached' but does NOT enumerate
+       WHICH resources block the delete. Operator workflow friction.
+
+    3. The pattern depends on EVERY service author writing the
+       existsBy check correctly. A forgotten existsBy call =
+       orphan rows after parent delete (the Tag asymmetry IS
+       this class).
+
+    4. The pattern depends on the FK-not-cascading. A future
+       migration adding `ON DELETE CASCADE` to a single FK would
+       break the application-tier guard's intent. No build-time
+       check enforces 'no FK has ON DELETE CASCADE'.
+
+  SEVERITY MEDIUM — the architecture is intentional + sound;
+  the Tag asymmetry is a code-omission bug (filed as a separate
+  HIGH-severity invariant THIS BATCH). The TOCTOU class is the
+  highest-severity downside but currently catches rare-edge.
+
+nodes:
+  - odd-platform java NamespaceController controller-class:NamespaceController
+  - odd-platform java DataSourceController controller-class:DataSourceController
+  - odd-platform java CollectorController controller-class:CollectorController
+  - odd-platform java TagController controller-class:TagController
+  - odd-platform java service service:NamespaceServiceImpl
+  - odd-platform java service service:DataSourceServiceImpl
+  - odd-platform java service service:CollectorServiceImpl
+  - odd-platform java service service:TagServiceImpl
+
+contributors:
+  - |-
+    NamespaceController batch W (PRIMARY SOURCE — 4-referent guard):
+    concepts.invariants[6] (Cascade-on-delete is application-tier-guarded
+    across exactly 4 referent classes (DataSource, Collector, Term,
+    non-deleted DataEntity), via Mono.zip of four existsByNamespace*
+    checks) +
+    implicit_adrs.[2] (Cascade-on-delete is APPLICATION-tier-guarded,
+    NOT FK-cascade-DB-tier — exception class CascadeDeleteException +
+    no ON DELETE clause on any of the 4 FK definitions)
+  - |-
+    DataSourceController batch W (CORROBORATING — existsNonDeletedByDataSourceId):
+    bugs_limitations_corner_cases (cascade-delete-blocks-at-first-non-deleted-data-entity-no-operator-hint
+    about WHICH children block deletion — generic error message
+    pattern)
+  - |-
+    CollectorController batch W (CORROBORATING — existsByCollector
+    check):
+    concepts.invariants[5] (Delete is cascade-protected at the
+    application layer: dataSourceRepository.existsByCollector(id)
+    is checked before delete, throwing CascadeDeleteException) +
+    implicit_adrs.[2] (Collector delete is soft-delete with
+    cascade application-layer-checked via existsByCollector before
+    the soft-delete commits)
+  - |-
+    TagController batch W (CORROBORATING — ASYMMETRIC outlier):
+    concepts.invariants[deleteTag cascade is asymmetric across the
+    three relation tables — tag_to_data_entity + tag_to_term cleaned
+    up, tag_to_dataset_field NOT cleaned up]
+
+evidence:
+  - |-
+    NamespaceController.md:concepts.invariants.[6] — Cascade is
+    application-tier-guarded across 4 referent classes; Mono.zip
+    of 4 existsByNamespace* checks
+  - |-
+    NamespaceController.md:implicit_adrs.[2] — Cascade-on-delete
+    is APPLICATION-tier-guarded (NOT FK-cascade-DB-tier); evidence:
+    NamespaceServiceImpl.java:73-90 + 4 FK definitions with NO ON
+    DELETE clause
+  - |-
+    DataSourceController.md:bugs_limitations_corner_cases (cascade-delete-blocks-at-first-non-deleted-data-entity-no-operator-hint-about-WHICH-children-block-deletion)
+    — evidence: DataSourceServiceImpl.java:88-95 (the existence
+    check returns boolean; CascadeDeleteException message says
+    only 'there are still data entities attached')
+  - |-
+    CollectorController.md:concepts.invariants.[5] + implicit_adrs.[2]
+    — collector cascade via existsByCollector check
+  - |-
+    TagController.md:concepts.invariants[deleteTag cascade
+    asymmetric] — Tag is the OUTLIER (cascade is HARD-DELETE-of-joins
+    rather than GUARD-THROW; cleaned-up partially per the THIS
+    BATCH bug invariant)
+  - |-
+    Cross-references concept three-soft-delete-mechanisms-across-the-repository-layer
+    (the master invariant — names the cascade-app-tier pattern as
+    one of the architectural mechanisms; THIS invariant adds the
+    EXPLICIT COUNT of referent classes per entity AND the Tag
+    outlier framing)
+  - |-
+    Cross-references concept deletetag-cascade-asymmetric-orphans-tag-to-dataset-field
+    (THIS BATCH sibling — the Tag-side asymmetry as a SPECIFIC
+    BUG within the general cascade-app-tier pattern)
+  - |-
+    Cross-references concept soft-delete-reincarnation-via-partial-unique-index-general-pattern
+    (THIS BATCH sibling — the soft-delete-reincarnation patterns
+    compose with the cascade-app-tier-guard to form the canonical
+    catalog-primitive lifecycle)
+
+axes_present:
+  - controllers
+  - services
+  - repositories_reactive
+  - schema_migrations
+
+triangulation_count: 4
+cross_batch: true
+cross_batch_refs:
+  - batch-B (CollectorServiceImpl.delete — existsByCollector check, established the pattern at Collector)
+  - batch-P (OwnerServiceImpl.deleteOwner — similar guard at Owner)
+  - batch-S (DataSourceServiceImpl.delete — existsNonDeletedByDataSourceId at DataSource)
+  - batch-W (NamespaceController + DataSourceController + CollectorController + TagController — 4-vertex pattern + Tag outlier framing, THIS INVARIANT)
+
+severity: MEDIUM
+severity_dim: architecture+operational
+
+mitigations_unimplemented:
+  - |-
+    Document the cascade pattern on every operator-facing
+    /features/management/{tab} page. Explicit text per entity:
+      Namespace: 'Deleting a namespace requires removing all
+                  data sources, collectors, terms, and active
+                  data entities scoped to it first.'
+      DataSource: 'Deleting a data source requires removing all
+                   active data entities ingested through it first.'
+      Collector: 'Deleting a collector requires removing all data
+                  sources reporting through it first.'
+      Tag: 'Deleting a tag removes all bindings to data entities,
+            dataset fields, and terms.' (AFTER the deletetag-cascade-asymmetric
+            fix lands.)
+  - |-
+    Make CascadeDeleteException error messages more informative.
+    Currently: 'Namespace cannot be deleted: there are still
+    resources attached'. Better: 'Namespace finance cannot be
+    deleted: 3 data sources, 1 collector, 5 terms, 47 data
+    entities still reference it.' The DTOs are available; just
+    need to be collected before the throw.
+  - |-
+    Add a 'why can't I delete this?' API endpoint per entity:
+    `GET /api/{entity}/{id}/blocking-references` returns the
+    enumerated child counts. The operator UI can call this on
+    delete-button-click before the delete; surfaces the friction
+    BEFORE the 400 response.
+  - |-
+    Address the TOCTOU class with explicit transaction boundary +
+    SELECT FOR UPDATE on the parent row. The existsBy checks +
+    the soft-delete UPDATE need to be in a single transaction
+    that holds a row lock on the parent. Cross-link to TOCTOU
+    classes catalogued at tag-toctou-listbynames-then-bulkcreate-auto-create-on-miss-race.
+  - |-
+    Build-time scanner: enumerate every service-tier delete method
+    AND verify the cascade-app-tier-guard pattern (existsBy* +
+    CascadeDeleteException-throw) OR the cascade-hard-delete-joins
+    pattern. Surface deviations as findings. The Tag asymmetry
+    would be caught by such a scanner.
+  - |-
+    Build-time scanner: enumerate every FK definition in the
+    migration suite AND assert NONE have `ON DELETE CASCADE` or
+    `ON DELETE SET NULL` (the application-tier-cascade-pattern
+    invariant). Same scanner shape as the cascade-method audit.
+
+notes: |-
+  This invariant captures the FIRST explicit framing of the
+  cascade-app-tier-guard pattern as a platform-wide convention,
+  with the explicit count of referent classes per entity AND the
+  Tag-outlier-asymmetry surfaced as a SEPARATE bug. Previous batches
+  named the pattern at individual entities (Collector batch B,
+  DataSource batch S, Owner batch P); batch W enumerates 4 sister
+  entities + the Tag deviation in a single architectural picture.
+
+  The architectural picture's load-bearing observations:
+    (a) Cascade is APPLICATION-TIER. The database doesn't enforce
+        it. A maintainer reading the FK definitions in V0_0_1__init.sql
+        would NOT conclude 'cascade happens here' — they would
+        conclude 'these FK references prevent deletes that violate
+        them, and the application has to deal with the validation
+        errors'. The application chose the more nuanced approach.
+    (b) The PATTERN-SHAPE varies per entity. Namespace + DataSource
+        + Collector + Owner GUARD-throw on existing children. Tag
+        + Owner-association (and likely Term link tables) HARD-DELETE
+        the joins as part of the parent delete. The two shapes
+        coexist; the maintainer chose differently per entity.
+    (c) The TAG OUTLIER is a bug, not a deliberate choice. The
+        third relation table (tag_to_dataset_field) is missing
+        from the cleanup. The fix is one line in TagServiceImpl
+        + the migration to clean up historical orphans.
+    (d) The pattern composes with soft-delete-reincarnation to
+        form the canonical lifecycle: cascade-guard preconditions
+        delete; partial-unique-index post-conditions recreate.
+
+  Cross-cutting connections:
+    - Pairs with three-soft-delete-mechanisms-across-the-repository-layer
+      (THIS invariant adds CASCADE-PATTERN COUNTS as a separate
+      facet; the master invariant focuses on the DELETION mechanism
+      varieties)
+    - Pairs with deletetag-cascade-asymmetric-orphans-tag-to-dataset-field
+      (THIS BATCH sibling — the Tag asymmetry is a SPECIFIC bug
+      within this general pattern)
+    - Pairs with soft-delete-reincarnation-via-partial-unique-index-general-pattern
+      (THIS BATCH sibling — the lifecycle composition)
+    - Pairs with tag-toctou-listbynames-then-bulkcreate-auto-create-on-miss-race
+      (the cascade-app-tier guard has its own TOCTOU class —
+      cross-cutting race-condition family across catalog primitives)
+
+  Two DOC-NNN candidates:
+    (a) Per-entity Management page text on cascade behaviour
+    (b) Cross-cutting /developer-guides/lifecycle-semantics
+        page (single anchor; cross-link the cascade-guard
+        + soft-delete-reincarnation + restore semantics)

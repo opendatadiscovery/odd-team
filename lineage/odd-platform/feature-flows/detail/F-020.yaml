@@ -21,6 +21,10 @@ drift_class_summary:
 - soft_deleted_collector_orphaned_token_row_never_purged
 - collector_name_full_unique_no_partial_silently_blocks_recreate
 - regenerate_token_no_audit_trail_no_history_no_activity_event
+- end_to_end_plaintext_token_chain_closed_across_5_tiers_controller_to_dom
+- update_full_form_replace_silently_nulls_unsubmitted_fields
+- status_code_drift_controller_200_vs_spec_201_register_and_update
+- no_rate_limit_on_any_collector_endpoint_bulk_rotate_harvest_attacks
 cross_pillar_relationships:
 - pillar_id: P-10
   kind: feeds
@@ -230,6 +234,171 @@ batch_extensions:
     No new F-020 drift facets; no conflicts; no supersedes. Cross-pillar
     coherence with F-008 (credential-CONSUMER pair) + F-007 (parallel
     unauthenticated-webhook architectural lens) STRENGTHENED.
+- batch: W
+  entry_point_added: |-
+    controller-class:CollectorController — the CONTROLLER-TIER PRIMARY
+    SOURCE closing the F-020 plaintext-token claim END-TO-END across
+    5 tiers: schema (V0_0_28 batch-R) → codegen (TokenPojo) → storage
+    write (TokenGeneratorImpl batch-R) → equality (SQL TOKEN.VALUE.eq) →
+    DOM render (CollectorsList batch-Q). The controller is the FIFTH
+    AND HIGHEST tier — the HTTP response body wire that ships the
+    40-char plaintext token to the operator's browser on register AND
+    rotate paths. The complete chain is now visible at every layer
+    of the stack — F-020's plaintext-everywhere finding is fully
+    anchored from disk to wire.
+  contributing_nodes_added:
+  - odd-platform java CollectorController controller-class:CollectorController
+  notes: |-
+    The controller-tier sidecar adds NO new F-020 user-observable
+    drift facets but PRIMARY-SOURCE CONFIRMS all batch-Q + batch-R
+    findings at the controller-class layer AND surfaces ONE NEW
+    architectural-shape finding visible only at the controller-class
+    granularity (vs. the per-method granularity of batch-P sidecars).
+    Listed in order of priority:
+
+    (1) END-TO-END PLAINTEXT TOKEN CHAIN CLOSED ACROSS ALL 5 TIERS
+    (HIGH) — CollectorController.java:27-31 (registerCollector) and
+    lines 47-51 (regenerateCollectorToken) BOTH return the response
+    body via `.map(ResponseEntity::ok)` without any header customisation
+    (no `Cache-Control: no-store`, no `X-Sensitive-Body` marker, no
+    explicit content-type beyond the default). The downstream
+    TokenMapper.mapValue branch (`dto.showToken() ? dto.tokenPojo().getValue()
+    : "******" + substring(...length()-6)`) decides plaintext-vs-masked
+    per-call-site; the controller is the FIFTH AND FINAL layer
+    serialising the full 40-char alphanumeric secret to the HTTP
+    response wire. Any reverse-proxy / API-gateway / browser cache /
+    server-side response-body logger / APM tool on those paths captures
+    the credential in cleartext. F-020 batch-Q surfaced the
+    `token_plaintext_rendered_into_dom_text_node_no_obfuscation`
+    drift facet at the DOM-render layer; F-020 batch-R surfaced the
+    SQL-tier `collector_token_plaintext_at_rest_sql_primary_source_end_to_end`;
+    THIS batch closes the response-wire layer. The
+    plaintext-everywhere finding is CONFIRMED at every layer of the
+    stack — schema → codegen → storage write → equality → application
+    storage read → response wire → DOM render. The implicit ADR
+    "collector tokens are deployment-internal shared secrets between
+    operator-controlled collectors and the operator-controlled
+    platform; storage-at-rest threats are addressed at the
+    disk/backup layer, not the application layer" (per batch-R
+    implicit_adrs[0]) is now visible at EVERY tier of the chain;
+    promotion to explicit ADR warranted.
+
+    (2) AUDIT-SILENCE CONTROLLER-TIER PRIMARY-SOURCE (HIGH) — Grep
+    against CollectorController.java for `log\.(info|warn|debug|error)`,
+    `@ActivityLog`, `@Slf4j`, `@Log` returns ZERO matches across the
+    52-line controller body. The F-020 batch-Q
+    `collectors_tab_audit_silence_no_analytics_no_persistent_audit_panel`
+    UI-tier finding now PRIMARY-SOURCE PROVEN at the controller-class
+    layer (the 9-SIDECAR audit-silence pattern catalogued across
+    batches E/H/N/Q/R/P/S/T — verified for COLLECTOR_* domain at the
+    controller tier). Cross-link to the system-mission.md
+    "Audit-log Presence Asymmetry" canonicalisation candidate.
+
+    (3) GET /api/collectors UNGATED — CONTROLLER-CLASS PRIMARY SOURCE
+    (HIGH) — SecurityConstants.java:127-137 verified end-to-end —
+    POST/PUT/DELETE/PUT-token rules present; NO GET rule for
+    /api/collectors. AuthorizationCustomizer.java:29-30 catch-all
+    `pathMatchers("/**").authenticated()` is the only gate. Any
+    authenticated user (including a user with NO MANAGEMENT-tier
+    permissions) can enumerate every collector on the platform with
+    masked-token last-6-chars exposed. F-020 batch-Q surfaced this at
+    the UI tier (the CollectorsList view-only render under DISABLED);
+    this batch confirms at the controller-class tier — the read
+    surface is read-collaborative regardless of UI mode. STRENGTHENS
+    the F-020 batch-Q
+    `anonymous_list_enumeration_under_disabled_leaks_last_six_chars`
+    finding by adding the controller-tier root cause (absent SecurityRule)
+    to the UI-tier behavioural manifestation.
+
+    (4) UPDATE SEMANTICS ARE FULL-REPLACE — NOT PATCH —
+    CONTROLLER-CLASS PRIMARY SOURCE (MEDIUM) — CollectorController.java:33-40
+    + CollectorServiceImpl.java:50-69 (`collectorMapper.applyToDto(collectorDto.collectorPojo(), form)`)
+    + CollectorMapper.java:41-47 (MapStruct `@MappingTarget` whole-pojo
+    overwrite). A UI flow submitting a partial form (e.g. just the
+    name) will null the description and namespace columns. The
+    OpenAPI spec uses PUT (idempotent full-replace is technically
+    correct HTTP semantics), but the field semantics are not documented
+    anywhere a UI author would discover them before writing a partial-update
+    flow. STRUCTURAL ANALOG to the DataSourceController batch-W
+    counterfactual finding (the UI admin DataSource path also uses
+    full-form-replace via MapStruct `@MappingTarget` — same pattern,
+    same operator-surprise potential). NEW drift facet to record at
+    the F-020 level: `update_full_form_replace_silently_nulls_unsubmitted_fields`.
+
+    (5) STATUS-CODE DRIFT — CONTROLLER VS OPENAPI (MEDIUM) —
+    CollectorController.java:27-31 (registerCollector returns
+    `ResponseEntity::ok` — HTTP 200) vs openapi.yaml:557-563
+    (declares 201 Created). Lines 33-40 (updateCollector) returns 200
+    vs openapi.yaml:586-591 declares 201. Same status-code drift class
+    as TermController.createTerm + .updateTerm (batch-U) and
+    TagController.createTag + .updateTag (batch-W THIS BATCH). Three
+    controller pairs ship the same 200-vs-201 drift; the platform-wide
+    OpenAPI consistency posture lists 201 for created/updated responses
+    but the controller convention is 200. Cross-link to F-002, F-018
+    same-batch finding. NEW drift facet to record at the F-020 level:
+    `status_code_drift_controller_200_vs_spec_201_register_and_update`.
+
+    (6) NO RATE-LIMIT ON ANY ENDPOINT — CONTROLLER-CLASS PRIMARY
+    SOURCE (MEDIUM) — CollectorController.java:1-52 has no
+    `@RateLimited` annotation, no programmatic throttle, no
+    SecurityRule rate-limit metadata. An attacker holding a
+    MANAGEMENT-permission session can rapidly create/delete/rotate
+    collectors at the rate the WebFlux stack allows; an attacker
+    holding any authenticated session can rapidly list collectors
+    and harvest masked-token suffixes. Cross-link to F-019 + F-027
+    (other Management surfaces share the missing-rate-limit posture).
+    NEW drift facet:
+    `no_rate_limit_on_any_collector_endpoint_bulk_rotate_harvest_attacks`.
+
+    (7) TOKEN ENTROPY USES NON-CRYPTOGRAPHICALLY-SECURE RNG
+    (HIGH — already catalogued in batch-R; reconfirmed at controller-tier
+    primary source via downstream chain) — TokenGeneratorImpl.java:39,
+    49 uses `RandomStringUtils.randomAlphanumeric(40)` which delegates
+    to `ThreadLocalRandom` in commons-lang 3.16+, NOT `SecureRandom`.
+    40 alphanumeric chars ≈ 238 bits of input space but the RNG
+    quality is the binding constraint. The controller-tier sidecar
+    reconfirms this from the file-local primary source (its
+    bugs_limitations_corner_cases enumeration) — strengthens batch-R
+    finding from the credential-MINTING side at the controller view.
+
+    (8) DELETE LEAVES ORPHAN TOKEN ROW — CONTROLLER-CLASS PRIMARY
+    SOURCE (HIGH — already catalogued in batch-R; reconfirmed at
+    controller-tier primary source) — CollectorServiceImpl.java:71-80
+    (delete path issues only `collectorRepository.delete(id)`; no
+    `tokenRepository.delete(...)`) + ReactiveAbstractSoftDeleteCRUDRepository.java:51-59
+    (soft-delete UPDATEs only the parent table). The plaintext credential
+    of a deleted collector persists in the TOKEN table indefinitely;
+    backups, replicas, and dumps carry it. The controller-tier sidecar
+    reconfirms this finding from the controller's view; strengthens
+    the F-020 batch-R `soft_deleted_collector_orphaned_token_row_never_purged`.
+
+    (9) THIN-DELEGATION CONTROLLER PATTERN — CONTROLLER-CLASS
+    IMPLICIT ADR (HIGH consistency confidence) — Every CollectorController
+    method body is exactly one line: `return collectorService.X(...).map(ResponseEntity::ok)`
+    or equivalent; no `try/catch`, no `@Transactional`, no logging.
+    The convention is consistent across DataSourceController (batch-W),
+    OwnerController (batch-P), TagController (batch-W), TermController
+    (batch-U), NamespaceController (batch-W) — the entire controller
+    package shares the thin-OpenAPI-delegate pattern. F-020 batch-Q
+    surfaced this implicit_adrs[3]; batch-W elevates it to a
+    cross-controller architectural shape worth promoting to an explicit
+    ADR. Cross-link to ADR-CANDIDATE-NN-ThinOpenApiDelegateControllers.
+
+    Coherence: STRENGTHENS=8 across the existing F-020 drift facets
+    (token plaintext + audit silence + ungated list + DISABLED-mode
+    reach + orphan token row + entropy + thin-delegate ADR + audit-silence
+    9-sidecar pattern). NEW drift facets ADDED to the F-020 drift_class_summary:
+    `update_full_form_replace_silently_nulls_unsubmitted_fields`,
+    `status_code_drift_controller_200_vs_spec_201_register_and_update`,
+    `no_rate_limit_on_any_collector_endpoint_bulk_rotate_harvest_attacks`,
+    `end_to_end_plaintext_token_chain_closed_across_5_tiers_controller_to_dom`.
+    NO conflicts surfaced; NO supersedes. The HIGHEST-LEVERAGE
+    consequence for the maintainer's roadmap is the explicit
+    plaintext-token ADR promotion — every layer of the stack now has
+    primary-source evidence; the architectural decision is observable
+    end-to-end and warrants explicit defending or remediation (a
+    one-shot revocable token model OR a hash-at-rest schema migration
+    OR a per-call masking responsibility shift).
 batch_origin: Q
 created_in_batch: Q
 discovered_from_entry_point: ui_route:/management/collectors

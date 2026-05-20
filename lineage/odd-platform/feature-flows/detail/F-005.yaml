@@ -12,6 +12,11 @@ drift_class_summary:
 - structural_amplification_surface
 - ui_default_masks_backend_caveat
 - co_membership_leakage
+- dataset_structure_by_version_id_ignores_data_entity_id_url_parameter
+- dataset_structure_diff_ignores_data_entity_id_url_parameter_cross_dataset_diff
+- dataset_structure_endpoints_no_security_rule_cross_owner_read_extension
+- dataset_structure_diff_500_on_missing_version_id_not_404_inconsistent_error_contract
+- dataset_diff_parent_field_cascade_delete_create_amplification_undocumented
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: Downstream lineage traversal — default depth handling
@@ -53,6 +58,7 @@ contributing_nodes:
 - odd-platform java service service:LineageServiceImpl
 - odd-platform java repository reactive repository:ReactiveLineageRepositoryImpl
 - odd-platform java ReactiveGroupEntityRelationRepositoryImpl (batch M — DEG-anchored member resolution)
+- odd-platform java DatasetController controller-class:DatasetController (batch W — cross-owner enumeration extension to dataset structure surface)
 terminal_side_effect:
   side_effect_class: page-render
   description: Returns LineageGraph payload to the lineage canvas component
@@ -466,6 +472,145 @@ control_summary: |-
   and per-component partitioning are DEG-specific. One new drift facet
   (co_membership_leakage) added here so a reader of F-005 finds the
   DEG variant via cross-link.
+
+  Batch W adds the DatasetController controller-class PRIMARY-SOURCE
+  for THREE new drift facets extending the F-005 cross-owner enumeration
+  + per-entity-scoping-bypass class to the DATASET STRUCTURE surface:
+  (1) `getDataSetStructureByVersionId(dataEntityId, versionId)` IGNORES
+  the `data_entity_id` URL parameter — the SQL filters
+  `WHERE DATASET_VERSION.ID = datasetVersionId` only
+  (ReactiveDatasetVersionRepositoryImpl.java:129); a request to
+  `GET /api/datasets/{any_id}/structure/{valid_version_id_for_other_dataset}`
+  returns the OTHER dataset's structure. (2) `getDataSetStructureDiff`
+  similarly ignores the `data_entity_id` — the SQL filters
+  `WHERE DATASET_VERSION.ID IN (firstVersionId, secondVersionId)`
+  only (line 154); a caller may diff two version_ids belonging to
+  two DIFFERENT datasets and receive a well-formed but cross-dataset
+  diff. (3) NO SecurityRule entry exists for any
+  `/api/datasets/{data_entity_id}/structure/*` or
+  `/api/datasets/{data_entity_id}/relationships` path
+  (SecurityConstants.java:98-355 verified — only
+  `/api/datasets/{data_entity_id}/dataqatests/{dataqa_test_id}/severity PUT`
+  is gated); reads fall through to global authentication-only. The
+  F-005 cross-owner enumeration class extends from LINEAGE GRAPH
+  EDGES to DATASET STRUCTURE + SCHEMA HISTORY + RELATIONSHIPS — three
+  additional read surfaces with the same read-collaborative posture.
+  The dataset-relationships endpoint `GET /api/datasets/{id}/relationships`
+  is in the spec at openapi.yaml:1810-1826 but is NOT documented at
+  the live API-reference Relationships sub-page (WebFetched 2026-05-20
+  status 200 — explicitly omitted). NEW drift facets for F-005:
+  `dataset_structure_by_version_id_ignores_data_entity_id_url_parameter`,
+  `dataset_structure_diff_ignores_data_entity_id_url_parameter_cross_dataset_diff`,
+  `dataset_structure_endpoints_no_security_rule_cross_owner_read_extension`,
+  `dataset_structure_diff_500_on_missing_version_id_not_404_inconsistent_error_contract`,
+  `dataset_diff_parent_field_cascade_delete_create_amplification_undocumented`.
+batch_extensions:
+- batch: W
+  entry_point_added: |-
+    controller-class:DatasetController — the 4-endpoint per-dataset
+    structure-versioning + relationships HTTP surface backing the
+    Data Entity detail page's Structure tab + Version history /
+    Compare versions surfaces. The class is pure thin-proxy plumbing
+    (every method body is a one-line delegation), no @PreAuthorize,
+    NO SecurityRule entries on any of the 4 GET endpoints. EXTENDS
+    F-005's cross-owner-enumeration + per-entity-scoping-bypass class
+    from the LINEAGE surface to the DATASET STRUCTURE surface.
+  contributing_nodes_added:
+  - odd-platform java DatasetController controller-class:DatasetController
+  notes: |-
+    The DatasetController batch-W sidecar surfaces FIVE new drift
+    facets extending F-005's cross-owner-enumeration + per-entity-scoping-bypass
+    class to the dataset structure surface. Listed in order of
+    architectural leverage:
+
+    (1) PER-ENTITY-SCOPING BYPASS AT `getDataSetStructureByVersionId`
+    (HIGH — F-005 family extension) — DatasetController.java:23-30
+    takes `(dataEntityId, versionId)`; service at
+    DatasetVersionServiceImpl.java:39-45 passes `datasetVersionId`
+    to the repo; the SQL at
+    ReactiveDatasetVersionRepositoryImpl.java:129 filters
+    `WHERE DATASET_VERSION.ID = datasetVersionId` only. The
+    `datasetId` argument is consumed ONLY in the NotFoundException
+    message text (lines 41-43). A request to
+    `GET /api/datasets/999999/structure/{valid_version_id_for_other_dataset}`
+    returns the structure of the OTHER dataset's version. Cross-link
+    to F-005's existing `cross_owner_enumeration` class: this is the
+    SAME blast radius (any authenticated user enumerates) on a
+    DIFFERENT read surface (structure rather than lineage). NEW
+    drift facet:
+    `dataset_structure_by_version_id_ignores_data_entity_id_url_parameter`.
+
+    (2) PER-ENTITY-SCOPING BYPASS AT `getDataSetStructureDiff`
+    (HIGH — F-005 family extension) — DatasetController.java:43-50
+    takes `(dataEntityId, firstVersionId, secondVersionId)`; service
+    at DatasetVersionServiceImpl.java:55-64 does NOT use `datasetId`
+    in any query; repo at line 154 filters
+    `WHERE DATASET_VERSION.ID IN (firstVersionId, secondVersionId)`
+    only. A caller may diff two version_ids from two completely
+    different datasets — the diff is computed over the raw column
+    lists keyed by `oddrn`; columns from unrelated datasets compare
+    by oddrn-mismatch as DELETED+CREATED, producing a well-formed
+    but nonsensical cross-dataset diff payload. Cross-link to F-005's
+    existing per-entity-scoping bypass class. NEW drift facet:
+    `dataset_structure_diff_ignores_data_entity_id_url_parameter_cross_dataset_diff`.
+
+    (3) NO SecurityRule ON ANY `/api/datasets/{id}/structure/*` OR
+    `/api/datasets/{id}/relationships` PATH (HIGH — F-005 read-collaborative
+    posture extension) — SecurityConstants.java:98-355 verified
+    end-to-end — only `/api/datasets/{data_entity_id}/dataqatests/{dataqa_test_id}/severity PUT`
+    rule exists for any /api/datasets/ path (line 244-246). All four
+    read endpoints in this controller fall back to global
+    authentication-only (read-collaborative posture). Under
+    `auth.type=DISABLED`, anonymously reachable. Same posture as
+    F-005's LineageServiceImpl.getLineage chain. Cross-link to
+    REFACTOR-024 family (per system-mission.md:267 read-collaborative
+    posture implicit ADR). NEW drift facet:
+    `dataset_structure_endpoints_no_security_rule_cross_owner_read_extension`.
+
+    (4) INCONSISTENT ERROR CONTRACT — 500 ON MISSING VERSION_ID FOR
+    DIFF (MEDIUM, NEW) — `DatasetVersionServiceImpl.buildDataSetVersionDiffList`
+    line 69-71 throws a generic `RuntimeException` when
+    `versionFields.size() != 2` (i.e., one of the requested version
+    ids does not exist). The runtime exception is NOT translated to
+    BadUserRequestException or NotFoundException — it bubbles as
+    HTTP 500. The other two structure endpoints throw NotFoundException
+    correctly (lines 41-43, 50-51). Inconsistent error contract
+    within the same controller surface — a missing version on the
+    diff endpoint is 500, on the by-version endpoint is 404. NEW
+    drift facet:
+    `dataset_structure_diff_500_on_missing_version_id_not_404_inconsistent_error_contract`.
+
+    (5) PARENT-FIELD CASCADE DELETE+CREATE AMPLIFICATION IN DIFF
+    (LOW, NEW) — DatasetVersionServiceImpl.getParentOddrnChangedPojos
+    (lines 156-180) treats every child field of a parent-renamed-or-deleted
+    column as itself DELETED+CREATED, surfacing the parent restructure
+    to ALL descendants. The result is amplified diff output for
+    parent-field changes — a single struct rename can cascade
+    DELETE+CREATE rows for every nested field. Behaviour intentional
+    (encodes the column-level versioning-by-reference invariant per
+    batch-R ReactiveDatasetFieldRepositoryImpl finding
+    `dataset_field_versioning_by_reference_no_soft_delete_orphan_accumulation`)
+    but NOT documented at the live API-reference surface. Cross-link
+    to F-004 batch-R (the column-level description surface). Operators
+    comparing two versions of a nested-struct dataset see amplified
+    diff output with no documentation of why. NEW drift facet:
+    `dataset_diff_parent_field_cascade_delete_create_amplification_undocumented`.
+
+    Coherence: STRENGTHENS=4 across F-005's existing drift facets
+    (cross-owner enumeration class extends to dataset structure;
+    REFACTOR-203 family extends from lineage edges to structure +
+    diff endpoints; read-collaborative posture confirmed at a new
+    surface; per-entity-scoping bypass class extends to 2 new
+    endpoints). SUPERSEDES=0; the per-entity-scoping bypass on the
+    structure endpoints is FRESH evidence at FRESH surfaces — does
+    not contradict any existing F-005 finding. NO conflicts surfaced.
+    The HIGHEST-LEVERAGE consequence is the realisation that the
+    F-005 cross-owner-enumeration class is BROADER than the lineage
+    edges — it covers EVERY read endpoint on the data-entity / dataset
+    surface that lacks a SecurityRule (lineage / structure / structure-diff
+    / relationships / per-entity-alerts / per-entity-DQ-tests). A
+    cross-surface audit sweep for SecurityRule absence on per-entity
+    GET endpoints would surface the full blast radius.
 related_refactoring_scopes:
 - REFACTOR-202
 - REFACTOR-203
@@ -481,6 +626,11 @@ related_concepts:
 - Read-Collaborative Posture
 related_retrospectives:
 - LSN-017
+- LSN-018
+related_features:
+- F-004   # batch-W cross-link — DatasetController is the read-side surface for the F-004 column-level XSS class (dataset_field.internal_description surfaces verbatim through getDataSetStructure*)
+- F-016   # DEG-Anchored Lineage — distinct feature for the DEG variant
+- F-022   # Per-Dataset DQ Test Reports & SLA — same controller surface (DatasetController) extends F-022's cross-owner DQ read class
 related_probes: null
 probe_verifications:
 - probe_id: P-008

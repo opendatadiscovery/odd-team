@@ -1,0 +1,67 @@
+name: Regenerate Data Source Token
+canonical_in_docs: false
+canonical_candidate: true
+description: |-
+  PUT /api/datasources/{data_source_id}/token — gated by
+  DATA_SOURCE_TOKEN_REGENERATE Permission (MANAGEMENT scope) at
+  SecurityConstants.java:124-126. The controller's
+  regenerateDataSourceToken handler (DataSourceController.java:53-59)
+  is a one-line delegation to DataSourceServiceImpl.regenerateDataSourceToken
+  (DataSourceServiceImpl.java:98-106 — NOTABLY NOT @ReactiveTransactional;
+  cf. the surrounding @ReactiveTransactional create/update/delete
+  methods at lines 52, 69, 86). The service: (1) loads the existing
+  DTO via dataSourceRepository.getDto(id) — throws NotFoundException
+  if absent; (2) calls tokenGenerator.regenerateToken(existingTokenPojo)
+  — returns a new TokenDto in memory; (3) tokenRepository.updateToken(newToken)
+  — UPDATE token SET value = ?, updated_at = ?, updated_by = ?
+  WHERE id = ?. Returns 200 with the new plaintext token visible
+  in DataSource.token.value (showToken=true). Token rotation IS
+  DESTRUCTIVE: old token value is OVERWRITTEN; no grace period;
+  no `token_old_value` column. A collector still using the old
+  token starts failing authentication on its next request
+  (IngestionDataSourceFilter throws AccessDeniedException). NO
+  warning logged to operators; NO email/notification fires.
+  Missing @ReactiveTransactional means partial-rotation failure
+  mode: if tokenGenerator.regenerateToken succeeds (in-memory)
+  but tokenRepository.updateToken fails (DB write fails), the
+  new token exists in the response body only, NOT in the DB; the
+  collector still authenticates with the OLD token (still valid).
+  Same SAME architectural surface as regenerateCollectorToken
+  (both rotate tokens in the same TOKEN table; same plaintext-everywhere
+  chain).
+axes_present:
+  - controllers
+nodes:
+  - odd-platform java DataSourceController controller-class:DataSourceController
+contributors:
+  - |-
+    DataSourceController batch W (PRIMARY SOURCE):
+    concepts.operations[regenerateDataSourceToken] +
+    bugs_limitations_corner_cases.[3] MEDIUM severity (Destructive
+    token rotation with no grace period; no warning to operators
+    or running collectors) +
+    bugs_limitations_corner_cases.[4] LOW severity
+    (regenerateDataSourceToken is NOT @ReactiveTransactional —
+    partial-rotation failure mode) +
+    coherence_check.conflicts_surfaced.[1] LOW (NEW finding:
+    file-local code-shape inconsistency)
+evidence:
+  - DataSourceController.md:concepts.operations[regenerateDataSourceToken]
+  - DataSourceController.md:bugs_limitations_corner_cases.[3] MEDIUM (destructive rotation)
+  - DataSourceController.md:bugs_limitations_corner_cases.[4] LOW (missing @ReactiveTransactional)
+  - DataSourceController.md:coherence_check.conflicts_surfaced.[1] (NEW partial-rotation race)
+notes: |-
+  Pairs with regenerate-collector-token (the symmetric Collector
+  variant; same rotation contract; same plaintext-everywhere chain).
+  Pairs with collector-token entity concept (the DataSource token
+  IS A COLLECTOR TOKEN per the schema — data_source.token_id REFERENCES
+  the same TOKEN table).
+  Pairs with collector-plaintext-token-chain-controller-tier-closure
+  (THIS BATCH — the plaintext-everywhere chain at the controller
+  tier, now framed for BOTH Collector and DataSource).
+  Pairs with datasource-ui-admin-disjoint-from-s2s-five-vertex-triangulation
+  (THIS BATCH — the rotation IS the LAST UI-admin endpoint that
+  surfaces the disjunction with the S2S ingestion path).
+  Pairs with audit-log-presence-asymmetry-2-tier-audit-story
+  (no Activity Event on regenerateDataSourceToken — same audit
+  gap as the surrounding DataSource operations).

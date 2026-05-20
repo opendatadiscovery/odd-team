@@ -1,0 +1,311 @@
+name: |-
+  deleteTag cascade ASYMMETRIC — tag_to_dataset_field rows NOT cleaned up (HIGH severity, batch W primary source)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-08
+description: |-
+  NEW HIGH-SEVERITY INVARIANT, batch 2026-05-20W — surfaces the
+  cascade asymmetry in TagServiceImpl.delete that leaves orphaned
+  tag_to_dataset_field rows referencing a soft-deleted tag id.
+  Confirmed by reading TagServiceImpl.java:57-70 end-to-end + by
+  Grep-confirming the existing ReactiveTagRepositoryImpl.deleteDatasetFieldRelations
+  is uncalled.
+
+  THE CASCADE PATH — what TagServiceImpl.delete actually does
+  (TagServiceImpl.java:57-70, @ReactiveTransactional):
+
+    Step 1: fetch the tag DTO via reactiveTagRepository.getDto(tagId)
+            and validate !external (line 62-63). External tags
+            (any tag_to_data_entity row with external=true) are
+            rejected with BadUserRequestException — these are
+            collector-owned tags that UI cannot delete.
+
+    Step 2: HARD-delete tag_to_term rows via
+            reactiveTagRepository.deleteTermRelations(tagId)
+            (ReactiveTagRepositoryImpl.java:280-286). This removes
+            the term-side bindings.
+
+    Step 3: HARD-delete tag_to_data_entity rows via
+            reactiveTagRepository.deleteDataEntityRelations(tagId)
+            (ReactiveTagRepositoryImpl.java:235-241). This removes
+            the data-entity-side bindings. Steps 2 and 3 run
+            concurrently via Flux.zip (line 64-65).
+
+    Step 4: SOFT-delete the tag row via the inherited
+            ReactiveAbstractSoftDeleteCRUDRepository.delete (UPDATE
+            tag SET deleted_at = NOW()).
+
+    Step 5: Update term-side search vectors via
+            reactiveTermSearchEntrypointRepository.updateChangedTagVectors(tagId)
+            (line 68-69).
+
+  WHAT IS MISSING — the asymmetry:
+
+    `ReactiveTagRepositoryImpl.deleteDatasetFieldRelations(tagId)`
+    EXISTS at lines 299-306 — fully implemented method that would
+    HARD-delete tag_to_dataset_field rows. But it is NOT INVOKED
+    from TagServiceImpl.delete. Verified by Grep:
+    `deleteDatasetFieldRelations` returns no caller in TagServiceImpl.
+
+    A tag attached to dataset fields via the side-door
+    DATASET_FIELD_TAGS_UPDATE path (DatasetFieldServiceImpl invokes
+    tagService.getOrCreateTagsByName, then writes
+    tag_to_dataset_field rows), when deleted via this controller,
+    leaves orphaned tag_to_dataset_field rows referencing the
+    soft-deleted tag id.
+
+  WHY THIS IS HIGH (not MEDIUM) — the load-bearing observations:
+
+    1. The orphan rows are UI-INVISIBLE — reads via
+       ReactiveTagRepositoryImpl.listDatasetFieldDtos filter with
+       addSoftDeleteFilter on the join (lines 84-98), so the
+       orphaned rows are NOT visible in the UI tag list for that
+       dataset field. But they PERSIST in the DB indefinitely.
+
+    2. NO HOUSEKEEPING JOB exists to clean them up. Verified by
+       cross-checking the HousekeepingTTLProperties + the 5-job
+       SchedulerConfig — none scan for orphan tag_to_dataset_field
+       rows.
+
+    3. The orphans accumulate WITH NO RETENTION LIMIT. Long-running
+       deployments accumulate tag_to_dataset_field rows pointing at
+       soft-deleted tags monotonically. Database disk usage grows
+       silently.
+
+    4. Future garbage-collection migrations would need to address
+       this; right now no cleanup task exists. The pattern is
+       SAME-CLASS as the orphan TOKEN rows after collector
+       soft-delete (collector-plaintext-token-at-rest-end-to-end-sql-to-dom-chain
+       invariant — that one is also unbounded; same architectural
+       fingerprint).
+
+    5. The cascade ASYMMETRY is invisible to operators — the live
+       /features/data-discovery/tagging page does NOT mention any
+       cascade behaviour. An operator deleting a tag via the
+       Management → Tags tab has no way to know SOME bindings are
+       cleaned up (tag_to_term, tag_to_data_entity) and OTHERS are
+       not (tag_to_dataset_field).
+
+    6. The bug is NOT visible from any single layer — only by
+       cross-referencing the TagServiceImpl.delete method against
+       the available repository methods. A maintainer working on
+       TagServiceImpl would not realize deleteDatasetFieldRelations
+       exists. A maintainer working on ReactiveTagRepositoryImpl
+       would see the unused method but might think it's reserved
+       for future use.
+
+  THE THREE TAG-RELATION TABLES — relationship to architecture:
+
+    tag_to_data_entity: HARD-deleted on tag-delete (cleaned up).
+                        Created via DATA_ENTITY_TAGS_UPDATE side-door
+                        OR ExternalTagIngestionRequestProcessor.
+
+    tag_to_term:        HARD-deleted on tag-delete (cleaned up).
+                        Created via TERM_TAGS_UPDATE side-door.
+
+    tag_to_dataset_field: NOT HARD-DELETED on tag-delete (ORPHANS).
+                          Created via DATASET_FIELD_TAGS_UPDATE side-door
+                          (the F-004 column-level write surface).
+
+    The three tables exist as parallel binding edges — same
+    architectural class. The cascade on delete is symmetric for
+    TWO of three; the third is the bug. This is a code-omission
+    bug, not an intentional design (no comment in the file frames
+    the omission as deliberate).
+
+  THE COMPOUND WITH PER-ENTITY SIDE-DOORS (cross-link):
+
+    The DATASET_FIELD_TAGS_UPDATE side-door creates novel tag
+    directory rows via tagService.getOrCreateTagsByName (a Permission
+    bypass — see namespace-create-tag-create-side-doors invariant).
+    The same per-entity-tag-editor can:
+      (a) MINT new global Tag rows without TAG_CREATE (the side-door
+          write path),
+      (b) BIND them to dataset fields via tag_to_dataset_field,
+      (c) When the operator (with TAG_DELETE) deletes the tag, the
+          tag_to_dataset_field rows DO NOT get cleaned up.
+    The per-entity-tag-editor's actions persist as orphan rows after
+    the operator's cleanup; the operator believes the tag is gone,
+    the orphan rows say otherwise. Combined with the open-read on
+    getPopularTagList (any authenticated user enumerates the tag
+    directory regardless of TAG_* permissions), the per-entity-editor
+    can re-discover their own orphan-bound dataset fields by guessing
+    soft-deleted tag ids.
+
+  SEVERITY HIGH — operational (unbounded DB growth) + integrity
+  (orphan binding rows referencing soft-deleted parents) + audit
+  (no record of which dataset fields had which tag attached at
+  delete time, since tag_to_data_entity emits TAG_ASSIGNMENT_UPDATED
+  Activity but tag_to_dataset_field does NOT — same audit-log
+  asymmetry as the data_source side).
+
+nodes:
+  - odd-platform java TagController controller-class:TagController
+  - odd-platform java service service:TagServiceImpl
+  - odd-platform java repository reactive repository:ReactiveTagRepositoryImpl
+
+contributors:
+  - |-
+    TagController batch W (PRIMARY SOURCE — controller-level surface):
+    concepts.invariants[deleteTag cascade ASYMMETRIC across the three
+    relation tables; tag_to_dataset_field rows persist as orphans] +
+    bugs_limitations_corner_cases.[2] MEDIUM severity (the cascade
+    asymmetry surfacing) +
+    feature_hint.drift_class_facets[Cascade asymmetry on deleteTag —
+    tag_to_data_entity + tag_to_term cleaned up, tag_to_dataset_field
+    NOT cleaned up]
+  - |-
+    TagServiceImpl (CORROBORATING — service-tier primary source for
+    the delete method): file:line 57-70 — the 5-step pipeline does
+    NOT include a deleteDatasetFieldRelations call; the available
+    repository method at ReactiveTagRepositoryImpl.java:299-306 is
+    uncalled.
+  - |-
+    ReactiveTagRepositoryImpl batch N (CORROBORATING — repository-tier
+    primary source for the available-but-uncalled method): the method
+    deleteDatasetFieldRelations at lines 299-306 exists in the
+    repository but the only caller-path that should invoke it
+    (TagServiceImpl.delete) does not.
+
+evidence:
+  - |-
+    TagController.md:concepts.invariants[deleteTag cascade asymmetric
+    across the three relation tables] — explicit naming of the
+    asymmetry pattern with file:line citations
+  - |-
+    TagController.md:bugs_limitations_corner_cases.[2] MEDIUM severity
+    — evidence: TagServiceImpl.java:57-70 (delete method) +
+    ReactiveTagRepositoryImpl.java:299-306 (deleteDatasetFieldRelations
+    exists but is NOT called from TagServiceImpl) + Grep
+    `deleteDatasetFieldRelations` returns no caller in TagServiceImpl
+  - |-
+    TagController.md:concepts.operations[deleteTag] — operation-level
+    documentation of the 5-step cascade pipeline and the missing 6th
+    step
+  - |-
+    TagController.md:tests_coverage_semantic.uncovered_behaviours[cascade
+    asymmetry — `testDeleteTag_CascadesToDataEntity_Term_NotDatasetField`]
+  - |-
+    Cross-references concept namespace-create-tag-create-side-doors-via-termcontroller-unguarded-paths
+    (the DATASET_FIELD_TAGS_UPDATE side-door is one of the 4 tag
+    side-doors; the orphan rows are CREATED via the side-door and
+    NOT CLEANED UP by the TAG_DELETE path — compound bug class)
+  - |-
+    Cross-references concept three-soft-delete-mechanisms-across-the-repository-layer
+    (the relationship-edge cluster pattern; the cascade asymmetry
+    is a new variant of the hard-delete vs soft-delete asymmetry
+    classification)
+
+axes_present:
+  - controllers
+  - services
+  - repositories_reactive
+
+triangulation_count: 1
+cross_batch: true
+cross_batch_refs:
+  - batch-N (ReactiveTagRepositoryImpl — the repository where deleteDatasetFieldRelations exists but is uncalled)
+  - batch-W (TagController + TagServiceImpl — the controller-level surface where the asymmetry was first noticed, THIS INVARIANT)
+
+severity: HIGH
+severity_dim: integrity+operational
+
+mitigations_unimplemented:
+  - |-
+    SIMPLE FIX — add the missing call. TagServiceImpl.delete should
+    extend the Flux.zip at line 64-65 to include
+    `reactiveTagRepository.deleteDatasetFieldRelations(tagId)`. This
+    closes the asymmetry; the cascade becomes symmetric across all
+    three relation tables. ONE-LINE FIX at TagServiceImpl.java:64.
+  - |-
+    Add a regression test asserting the symmetric cascade:
+      (a) Create a tag T.
+      (b) Bind T to a data entity (DATA_ENTITY_TAGS_UPDATE path).
+      (c) Bind T to a dataset field (DATASET_FIELD_TAGS_UPDATE path).
+      (d) Bind T to a term (TERM_TAGS_UPDATE path).
+      (e) Delete T via TAG_DELETE.
+      (f) Assert: tag_to_data_entity row REMOVED.
+      (g) Assert: tag_to_dataset_field row REMOVED.  (CURRENTLY FAILS)
+      (h) Assert: tag_to_term row REMOVED.
+      (i) Assert: tag.deleted_at = NOW() (soft-deleted).
+    The (g) assertion pins the bug; once the simple fix lands, (g)
+    passes.
+  - |-
+    Add a one-time cleanup migration that DELETEs the existing orphan
+    tag_to_dataset_field rows in long-running deployments:
+      DELETE FROM tag_to_dataset_field
+      WHERE tag_id IN (SELECT id FROM tag WHERE deleted_at IS NOT NULL);
+    For a deployment with N orphan rows accumulated over months,
+    this releases the disk usage.
+  - |-
+    OR (longer-term) — add a housekeeping job that nightly scans
+    for orphan tag_to_dataset_field rows. Same architectural class
+    as the proposed orphan-TOKEN-row cleanup job. The housekeeping
+    pattern already exists; one more job to the registry. Requires
+    HousekeepingTTLProperties to gain a tag_orphan_relations_days
+    knob (deferred cleanup vs immediate).
+  - |-
+    Document the cascade behaviour on the
+    /features/data-discovery/tagging live page — explicit text:
+    'Deleting a tag from the catalog vocabulary REMOVES every
+    binding to data entities, dataset fields, and terms.' The text
+    should match the FIXED behaviour, not the current behaviour.
+    DOC-NNN candidate.
+
+notes: |-
+  This invariant captures a CODE-OMISSION BUG visible only by
+  cross-referencing TWO files (TagServiceImpl.java + ReactiveTagRepositoryImpl.java).
+  The asymmetry is invisible from EITHER file in isolation:
+    - TagServiceImpl.delete calls TWO of three relation-cleanup methods.
+      A maintainer reading just this file sees a coherent
+      'delete-with-cascade' shape — they would not notice the missing
+      third relation table because the file is otherwise complete.
+    - ReactiveTagRepositoryImpl exposes THREE relation-cleanup methods
+      symmetrically. A maintainer reading just this file sees the
+      three methods named consistently — they would not notice that
+      one of them is never called.
+  The bug surfaces ONLY when the controller-level analysis
+  systematically enumerates 'what does deleteTag actually do, and
+  what could it have done?'. This is the same shape as several
+  prior cross-file bugs (REFACTOR-217 path-mismatch, the
+  SecurityConstants alerts-status mis-gate, the
+  term-to-term-deleted-at-schema-drift). The cross-file scan
+  protocol per LSN-018 IS the only mechanism that catches it.
+
+  Cross-cutting connections:
+    - Pairs with the spec-documented-auto-create-with-scope-asymmetry-tag-side-door-past-tag-create
+      master invariant (the side-doors create the rows that this
+      invariant says are not cleaned up — compound bug class)
+    - Pairs with the namespace-create-tag-create-side-doors-via-termcontroller-unguarded-paths
+      master invariant (the broader cross-pillar pattern — TermController
+      side-door for Tag creation + DatasetField side-door for Tag
+      creation; the cleanup asymmetry compounds the bypass asymmetry)
+    - Pairs with the three-soft-delete-mechanisms-across-the-repository-layer
+      master invariant (the cascade asymmetry is a NEW VARIANT
+      within the relationship-edge cluster — same architectural
+      class as the SOFT-DELETE-on-cascade vs HARD-DELETE-on-user
+      split in group_entity_relations + data_entity_to_term)
+    - Pairs with the collector-plaintext-token-at-rest-end-to-end-sql-to-dom-chain
+      invariant (both are 'orphan rows accumulate unbounded after
+      parent soft-delete with no housekeeping job' — same
+      operational class; both need housekeeping additions)
+    - Pairs with the audit-log-presence-asymmetry-2-tier-audit-story
+      master invariant (tag_to_dataset_field operations do NOT emit
+      Activity events; tag_to_data_entity DOES emit
+      TAG_ASSIGNMENT_UPDATED; the orphans-after-delete are forensically
+      dark because Activity Feed has no record of which dataset fields
+      had the tag attached)
+
+  Three DOC-NNN candidates:
+    (a) /features/data-discovery/tagging — document the cascade
+        behaviour explicitly (assuming the simple fix lands; document
+        the FIXED behaviour, not the buggy one).
+    (b) /features/management — admonition on the Tags tab Delete
+        action: 'Deleting a tag removes all bindings to data entities,
+        dataset fields, and terms.'
+    (c) Operator playbook for cleanup of historical orphans — if a
+        deployment has been running pre-fix, the cleanup migration
+        is operator-runnable (DELETE FROM tag_to_dataset_field WHERE
+        tag_id IN ...).

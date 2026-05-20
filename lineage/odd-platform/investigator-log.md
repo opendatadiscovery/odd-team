@@ -1819,3 +1819,60 @@ The /next-batch orchestrator verified all 5 target paths via `find` BEFORE firin
 - 214 detail-without-index in refactoring-scopes; 90 in implicit-adrs; 37+4 in doc-gaps
 - Coherence-sweep candidates: 44.6k (U) → 47.7k (V)
 
+
+## Batch 2026-05-20-W — Management/admin tier: DataSource + Collector + Namespace + Tag + Dataset controllers (5/5)
+
+- **Date**: 2026-05-20
+- **Branch**: `feature/ontology-finalize-2026-05-20`
+- **Substrate**: 119 prior + 5 new = **124 total**; 0 deferred
+- **Theme**: Management/admin tier — closes F-020 controller half, F-018 controller half, F-008 5-vertex triangulation, F-005 column-level read-side, namespace as new pillar feature
+
+### Sidecars added (5)
+
+| Sidecar | Pillar | Headline |
+|---|---|---|
+| `DataSourceController` | P-08+P-10 | 5-endpoint UI admin **DISJOINT from S2S** createDataSourceEntity (separate auth + service + mutation semantics). **5th vertex of ADR-142/143 triangulation closed**. NEW: implicit namespace creation bypasses NAMESPACE_CREATE; regenerateDataSourceToken missing @ReactiveTransactional; 201-vs-200 status drift. |
+| `CollectorController` | P-08+P-10 | **End-to-end plaintext token chain CLOSED at controller tier** (register POST + regenerate-token PUT both return 40-char plaintext via showToken=true). GET unrestricted. **Orphan TOKEN row on delete CONFIRMED**. Zero audit logging. |
+| `NamespaceController` | P-08 | **NAMESPACE_CREATE side-door confirmed at 4 sister services** (TermService + DataSourceService + CollectorService + DataEntityGroupService — 8 call sites bypass via getOrCreate). Partial-unique-index allows soft-delete reincarnation. TOCTOU between cascade-check and concurrent referent insert. |
+| `TagController` | P-01+P-08 | REFACTOR-223 side-door is at SERVICE LAYER (TagServiceImpl.getOrCreateTagsByName invoked from 5 paths). This controller is the GATED path. **deleteTag cascade ASYMMETRIC** — cleans tag_to_data_entity + tag_to_term but NOT tag_to_dataset_field. getPopularTagList open-read + per-entity-tag-editors compose to write+read directory bypass without TAG_*. |
+| `DatasetController` | P-01+P-05 | **HIGH: per-entity-scoping BYPASS** — dataEntityId URL parameter NOT enforced against version_id at SQL (ReactiveDatasetVersionRepositoryImpl filters on DATASET_VERSION.ID only). 4 endpoints NO SecurityRule. F-004 verbatim-description read-side surface at column level. Undocumented `dataSet` OpenAPI tag. |
+
+### Reducer diffs
+
+| Reducer | Before → After | Highlights |
+|---|---|---|
+| concept-merger | 348 → **367 concepts** | +19 new (13 invariants + 6 operations) + 8 strengthened. End-to-end plaintext token chain CLOSED across 5 tiers. NAMESPACE_CREATE side-door 4-sister closure. DatasetController scoping-bypass invariant. deleteTag asymmetric cascade. Soft-delete reincarnation general pattern. |
+| adr-archaeologist (ADRs) | 168 → **171** | +3 (169-171) + 6 strengthened. 9 wisdom-test reclassifications → scopes. |
+| adr-archaeologist (scopes) | 486 → **495** | +9 (487-495) + 4 strengthened. 4 HIGH new (NAMESPACE_CREATE side-door / deleteTag cascade asymmetric / getPopularTagList directory bypass / DatasetController per-entity-scoping bypass). |
+| doc-gap-finder | 217 → **217 (in-memory)** | Reducer returned findings inline rather than writing files this batch (will reconcile in next batch). 7 candidate findings noted (DOC-218..224 candidates: F-020 docs split, datasource sub-page broken-URL, NAMESPACE side-door undocumented, getPopularTagList asymmetry, etc.). |
+| test-coverage-mapper | 745 → **770 indexed** | +25 (749-773) + 1 strengthened (TEST-726). **5 NEW CRITICAL** → 130 CRITICAL. CRITICAL: regenerateDataSourceToken non-transactional, DataSource end-to-end plaintext token, Collector end-to-end plaintext token, DatasetController per-entity-scoping bypass at by-version + diff. |
+| feature-flow-builder | 27 → **28 features** (+1 new, +4 extended) | **F-028 / P-08:F-006 Namespace Lifecycle Management** (NEW — distinct independent capability per pillar's sub-feature seed). F-020 + F-008 + F-018 + F-005 + F-004 extended. 24 new drift facets. |
+
+### Coverage state after batch W
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment | 124 | **31.4%** (was 30.1%) |
+| Effective coverage | 267 | **67.6%** (was 65.1%) |
+| Features discovered | 28 (was 27) | +1 NEW (F-028 P-08:F-006 Namespace Lifecycle) |
+| Total test-gaps | 770 indexed | 130 CRITICAL (was 125) |
+
+### Cross-batch triangulation deltas
+
+- **F-020 Collector Lifecycle** controller-tier closes end-to-end plaintext token chain (now 6-tier 5-controller picture)
+- **F-018 Manual Object Tagging** controller-tier confirms side-door is SERVICE layer; introduces ASYMMETRIC cascade finding
+- **F-008 Batch Ingestion** 5-vertex ADR-142/143 triangulation (UI admin counterfactual closes the picture)
+- **NAMESPACE_CREATE side-door**: 4 sister services + 8 call sites → full side-door class confirmed
+- **DatasetController per-entity-scoping bypass** — NEW HIGH class (dataEntityId URL parameter NOT enforced at SQL — by-version + diff endpoints)
+- **deleteTag cascade asymmetric** — orphan tag_to_dataset_field invisible to reads (NEW HIGH bug)
+- **End-to-end plaintext token chain** 6-tier: controller register + regenerate (THIS BATCH) + service + repo write + repo read + at-rest + UI render
+- **Read-collaborative cross-owner enumeration**: 24 → **29 surfaces**
+
+### Follow-ups (logged, not blocking)
+
+- doc-gap-finder reducer returned findings inline (in-memory) rather than writing detail/ files; 7 candidate findings (DOC-218..224) noted in concept/scope evidence but NOT on disk as separate detail files — recover in next batch
+- RelationshipController + DOC-216-batch-W-append still pending
+- 2 broken-yaml from batches P+S persist; 3 from earlier
+- 214 detail-without-index in refactoring-scopes; 90 in implicit-adrs; 37+4 in doc-gaps
+- Coherence-sweep candidates: 47.7k (V) → 49.9k (W)
+

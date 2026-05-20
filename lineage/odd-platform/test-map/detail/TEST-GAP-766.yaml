@@ -1,0 +1,67 @@
+gap_id: TEST-GAP-766
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java TagController controller-class:TagController"
+pillars_affected: [P-01, P-07]
+surfaced_by:
+  - "TagController.md:security.known_security_gaps.[No audit log on this controller's write paths — createTag / updateTag / deleteTag produce NO entries in the Activity Feed. The platform's @ActivityLog(event = TAG_ASSIGNMENT_UPDATED) annotation exists at DataEntityServiceImpl.java:358 (the per-entity tag-assignment path), but NOT at the controller-side directory-vocabulary path here. An operator using the Management → Tags tab to delete or rename a tag produces no audit trace]"
+  - "TagController.md:feature_hint.drift_class_facets.[Audit-log absence on directory-vocabulary mutations — createTag / updateTag / deleteTag produce no Activity Feed entries; extends the existing Audit-log Presence Asymmetry canonicalisation candidate in system-mission.md]"
+behaviour: |-
+  **MEDIUM — TagController's 3 write endpoints (`createTag`, `updateTag`, `deleteTag`) produce ZERO Activity Feed entries. The platform's `@ActivityLog(event = TAG_ASSIGNMENT_UPDATED)` annotation exists at `DataEntityServiceImpl.java:358` (the per-entity tag-assignment path), but NOT at the controller-side directory-vocabulary path. An operator using the Management → Tags tab to delete or rename a tag produces no audit trace.** Primary-source confirmed in batch-W TagController sidecar:
+
+  - `TagController.java:22-52`: NO `@ActivityLog` annotations on any of the 4 method handlers.
+  - `TagServiceImpl.java:31-167`: NO `@ActivityLog` on `bulkCreate / update / delete`.
+  - `DataEntityServiceImpl.java:358`: the ONLY `@ActivityLog` entry related to tags — and it's on the PER-ENTITY tag-assignment surface (TAG_ASSIGNMENT_UPDATED), NOT the directory-vocabulary lifecycle (TAG_CREATED / TAG_UPDATED / TAG_DELETED enum values do not exist in `ActivityEventTypeDto`).
+
+  **Cross-pillar pattern** — this is another instance of the system-wide `audit-log-presence-asymmetry-2-tier-audit-story` canonicalisation candidate (per system-mission.md §"Audit-log Presence Asymmetry (2-tier audit story)"):
+  - **Tier 1 (audited)**: per-entity metadata changes (description edits, tag ASSIGNMENTS, ownership changes).
+  - **Tier 2 (NOT audited)**: RBAC mutations + Collector lifecycle (TEST-GAP-757) + Datasource lifecycle (TEST-GAP-749 family) + **Tag DIRECTORY lifecycle (THIS gap)**.
+
+  The Management tab surface — operators' canonical place for vocabulary-level mutations — has the LOWEST audit-trail granularity. The asymmetry is invisible until an operator goes looking.
+
+  **Operator-visible consequences**:
+  - **Audit confusion**: an operator browsing the Activity Feed expects to see "user X created tag 'finance-pii' at 14:32" but sees nothing. The tag exists in the directory; no audit trail.
+  - **Compliance gap**: SOX / GDPR / ISO 27001 audit reports demonstrating "who has modified the catalog vocabulary in 2026-Q1" cannot be reconstructed from the Activity Feed.
+  - **Forensic investigation**: a stewardship investigation ("who renamed the `sensitive` tag to `Sensitive`?") has no answer from the Activity Feed; the only audit signal is `tag.updated_at` + (if available) the rename-time correlation with an operator's session.
+  - **Compound with TEST-GAP-763**: side-door write paths bypass `TAG_CREATE` AND produce no audit log. An auditor investigating "who polluted the tag vocabulary" cannot identify the responsible side-door caller.
+
+  **Why MEDIUM not HIGH**:
+  - The audit-log absence is a known platform-wide pattern (per system-mission.md canonicalisation candidate); the Tag DIRECTORY is one of multiple surfaces.
+  - The functional impact is recoverable (the operator can examine `tag` table directly for `updated_at` + DB-level audit if enabled).
+  - HIGH would be inappropriate when sister findings at the same severity (CollectorController audit-silence TEST-GAP-757, DataSourceController audit-silence in the TEST-GAP-752 family) are rated HIGH ONLY when combined with other invariants. The Tag DIRECTORY in isolation is MEDIUM.
+
+  **Test gap shape**: regression-pin asserting: (a) `POST /api/tags` produces ZERO Activity Feed entries; (b) `PUT /api/tags/{id}` produces ZERO; (c) `DELETE /api/tags/{id}` produces ZERO; (d) the per-entity tag-assignment path AT `DataEntityServiceImpl.java:358` DOES produce TAG_ASSIGNMENT_UPDATED Activity entries (asserting the asymmetry exists); (e) `ActivityEventTypeDto` does NOT have `TAG_CREATED / TAG_UPDATED / TAG_DELETED` enum values (the schema-level absence). The current state is PINNED — failures land if a future maintainer adds enum values + `@ActivityLog` instrumentation.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/TagDirectoryAuditSilenceTest.java"
+  name: "createUpdateDeleteTag_produceZeroActivityEvents_butPerEntityAssignmentDoesEmit_pinsAuditAsymmetry"
+evidence:
+  - "TagController.md says (security.known_security_gaps.[No audit log]): 'No audit log on this controller's write paths — createTag / updateTag / deleteTag produce NO entries in the Activity Feed. The platform's @ActivityLog(event = TAG_ASSIGNMENT_UPDATED) annotation exists at DataEntityServiceImpl.java:358 (the per-entity tag-assignment path), but NOT at the controller-side directory-vocabulary path here. An operator using the Management → Tags tab to delete or rename a tag produces no audit trace.' — evidence: TagController.java:22-52 (no @ActivityLog) + TagServiceImpl.java:31-167 (no @ActivityLog on bulkCreate / update / delete) + DataEntityServiceImpl.java:358 (the only @ActivityLog entry related to tags) — severity: MEDIUM"
+  - "TagController.md says (feature_hint.drift_class_facets.[audit-log-absence]): 'Audit-log absence on directory-vocabulary mutations — createTag / updateTag / deleteTag produce no Activity Feed entries; extends the existing Audit-log Presence Asymmetry canonicalisation candidate in system-mission.md'"
+  - "Verified at primary source: TagController.java:22-52 (no @ActivityLog) + TagServiceImpl.java:31-167 (no @ActivityLog) + DataEntityServiceImpl.java:358 (the per-entity path)"
+  - "Cross-link to system-mission.md §Audit-log Presence Asymmetry — canonicalisation candidate"
+cross_references:
+  - "TEST-GAP-757 (NEW batch W — CollectorController audit-silence — sister architectural class)"
+  - "TEST-GAP-725 (existing batch-U — Term audit-silence — sister architectural class)"
+  - "TEST-GAP-752 (NEW batch W — DataSourceController audit-silence — sister architectural class)"
+  - "TEST-GAP-762 (NEW batch W — sister TagController cascade-asymmetry gap)"
+  - "TEST-GAP-763 (NEW batch W — sister TagController directory bypass gap; this audit-silence compounds the bypass into untraceable pollution)"
+  - "concepts: audit-log-presence-asymmetry-2-tier-audit-story (canonicalisation candidate — this gap is a Tag-specific instance)"
+  - "REFACTOR-NNN candidate: add ActivityEventTypeDto enum values TAG_CREATED / TAG_UPDATED / TAG_DELETED; add @ActivityLog annotations to TagController + TagServiceImpl mutating methods"
+  - "DOC-NNN candidate: surface the audit-log absence on the Tagging doc; explain that vocabulary-level changes are NOT in the Activity Feed"
+related_features: [F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging", "P-07:F-002-activity-feed"]
+proposed_action: |-
+  Add `TagDirectoryAuditSilenceTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Five test methods:
+  1. `createTag_producesZeroActivityEntries_pinsAuditSilence` — register an ActivityEventEmitter mock; POST `/api/tags` with valid form; assert ZERO Activity invocations.
+  2. `updateTag_producesZeroActivityEntries_pinsAuditSilence` — sister on update.
+  3. `deleteTag_producesZeroActivityEntries_pinsAuditSilence` — sister on delete.
+  4. `perEntityTagAssignment_producesTagAssignmentUpdatedActivity_pinsExistingAuditOnAssignmentPath` — POST `/api/dataentities/{id}/tags` (the per-entity path); assert TAG_ASSIGNMENT_UPDATED IS emitted. PIN the asymmetry — the per-entity path IS audited, the directory path is NOT.
+  5. `activityEventTypeDtoEnum_doesNotContainTagCreatedOrTagUpdatedOrTagDeleted_pinsSchemaLevelAbsence` — use reflection to enumerate `ActivityEventTypeDto`'s values; assert NONE of {TAG_CREATED, TAG_UPDATED, TAG_DELETED} are present. PIN the schema-root cause — even if a maintainer wanted to add `@ActivityLog`, the right enum values don't exist.
+
+  Pair with REFACTOR-NNN: add the three enum values to `ActivityEventTypeDto` + add `@ActivityLog(event = TAG_CREATED|UPDATED|DELETED)` annotations to TagController's 3 mutating methods. When the fix lands, tests #1-#3 invert.
+
+  Cross-pair with DOC-NNN: surface the audit-log absence on the Tagging doc + Activity Feed doc; explain the tier-1 vs tier-2 audit story.
+batch: 2026-05-20-W
+feature_id: F-018

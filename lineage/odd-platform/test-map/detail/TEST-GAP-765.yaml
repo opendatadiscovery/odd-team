@@ -1,0 +1,58 @@
+gap_id: TEST-GAP-765
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java TagController controller-class:TagController"
+pillars_affected: [P-01, P-10]
+surfaced_by:
+  - "TagController.md:tests_coverage_semantic.uncovered_behaviours.[deleteTag external-relations rejection — DELETE /api/tags/{tag_id} for a tag with external = true (one of its tag_to_data_entity rows has external = true), assert 4xx response with Can't delete tag which has external relations message (the BadUserRequestException from TagServiceImpl.java:63)]"
+  - "TagController.md:tests_coverage_semantic.uncovered_behaviours.[updateTag external-relations rejection — same shape on the update path; PUT /api/tags/{tag_id} with new form-data for an external-relations tag, assert BadUserRequestException from TagServiceImpl.java:50]"
+  - "TagController.md:implicit_adrs.[The !external guard protects Collector-pushed tags from UI overwrite — TagServiceImpl.update (:49-50) and TagServiceImpl.delete (:62-63) both reject tags with any external = true usage via BadUserRequestException]"
+behaviour: |-
+  **MEDIUM — The `!external` guard at `TagServiceImpl.update` (:49-50) and `TagServiceImpl.delete` (:62-63) blocks UI-tier mutations on tags that have ANY `tag_to_*` row with `external = true`. The guard's intent: a Collector that pushes a tag via `ExternalTagIngestionRequestProcessor` claims ownership of it; UI mutations would silently override the Collector-side semantics on next push. The guard's error messages are user-facing contract strings: "Can't update tag which has external relations" / "Can't delete tag which has external relations".** Primary-source confirmed in batch-W TagController sidecar:
+
+  - `TagServiceImpl.update` (lines 49-50): `if (anyExternalRelation(tagId)) { return Mono.error(new BadUserRequestException("Can't update tag which has external relations")); }`
+  - `TagServiceImpl.delete` (lines 62-63): same shape with "Can't delete tag which has external relations".
+  - The check queries `tag_to_data_entity` / `tag_to_term` / `tag_to_dataset_field` for any row with `external = true`.
+  - **Soft-lock semantic**: once the operator removes all external relations (via the collector's next push that omits the tag, OR by manually deleting the external relations via raw DB access), the tag becomes UI-editable again.
+
+  **Behaviour to pin** (the test gap):
+  - Seed a tag attached to a data_entity with `external = true` (simulating a collector-pushed assignment).
+  - `PUT /api/tags/{tag_id}` for that tag → HTTP 400 with body containing "Can't update tag which has external relations".
+  - `DELETE /api/tags/{tag_id}` for that tag → HTTP 400 with body containing "Can't delete tag which has external relations".
+  - Conversely: a tag with ONLY `external = false` assignments is UPDATABLE and DELETABLE via the UI surface.
+
+  **Why MEDIUM not LOW**:
+  - The guard implements an important cross-pillar invariant (collector-driven tags are NOT silently overwritten by UI edits).
+  - The guard's error messages are user-facing contract strings — operators see them in the Management → Tags tab and reasonably build expectations around them.
+  - **A regression** that REMOVED the `!external` guard (perhaps in service of a refactor unifying create / update paths) would let UI users overwrite Collector-pushed external tags silently, breaking the invariant.
+
+  **Test gap shape**: regression-pin asserting: (a) update of a tag with any external relation returns HTTP 400 with the canonical message; (b) delete of a tag with any external relation returns HTTP 400 with the canonical message; (c) update / delete of a tag with NO external relations succeeds. The current state is PINNED — failures land if a future maintainer removes the guard.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/TagRepositoryImplTest.java (10 repository-tier tests; does NOT exercise the !external guard at the service tier)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/TagExternalRelationsGuardTest.java"
+  name: "updateAndDeleteTag_withExternalTrueRelations_return400_pinsExternalGuardContract"
+evidence:
+  - "TagController.md says (tests_coverage_semantic.uncovered_behaviours.[deleteTag external-relations rejection]): 'DELETE /api/tags/{tag_id} for a tag with external = true (one of its tag_to_data_entity rows has external = true), assert 4xx response with Can't delete tag which has external relations message (the BadUserRequestException from TagServiceImpl.java:63).'"
+  - "TagController.md says (implicit_adrs.[!external-guard]): 'The !external guard protects Collector-pushed tags from UI overwrite — TagServiceImpl.update (:49-50) and TagServiceImpl.delete (:62-63) both reject tags with any external = true usage via BadUserRequestException(Can't update tag which has external relations) and BadUserRequestException(Can't delete tag which has external relations). The intent: a Collector that pushes a tag via ExternalTagIngestionRequestProcessor claims ownership of it; UI mutations would silently override the Collector-side semantics on next push. This is a soft-lock — once the operator removes all external relations, the tag becomes UI-editable again.' — confidence: HIGH"
+  - "Verified at primary source: TagServiceImpl.java:49-50 (update guard) + TagServiceImpl.java:62-63 (delete guard)"
+cross_references:
+  - "TEST-GAP-762 (NEW batch W — sister TagController cascade-asymmetry gap)"
+  - "TEST-GAP-763 (NEW batch W — sister TagController directory bypass gap)"
+  - "TEST-GAP-764 (NEW batch W — sister TagController status-code drift gap)"
+  - "TEST-GAP-766 (NEW batch W — sister TagController audit-log absence gap)"
+  - "concepts: external-tag-ingestion-collector-claims-ownership (existing concept candidate)"
+  - "DOC-NNN candidate: surface the !external guard on the Tagging doc; explain when operators see the canonical error messages"
+related_features: [F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging", "P-10:F-001"]
+proposed_action: |-
+  Add `TagExternalRelationsGuardTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Four test methods:
+  1. `updateTag_withTagToDataEntityExternalTrue_returns400_pinsUpdateGuardOnDataEntityRelation` — seed a tag with a `tag_to_data_entity` row where `external = true`; PUT `/api/tags/{tag_id}`; assert HTTP 400 with body containing "Can't update tag which has external relations".
+  2. `deleteTag_withTagToDataEntityExternalTrue_returns400_pinsDeleteGuardOnDataEntityRelation` — same setup; DELETE; assert 400 with body containing "Can't delete tag which has external relations".
+  3. `updateTag_withAllRelationsExternalFalse_succeeds_pinsGuardScopedToExternalTrue` — seed a tag with `tag_to_data_entity` row `external = false`; PUT; assert HTTP 200. PIN that the guard ONLY blocks external-true.
+  4. `deleteTag_afterCollectorReleasesExternalRelation_unblocksDeletion_pinsSoftLockSemantic` — seed `external = true`; simulate collector removing the external relation (DELETE the tag_to_data_entity row); DELETE the tag; assert HTTP 200. PIN the soft-lock release.
+
+  Pair with DOC-NNN: surface the !external guard on the Tagging doc; explain when operators see the canonical error messages.
+batch: 2026-05-20-W
+feature_id: F-018

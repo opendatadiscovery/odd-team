@@ -32,6 +32,10 @@ drift_class_summary:
 - adr_candidate_142_service_tier_enactment_primary_source_lines_74_92
 - adr_candidate_143_service_tier_enactment_primary_source_line_106
 - collector_id_preserved_across_cross_collector_upserts_positive_case_law
+- operator_edits_collector_overwrites_name_description_silent_no_audit_no_warning
+- data_source_create_path_implicit_namespace_create_permission_escalation_by_side_effect
+- data_source_controller_no_single_get_by_id_documented_path_missing
+- regenerate_datasource_token_not_reactive_transactional_inconsistent_with_siblings
 batch_extensions:
 - batch: O
   entry_point_added: |-
@@ -591,6 +595,164 @@ batch_extensions:
     (F-008 cross-collector enumeration compound surface,
     EXCLUDE_FROM_SEARCH inconsistency family extended via
     REFACTOR-NEW). Cross-link to F-023 (the consumer side).
+- batch: W
+  entry_point_added: |-
+    controller-class:DataSourceController — the 5TH AND FINAL VERTEX
+    of the ADR-CANDIDATE-142 / ADR-CANDIDATE-143 partial-merge +
+    namespace-inheritance triangulation. The UI admin DataSource
+    surface (`POST/GET/PUT/DELETE /api/datasources*` + token rotation)
+    is DISJOINT FROM the S2S Ingestion path (`POST /ingestion/datasources`
+    captured in batch P) — same `data_source` table on the persistence
+    side, but separate paths / auth filters / service classes / mutation
+    semantics. The DISJOINT lens is the COUNTERFACTUAL that completes
+    the ADR-CANDIDATE-142 picture: collectors are CONSTRAINED tenants
+    in the data-source space (name + description-only partial-merge,
+    namespace inherited from Collector); operators are ADMINS (full-form
+    REPLACE via MapStruct, free namespace choice).
+  contributing_nodes_added: []
+  notes: |-
+    The DataSourceController batch-W sidecar adds NO new chain extension
+    to F-008 (the UI admin path is DISJOINT — it does NOT route through
+    F-008's `IngestionService` + 14-processor chain) but SURFACES FIVE
+    cross-feature drift facets via the COUNTERFACTUAL lens, closing
+    the 5-vertex ADR-CANDIDATE-142 + ADR-CANDIDATE-143 triangulation
+    that batch-P / R / S established for the S2S half. Listed in order
+    of architectural leverage:
+
+    (1) ADR-CANDIDATE-142 PARTIAL-MERGE 5-VERTEX TRIANGULATION CLOSED
+    BY COUNTERFACTUAL (HIGH architectural confidence) — Prior batches
+    triangulated the S2S partial-merge across 4 vertices: P (controller
+    IngestionController.createDataSourceEntity), R (repository SQL
+    layer), S (service DataSourceIngestionServiceImpl.prepareForUpdate
+    narrowing to name + description ONLY at lines 74-92). THIS batch
+    provides the 5TH VERTEX — the UI admin counterpart path
+    (DataSourceController + DataSourceServiceImpl + DataSourceMapper)
+    which uses MapStruct's `@MappingTarget` to write ALL DataSourceUpdateFormData
+    fields (DataSourceMapper.java:49-50 `applyToPojo`). The narrowing
+    is path-specific (S2S-only); the architectural decision is now
+    fully visible: "collector-driven UPDATE narrows to name+description;
+    UI-driven UPDATE writes the full form." Without the counterfactual,
+    the partial-merge looked like an oversight; with the counterfactual,
+    it is deliberate. F-008 batch-P
+    `upsert_partial_merge_name_and_description_only` drift facet now
+    has end-to-end primary-source backing across 5 layers including
+    the DISJOINT operator-side path. The promotion path: ADR-CANDIDATE-142
+    is ready for explicit ADR authoring with all 5 vertices cited.
+
+    (2) ADR-CANDIDATE-143 NAMESPACE-INHERITANCE 5-VERTEX TRIANGULATION
+    CLOSED BY COUNTERFACTUAL (HIGH architectural confidence) — The
+    S2S path silently DROPS namespace_name from the payload (per batch
+    S DataSourceIngestionServiceImpl.java:106 — `c.namespace().getId()`
+    is sourced UNCONDITIONALLY from the matched Collector). THIS batch
+    confirms the counterfactual: DataSourceServiceImpl.java:56-60 + 73-77
+    on the UI admin path EXPLICITLY reads `form.getNamespaceName()`,
+    calls `namespaceService.getOrCreate` (creating if absent), and
+    stamps the resolved namespace_id on the new DataSourcePojo. The
+    asymmetry is operator-visible: collectors CANNOT cross namespaces
+    (the namespace is THE COLLECTOR'S tenancy boundary); operators
+    CAN choose any namespace. The intent is now fully visible: "collector
+    is the tenant boundary; operator is the admin." F-008 batch-P
+    `namespace_inherited_from_collector_payload_silently_dropped` drift
+    facet now anchored at 5 layers; promotion to explicit ADR warranted.
+
+    (3) UI-vs-S2S MERGE-SEMANTIC ASYMMETRY IS OPERATOR-INVISIBLE (HIGH
+    operator-impact) — DataSourceController.updateDataSource at lines
+    38-45 → DataSourceServiceImpl.update at lines 68-83 → DataSourceMapper
+    `applyToPojo` writes ALL form fields. The NEXT collector startup
+    that includes the same ODDRN OVERWRITES the operator's edits to
+    name + description (but PRESERVES the operator's edits to
+    connection_url, since the S2S service narrows to name+description
+    only). The collision is SILENT at both ends — no warning at the
+    UI write time (the operator doesn't know a collector exists for
+    this datasource), no warning at the collector write time. NO
+    Activity Event emission on EITHER path (verified across both
+    DataSourceServiceImpl + DataSourceIngestionServiceImpl). REFACTOR-423
+    `silent_overwrite_of_operator_ui_edits` drift facet PRIMARY-SOURCE
+    PROVEN at the operator-side EDIT POINT (batch-S established the
+    collector-side overwrite; this batch establishes the operator-side
+    edit point — both vertices needed for the full picture). NEW
+    drift facet:
+    `operator_edits_collector_overwrites_name_description_silent_no_audit_no_warning`.
+
+    (4) IMPLICIT NAMESPACE CREATION PERMISSION ESCALATION BY SIDE-EFFECT
+    (MEDIUM SECURITY — NEW FINDING THIS BATCH) — DataSourceServiceImpl.java:57
+    + 75 invoke `namespaceService.getOrCreate(form.getNamespaceName())`
+    which CREATES the namespace if absent. The endpoint requires
+    DATA_SOURCE_CREATE / DATA_SOURCE_UPDATE permission, NOT
+    NAMESPACE_CREATE. An operator with DATA_SOURCE_CREATE but NOT
+    NAMESPACE_CREATE can implicitly mint new namespaces by registering
+    a datasource with a previously-unknown namespace_name. This is
+    STRUCTURALLY IDENTICAL to the namespace side-door pattern
+    catalogued in F-028 batch-W
+    `namespace_create_side_door_bypass_via_four_sister_services`;
+    the DataSourceServiceImpl is ONE of the 4 sister services. Cross-link
+    to F-028 (the canonical home for the namespace side-door pattern)
+    + F-018 (the TAG-side analog REFACTOR-223). NEW drift facet for F-008
+    `data_source_create_path_implicit_namespace_create_permission_escalation_by_side_effect`.
+
+    (5) REFACTOR-425 listDto count-vs-query DIVERGENCE REACHES THE UI
+    SURFACE (MEDIUM — STRENGTHENS batch-R finding) — Batch-R sidecar
+    identified the SQL-tier predicate mismatch in
+    `ReactiveDataSourceRepositoryImpl.listDto` (startsWithIgnoreCase
+    vs containsIgnoreCase asymmetry between count and page queries).
+    THIS batch confirms the divergence REACHES THE OPERATOR via
+    `getDataSourceList` → `DataSourceServiceImpl.list` → the broken
+    `listDto`. Operators using Management → Datasources tab search
+    filter at >50 datasources see misleading pagination (total count
+    includes contains-matches, but the page only shows startsWith-matches).
+    F-008 batch-R `data_source_listdto_page_vs_count_predicate_divergence_refactor_425`
+    drift facet now has UI-end primary-source anchoring.
+
+    (6) ASYMMETRIC GET-RESPONSIBILITY (MEDIUM, structural) —
+    DataSourceController offers NO `getDataSource(id)` method
+    (verified — only `getDataSourceList` + 4 mutating endpoints).
+    Single-datasource details are reached via the Directory feature
+    (F-023 cross-link batch-T) OR via the list endpoint with a name
+    filter. The architectural choice (no single-GET on this controller)
+    is intentional but undocumented — operators may attempt
+    `GET /api/datasources/{id}` and receive 404. NEW drift facet:
+    `data_source_controller_no_single_get_by_id_documented_path_missing`.
+
+    (7) regenerateDataSourceToken IS NOT @ReactiveTransactional —
+    INTERNAL ASYMMETRY (LOW, file-local) — DataSourceServiceImpl.java:98-106
+    is NOT annotated; lines 52 (create), 69 (update), 86 (delete) ARE
+    annotated. If `tokenGenerator.regenerateToken` succeeds in-memory
+    but `tokenRepository.updateToken` fails (DB write fails), the new
+    TokenDto exists in the in-memory pipeline only — the response
+    carries the new token but the DB still holds the OLD token. The
+    operator sees a SUCCESS response with a token they cannot use;
+    the COLLECTOR still authenticates with the OLD token. NEW drift
+    facet: `regenerate_datasource_token_not_reactive_transactional_inconsistent_with_siblings`.
+
+    (8) GET /api/datasources HAS NO SecurityRule — READ-COLLABORATIVE
+    POSTURE PRIMARY SOURCE (MEDIUM, cross-batch) — SecurityConstants.java:116-126
+    only contains rules for POST/PUT/DELETE/PUT-token on /api/datasources*;
+    the GET list endpoint falls through to AuthorizationCustomizer's
+    catch-all `.authenticated()`. Any authenticated user (including
+    one with NO MANAGEMENT permissions) can enumerate ALL datasources
+    in the catalog regardless of role/policy. STRENGTHENS the
+    platform-wide read-collaborative posture cross-batch concept
+    (REFACTOR-024 / REFACTOR-203 family). The DataSourceController
+    sidecar's enumeration of the SecurityRules + the verified absence
+    of a GET rule completes the cross-pillar pattern.
+
+    Coherence: STRENGTHENS=8 (ADR-CANDIDATE-142 5-vertex; ADR-CANDIDATE-143
+    5-vertex; REFACTOR-423 operator-side edit point; REFACTOR-425
+    UI-end manifestation; read-collaborative posture; audit-silence
+    extends to DataSource mutations completing the 9-sidecar pattern
+    extension; collector tenancy boundary; thin-delegate controller
+    convention). NEW drift facets ADDED to F-008's drift_class_summary
+    (4 net-new):
+    `operator_edits_collector_overwrites_name_description_silent_no_audit_no_warning`,
+    `data_source_create_path_implicit_namespace_create_permission_escalation_by_side_effect`,
+    `data_source_controller_no_single_get_by_id_documented_path_missing`,
+    `regenerate_datasource_token_not_reactive_transactional_inconsistent_with_siblings`.
+    NO conflicts surfaced; NO supersedes. The HIGHEST-LEVERAGE
+    consequence is the explicit-ADR promotion path for
+    ADR-CANDIDATE-142 + ADR-CANDIDATE-143 — both now have all 5
+    vertices primary-source confirmed and warrant promotion to
+    explicit ADRs (collector-tenant vs operator-admin asymmetry,
+    UI-vs-S2S merge-semantic divergence).
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: Ingestion-replace destruction surface
@@ -1399,6 +1561,7 @@ related_features:
 - F-020  # batch-S DataSourceIngestionService also lands evidence on F-020 (Collector Lifecycle) — credential-CONSUMER pair
 - F-022  # Per-Dataset DQ Test Reports & SLA — DQ results are pushed via F-008 ingestion; consumer-producer pair on the DQ-test-result entity class
 - F-023  # Directory Browsing — consumer of every datasource F-008 ingests; cross-owner enumeration compound surface (the F-008+F-023 cross-feature lens)
+- F-028  # batch-W Namespace Lifecycle Management — ADR-CANDIDATE-143 counterfactual (UI accepts namespace_name); side-door bypass via DataSourceServiceImpl.getOrCreate
 related_test_gaps_batch_p_candidates:
 - TEST-GAP-NNN (IngestionDataSourceFilterIntegrationTest — session-bridge contract, soft-deleted-Collector tokens, cross-collector token-share race; deferred to test-coverage-mapper reducer)
 related_doc_gaps_batch_p_candidates:

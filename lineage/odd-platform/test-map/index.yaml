@@ -7,16 +7,16 @@ source_monolith_frontmatter:
   sidecar_count: 60
   test_files_indexed: 70
   prompt_version: test-coverage-mapper/0.1.0
-  total_test_gaps: 745
+  total_test_gaps: 770
   gaps_by_criticality:
-    CRITICAL: 125
-    HIGH: 231
-    MEDIUM: 281
-    LOW: 108
+    CRITICAL: 130
+    HIGH: 238
+    MEDIUM: 292
+    LOW: 110
   gaps_by_category:
-    missing-integration: 138
-    missing-security: 211
-    missing-edge-case: 271
+    missing-integration: 147
+    missing-security: 223
+    missing-edge-case: 275
     missing-unit: 82
     sidecar-stale: 3
     missing-performance: 30
@@ -154,7 +154,7 @@ source_monolith_frontmatter:
   - odd-platform java OwnerAssociationRequestController controller-class:OwnerAssociationRequestController
   - odd-platform java DataEntityAttachmentController controller-class:DataEntityAttachmentController
   - odd-platform java DatasetFieldController controller-class:DatasetFieldController
-total_entries: 745
+total_entries: 770
 notice: Rebuilt from detail/ by lineage/_extractor/registry-shard/rebuild_indexes.py.
   The detail files are the source of truth; this index is derived headlines for the
   registry-search subagent.
@@ -13568,87 +13568,137 @@ test_gaps_index:
   related_doc_gap_ids: []
   detail_path: detail/TEST-GAP-725.yaml
 - gap_id: TEST-GAP-726
-  behaviour: '**HIGH — TermController write endpoints systematically bypass NAMESPACE_CREATE
-    + TAG_CREATE permissions via the platform''s getOrCreate side-door pattern.**
-    Primary-source confirmed across both batch-U Term-side sidecars + cross-link to
-    the platform''s existing batch-K invariant on the same architectural class:
+  behaviour: '**HIGH — `NAMESPACE_CREATE` is bypassed by 4 sister services × 2 method
+    × 8 call sites total via the platform''s `getOrCreate` side-door pattern. A caller
+    holding `TERM_CREATE` / `TERM_UPDATE` / `DATA_SOURCE_CREATE` / `DATA_SOURCE_UPDATE`
+    / `COLLECTOR_CREATE` / `COLLECTOR_UPDATE` / `DATA_ENTITY_GROUP_CREATE` / `DATA_ENTITY_GROUP_UPDATE`
+    can submit a parent form with a NEVER-SEEN `namespaceName` and SILENTLY CREATE
+    the namespace. The dedicated `NAMESPACE_CREATE` permission (gated at `POST /api/namespaces`)
+    is NEVER consulted on these paths.** Primary-source confirmed across batches K,
+    U (Term-side) AND batch W (full 4-sister aggregate via NamespaceController + DataSourceController
+    sidecars):
 
 
-    **NAMESPACE_CREATE side-door** — two entry points:
+    **The 4-sister-service / 8-call-site aggregate** (per NamespaceController.md:bugs_limitations_corner_cases.[1]
+    — primary source for the aggregate):
 
-    - `TermController.createTerm` → `TermServiceImpl.createTerm` → `namespaceService.getOrCreate(formData.getNamespaceName())`
-    (`TermServiceImpl.java:103`). A caller holding `TERM_CREATE` (the documented gate
-    per Business Glossary docs) can submit a TermFormData with a NEVER-SEEN `namespaceName`
-    and SILENTLY CREATE the namespace.
+    - **Sister 1 — Term**: `TermServiceImpl.createTerm` (line 103) + `TermServiceImpl.updateTerm`
+    (line 138) → `namespaceService.getOrCreate(formData.getNamespaceName())`
 
-    - `TermController.updateTerm` → `TermServiceImpl.updateTerm` → `namespaceService.getOrCreate(formData.getNamespaceName())`
-    (`TermServiceImpl.java:138`). Same side-door on update — re-naming a term to a
-    fresh namespace creates that namespace.
+    - **Sister 2 — DataSource (BATCH W ADDITION)**: `DataSourceServiceImpl.create`
+    (line 57) + `DataSourceServiceImpl.update` (line 75) → `namespaceService.getOrCreate(...)`.
+    Permission gate: DATA_SOURCE_CREATE / DATA_SOURCE_UPDATE.
 
+    - **Sister 3 — Collector (BATCH W EVIDENCE FROM NAMESPACE SIDECAR)**: `CollectorServiceImpl.create`
+    (line 43) + `CollectorServiceImpl.update` (line 57) → `namespaceService.getOrCreate(...)`.
+    Permission gate: COLLECTOR_CREATE / COLLECTOR_UPDATE.
 
-    **TAG_CREATE side-door** — one entry point:
-
-    - `TermController.createTermTagsRelations` → `TermServiceImpl.upsertTags` → `tagService.getOrCreateTagsByName(names)`
-    (`TermServiceImpl.java:257`). A caller holding `TERM_TAGS_UPDATE` (the documented
-    gate per Business Glossary docs) can submit a TagsFormData with NEVER-SEEN tag
-    names and SILENTLY CREATE the tags.
-
-
-    **What the docs claim vs what the code enforces**: the Business Glossary docs
-    (live-fetched 2026-05-20 per the sidecars) declare `TERM_CREATE` gates "Create
-    a new term in the Dictionary" and `TERM_TAGS_UPDATE` gates "Apply or remove tags
-    on a term". Neither line discloses the side-door creation of namespaces or tags.
-    Operators authoring RBAC policies that withhold `NAMESPACE_CREATE` (the dedicated
-    permission for creating namespaces — gated at `POST /api/namespaces` per the Management
-    surface) or `TAG_CREATE` (gated at `POST /api/tags` per the Management surface)
-    and granting only `TERM_CREATE` + `TERM_TAGS_UPDATE` to a "glossary curator" Role
-    expect the curator to be unable to expand the namespace or tag taxonomies. The
-    code, however, allows arbitrary expansion via Term write endpoints.
+    - **Sister 4 — DataEntityGroup (BATCH W EVIDENCE FROM NAMESPACE SIDECAR)**: `DataEntityGroupServiceImpl.createDataEntityGroup`
+    (line 65) + `DataEntityGroupServiceImpl.updateDEG` (line 84) → `namespaceService.getOrCreate(...)`.
+    Permission gate: DATA_ENTITY_GROUP_CREATE / DATA_ENTITY_GROUP_UPDATE.
 
 
-    **Architectural pattern — cross-pillar reach**: this is a SISTER pattern to the
-    previously-enumerated `getOrCreate` side-doors:
+    **NEW BATCH W FILE:LINE evidence**:
+
+    - `DataSourceServiceImpl.java:56-60` (`if (StringUtils.isNotEmpty(form.getNamespaceName()))
+    { namespaceService.getOrCreate(form.getNamespaceName()).zipWith(token)... }`).
+
+    - `DataSourceServiceImpl.java:73-77` (update path — same pattern).
+
+    - NamespaceController.md:bugs_limitations_corner_cases.[1] enumerates ALL 4 sisters
+    × 2 methods × 8 call sites.
+
+
+    **TAG_CREATE side-door** (continuing from prior batch-U finding, also strengthened
+    in batch W via TagController.md):
+
+    - `TermServiceImpl.upsertTags` (line 257) — TERM_TAGS_UPDATE → `tagService.getOrCreateTagsByName`.
+
+    - `TagServiceImpl.updateRelationsWithDataEntity` (line 105) — DATA_ENTITY_TAGS_UPDATE
+    → same.
+
+    - `TermServiceImpl.upsertTags` (line 257) — TERM_TAGS_UPDATE → same.
+
+    - `DatasetFieldServiceImpl.java:202, 266` — DATASET_FIELD_TAGS_UPDATE → same.
+
+    - `ExternalTagIngestionRequestProcessor.java:104` — S2S ingestion → `getOrInjectTagByName`.
+
+
+    **What the docs claim vs what the code enforces** (extended in batch W):
+
+    - Business Glossary docs (live-fetched 2026-05-20 per batch-U sidecars): `TERM_CREATE`
+    gates "Create a new term in the Dictionary" — does NOT disclose namespace side-door.
+
+    - **Management page (BATCH W ADDITION, WebFetch 2026-05-20 status 200)**: describes
+    the Datasources / Collectors / DEGs tabs as operator-facing surfaces; does NOT
+    disclose that `DATA_SOURCE_CREATE` / `COLLECTOR_CREATE` / `DATA_ENTITY_GROUP_CREATE`
+    permissions implicitly include `NAMESPACE_CREATE`.
+
+    - **Authorization page (BATCH W, WebFetch 2026-05-20 status 200)**: "The current
+    page only lists the authorization documentation structure with links to detailed
+    sections on Policies, Permissions, Roles, Owners, and User-owner association,
+    but does not include the specific permission names or policy types you''re seeking."
+    — operators have no doc-side anchor to the 4 *_CREATE permissions involved.
+
+
+    **Architectural pattern — cross-pillar reach**:
 
     - REFACTOR-199 (Owner auto-create via `ownerService.getOrCreate` — gateway for
     `OWNER_CREATE` bypass via OwnerController#createOwner)
 
-    - REFACTOR-222 (TAG_CREATE bypass via `upsertTags` in OwnerController#createOwner
-    — same `getOrCreateTagsByName` call site)
+    - REFACTOR-222 (TAG_CREATE bypass via `upsertTags` in OwnerController#createOwner)
 
     - REFACTOR-223 (NAMESPACE_CREATE bypass via `getOrCreate` in TermServiceImpl#createTerm
-    — sister site, identified earlier)
+    — original site)
 
-    - REFACTOR-486 (TITLE auto-create via `titleService.getOrCreate` — `TitleServiceImpl.getOrCreate`
-    has NO allowlist, no enum, no @Pattern)
+    - REFACTOR-486 (TITLE auto-create via `titleService.getOrCreate` — `TitleServiceImpl.getOrCreate`)
 
-
-    The aggregate finding: **the platform''s `getOrCreate*` pattern systematically
-    allows tag/namespace/owner/title creation through ANY endpoint that touches those
-    entities, bypassing the dedicated `*_CREATE` permissions.** This sidecar adds
-    the NAMESPACE_CREATE side-door on createTerm + updateTerm and the TAG_CREATE side-door
-    on createTermTagsRelations to the family, bringing the cumulative cross-pillar
-    count to FOUR getOrCreate bypass sites.
-
-
-    **Why HIGH not MEDIUM**: while each individual side-door is rated MEDIUM in the
-    sidecars, the CUMULATIVE cross-pillar pattern is elevated to HIGH because: (a)
-    the side-doors are NOT documented anywhere in the operator-facing site (sidecar''s
-    doc_drift_findings confirm); (b) operators reasoning about access control via
-    the documented `*_CREATE` permissions are SYSTEMATICALLY DECEIVED about what permissions
-    a Role actually allows; (c) the read-collaborative posture means EVERY authenticated
-    user with any `TERM_*` write permission can pollute the namespace + tag taxonomies
-    indefinitely. The Management UI''s Namespace + Tag tabs (intended as the controlled-vocabulary
-    surfaces per P-08) are EFFECTIVELY UNGATED because every other pillar''s write
-    endpoints can bypass them.
+    - **BATCH W**: the 4-sister-service NAMESPACE_CREATE side-door is now PRIMARY-SOURCE
+    confirmed at the controller-class scope (NOT just term-side). The aggregate finding:
+    the platform''s `getOrCreate*` pattern systematically allows tag/namespace/owner/title
+    creation through ANY endpoint that touches those entities, bypassing the dedicated
+    `*_CREATE` permissions. THIS finding brings the cumulative cross-pillar count
+    to FIVE getOrCreate bypass sites with the 4-sister NAMESPACE_CREATE aggregate
+    at the centre.
 
 
-    **Test gap shape**: regression-pin asserting: (a) `createTerm` with a never-seen
+    **Why HIGH not MEDIUM** (unchanged from prior batches; reinforced by batch W aggregate):
+
+    - Individual side-doors are MEDIUM in sidecars; cumulative cross-pillar pattern
+    is HIGH because: (a) side-doors are NOT documented anywhere in operator-facing
+    site (sidecar''s doc_drift_findings confirm); (b) operators reasoning about access
+    control via the documented `*_CREATE` permissions are SYSTEMATICALLY DECEIVED
+    about what permissions a Role actually allows; (c) the read-collaborative posture
+    means EVERY authenticated user with any *_CREATE write permission can pollute
+    the namespace + tag taxonomies indefinitely. The Management UI''s Namespace +
+    Tag tabs (intended as the controlled-vocabulary surfaces per P-08) are EFFECTIVELY
+    UNGATED because every other pillar''s write endpoints can bypass them.
+
+    - **BATCH W reinforcement**: the same pattern now visible across P-06 (Glossary),
+    P-08 (Datasources + Collectors + DEGs) — every catalog-mutation pillar has at
+    least one NAMESPACE_CREATE side-door. The Management UI''s Namespaces tab is effectively
+    ungated across 4 sister pillars.
+
+
+    **Test gap shape**: regression-pin asserting:
+
+    - **Term-side** (unchanged from prior batch-U): (a) `createTerm` with a never-seen
     `namespaceName` succeeds for a caller holding TERM_CREATE but NOT NAMESPACE_CREATE;
     (b) `createTermTagsRelations` with never-seen tag names succeeds for a caller
     holding TERM_TAGS_UPDATE but NOT TAG_CREATE; (c) `updateTerm` with a never-seen
     `namespaceName` succeeds for a caller holding TERM_UPDATE but NOT NAMESPACE_CREATE.
+
+    - **BATCH W ADDITION**: (d) `registerDataSource` with a never-seen `namespaceName`
+    succeeds for a caller holding DATA_SOURCE_CREATE but NOT NAMESPACE_CREATE (per
+    TEST-GAP-751 for the file-local instance); (e) `registerCollector` with a never-seen
+    `namespaceName` succeeds for a caller holding COLLECTOR_CREATE but NOT NAMESPACE_CREATE;
+    (f) `createDataEntityGroup` with a never-seen `namespaceName` succeeds for a caller
+    holding DATA_ENTITY_GROUP_CREATE but NOT NAMESPACE_CREATE.
+
+
     Each test PINS the current (bypass) behaviour — failures land if a future maintainer
-    adds explicit `NAMESPACE_CREATE` / `TAG_CREATE` checks at the service layer.'
+    adds explicit `NAMESPACE_CREATE` / `TAG_CREATE` checks at the service layer at
+    ANY of the 8 call sites.'
   test_class: missing-security
   criticality: HIGH
   node_id: ''
@@ -15135,3 +15185,1946 @@ test_gaps_index:
   related_refactor_ids: []
   related_doc_gap_ids: []
   detail_path: detail/TEST-GAP-748.yaml
+- gap_id: TEST-GAP-749
+  behaviour: '**CRITICAL — `regenerateDataSourceToken` is the ONE non-transactional
+    mutation in DataSourceServiceImpl (lines 98-106), creating a split-state failure
+    where the operator receives a NEW token in the API response while the DB retains
+    the OLD token.** Primary-source confirmed in batch-W DataSourceController sidecar:
+
+
+    - `DataSourceServiceImpl.create` (line 52) — IS `@ReactiveTransactional`
+
+    - `DataSourceServiceImpl.update` (line 69) — IS `@ReactiveTransactional`
+
+    - `DataSourceServiceImpl.delete` (line 86) — IS `@ReactiveTransactional`
+
+    - **`DataSourceServiceImpl.regenerateDataSourceToken` (lines 98-106) — is NOT
+    `@ReactiveTransactional`** (verified by sidecar primary-source line-by-line read
+    of the file)
+
+
+    The service method chain: `getDto(id)` → `tokenGenerator.regenerateToken(existingTokenPojo)`
+    (in-memory) → `tokenRepository.updateToken(newToken)` (DB write).
+
+
+    **Split-state failure scenario**:
+
+    1. Step 1 succeeds: `getDto(id)` resolves the existing datasource + token.
+
+    2. Step 2 succeeds: `tokenGenerator.regenerateToken` creates a new TokenDto in
+    memory.
+
+    3. Step 3 fails: `tokenRepository.updateToken(newToken)` raises a transient DB
+    error (network blip, statement timeout, lock conflict).
+
+    4. **The reactive chain bubbles a 500 to the controller.** The Mono fails after
+    step 3 — but **the NEW TokenDto has already been emitted into the response stream**
+    if the chain composition uses `.map(ResponseEntity::ok)` before the DB write completes.
+    Per the controller code at lines 53-59, the response IS constructed from the service''s
+    emitted token DTO. The exact failure mode depends on the WebFlux response buffering:
+    a partial response with the new token may reach the client before the 500 propagates.
+
+    5. **The OLD token remains in the DB.** The collector authenticating with the
+    OLD token continues working. The operator (who captured the NEW token from the
+    partial response) tries to use it — and discovers the collector is still authenticating
+    with the OLD token. **There is no mechanism to recover the in-memory NEW token**
+    because it never persisted.
+
+
+    **Why CRITICAL not LOW (the sidecar''s own rating)**: this gap is INDIVIDUALLY
+    low (rare failure mode), but compounds CRITICALLY with two other adjacent findings:
+
+    - **TEST-GAP-750 (this batch — end-to-end plaintext token chain at controller
+    tier)**: the new token IS emitted plaintext in the response body. A 500-after-emit
+    can leak the unused token via response logging / APM tools while DB still holds
+    the OLD token. The leaked token has no counterpart — it can''t be used to authenticate.
+
+    - **Per the sidecar''s `concept-link to shared-secret-tokens-stored-plaintext`**:
+    the operator''s only recovery is to retry the rotation. But retries are NOT idempotent
+    — each retry generates a fresh new token. The DB write that eventually succeeds
+    reflects the LATEST token, but the operator may have copied an earlier one. **Multiple
+    failed-then-retried rotations create a sequence of in-memory tokens that NEVER
+    reach DB but DO reach the response stream.** Forensic investigation cannot reconstruct
+    which token reached which response.
+
+    - **The destructive rotation has no grace period (per sidecar implicit_adrs.[3])**:
+    there is no "old token still valid for N hours" — once the DB write succeeds,
+    the old token is dead. So the operator''s mitigation window is exactly the duration
+    of the failing rotation: zero.
+
+
+    **Test gap shape**: regression-pin asserting: (a) the service method DOES NOT
+    have `@ReactiveTransactional`; (b) on simulated DB-write failure, the operator''s
+    response carries a token that is NOT in the DB; (c) the OLD token still authenticates
+    against `IngestionDataSourceFilter`; (d) a follow-up successful retry creates
+    a DIFFERENT new token, breaking the operator''s captured-from-failed-response
+    token. The current state is PINNED to make the design intent visible — any future
+    maintainer adding `@ReactiveTransactional` will see the test invert (the response
+    no longer carries an uncommitted token).'
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-020
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-749.yaml
+- gap_id: TEST-GAP-750
+  behaviour: '**CRITICAL — End-to-end plaintext token chain at the controller tier:
+    `POST /api/datasources` and `PUT /api/datasources/{id}/token` (DataSourceController)
+    AND `POST /api/collectors` and `PUT /api/collectors/{id}/token` (CollectorController)
+    all emit the full 40-character plaintext token in the HTTP response body. The
+    platform''s token-issuing API is "send-once over the wire" with NO mitigations
+    (no `Cache-Control: no-store`, no `X-Sensitive-Body`, no Vary-by-auth response-marker,
+    no documented warning).** Primary-source confirmed across batch-W DataSourceController
+    + CollectorController sidecars + cross-link to existing batch-Q UI-tier finding
+    + batch-R repository-tier finding:
+
+
+    **Controller tier (this gap''s surface)**:
+
+    - `DataSourceController.registerDataSource` (lines 30-36) calls `dataSourceService.create(form)`
+    → `tokenGenerator.generateToken()` → response via `ResponseEntity::ok(DataSourceMapper.mapDto(...))`.
+    The mapper at `DataSourceMapper.mapDto` includes the full `TokenDto.value` (40
+    alphanumeric chars, plaintext).
+
+    - `DataSourceController.regenerateDataSourceToken` (lines 53-59) calls `dataSourceService.regenerateDataSourceToken(id)`
+    → `tokenGenerator.regenerateToken(existing)` → response via `ResponseEntity::ok`.
+    Same full plaintext token in the response.
+
+    - `CollectorController.registerCollector` (CollectorController.java:27-31) — same
+    pattern: `ResponseEntity::ok` carrying the full plaintext token.
+
+    - `CollectorController.regenerateCollectorToken` (CollectorController.java:47-51)
+    — same pattern.
+
+    - **Per the `TokenMapper.mapValue` branch at TokenMapper.java:15-18**: `dto.showToken()
+    ? dto.tokenPojo().getValue() : "******" + dto.tokenPojo().getValue().substring(length()-6)`.
+    The `showToken=true` flag is set at `ReactiveTokenRepositoryImpl.create` line
+    21 and `updateToken` line 30 — both branches RETURN the full plaintext.
+
+
+    **Wire-tier (the leak vectors)**:
+
+    - **Reverse proxies / API gateways**: any TLS-terminating proxy on the operator''s
+    deployment captures the response body. The platform''s default deployment via
+    Helm uses an ingress controller that logs at `level: debug` capturing full bodies;
+    operators do not know to disable.
+
+    - **Browser history + DevTools**: a Management → Datasources tab operator clicking
+    `Add datasource` or `Regenerate token` issues the API call; the response body
+    is captured in browser DevTools'' Network tab AND in the browser''s session HTTP
+    cache (`Cache-Control: no-store` is absent).
+
+    - **APM tools (Datadog APM, New Relic, Honeycomb)**: distributed-tracing agents
+    capture HTTP request/response bodies for `/api/datasources*` and `/api/collectors*`
+    paths by default. The plaintext token is in the trace.
+
+    - **Server-side response loggers**: WebFlux''s `ServerHttpResponseDecorator` is
+    freely composable; many operator deployments wrap the response stream with a tee-logger
+    for audit. The plaintext token is in the audit log.
+
+
+    **Aggregate-chain (the multi-layer finding)**:
+
+    This gap is the **third vertex** of the end-to-end plaintext-token-chain triangulation:
+
+    - **Vertex 1 (batch-R repository-tier)**: tokens are stored in `TOKEN.value` column
+    as plaintext (per concept `shared-secret-tokens-stored-plaintext`). At-rest plaintext.
+
+    - **Vertex 2 (batch-Q UI-tier — CollectorsList.tsx)**: the UI renders the token
+    to the DOM plaintext (no copy-to-clipboard masking, no on-screen scroll-clear).
+    Plaintext in browser memory.
+
+    - **Vertex 3 (THIS gap — controller-tier)**: the API response wire carries the
+    plaintext. The complete chain is: **operator click → controller response wire
+    (PLAINTEXT) → UI DOM render (PLAINTEXT) → repository write (PLAINTEXT)**. Every
+    layer is plaintext; there is NO HMAC-equivalent / hash-equivalent that would let
+    the operator capture the credential while the platform stores only a derived form.
+    The S2S consumer (`IngestionDataSourceFilter` / `IngestionDataEntitiesFilter`)
+    compares plaintext-to-plaintext.
+
+
+    **Operator-visible consequences**:
+
+    - An operator who screenshares their browser during a Datasources tab rotation
+    leaks the new token in the screenshare.
+
+    - An operator who clicks Regenerate while a corporate proxy logs request/response
+    bodies leaks the new token to the proxy log.
+
+    - An operator who exports their browser''s network log for debugging leaks every
+    token they''ve ever rotated.
+
+    - A breach of the central observability platform (APM aggregator) yields every
+    collector token across every datasource for every customer using that APM.
+
+
+    **Why CRITICAL not MEDIUM (the sidecar''s own rating)**: individual vertices are
+    MEDIUM; the COMPLETE END-TO-END CHAIN is CRITICAL because the absence of ANY single-layer
+    mitigation means the operator has NO recovery: there is no point at which the
+    operator can capture the token while the platform retains only a derived form
+    (no Bearer-token-derive-on-receipt, no HMAC-on-issue). The chain is "all or nothing";
+    any leak at any layer leaks the full credential.
+
+
+    **Test gap shape**: regression-pin asserting that: (a) POST `/api/datasources`
+    returns the plaintext token in the response body verbatim; (b) PUT `/api/datasources/{id}/token`
+    returns the plaintext token; (c) POST `/api/collectors` returns the plaintext
+    token; (d) PUT `/api/collectors/{id}/token` returns the plaintext token; (e) NO
+    `Cache-Control: no-store` or sensitive-body markers are set on any response. The
+    current state is PINNED — any future maintainer adding HMAC-on-issue / Vary-by-auth
+    / no-store markers will see the test fail and must update both the wire contract
+    AND the operator-facing docs in lockstep.'
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-020
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-750.yaml
+- gap_id: TEST-GAP-751
+  behaviour: '**HIGH — `POST /api/datasources` and `PUT /api/datasources/{id}` implicitly
+    CREATE Namespaces via the `getOrCreate` side-door pattern, bypassing `NAMESPACE_CREATE`
+    permission.** An operator holding `DATA_SOURCE_CREATE` (the documented gate per
+    Management → Datasources tab) but explicitly NOT `NAMESPACE_CREATE` can proliferate
+    new namespaces by submitting a never-seen `namespaceName` in the DataSourceFormData.
+    Primary-source confirmed in batch-W DataSourceController + NamespaceController
+    sidecars:
+
+
+    **Call site primary-source**:
+
+    - `DataSourceServiceImpl.create` (line 52, `@ReactiveTransactional`) line 57:
+    `if (StringUtils.isNotEmpty(form.getNamespaceName())) { namespaceService.getOrCreate(form.getNamespaceName()).zipWith(token)...
+    }`. The `namespaceService.getOrCreate` (NamespaceServiceImpl.java) creates the
+    namespace if absent.
+
+    - `DataSourceServiceImpl.update` (line 69, `@ReactiveTransactional`) line 75:
+    same `namespaceService.getOrCreate(...)` pattern.
+
+
+    **What the docs claim vs what the code enforces** (per batch-W sidecar''s `docs_link_semantic`
+    WebFetch 2026-05-20):
+
+    - Management page: "Registered data sources — the platform''s view of every system
+    a Collector or Push-client is reporting from. View existing sources, audit ingestion
+    timestamps, edit metadata, link to a Collector + Namespace." — describes the UI
+    flow but does NOT disclose the implicit-namespace-creation side-effect.
+
+    - Authorization page: "The current page only lists the authorization documentation
+    structure with links to detailed sections on Policies, Permissions, Roles, Owners,
+    and User-owner association, but does not include the specific permission names
+    or policy types you''re seeking." — the live docs do NOT enumerate `NAMESPACE_CREATE`
+    / `DATA_SOURCE_CREATE` permission names; operators authoring policies have no
+    doc-side anchor.
+
+    - The dedicated `POST /api/namespaces` endpoint requires `NAMESPACE_CREATE` (SecurityConstants.java:99-102)
+    — operators authoring a "datasource-admin" Role with `DATA_SOURCE_CREATE` but
+    NOT `NAMESPACE_CREATE` reasonably expect the operator cannot create namespaces.
+    The code contradicts that expectation.
+
+
+    **Cross-pillar reach (the architectural pattern)**:
+
+    This is **vertex 3 of the 4-sister-service NAMESPACE_CREATE side-door** documented
+    in NamespaceController.md:bugs_limitations_corner_cases.[1]:
+
+    - Vertex 1: TermServiceImpl.createTerm / updateTerm (lines 103, 138) — TERM_CREATE
+    / TERM_UPDATE → namespaceService.getOrCreate
+
+    - Vertex 2: CollectorServiceImpl.create / update (lines 43, 57) — COLLECTOR_CREATE
+    / COLLECTOR_UPDATE → namespaceService.getOrCreate
+
+    - **Vertex 3 (THIS gap)**: DataSourceServiceImpl.create / update (lines 57, 75)
+    — DATA_SOURCE_CREATE / DATA_SOURCE_UPDATE → namespaceService.getOrCreate
+
+    - Vertex 4: DataEntityGroupServiceImpl.createDataEntityGroup / updateDEG (lines
+    65, 84) — DATA_ENTITY_GROUP_CREATE / UPDATE → namespaceService.getOrCreate
+
+
+    **Aggregate finding**: NAMESPACE_CREATE is bypassed by 4 sister services × 2 method
+    × 8 call sites total. Each individual side-door is LOW-MEDIUM per the sidecars;
+    the aggregate is HIGH because: (a) operators authoring RBAC policies expecting
+    NAMESPACE_CREATE to gate namespace creation are SYSTEMATICALLY DECEIVED about
+    what their policies allow; (b) the live docs do NOT disclose this; (c) every catalog-mutation
+    pillar (P-06 Glossary, P-08 Datasources/Collectors, P-01 DEGs/Discovery) has a
+    side-door. The Management UI''s Namespaces tab (intended as the controlled-vocabulary
+    surface per P-08) is EFFECTIVELY UNGATED because every other pillar''s write endpoints
+    can bypass it.
+
+
+    **THIS gap pins the DataSourceController-specific vertex** (the broader 4-sister
+    aggregate is being STRENGTHENED into TEST-GAP-726 in the same batch — see the
+    parallel finding there). Both representations are kept: TEST-GAP-726 is the aggregate
+    test (4-sister-service compound), TEST-GAP-751 is the DataSource-specific instance
+    with controller-tier file:line anchors.
+
+
+    **Test gap shape**: regression-pin asserting: (a) `POST /api/datasources` with
+    a never-seen `namespaceName` succeeds for a caller holding `DATA_SOURCE_CREATE`
+    but NOT `NAMESPACE_CREATE`; (b) the namespace IS persisted; (c) `PUT /api/datasources/{id}`
+    with a never-seen `namespaceName` succeeds for a caller holding `DATA_SOURCE_UPDATE`
+    but NOT `NAMESPACE_CREATE`. The current state is PINNED — failures land if a future
+    maintainer adds explicit `NAMESPACE_CREATE` check at the service layer.'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-020
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-751.yaml
+- gap_id: TEST-GAP-752
+  behaviour: '**HIGH — Cross-path silent-overwrite class: an operator''s UI edit via
+    `PUT /api/datasources/{id}` (full-form replace via MapStruct''s `@MappingTarget`)
+    is OVERWRITTEN on the next collector ingestion via `POST /ingestion/datasources`
+    (partial-merge of name + description ONLY). NO warning at the UI write time, NO
+    warning at the collector overwrite time, NO audit log of either event.** Primary-source
+    confirmed across batch-W DataSourceController sidecar + cross-link to batch-P
+    IngestionController + batch-S DataSourceIngestionServiceImpl + batch-R ReactiveDataSourceRepositoryImpl
+    sidecars (the 5-vertex triangulation per the sidecar''s coherence_check):
+
+
+    **The two paths**:
+
+    - **UI path** (`DataSourceController.updateDataSource` lines 38-45 → `DataSourceServiceImpl.update`
+    lines 68-83 → `DataSourceMapper.applyToPojo` at `DataSourceMapper.java:49-56`):
+    MapStruct''s `@MappingTarget` over the entire DataSourceUpdateFormData. ALL fields
+    written: name, description, connectionUrl, active flag, namespace_id, etc.
+
+    - **S2S path** (`IngestionController.createDataSourceEntity` → `DataSourceIngestionServiceImpl.prepareForUpdate`
+    at `DataSourceIngestionServiceImpl.java:74-92` per batch-S sidecar): `new DataSourcePojo(a).setName(i.getName()).setDescription(i.getDescription())`.
+    ONLY name + description written. The collector OVERWRITES whatever was there with
+    the collector''s own representation of those two fields.
+
+
+    **Operator-impact scenario** (the operator-cliff failure mode per LSN-001 / LSN-002
+    framing):
+
+    1. Operator opens the Management → Datasources tab, locates the `snowflake-prod`
+    datasource.
+
+    2. Operator edits the description to "Production warehouse — DO NOT REPORT TO
+    SLACK alert channel" and saves. UI confirms 200; the description is persisted.
+
+    3. The collector running `odd-collector` (configured with its `odd-collector-config.yaml`
+    containing the canonical name and the legacy description) restarts overnight (a
+    routine deployment).
+
+    4. On startup, the collector sends `POST /ingestion/datasources` with `name: ''snowflake-prod''`
+    and `description: ''Snowflake production''` (the value from its config file).
+
+    5. The S2S service path applies the partial merge — name and description are overwritten.
+    The operator''s edit is GONE.
+
+    6. **No notification.** No audit log entry. No "config drift detected" alert.
+    The operator next sees their description and finds it has reverted; they have
+    no signal about what happened.
+
+
+    **Cross-tier evidence**:
+
+    - **DataSourceMapper.java:49-56** (`applyToPojo` — UI side): `@Mapping(target
+    = ..., ignore = false)` over every field. Confirmed by batch-W sidecar''s primary-source
+    reading.
+
+    - **DataSourceIngestionServiceImpl.java:74-92** (`prepareForUpdate` — S2S side,
+    per batch-S sidecar): explicit field narrowing to `setName + setDescription`.
+
+    - **NO audit log on either path** (per batch-W sidecar''s downstream_side_effects.[8]:
+    "NO Activity Event emission for ANY data_source mutation. No activityEventEmitter
+    call in DataSourceServiceImpl (verified by Grep — the class imports no ActivityEvent
+    + emits no Activity)"). The Datasources tab shows CURRENT row state, NOT a change
+    history. The two paths'' interleaving is invisible to operators.
+
+
+    **Why HIGH not MEDIUM (the sidecar''s own rating)**: this is the canonical operator-cliff
+    failure mode (LSN-001 / LSN-002 family): the operator follows the documented UI
+    workflow, gets a 200 OK, believes the change is persisted, then the next routine
+    collector restart silently reverts the change. The operator has no doc-side anchor
+    warning them that the platform has TWO mutation paths with DIFFERENT field-set
+    semantics — the Management page (live-fetched 2026-05-20) describes only the UI
+    flow.
+
+
+    **Test gap shape**: regression-pin asserting: (a) `PUT /api/datasources/{id}`
+    writes ALL DataSourceUpdateFormData fields (verifiable by DB read after); (b)
+    a subsequent `POST /ingestion/datasources` for the same ODDRN overwrites ONLY
+    name + description (the operator''s other-field edits SURVIVE); (c) NO Activity
+    Event is emitted by either path. The current state is PINNED — failures land if
+    a future maintainer either (a) narrows the UI mapper to match S2S (breaking operator
+    full-form-replace), or (b) broadens the S2S mapper to match UI (breaking collector-tenant
+    constraint), or (c) adds Activity Event emission (changing the audit story).'
+  test_class: missing-integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-752.yaml
+- gap_id: TEST-GAP-753
+  behaviour: '**MEDIUM — `DELETE /api/datasources/{id}` cascade-delete behaviour is
+    unverified at the HTTP boundary. The block-on-live-children path AND the allow-when-no-children-or-all-deleted
+    path are both uncovered by tests.** Primary-source confirmed in batch-W DataSourceController
+    sidecar:
+
+
+    - `DataSourceServiceImpl.delete` (lines 85-96, `@ReactiveTransactional`) line
+    88: calls `dataEntityRepository.existsNonDeletedByDataSourceId(id)` (per batch-D
+    `ReactiveDataEntityRepositoryImpl.java:158` sidecar).
+
+    - If TRUE → throws `CascadeDeleteException("Data source cannot be deleted: there
+    are still data entities attached")` (line 93-94) → mapped to HTTP 400 via `ControllerAdvice.java:42-46`.
+
+    - If FALSE → calls `dataSourceRepository.delete(id)` → soft-delete via `ReactiveAbstractSoftDeleteCRUDRepository.delete`
+    lines 50-58 → `UPDATE data_source SET deleted_at = NOW() WHERE id = ? AND deleted_at
+    IS NULL`.
+
+
+    **Behaviour to pin**:
+
+    - **Cascade-delete block**: a datasource with ANY non-soft-deleted data_entity
+    child returns HTTP 400. The error message is a literal string "Data source cannot
+    be deleted: there are still data entities attached" — the operator gets NO hint
+    about WHICH children block deletion (boolean check, not list).
+
+    - **Cascade-delete allow**: a datasource with NO data_entity children OR all-soft-deleted
+    children returns HTTP 204 No Content.
+
+    - **Soft-delete verification**: after a successful delete, `data_source.deleted_at
+    IS NOT NULL`; the row is excluded from `GET /api/datasources` by the soft-delete
+    filter.
+
+    - **Orphan-children semantic**: the delete does NOT cascade — soft-deleted data_entity
+    children remain with `data_entity.data_source_id = soft-deleted data_source.id`.
+    The FK is NOT cascaded by Postgres (no `ON DELETE CASCADE` in the schema), NOT
+    nulled by application logic. (Per the sidecar''s downstream_side_effects.deleteDataSource:
+    "the data_entity.data_source_id remains the soft-deleted data_source.id; the FK
+    is NOT cascaded by Postgres, NOT nulled by application logic.")
+
+
+    **Why MEDIUM not HIGH**: cascade-delete is a non-destructive failure mode (operator
+    gets a clear 400 with a message). The behaviour is consistent with FOUR other
+    cascade-delete guards in the codebase (Collector, Namespace, Policy, Role, Owner
+    — all use the same `existsByX` + `CascadeDeleteException` pattern). The MEDIUM
+    rating reflects the operator-experience-friction (operator must use Discovery
+    UI to find and remove children) and the un-cascaded orphan semantics — but no
+    security or correctness issue.
+
+
+    **Test gap shape**: regression-pin asserting: (a) DELETE for a datasource with
+    live data_entity children returns HTTP 400 with the canonical message; (b) DELETE
+    for a datasource with no children returns HTTP 204; (c) post-delete, `data_source.deleted_at
+    IS NOT NULL`; (d) post-delete, a fresh registerDataSource with the same ODDRN
+    succeeds (the partial unique index `data_source_oddrn_unique WHERE deleted_at
+    IS NULL` excludes the soft-deleted row).'
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-753.yaml
+- gap_id: TEST-GAP-754
+  behaviour: '**CRITICAL — `POST /api/collectors` and `PUT /api/collectors/{id}/token`
+    emit the full 40-character plaintext collector token in the HTTP response body.
+    The token then traverses the wire to the UI (batch-Q CollectorsList.tsx renders
+    plaintext to DOM), the at-rest store (batch-R: `TOKEN.value` stored plaintext),
+    and any reverse-proxy / APM / browser DevTools on the path. NO `Cache-Control:
+    no-store`, NO `X-Sensitive-Body`, NO documented warning to operators about wire-tier
+    exposure.** Primary-source confirmed in batch-W CollectorController sidecar:
+
+
+    **Controller tier (this gap''s surface)**:
+
+    - `CollectorController.registerCollector` (lines 27-31): `return collectorService.create(formData).map(ResponseEntity::ok)`
+    — the service emits a `Collector` DTO whose `token.value` is the plaintext 40-char
+    string per `ReactiveTokenRepositoryImpl.create` line 21 (`new TokenDto(r.into(TokenPojo.class),
+    true)` — the `showToken=true` flag).
+
+    - `CollectorController.regenerateCollectorToken` (lines 47-51): same pattern —
+    `tokenRepository.updateToken(...)` line 30 returns `new TokenDto(..., true)`.
+
+    - **Per `TokenMapper.mapValue` (TokenMapper.java:15-18)**: when `dto.showToken()
+    == true`, returns the FULL plaintext. When false, returns `******{last6chars}`.
+
+
+    **The chain (the complete picture across 3 layers)**:
+
+    - **Vertex 1 — Wire-tier (THIS gap)**: HTTP response body contains plaintext.
+    Reverse-proxy + APM + DevTools all capture it.
+
+    - **Vertex 2 — UI-tier (batch-Q CollectorsList.tsx)**: the UI renders the plaintext
+    to DOM (no copy-to-clipboard masking; no on-screen scroll-clear; the token sits
+    in browser memory as plaintext).
+
+    - **Vertex 3 — At-rest tier (batch-R TOKEN.value)**: stored plaintext. The platform
+    compares plaintext-to-plaintext against the `IngestionDataEntitiesFilter`.
+
+
+    **Operator-visible consequences**:
+
+    - An operator clicking Register Collector in the Management → Collectors tab:
+    the plaintext token traverses the response wire, renders in their browser, and
+    is captured by any APM agent / proxy logger / browser cache.
+
+    - An operator screensharing during the Register flow: the token is leaked in the
+    screenshare.
+
+    - An operator running the platform behind a corporate ingress with body-capture
+    logging: every token they ever rotate is in the ingress log forever.
+
+    - A breach of the central APM aggregator: every collector token across every customer
+    using that APM.
+
+    - **The leaked token is the FULL credential** — there is no salting, no HMAC,
+    no derived form. The S2S filter at `IngestionDataEntitiesFilter` does a plaintext
+    comparison.
+
+
+    **Why CRITICAL not MEDIUM (the sidecar''s own rating per CollectorController.md)**:
+    the sidecar rates this MEDIUM at the controller layer in isolation, but explicitly
+    states "high in aggregate via the chain". This test pins the END-TO-END behaviour:
+    the chain across wire + UI + at-rest is CRITICAL because ANY single-layer leak
+    compromises the full credential (no recovery via HMAC-on-issue / derived-form
+    / hashed-storage). The CollectorController''s wire-tier is the FIRST exposure
+    point.
+
+
+    **Test gap shape**: regression-pin asserting: (a) `POST /api/collectors` response
+    body contains the plaintext 40-char token verbatim; (b) `PUT /api/collectors/{id}/token`
+    response body contains the plaintext token; (c) `GET /api/collectors` (list) responses
+    carry the masked `******{last6chars}` form; (d) `PUT /api/collectors/{id}` (update)
+    responses carry the masked form; (e) NO response carries `Cache-Control: no-store`
+    or `X-Sensitive-Body`. The current state is PINNED — any future maintainer adding
+    header markers OR migrating to HMAC-on-issue will see tests #1-#4 fail and must
+    update the wire contract + the UI + the docs in lockstep.'
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-020
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-754.yaml
+- gap_id: TEST-GAP-755
+  behaviour: '**HIGH — `DELETE /api/collectors/{id}` soft-deletes the `collector`
+    row BUT LEAVES THE TOKEN ROW INTACT in the `token` table indefinitely. The plaintext
+    credential of a deleted collector persists in DB backups, replicas, dumps, and
+    reads forever.** Primary-source confirmed in batch-W CollectorController sidecar
+    + cross-link to batch-R `ReactiveCollectorRepositoryImpl` sidecar:
+
+
+    **Persistence-layer evidence**:
+
+    - `CollectorServiceImpl.delete` (lines 71-80, `@ReactiveTransactional`): the only
+    delete operation is `collectorRepository.delete(id)` (line 78). NO `tokenRepository.delete(...)`
+    call. NO grep hit for `tokenRepository.delete` anywhere in `CollectorServiceImpl`.
+
+    - `ReactiveAbstractSoftDeleteCRUDRepository.delete` (lines 51-59): the inherited
+    soft-delete UPDATEs ONLY the parent table — `UPDATE collector SET deleted_at =
+    NOW() WHERE id = ?`. The FK `collector.token_id → token.id` remains; the `token`
+    row is untouched.
+
+    - **The TOKEN row remains**: its `value` column carries the plaintext credential,
+    indefinitely. The row is unreachable via Collector navigation (the parent is soft-deleted)
+    but lives in the table.
+
+
+    **Operator-visible consequences**:
+
+    - **Backup retention**: an operator running standard PostgreSQL backups (pg_dump
+    nightly, retained for 90 days per typical SOX/GDPR compliance) carries 90 days
+    of plaintext deleted-collector tokens.
+
+    - **Replica drift**: a hot-standby or read-replica carries the orphan tokens until
+    manual cleanup.
+
+    - **Incident response**: an operator investigating a credential leak ("did we
+    ever issue a token for this URL?") queries `SELECT * FROM token WHERE created_at
+    > ''2025-01-01''` and sees credentials that have been "deleted" via the UI but
+    are still in the table — confusing the investigation timeline.
+
+    - **GDPR right-to-erasure**: a customer requesting data erasure for their integration
+    credentials cannot be told "the token has been deleted" — it has not.
+
+    - **Audit trail asymmetry**: the UI shows "Collector deleted"; the DB shows "TOKEN
+    row still present". Audit reports comparing UI state to DB state surface a discrepancy.
+
+
+    **Why HIGH not MEDIUM (the sidecar''s own rating)**: the sidecar rates this MEDIUM-HIGH
+    per `bugs_limitations_corner_cases` and HIGH per `security.known_security_gaps`.
+    We rate THIS gap HIGH because: (a) the plaintext-credential persistence has GDPR/SOX
+    implications operators cannot mitigate without raw DB access; (b) the orphan growth
+    is unbounded — every collector ever deleted leaves a row; (c) there is NO scheduled
+    cleanup job (no entry in the 5-job housekeeping cycle covers the `token` table).
+    The asymmetry between the UI''s "deleted" view and the DB''s "still present" reality
+    is a forensic-investigation hazard.
+
+
+    **Test gap shape**: regression-pin asserting: (a) after `DELETE /api/collectors/{id}`,
+    the `collector` row has `deleted_at IS NOT NULL`; (b) the `token` row referenced
+    by the deleted collector''s `token_id` STILL EXISTS in the `token` table; (c)
+    the `token.value` column STILL HOLDS the plaintext credential; (d) no scheduled
+    job (housekeeping cycle) removes the orphan token. The current state is PINNED
+    — failures land if a future maintainer adds `tokenRepository.delete(collector.token_id)`
+    to the delete path, or adds a housekeeping job to GC orphan tokens.'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-020
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-755.yaml
+- gap_id: TEST-GAP-756
+  behaviour: "**HIGH — Collector tokens are generated by `RandomStringUtils.randomAlphanumeric(40)`\
+    \ which (in commons-lang 3.16+) delegates to `ThreadLocalRandom`, NOT `SecureRandom`.\
+    \ The 40-character alphanumeric token has ≈238 bits of input space, but the RNG\
+    \ quality is the binding security constraint. ThreadLocalRandom is a predictable\
+    \ PRNG seeded once per thread — its output is reproducible given knowledge of\
+    \ the seed.** Primary-source confirmed in batch-W CollectorController sidecar:\n\
+    \n- `TokenGeneratorImpl.java:39, 49` — verified by sidecar primary-source line-by-line\
+    \ read.\n- Used by BOTH `CollectorController.registerCollector` (line 27) → `CollectorServiceImpl.create`\
+    \ (line 42) → `tokenGenerator.generateToken()` AND `CollectorController.regenerateCollectorToken`\
+    \ (line 47) → `CollectorServiceImpl.regenerateCollectorToken` (line 90) → `tokenGenerator.regenerateToken(...)`.\n\
+    - Also used by `DataSourceController.registerDataSource` → `DataSourceServiceImpl.create`\
+    \ (line 54) → `tokenGenerator.generateToken()` (per batch-W DataSourceController\
+    \ sidecar).\n- **The same TokenGenerator** is shared across F-020 (Collector Lifecycle)\
+    \ AND F-008 (Datasource registration). The vulnerability is platform-wide.\n\n\
+    **Why HIGH not MEDIUM**:\n- **ThreadLocalRandom is NOT cryptographically secure**\
+    \ per Java's official documentation: \"Instances of java.util.concurrent.ThreadLocalRandom\
+    \ are not cryptographically secure. Consider using SecureRandom in security-sensitive\
+    \ applications.\" (Source: Java SE 17 docs, java.util.concurrent.ThreadLocalRandom).\n\
+    - **40 alphanumeric chars = 238 bits of ENTROPY** — but only if the RNG is uniform-random\
+    \ over the full space. ThreadLocalRandom's actual entropy depends on the seed;\
+    \ if the seed is predictable (e.g., timestamp-derived), the effective entropy\
+    \ drops sharply.\n- **The token IS the credential** — there is no salt, no HMAC,\
+    \ no derived form. A compromised RNG yields a compromised token.\n\n**Attack scenario**:\n\
+    - An attacker who can run code on the same JVM (or observe its timing) can characterize\
+    \ ThreadLocalRandom's seed and predict next-token outputs. For a JVM running an\
+    \ open-source platform with deterministic startup behaviour, the seed entropy\
+    \ is bounded by the system clock at startup.\n- Even without same-JVM access,\
+    \ ThreadLocalRandom's reduced entropy means brute-force search over the credential\
+    \ space is FASTER than a true 238-bit search. The 40-char alphanumeric token gives\
+    \ the ATTACKER fewer effective bits than the operator thinks.\n\n**Cross-platform\
+    \ evidence**:\n- **CollectorController register path** (`TokenGeneratorImpl.java:39`):\
+    \ the seed entropy of the token issued during collector registration.\n- **CollectorController\
+    \ regenerate path** (`TokenGeneratorImpl.java:49`): the seed entropy of the token\
+    \ issued during rotation.\n- **DataSourceController register path** (uses the\
+    \ same `TokenGenerator` per batch-W DataSourceController sidecar): the seed entropy\
+    \ of the token issued during datasource registration.\n- **DataSourceController\
+    \ regenerate path**: same.\n\n**Mitigation**: replace `RandomStringUtils.randomAlphanumeric(40)`\
+    \ with a `SecureRandom`-backed equivalent:\n```java\nprivate final SecureRandom\
+    \ secureRandom = new SecureRandom();\nprivate static final String CHARS = \"abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789\"\
+    ;\nString token = IntStream.range(0, 40)\n    .map(i -> CHARS.charAt(secureRandom.nextInt(CHARS.length())))\n\
+    \    .collect(Collectors.joining());\n```\n\n**Test gap shape**: regression-pin\
+    \ asserting: (a) `TokenGeneratorImpl.generateToken` uses `RandomStringUtils.randomAlphanumeric`\
+    \ (assert via reflection or AST inspection); (b) `TokenGeneratorImpl.regenerateToken`\
+    \ uses the same method; (c) the method delegates to `ThreadLocalRandom` (assertable\
+    \ via JVM instrumentation or library introspection on commons-lang ≥3.16). The\
+    \ current state is PINNED — failures land if a future maintainer migrates to `SecureRandom`.\
+    \ When the fix lands, the test inverts to assert `SecureRandom` IS the source."
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-020
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-756.yaml
+- gap_id: TEST-GAP-757
+  behaviour: '**HIGH — F-020 Collector Lifecycle has ZERO audit logging across the
+    entire surface: no Activity Feed entries, no `@Slf4j` logger statements, no record
+    of who registered / updated / deleted / rotated any collector. The `TOKEN.updated_by`
+    column captures the LAST actor on rotation (single-state, not append-only) — overwritten
+    on each rotation. Forensic incident response cannot reconstruct collector-lifecycle
+    history from production data alone.** Primary-source confirmed in batch-W CollectorController
+    sidecar:
+
+
+    **Audit-tier evidence (the absence)**:
+
+    - `CollectorController.java:1-52` — NO `@Slf4j` annotation, NO `log.info`/`log.warn`/`log.debug`/`log.error`
+    calls (verified by Grep returning zero matches).
+
+    - `CollectorServiceImpl.java:1-110` — same. No log statements at any severity.
+
+    - `TokenGeneratorImpl.java:1-53` — same.
+
+    - `ReactiveTokenRepositoryImpl.java` — same on the relevant paths.
+
+    - **No `@ActivityLog` annotation** on any of the 5 endpoint methods (register
+    / update / delete / regenerate-token; the GET-list path doesn''t need one but
+    mutations do).
+
+    - **No `activityEventEmitter` call** anywhere in the F-020 surface.
+
+
+    **The TOKEN.updated_by column** captures the LAST actor on the last rotation,
+    single-state. If operator A rotates the token, then operator B rotates again,
+    the column shows B. The forensic question "did operator A rotate this token in
+    2024-Q3?" is unanswerable from production data alone.
+
+
+    **Cross-pillar context** — this is the same audit-log-presence-asymmetry pattern
+    surfaced in the canonicalisation candidate at system-mission.md §"Audit-log Presence
+    Asymmetry (2-tier audit story)":
+
+    - **Tier 1 (Activity Feed)**: records entity-side metadata changes (description
+    edits, tag assignments, ownership changes).
+
+    - **Tier 2 (NO audit log)**: RBAC mutations (Role create/edit, Policy edit, Owner
+    role-attach) — and now F-020 Collector Lifecycle — and F-008 Datasource Lifecycle
+    (per batch-W DataSourceController sidecar: "NO Activity Event emission for ANY
+    data_source mutation").
+
+
+    **Why HIGH not MEDIUM**:
+
+    - **Incident response**: an operator investigating "someone rotated the collector
+    token at 02:14 UTC on 2026-05-15 — who?" gets the last rotator from `TOKEN.updated_by`
+    but cannot tell if there were intermediate rotations or who-did-what.
+
+    - **Compliance**: SOX, GDPR, ISO 27001 all require auditability of credential
+    lifecycle events. The platform''s audit story for collector tokens is "the last
+    rotator''s name". This is insufficient for compliance auditors.
+
+    - **Operator deception**: the Activity Feed in the UI shows "entity X was tagged
+    at 14:32 by user Y" — operators reasonably expect the same audit trail for "collector
+    X was registered at 14:32 by user Y" or "token X was rotated at 14:32 by user
+    Y". The asymmetry is invisible until an operator goes looking.
+
+    - **Cross-pillar reach**: the audit-log absence on F-020 (Collector Lifecycle)
+    AND F-008 (Datasource Lifecycle) AND RBAC mutations means the ENTIRE Management
+    tab surface — the place operators expect the highest audit-trail granularity —
+    has the LOWEST audit-trail granularity. The canonicalisation candidate in system-mission.md
+    captures this as an open question; this test gap is the F-020-specific instance
+    pinning the regression.
+
+
+    **Test gap shape**: regression-pin asserting: (a) `POST /api/collectors` produces
+    NO Activity Feed entries; (b) `PUT /api/collectors/{id}` produces NO Activity
+    Feed entries; (c) `DELETE /api/collectors/{id}` produces NO Activity Feed entries;
+    (d) `PUT /api/collectors/{id}/token` produces NO Activity Feed entries; (e) `CollectorServiceImpl`
+    carries NO `@Slf4j` annotation (verifiable via reflection); (f) the `TOKEN.updated_by`
+    column is overwritten on each rotation (not append-only). The current state is
+    PINNED — failures land if a future maintainer adds Activity Event emission OR
+    moves `TOKEN.updated_by` to an append-only history table.'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-020
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-757.yaml
+- gap_id: TEST-GAP-758
+  behaviour: '**MEDIUM — The CollectorController''s 5 endpoints have asymmetric token-visibility
+    semantics that are unverified at the HTTP boundary: POST and PUT-token MUST return
+    full plaintext (the operator''s only chance to capture the credential); GET-list
+    and PUT-update MUST return masked `******{last6}` form (the directory enumeration
+    MUST NOT leak credentials). The contract is intentional per the sidecar''s implicit_adrs.[2]
+    but NO test asserts the asymmetry.** Primary-source confirmed in batch-W CollectorController
+    sidecar:
+
+
+    - `POST /api/collectors` (registerCollector lines 27-31): `ReactiveTokenRepositoryImpl.create`
+    line 21 returns `new TokenDto(r.into(TokenPojo.class), true)` — the `showToken=true`
+    flag triggers `TokenMapper.mapValue` (line 15-18) to return the FULL plaintext.
+
+    - `PUT /api/collectors/{id}/token` (regenerateCollectorToken lines 47-51): `ReactiveTokenRepositoryImpl.updateToken`
+    line 30 returns `new TokenDto(..., true)` — same FULL plaintext path.
+
+    - `GET /api/collectors` (listCollectors lines 19-25): `ReactiveCollectorRepositoryImpl.listDto`
+    line 124 returns `new TokenDto(tokenPojo)` — defaults to `showToken=false` — TokenMapper
+    returns `******{last6chars}`.
+
+    - `PUT /api/collectors/{id}` (updateCollector lines 33-40): `ReactiveCollectorRepositoryImpl.getDto`
+    line 114 returns `new TokenDto(tokenPojo)` — defaults to `showToken=false` — masked.
+
+
+    **The asymmetry is intentional design** per CollectorController.md:implicit_adrs.[2]:
+    "Response shape for token-issuing operations returns plaintext token by design;
+    read operations return masked tokens. TokenDto.visibleToken(...) is a deliberately-named
+    static factory and the boolean field is named showToken (not isPersisted or isFresh)
+    — the visibility decision is an intentional per-call-site policy."
+
+
+    **The contract that must be pinned**:
+
+    - Register / regenerate-token → FULL PLAINTEXT in response (operator captures
+    the credential ONCE; there is no "show token again" surface).
+
+    - List / update → MASKED in response (the directory enumeration must NOT leak
+    credentials).
+
+    - A regression that accidentally flips `showToken=true` on the list-endpoint code
+    path would leak every collector''s plaintext token to every authenticated user
+    (combined with TEST-GAP-763''s "GET endpoint has no Permission gate" finding,
+    that''s full-catalog credential leak to any authenticated user).
+
+    - A regression that accidentally flips `showToken=false` on the register/regenerate
+    path would prevent operators from capturing the new credential — they''d see masked
+    output and the platform would lock them out.
+
+
+    **Why MEDIUM not LOW**: the contract is correct as-is; the gap is purely "regression-pin
+    to keep it that way". MEDIUM rather than LOW because:
+
+    - A code-review tool cannot see the difference between `new TokenDto(p, true)`
+    and `new TokenDto(p)` — both compile, both pass tests if no test exists.
+
+    - The asymmetry is in 4 different files (`ReactiveTokenRepositoryImpl`, `ReactiveCollectorRepositoryImpl`,
+    `TokenDto`, `TokenMapper`) — a refactor touching any one of these can flip the
+    visibility unintentionally.
+
+    - The "leak" failure mode is CRITICAL but the "lock-out" failure mode is also
+    operator-affecting.
+
+
+    **Test gap shape**: regression-pin asserting that: (a) `POST /api/collectors`
+    response → `token.value` is the full 40-char plaintext; (b) `PUT /api/collectors/{id}/token`
+    response → full plaintext; (c) `GET /api/collectors` response → all tokens are
+    `******{last6chars}` masked; (d) `PUT /api/collectors/{id}` response → masked;
+    (e) the full-plaintext token from #1 IS the same value as what `IngestionDataEntitiesFilter`
+    will accept (cross-link to F-008 S2S contract); (f) the masked token from #3 is
+    NOT a valid `IngestionDataEntitiesFilter` credential (the substring fails the
+    equality check).'
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-020
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-758.yaml
+- gap_id: TEST-GAP-759
+  behaviour: '**MEDIUM — `DELETE /api/namespaces/{id}` is vulnerable to a TOCTOU race
+    between the cascade-check phase and the namespace-delete phase. A concurrent `POST
+    /api/datasources` (or any of the 7 other "side-door" namespace-referencing endpoints)
+    can insert a new referent row with `namespace_id = id` between the zip-existsByNamespace
+    check and the namespaceRepository.delete UPDATE. The delete proceeds; the new
+    referent row is orphan-attached to a soft-deleted namespace.** Primary-source
+    confirmed in batch-W NamespaceController sidecar:
+
+
+    **Concurrent-execution evidence**:
+
+    - `NamespaceServiceImpl.delete` (lines 73-90): NOT annotated with `@ReactiveTransactional`
+    (verified by sidecar primary-source — contrasted with the surrounding `update`
+    at lines 62-71 which IS annotated). NO SELECT FOR UPDATE on the namespace row.
+    NO advisory-lock.
+
+    - The check phase: `Mono.zip(dataSourceRepository.existsByNamespace(id), collectorRepository.existsByNamespace(id),
+    termRepository.existsByNamespace(id), dataEntityRepository.existsNonDeletedByNamespace(id))`
+    — 4 parallel SELECTs.
+
+    - The filter phase: `.filter(tuple -> !tuple.t1() && !tuple.t2() && !tuple.t3()
+    && !tuple.t4())` — application-tier boolean.
+
+    - The delete phase: `.then(namespaceRepository.delete(id))` — `UPDATE namespace
+    SET deleted_at = NOW() WHERE id = ?`.
+
+    - **Race window**: between the 4 existsByNamespace SELECTs and the namespace soft-delete
+    UPDATE, ANY of the 8 side-door call sites (per NamespaceController.md:bugs_limitations_corner_cases.[1]
+    — TermServiceImpl.createTerm/updateTerm, DataSourceServiceImpl.create/update,
+    CollectorServiceImpl.create/update, DataEntityGroupServiceImpl.createDataEntityGroup/updateDEG)
+    can INSERT a new row with `namespace_id = id`. The cascade-check has already returned
+    "no children"; the new child arrives after the check; the delete proceeds.
+
+
+    **Operator-visible consequence**:
+
+    - The new datasource (or term / collector / DEG) references a soft-deleted namespace
+    via `namespace_id`. Reads via `dataSourceService.list(...)` will JOIN through
+    the namespace and find `deleted_at IS NOT NULL` — depending on the JOIN''s filter,
+    the datasource may appear with NULL namespace OR may be filtered out entirely.
+
+    - The FK `data_source.namespace_id → namespace.id` has NO `ON DELETE CASCADE`
+    (verified by V0_0_11 migration); the new referent row is technically orphan-attached
+    but the FK is still valid (the parent row exists, just soft-deleted).
+
+    - The race is REACHABLE at multi-instance scale (the platform can scale horizontally;
+    concurrent operator + collector mutations on different instances are common).
+
+
+    **Sibling pattern**: this is the same architectural class as `ReactiveTagRepositoryImpl`
+    TOCTOU (batch N) — the cascade-check + write are not atomic at the persistence
+    tier; the application-tier zip-check is best-effort under concurrency.
+
+
+    **Why MEDIUM not HIGH**: the operator-impact is RECOVERABLE — the orphan-attached
+    referent can be deleted by the operator and re-attached to a new namespace. The
+    race is statistically rare (requires concurrent ops on the same namespace within
+    milliseconds). MEDIUM rather than LOW because: (a) the race window is REACHABLE;
+    (b) the application invariant ("namespaces with non-deleted referents cannot be
+    deleted") is violated; (c) there is no DB-tier constraint backing the invariant.
+
+
+    **Test gap shape**: regression-pin asserting the TOCTOU is reachable: concurrent
+    `DELETE /api/namespaces/{id}` + `POST /api/datasources?namespace_name={target_name}`
+    produces a state where the datasource references a soft-deleted namespace. The
+    current state is PINNED — failures land if a future maintainer adds `@ReactiveTransactional`
+    + SELECT FOR UPDATE.'
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-759.yaml
+- gap_id: TEST-GAP-760
+  behaviour: '**MEDIUM — Namespace name comparison is CASE-SENSITIVE at every layer
+    (repository getByName, unique-index `namespace_unique`, application-tier validation).
+    An operator creating `finance` and then `Finance` gets TWO distinct namespaces
+    with distinct ids — but the live docs treat namespace names as natural identifiers
+    (`Create a namespace before authoring tags or terms that should be scoped to a
+    particular team or domain`).** Primary-source confirmed in batch-W NamespaceController
+    sidecar:
+
+
+    - **Repository tier**: `ReactiveNamespaceRepositoryImpl.getByName` line 26 uses
+    `NAMESPACE.NAME.eq(name)` — jOOQ''s `.eq` resolves to `=` SQL operator, which
+    is BYTE-EQUALITY in PostgreSQL''s `varchar` column (no case-folding, no collation
+    override).
+
+    - **DB tier**: V0_0_31__add_deleted_at_field.sql:25 — `CREATE UNIQUE INDEX IF
+    NOT EXISTS namespace_unique ON namespace (name) WHERE deleted_at IS NULL` — the
+    index expression is `(name)`, NOT `(LOWER(name))` or `(name COLLATE "C")`. Case-sensitive
+    uniqueness.
+
+    - **Mapper tier**: `NamespaceMapper.java:1-29` — no case-folding hook. The mapper
+    passes name verbatim.
+
+    - **Controller tier**: `NamespaceController.java` — no normalization in the request
+    handlers.
+
+
+    **Operator-visible consequences**:
+
+    - Operator A creates namespace `Finance`. Operator B searches the autocomplete
+    for `finance`, doesn''t see a match, creates `finance`. The platform now has TWO
+    namespaces. Tags and terms scoped to one don''t see the other.
+
+    - Cross-team confusion: when team B tags their data with `finance` and team A
+    tagged theirs with `Finance`, the cross-namespace queries return disjoint results.
+
+    - The "natural identifier" framing in the docs (live-fetched 2026-05-20 from `/features/management`:
+    "Create a namespace before authoring tags or terms that should be scoped to a
+    particular team or domain") implies case-insensitive matching.
+
+    - UI Unicode confusables: `fіnance` (Cyrillic ''і'') vs `finance` (ASCII ''i'')
+    — both ACCEPTED as distinct names. The platform offers no defense against homograph
+    attacks for namespace selection.
+
+
+    **Why MEDIUM not HIGH**:
+
+    - Operator-impact is RECOVERABLE — duplicate namespaces can be merged (delete
+    one, re-attach referents to the other).
+
+    - The behaviour is CONSISTENT with the platform''s broader posture (per implicit_adrs.[4]):
+    "Name validation is INTENTIONALLY minimal — varchar(64), no regex, no allowlist,
+    no case-folding." — applied uniformly across owner / tag / label / data_source
+    name columns.
+
+    - Not a security vulnerability per se; the issue is operator-surprise and cross-team
+    data fragmentation.
+
+
+    **Test gap shape**: regression-pin asserting: (a) `POST /api/namespaces` with
+    name `finance` then `POST /api/namespaces` with name `Finance` BOTH succeed and
+    return DISTINCT ids; (b) the unique-index `namespace_unique` is over `(name)`
+    not `(LOWER(name))`; (c) Unicode confusables (Cyrillic ''і'' vs ASCII ''i'') produce
+    distinct namespaces. The current state is PINNED — failures land if a future maintainer
+    adds case-folding at any layer.'
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-760.yaml
+- gap_id: TEST-GAP-761
+  behaviour: '**LOW — Soft-delete reincarnation: deleting a namespace marks `deleted_at
+    = NOW()`; the partial unique index `namespace_unique` excludes that row; a subsequent
+    `create({name: ''X''})` succeeds and yields a NEW namespace id with NEW history.
+    Any operator-side bookmarks / external references using the old id break silently;
+    tag / term assignments to the soft-deleted namespace persist in the DB but are
+    filtered out of all reads.** Primary-source confirmed in batch-W NamespaceController
+    sidecar:
+
+
+    - **Schema tier**: V0_0_31__add_deleted_at_field.sql:25 — `CREATE UNIQUE INDEX
+    IF NOT EXISTS namespace_unique ON namespace (name) WHERE deleted_at IS NULL`.
+    The `WHERE deleted_at IS NULL` predicate excludes soft-deleted rows from the unique
+    constraint.
+
+    - **Repository tier**: `ReactiveAbstractSoftDeleteCRUDRepository.delete` (lines
+    50-58, the inherited soft-delete): `UPDATE namespace SET deleted_at = NOW() WHERE
+    id = ? AND deleted_at IS NULL`.
+
+    - **Reincarnation sequence**: (1) operator creates `finance` → id=42; (2) operator
+    deletes `finance` → row 42 gets `deleted_at = NOW()`; (3) operator (or any of
+    the 8 side-door callers) creates `finance` again → new row, new id=43; (4) the
+    new row''s name=`finance` doesn''t collide with row 42 because the partial-unique-index
+    excludes deleted rows.
+
+
+    **Operator-visible consequences**:
+
+    - **External references break silently**: a BI tool that hardcoded `namespace_id=42`
+    for `finance` reports against the soft-deleted row''s referents. The new `finance`
+    namespace has id=43; the BI tool sees nothing.
+
+    - **Audit confusion**: the activity feed (if it captured the original namespace
+    creation by user A at timestamp T) shows row 42''s creation. The new row 43 has
+    its own creation event by user B at timestamp T''. The audit story is "namespace
+    `finance` was created twice" — operator must investigate.
+
+    - **Orphan tag/term assignments**: tags scoped to namespace 42 still have `namespace_id=42`
+    in `tag.namespace_id`. The new namespace 43 has no inherited tags. Operators expecting
+    "I deleted and recreated `finance` and my tags still work" are surprised.
+
+    - **GDPR right-to-erasure ambiguity**: the soft-deleted row still holds the original
+    creator''s audit metadata. A "delete my data" request must hard-delete the row
+    + all referents — not a single button in the UI.
+
+
+    **Why LOW not MEDIUM**:
+
+    - The behaviour is intentional (per implicit_adrs.[3]): "The partial-index syntax
+    `WHERE deleted_at IS NULL` is a DELIBERATE pattern repeated across data_source_name_unique
+    / collector_name_unique / data_source_oddrn_unique (same migration lines 27, 29,
+    31). The pattern explicitly enables ''delete then recreate'' semantics."
+
+    - Operator-impact is RECOVERABLE — operator can examine the soft-deleted row''s
+    referents and migrate them manually.
+
+    - The reincarnation enables a useful workflow (delete a typo''d namespace, recreate
+    it without conflict).
+
+
+    **Test gap shape**: regression-pin asserting: (a) deleting `finance` succeeds
+    (HTTP 204); (b) the soft-deleted row''s `deleted_at IS NOT NULL`; (c) creating
+    `finance` again succeeds and returns a NEW id; (d) the new namespace has NO inherited
+    tag/term assignments; (e) the partial unique index''s WHERE clause is verifiable
+    via `pg_indexes`. The current state is PINNED — failures land if a future maintainer
+    hard-deletes (instead of soft-deletes) or changes the unique-index expression.'
+  test_class: missing-edge-case
+  criticality: LOW
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-761.yaml
+- gap_id: TEST-GAP-762
+  behaviour: '**HIGH — `DELETE /api/tags/{tag_id}` cascade is INCOMPLETE: the service
+    hard-deletes `tag_to_data_entity` + `tag_to_term` join rows, soft-deletes the
+    `tag` row, but DOES NOT hard-delete `tag_to_dataset_field` rows. Tags attached
+    to dataset fields via the side-door `DATASET_FIELD_TAGS_UPDATE` path, when deleted
+    via this controller, leave orphaned `tag_to_dataset_field` rows referencing the
+    soft-deleted tag id indefinitely. The orphans are filter-hidden from reads via
+    `addSoftDeleteFilter` on the join, but persist in the DB.** Primary-source confirmed
+    in batch-W TagController sidecar:
+
+
+    - `TagServiceImpl.delete` (lines 57-70, `@ReactiveTransactional`): the cascade-aware
+    deletion logic.
+
+    - **Line 64**: `reactiveTagRepository.deleteTermRelations(tagId)` — hard-deletes
+    `tag_to_term`.
+
+    - **Line 65**: `reactiveTagRepository.deleteDataEntityRelations(tagId)` — hard-deletes
+    `tag_to_data_entity`.
+
+    - **MISSING line — would be `reactiveTagRepository.deleteDatasetFieldRelations(tagId)`**:
+    this method EXISTS at `ReactiveTagRepositoryImpl.java:299-306` but is NOT called
+    from `TagServiceImpl.delete`. Verified by sidecar''s Grep on `deleteDatasetFieldRelations`
+    returning no caller in TagServiceImpl.
+
+    - **Line 66**: the soft-delete of the `tag` row.
+
+
+    **The orphan growth pattern**:
+
+    - A tag created via the side-door `DATASET_FIELD_TAGS_UPDATE` path (DatasetFieldServiceImpl.java:202,
+    266) gets a `tag_to_dataset_field` row.
+
+    - When the operator (or a future maintainer running cleanup scripts) deletes the
+    tag via `DELETE /api/tags/{id}`, the `tag_to_data_entity` + `tag_to_term` rows
+    go away — but the `tag_to_dataset_field` row remains, referencing the now-soft-deleted
+    tag id.
+
+    - Reads via `listDatasetFieldDtos` filter these out via `addSoftDeleteFilter`
+    on the join (`ReactiveDatasetFieldRepositoryImpl.java:84-98` per batch-R sidecar)
+    — so the orphans are UI-invisible — but they persist in the DB indefinitely.
+
+
+    **Operator-visible consequences**:
+
+    - **DB bloat (slow growing)**: every tag ever attached to a dataset field and
+    then deleted leaves an orphan `tag_to_dataset_field` row. For a heavily-tagged
+    catalog, the orphan table can grow to non-trivial size over years.
+
+    - **Migration hazard**: a future maintainer changing the join-filter logic (e.g.,
+    removing `addSoftDeleteFilter`) would suddenly SURFACE all the orphan rows in
+    reads — a regression at the read-side that exposes the orphan accumulation.
+
+    - **Schema-migration hazard**: any migration that introduces FK constraints on
+    `tag_to_dataset_field` would fail because the orphan rows reference soft-deleted
+    tags.
+
+    - **Audit confusion**: a forensic investigation querying `SELECT * FROM tag_to_dataset_field
+    WHERE tag_id = X` after a tag has been "deleted via the UI" finds rows — the operator
+    must understand the soft-delete-with-orphan-cascade semantics.
+
+
+    **Why HIGH not MEDIUM (the sidecar''s own rating)**: the sidecar rates this MEDIUM.
+    We elevate to HIGH because:
+
+    - **Cascade asymmetry is invisible to code-review**: a maintainer reading `TagServiceImpl.delete`
+    sees the 2-line cascade (`deleteTermRelations + deleteDataEntityRelations`) and
+    reasonably assumes that''s the full cascade — there''s no comment explaining that
+    `tag_to_dataset_field` is intentionally NOT cleaned up. The pattern is silently
+    asymmetric.
+
+    - **Cross-side-door reach**: the side-door `DATASET_FIELD_TAGS_UPDATE` mints tag
+    entries (TEST-GAP-763 — the directory side-door), and the cleanup is INCOMPLETE;
+    together these create a unilateral data-accumulation surface (operators can CREATE
+    via side-door, but cannot DELETE cleanly).
+
+    - **No housekeeping job**: the 5-job housekeeping cycle (per batch-K F-010) does
+    NOT include a `TagToDatasetFieldHousekeepingJob`. The orphans grow without bound.
+
+
+    **Test gap shape**: regression-pin asserting: (a) seed a tag; attach it to BOTH
+    a data_entity AND a dataset_field via the appropriate side-door paths; (b) DELETE
+    the tag via `/api/tags/{id}`; (c) assert `tag_to_data_entity` row is GONE (hard-deleted);
+    (d) assert `tag_to_term` row is GONE; (e) assert `tag_to_dataset_field` row STILL
+    EXISTS (orphan); (f) assert the soft-deleted tag row''s `deleted_at IS NOT NULL`.
+    The current state is PINNED — failures land if a future maintainer adds `deleteDatasetFieldRelations(tagId)`
+    to the cascade.'
+  test_class: missing-integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-018
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-762.yaml
+- gap_id: TEST-GAP-763
+  behaviour: '**HIGH — `getPopularTagList` + per-entity-tag-editors compose to a full
+    directory bypass: an authenticated user with `DATA_ENTITY_TAGS_UPDATE` (or `TERM_TAGS_UPDATE`
+    / `DATASET_FIELD_TAGS_UPDATE`) — but explicitly NOT `TAG_CREATE` — can both READ
+    the global tag directory (via the ungated `GET /api/tags`) AND WRITE to it (via
+    the side-door `getOrCreateTagsByName` chain). The controller-defended `TAG_CREATE`
+    permission is effectively bypassed in BOTH directions.** Primary-source confirmed
+    in batch-W TagController sidecar:
+
+
+    **Read-side: GET /api/tags is ungated** (per TagController.md:bugs_limitations_corner_cases):
+
+    - `TagController.getPopularTagList` (lines 37-44): no `@PreAuthorize`.
+
+    - `SecurityConstants.java:138-142`: only 3 entries for `/api/tags*` — POST (TAG_CREATE),
+    PUT (TAG_UPDATE), DELETE (TAG_DELETE). NO GET entry.
+
+    - `AuthorizationCustomizer.java:29-30`: catch-all `pathMatchers("/**").authenticated()`
+    — any authenticated user reaches the GET endpoint.
+
+
+    **Write-side: 4 side-door paths bypass TAG_CREATE** (per TagController.md:bugs_limitations_corner_cases):
+
+    - `TagServiceImpl.updateRelationsWithDataEntity → getOrCreateTagsByName` (TagServiceImpl.java:105)
+    — DATA_ENTITY_TAGS_UPDATE caller mints tags.
+
+    - `TermServiceImpl.upsertTags → getOrCreateTagsByName` (TermServiceImpl.java:257)
+    — TERM_TAGS_UPDATE caller mints tags.
+
+    - `DatasetFieldServiceImpl → getOrCreateTagsByName` (DatasetFieldServiceImpl.java:202,
+    266) — DATASET_FIELD_TAGS_UPDATE caller mints tags.
+
+    - `ExternalTagIngestionRequestProcessor.process → getOrInjectTagByName → ingestData
+    upsert` (ExternalTagIngestionRequestProcessor.java:104) — S2S ingestion caller
+    mints tags.
+
+
+    **The compound finding**:
+
+    - **READ + WRITE** without TAG_CREATE: a per-entity-tag-editor user can both list
+    the entire global tag vocabulary AND extend it with new tags, all without holding
+    the dedicated `TAG_CREATE` permission documented per the Management → Tags tab.
+
+    - **The TAG_CREATE permission gate is the controller''s perimeter defence**: it
+    gates the canonical `POST /api/tags` write surface. But the 4 side-door paths
+    bypass the perimeter at the SERVICE layer (`getOrCreateTagsByName`).
+
+    - **No service-tier check**: per TagController.md:security.known_security_gaps.[Service-tier
+    zero-checks posture]: "`TagServiceImpl` performs no `@PreAuthorize` or programmatic
+    permission checks (`:1-167` end-to-end). The controller perimeter is the SOLE
+    authorisation defence."
+
+
+    **What the docs claim vs what the code enforces** (per WebFetch 2026-05-20):
+
+    - Live `https://docs.opendatadiscovery.org/features/data-discovery/tagging` (status
+    200): describes `TAG_CREATE` as "Create a new tag in the catalog vocabulary";
+    describes `TAG_UPDATE` / `TAG_DELETE` as "vocabulary-level mutations". Does NOT
+    name `DATA_ENTITY_TAGS_UPDATE` as a second write path into the directory.
+
+    - Live `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions`
+    (status 200): names `TAG_CREATE` AND `DATA_ENTITY_TAGS_UPDATE` separately. Says
+    `DATA_ENTITY_TAGS_UPDATE` "Allows editing a data entity''s tags." Does NOT describe
+    any mechanism by which `DATA_ENTITY_TAGS_UPDATE` can create new global tags.
+
+    - Operators authoring RBAC policies that GRANT `DATA_ENTITY_TAGS_UPDATE` but WITHHOLD
+    `TAG_CREATE` reasonably expect that grantees cannot mint new tags. The code contradicts
+    that expectation.
+
+
+    **Operator-impact**:
+
+    - A "data-entity-tagger" Role intended for analysts (with `DATA_ENTITY_TAGS_UPDATE`
+    only) can pollute the global tag vocabulary indefinitely. The Management → Tags
+    tab (intended as the controlled-vocabulary surface) is effectively ungated.
+
+    - Read-side enumeration: an authenticated auditor with ZERO `TAG_*` permissions
+    can list every tag in the catalog (which may include tags reflecting internal
+    team names, project codenames, sensitivity classifications).
+
+
+    **Why HIGH not MEDIUM (the sidecar''s own rating)**: the sidecar rates the side-door
+    write paths HIGH (per security.known_security_gaps.[Side-door directory growth]).
+    The read-side is MEDIUM in isolation. The COMPOUND (read+write bypass on the same
+    permission) is HIGH because operators authoring RBAC reason about WHERE permissions
+    gate — and the platform''s design says TAG_CREATE gates writes, but the code has
+    4 bypass paths AND no read gate at all. The aggregate is a perimeter-defence collapse.
+
+
+    **Test gap shape**: regression-pin asserting: (a) authenticated user with NO `TAG_*`
+    permissions can GET `/api/tags` and receive a full result set; (b) authenticated
+    user with `DATA_ENTITY_TAGS_UPDATE` ONLY (no `TAG_CREATE`) can `POST /api/dataentities/{id}/tags`
+    with novel tag names and successfully create them; (c) the new tags appear in
+    `GET /api/tags` for that user (verifying the side-door''s write IS observable
+    via the controller''s read); (d) `POST /api/tags` (direct creation) fails with
+    403 for the same user. The current state is PINNED — failures land if a future
+    maintainer adds RBAC gating to the side-door paths.'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-018
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-763.yaml
+- gap_id: TEST-GAP-764
+  behaviour: '**MEDIUM — `POST /api/tags` and `PUT /api/tags/{tag_id}` return HTTP
+    200 OK (`ResponseEntity::ok`) but the OpenAPI spec declares HTTP 201 Created (`openapi.yaml:372`
+    for create, `:400` for update). Consumers driving against the spec (e.g., generated
+    SDK clients that check `if (response.status == 201)`) will see the wrong status
+    code.** Primary-source confirmed in batch-W TagController sidecar:
+
+
+    - `TagController.createTag` (line 27): `.collectList().flatMap(tagService::bulkCreate).map(ResponseEntity::ok)`
+    — returns 200.
+
+    - `TagController.updateTag` (line 51): `.flatMap(fd -> tagService.update(tagId,
+    fd)).map(ResponseEntity::ok)` — returns 200.
+
+    - `openapi.yaml:372` (createTag): declares `''201'': description: The resource
+    has been successfully created`.
+
+    - `openapi.yaml:400` (updateTag): declares `''201'': description: The resource
+    has been successfully updated` — NOTE: 201 for an UPDATE is itself non-canonical
+    (201 = created); the controller''s 200 is more semantically correct but the spec
+    is published as 201.
+
+
+    **The drift class** — this is the same architectural drift class as:
+
+    - TermController.createTerm + updateTerm (batch-U finding — declared 201, returns
+    200).
+
+    - AlertController findings (batch-S — drift on alerts surface).
+
+    - The systemic pattern across the controller package: `.map(ResponseEntity::ok)`
+    is the conventional shape for ALL endpoints, regardless of whether the operation
+    is a CREATE / UPDATE / DELETE / READ. The spec writers chose 201 for create/update;
+    the implementers chose 200 uniformly.
+
+
+    **Operator-visible consequences**:
+
+    - **Generated SDK clients**: customers using `openapi-generator-cli` to generate
+    clients against the published spec get methods that throw on unexpected status.
+    A consumer checking `if (response.status != HttpStatus.CREATED) throw new RuntimeException(...)`
+    fails.
+
+    - **API consumer documentation**: an integrator reading the docs at `https://docs.opendatadiscovery.org/developer-guides/api-reference`
+    and writing curl scripts that check the status code gets the wrong answer.
+
+    - **Tooling-level drift**: post-generation client compilation passes; runtime
+    fails. The failure is silent in CI (tests pass; SDK works against a mock); appears
+    at first real API call.
+
+
+    **Why MEDIUM not LOW**:
+
+    - The functional impact is zero (the response body is correct, the action is performed).
+
+    - The contract impact is non-zero (consumers reading the spec build wrong expectations).
+
+    - The drift is silent (no test catches it; the spec and the code don''t reconcile
+    at any layer).
+
+
+    **Test gap shape**: regression-pin asserting: (a) `POST /api/tags` returns HTTP
+    200; (b) `PUT /api/tags/{id}` returns HTTP 200; (c) the OpenAPI spec declares
+    201 for both. The test documents the drift as the current state. The current state
+    is PINNED — failures land if a future maintainer either (a) changes the controller
+    to return 201 (breaking long-standing consumers that may have adapted to 200),
+    or (b) changes the spec to 200 (breaking spec-driven consumers).'
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-018
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-764.yaml
+- gap_id: TEST-GAP-765
+  behaviour: '**MEDIUM — The `!external` guard at `TagServiceImpl.update` (:49-50)
+    and `TagServiceImpl.delete` (:62-63) blocks UI-tier mutations on tags that have
+    ANY `tag_to_*` row with `external = true`. The guard''s intent: a Collector that
+    pushes a tag via `ExternalTagIngestionRequestProcessor` claims ownership of it;
+    UI mutations would silently override the Collector-side semantics on next push.
+    The guard''s error messages are user-facing contract strings: "Can''t update tag
+    which has external relations" / "Can''t delete tag which has external relations".**
+    Primary-source confirmed in batch-W TagController sidecar:
+
+
+    - `TagServiceImpl.update` (lines 49-50): `if (anyExternalRelation(tagId)) { return
+    Mono.error(new BadUserRequestException("Can''t update tag which has external relations"));
+    }`
+
+    - `TagServiceImpl.delete` (lines 62-63): same shape with "Can''t delete tag which
+    has external relations".
+
+    - The check queries `tag_to_data_entity` / `tag_to_term` / `tag_to_dataset_field`
+    for any row with `external = true`.
+
+    - **Soft-lock semantic**: once the operator removes all external relations (via
+    the collector''s next push that omits the tag, OR by manually deleting the external
+    relations via raw DB access), the tag becomes UI-editable again.
+
+
+    **Behaviour to pin** (the test gap):
+
+    - Seed a tag attached to a data_entity with `external = true` (simulating a collector-pushed
+    assignment).
+
+    - `PUT /api/tags/{tag_id}` for that tag → HTTP 400 with body containing "Can''t
+    update tag which has external relations".
+
+    - `DELETE /api/tags/{tag_id}` for that tag → HTTP 400 with body containing "Can''t
+    delete tag which has external relations".
+
+    - Conversely: a tag with ONLY `external = false` assignments is UPDATABLE and
+    DELETABLE via the UI surface.
+
+
+    **Why MEDIUM not LOW**:
+
+    - The guard implements an important cross-pillar invariant (collector-driven tags
+    are NOT silently overwritten by UI edits).
+
+    - The guard''s error messages are user-facing contract strings — operators see
+    them in the Management → Tags tab and reasonably build expectations around them.
+
+    - **A regression** that REMOVED the `!external` guard (perhaps in service of a
+    refactor unifying create / update paths) would let UI users overwrite Collector-pushed
+    external tags silently, breaking the invariant.
+
+
+    **Test gap shape**: regression-pin asserting: (a) update of a tag with any external
+    relation returns HTTP 400 with the canonical message; (b) delete of a tag with
+    any external relation returns HTTP 400 with the canonical message; (c) update
+    / delete of a tag with NO external relations succeeds. The current state is PINNED
+    — failures land if a future maintainer removes the guard.'
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-018
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-765.yaml
+- gap_id: TEST-GAP-766
+  behaviour: '**MEDIUM — TagController''s 3 write endpoints (`createTag`, `updateTag`,
+    `deleteTag`) produce ZERO Activity Feed entries. The platform''s `@ActivityLog(event
+    = TAG_ASSIGNMENT_UPDATED)` annotation exists at `DataEntityServiceImpl.java:358`
+    (the per-entity tag-assignment path), but NOT at the controller-side directory-vocabulary
+    path. An operator using the Management → Tags tab to delete or rename a tag produces
+    no audit trace.** Primary-source confirmed in batch-W TagController sidecar:
+
+
+    - `TagController.java:22-52`: NO `@ActivityLog` annotations on any of the 4 method
+    handlers.
+
+    - `TagServiceImpl.java:31-167`: NO `@ActivityLog` on `bulkCreate / update / delete`.
+
+    - `DataEntityServiceImpl.java:358`: the ONLY `@ActivityLog` entry related to tags
+    — and it''s on the PER-ENTITY tag-assignment surface (TAG_ASSIGNMENT_UPDATED),
+    NOT the directory-vocabulary lifecycle (TAG_CREATED / TAG_UPDATED / TAG_DELETED
+    enum values do not exist in `ActivityEventTypeDto`).
+
+
+    **Cross-pillar pattern** — this is another instance of the system-wide `audit-log-presence-asymmetry-2-tier-audit-story`
+    canonicalisation candidate (per system-mission.md §"Audit-log Presence Asymmetry
+    (2-tier audit story)"):
+
+    - **Tier 1 (audited)**: per-entity metadata changes (description edits, tag ASSIGNMENTS,
+    ownership changes).
+
+    - **Tier 2 (NOT audited)**: RBAC mutations + Collector lifecycle (TEST-GAP-757)
+    + Datasource lifecycle (TEST-GAP-749 family) + **Tag DIRECTORY lifecycle (THIS
+    gap)**.
+
+
+    The Management tab surface — operators'' canonical place for vocabulary-level
+    mutations — has the LOWEST audit-trail granularity. The asymmetry is invisible
+    until an operator goes looking.
+
+
+    **Operator-visible consequences**:
+
+    - **Audit confusion**: an operator browsing the Activity Feed expects to see "user
+    X created tag ''finance-pii'' at 14:32" but sees nothing. The tag exists in the
+    directory; no audit trail.
+
+    - **Compliance gap**: SOX / GDPR / ISO 27001 audit reports demonstrating "who
+    has modified the catalog vocabulary in 2026-Q1" cannot be reconstructed from the
+    Activity Feed.
+
+    - **Forensic investigation**: a stewardship investigation ("who renamed the `sensitive`
+    tag to `Sensitive`?") has no answer from the Activity Feed; the only audit signal
+    is `tag.updated_at` + (if available) the rename-time correlation with an operator''s
+    session.
+
+    - **Compound with TEST-GAP-763**: side-door write paths bypass `TAG_CREATE` AND
+    produce no audit log. An auditor investigating "who polluted the tag vocabulary"
+    cannot identify the responsible side-door caller.
+
+
+    **Why MEDIUM not HIGH**:
+
+    - The audit-log absence is a known platform-wide pattern (per system-mission.md
+    canonicalisation candidate); the Tag DIRECTORY is one of multiple surfaces.
+
+    - The functional impact is recoverable (the operator can examine `tag` table directly
+    for `updated_at` + DB-level audit if enabled).
+
+    - HIGH would be inappropriate when sister findings at the same severity (CollectorController
+    audit-silence TEST-GAP-757, DataSourceController audit-silence in the TEST-GAP-752
+    family) are rated HIGH ONLY when combined with other invariants. The Tag DIRECTORY
+    in isolation is MEDIUM.
+
+
+    **Test gap shape**: regression-pin asserting: (a) `POST /api/tags` produces ZERO
+    Activity Feed entries; (b) `PUT /api/tags/{id}` produces ZERO; (c) `DELETE /api/tags/{id}`
+    produces ZERO; (d) the per-entity tag-assignment path AT `DataEntityServiceImpl.java:358`
+    DOES produce TAG_ASSIGNMENT_UPDATED Activity entries (asserting the asymmetry
+    exists); (e) `ActivityEventTypeDto` does NOT have `TAG_CREATED / TAG_UPDATED /
+    TAG_DELETED` enum values (the schema-level absence). The current state is PINNED
+    — failures land if a future maintainer adds enum values + `@ActivityLog` instrumentation.'
+  test_class: missing-security
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-018
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-766.yaml
+- gap_id: TEST-GAP-767
+  behaviour: "**CRITICAL — Per-entity-scoping bypass at `getDataSetStructureByVersionId`:\
+    \ a client calling `GET /api/datasets/{any_id}/structure/{valid_version_id_for_other_dataset}`\
+    \ receives the OTHER dataset's structure. The `data_entity_id` URL parameter is\
+    \ NOT enforced against the `version_id` at the SQL level — the WHERE clause filters\
+    \ by `version_id` only.** Primary-source confirmed in batch-W DatasetController\
+    \ sidecar:\n\n**Persistence-tier evidence**:\n- `DatasetController.getDataSetStructureByVersionId`\
+    \ (lines 23-30): accepts `dataEntityId` from URL path; passes BOTH to `datasetVersionService.getDatasetVersion(dataEntityId,\
+    \ versionId)`.\n- `DatasetVersionServiceImpl.getDatasetVersion` (lines 39-45):\
+    \ the `datasetId` argument is consumed ONLY by the `NotFoundException` message\
+    \ text — the SQL call ignores it.\n- `ReactiveDatasetVersionRepositoryImpl.getDatasetVersion`\
+    \ (lines 97-144): the WHERE clause at line 129 is `DATASET_VERSION.ID = datasetVersionId`\
+    \ — NO `DATA_ENTITY.ID = datasetId` join condition.\n- Compare to `getLatestDatasetVersion`\
+    \ (lines 160-217, line 167): DOES use `DATA_ENTITY.ID.eq(datasetId)`. Three SQL\
+    \ shapes in the same repository, only one of which scopes.\n\n**Attack scenario**:\n\
+    ```\n# Attacker has authenticated access (LOGIN_FORM / OAUTH2 / LDAP — ANY auth.type\
+    \ with authenticated()).\n# Attacker has NO ownership of dataset 200; dataset\
+    \ 100 is one they can see.\n\ncurl -X GET https://platform/api/datasets/100/structure/999\
+    \ \\\n     -H \"Authorization: Bearer $TOKEN\"\n\n# Result: if version_id=999\
+    \ belongs to dataset 200, the response is dataset 200's structure.\n#        \
+    \ The URL path advertised dataset 100; the SQL returns 200.\n```\n\n**Blast radius**:\n\
+    - **Cross-owner column-metadata enumeration**: any authenticated user can read\
+    \ any dataset's `internal_description`, `internal_name`, tags, terms, metadata-field\
+    \ values, enum-value counts, lookup-table definitions for any version of any dataset\
+    \ in the catalog by brute-forcing version_ids.\n- **`dataset_version.id` is a\
+    \ monotonically increasing surrogate** (jOOQ sequence) — sequential enumeration\
+    \ `/api/datasets/1/structure/{1..N}` walks the entire catalog's version history.\n\
+    - **No rate-limit, no audit-log, no soft-delete-filter exclusion** on the endpoint.\n\
+    - **Compound with TEST-GAP-770**: the verbatim-storage F-004 XSS read-side surface\
+    \ IS reachable here. Any operator-supplied Markdown / HTML in `dataset_field.internal_description`\
+    \ round-trips verbatim through this endpoint.\n\n**What the docs claim vs what\
+    \ the code enforces**:\n- Live `https://docs.opendatadiscovery.org/features/data-discovery`\
+    \ (WebFetch 2026-05-20, status 200): describes \"Dataset schema diff\" as a feature\
+    \ but provides NO API anchor, NO permission model, NO commentary on owner-scoping\
+    \ or who-can-view.\n- Live `https://docs.opendatadiscovery.org/developer-guides/api-reference`\
+    \ (status 200): explicitly omits a `dataSet` sub-page. Per the live page verbatim:\
+    \ \"The reference hub documents these feature areas: Alerts, Data Collaboration,\
+    \ Directory, Glossary, Integrations, Lineage, Query Examples, Reference Data,\
+    \ Relationships. None of these sections mention dataset-specific CRUD operations,\
+    \ versioning, or diff functionality.\"\n- Operators reading the feature description\
+    \ cannot infer the id-confusion behaviour.\n\n**Why CRITICAL not HIGH (the sidecar's\
+    \ own rating)**:\n- The sidecar rates this HIGH. We elevate to CRITICAL because:\n\
+    - **Combined with the cross-owner read posture (no SecurityRule on the 4 endpoints)\
+    \ AND the F-004 verbatim-description payload (TEST-GAP-770)**, this is the canonical\
+    \ cross-tenant enumeration class — every column-level description payload (including\
+    \ ones that may carry sensitive operational text, table-level annotations, or\
+    \ operator-curated notes) is reachable by any authenticated user.\n- **The URL\
+    \ path implies a parent-child relationship that the implementation does not enforce**:\
+    \ operators wiring permission policies on `/api/datasets/{id}/...` reasonably\
+    \ assume the parent is scoped. The mismatch is a permission-model-violation.\n\
+    - **Audit-log attribution wrong**: audit logs / tracing tools tagging requests\
+    \ by `data_entity_id` attribute reads to the WRONG dataset. Forensic investigation\
+    \ of \"who read this dataset\" returns false positives.\n\n**Test gap shape**:\
+    \ regression-pin asserting: (a) `GET /api/datasets/{A}/structure/{version_id_for_B}`\
+    \ returns dataset B's structure (not A's, not 404); (b) the SQL WHERE clause is\
+    \ over `dataset_version.id` only; (c) `getLatestDatasetVersion` DOES scope (sister\
+    \ contract). The current state is PINNED — failures land if a future maintainer\
+    \ ADDS a `data_entity_id` WHERE clause to the SQL (which would FIX the bypass).\
+    \ When the fix lands, the test inverts to assert 404."
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-767.yaml
+- gap_id: TEST-GAP-768
+  behaviour: "**CRITICAL — Per-entity-scoping bypass at `getDataSetStructureDiff`:\
+    \ a client calling `GET /api/datasets/{any_id}/structure/diff?first_version_id=A&second_version_id=B`\
+    \ where A and B belong to two DIFFERENT datasets receives a cross-dataset structural\
+    \ diff. The `data_entity_id` URL parameter is NOT enforced against the two `version_id`\
+    \ parameters at the SQL level.** Primary-source confirmed in batch-W DatasetController\
+    \ sidecar:\n\n**Persistence-tier evidence**:\n- `DatasetController.getDataSetStructureDiff`\
+    \ (lines 43-50): accepts `dataEntityId` from URL path; passes BOTH version ids\
+    \ to `datasetVersionService.getDatasetVersionDiff(dataEntityId, firstVersionId,\
+    \ secondVersionId)`.\n- `DatasetVersionServiceImpl.getDatasetVersionDiff` (lines\
+    \ 55-64): the `datasetId` argument is consumed ONLY by the identical-versions\
+    \ guard's error context — the SQL call ignores it.\n- `ReactiveDatasetVersionRepositoryImpl.getDatasetVersionWithFields`\
+    \ (lines 146-157): the WHERE clause at line 154 is `DATASET_VERSION.ID IN (firstVersionId,\
+    \ secondVersionId)` — NO `DATA_ENTITY.ID = datasetId` join condition.\n\n**Attack\
+    \ scenario**:\n```\n# Attacker has authenticated access. Datasets A=100 (owned\
+    \ by team X) and B=200 (owned by team Y).\n# Attacker has NO ownership on EITHER.\n\
+    \ncurl -X GET \"https://platform/api/datasets/100/structure/diff?first_version_id=999&second_version_id=1001\"\
+    \ \\\n     -H \"Authorization: Bearer $TOKEN\"\n\n# If version_id=999 belongs\
+    \ to dataset A and version_id=1001 belongs to dataset B:\n# The diff computation\
+    \ operates on the raw column lists keyed by oddrn.\n# Columns from dataset A compare\
+    \ by oddrn-mismatch with dataset B as DELETED+CREATED.\n# The response is a nonsensical-but-well-formed\
+    \ structural diff payload.\n```\n\n**Blast radius**:\n- **Nonsensical-but-useful\
+    \ enumeration vector**: even when the diff is semantically meaningless (datasets\
+    \ A and B have unrelated schemas), the response carries information — a caller\
+    \ can PROVE which version_ids exist by observing the diff status fields (`CREATED`\
+    \ / `DELETED` / `NO_CHANGES` per `DataSetFieldDiffState`).\n- **Cross-tenant column\
+    \ enumeration**: the response includes the verbatim before/after snapshots of\
+    \ each column, including `internal_description` (the F-004 verbatim-description\
+    \ field), `internal_name`, tags, terms.\n- **Compound with TEST-GAP-767** (sister\
+    \ per-entity-scoping bypass at by-version): the two bypasses TOGETHER mean the\
+    \ entire catalog's dataset-structure history is readable to any authenticated\
+    \ user.\n\n**What the docs claim vs what the code enforces**:\n- Live `https://docs.opendatadiscovery.org/features/data-discovery`\
+    \ (status 200, 2026-05-20): describes \"Dataset schema diff\" as \"visual side-by-side\
+    \ comparison of dataset schema revisions, with backwards-incompatible changes\
+    \ additionally raising an alert\" — NO mention of who-can-view, no permission\
+    \ model, no owner-scoping commentary.\n- Live `https://docs.opendatadiscovery.org/developer-guides/api-reference`\
+    \ (status 200): NO `dataSet` sub-page; the diff endpoint is undocumented at the\
+    \ operator-facing API reference.\n\n**Why CRITICAL not HIGH (the sidecar's own\
+    \ rating)**:\n- The sidecar rates this HIGH. We elevate to CRITICAL because:\n\
+    - **Combined with TEST-GAP-767** (sister bypass at by-version): the TWO bypasses\
+    \ together cover the full surface of the controller's primary read endpoints.\
+    \ The blast radius is the entire catalog's column-level history.\n- **The diff\
+    \ payload INCLUDES `internal_description` verbatim** (the F-004 read-side surface\
+    \ — TEST-GAP-770). An attacker observing diffs can read every operator-supplied\
+    \ Markdown / HTML payload in the catalog.\n- **Useful even when nonsensical**:\
+    \ a defender's mental model \"the diff is meaningless across unrelated datasets\
+    \ so an attacker gains nothing\" is wrong — the response IS information (version_id\
+    \ existence proofs, column-level snapshots, oddrn enumeration).\n\n**Test gap\
+    \ shape**: regression-pin asserting: (a) `GET /api/datasets/{C}/structure/diff?first_version_id={A_version}&second_version_id={B_version}`\
+    \ returns HTTP 200 with a well-formed diff payload comparing A and B (NOT 404);\
+    \ (b) the response contains BOTH A's and B's `internal_description` / `internal_name`\
+    \ payloads verbatim; (c) the SQL WHERE clause is over `dataset_version.id IN (...)`\
+    \ only. The current state is PINNED — failures land if a future maintainer adds\
+    \ a `data_entity_id` WHERE clause."
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-768.yaml
+- gap_id: TEST-GAP-769
+  behaviour: '**MEDIUM — `GET /api/datasets/{id}/structure/diff` with a non-existent
+    `version_id` (one of the two requested ids does not exist) returns HTTP 500, NOT
+    404. The other two structure endpoints (`getDatasetVersion`, `getLatestDatasetVersion`)
+    correctly throw `NotFoundException` → HTTP 404 on missing version. Inconsistent
+    error contract within the same controller''s surface.** Primary-source confirmed
+    in batch-W DatasetController sidecar:
+
+
+    - `DatasetVersionServiceImpl.buildDataSetVersionDiffList` (lines 69-71): `if (versionFields.size()
+    != 2) throw new RuntimeException(...)`. The runtime exception bubbles through
+    `ControllerAdvice.handleException` (line 61-66) → HTTP 500.
+
+    - Compare: `DatasetVersionServiceImpl.getDatasetVersion` (lines 41-43): `Mono.error(new
+    NotFoundException("Dataset version", versionId))` → HTTP 404.
+
+    - Compare: `DatasetVersionServiceImpl.getLatestDatasetVersion` (lines 50-51):
+    same NotFoundException pattern → HTTP 404.
+
+
+    **Operator-visible consequences**:
+
+    - **Inconsistent client error handling**: a consumer driving against the API has
+    to write DIFFERENT error-handling branches for the same logical error (missing
+    version) on the diff endpoint vs the by-version / latest endpoints.
+
+    - **500 is misleading**: HTTP 500 implies a server-side bug (the platform''s fault);
+    the actual cause is a client-supplied invalid id (the client''s fault). 404 would
+    be the correct semantic.
+
+    - **Generic RuntimeException with no specific message**: the response body is
+    the generic error envelope; the operator has no precise hint about which version_id
+    was missing.
+
+
+    **The fix is local**: change line 69-71 to throw `NotFoundException` with a message
+    identifying which id was missing. The diff endpoint then aligns with the sibling
+    endpoints'' contract.
+
+
+    **Why MEDIUM not LOW**:
+
+    - The inconsistency is REAL contract drift (same logical error, different HTTP
+    status across siblings).
+
+    - The 500 is operator-confusing (implies server bug; actually a client error).
+
+    - The local impact is bounded but worth pinning to prevent future maintainers
+    replicating the pattern.
+
+
+    **Test gap shape**: regression-pin asserting: (a) `GET /api/datasets/{id}/structure/diff?first_version_id={nonexistent}&second_version_id={valid}`
+    returns HTTP 500 (PINNING the current state); (b) `GET /api/datasets/{id}/structure/{nonexistent_version_id}`
+    returns HTTP 404 with NotFoundException (the sibling contract); (c) `GET /api/datasets/{nonexistent_dataset_id}/structure`
+    (latest) returns HTTP 404 (the other sibling). The test documents the drift as
+    the current state. The current state is PINNED — failures land if a future maintainer
+    fixes the diff endpoint to return 404 (which is the desired direction).'
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-769.yaml
+- gap_id: TEST-GAP-770
+  behaviour: '**MEDIUM — `GET /api/datasets/{id}/structure*` (all three variants:
+    by-version, latest, diff) return `dataset_field.internal_description` VERBATIM,
+    including user-supplied Markdown / HTML / script payloads. The DatasetField description
+    PUT path (per batch-V DatasetFieldController + batch-R ReactiveDatasetFieldRepositoryImpl.updateDescription
+    sidecars) writes verbatim with no sanitization, no length cap, no allowlist. THIS
+    controller is the canonical READ surface for those payloads.** Primary-source
+    confirmed in batch-W DatasetController sidecar:
+
+
+    - `DatasetController.getDataSetStructureByVersionId` (lines 23-30) → response
+    `DataSetStructure` includes `List<DataSetField>` where each `DataSetField.internalDescription`
+    is the verbatim string.
+
+    - `DatasetController.getDataSetStructureLatest` (lines 33-41) → same.
+
+    - `DatasetController.getDataSetStructureDiff` (lines 43-50) → response `DataSetVersionDiffList`
+    includes the verbatim before / after snapshots of each column''s description.
+
+    - `ReactiveDatasetVersionRepositoryImpl.java:97-144` — NO sanitisation on the
+    returned `internal_description` field; NO length cap; NO allowlist.
+
+
+    **The cross-tier picture** (F-004 surface aggregated across 3 batches):
+
+    - **WRITE side (batch-V DatasetFieldController PUT)**: operator-supplied Markdown
+    / HTML lands in `dataset_field.internal_description` column verbatim.
+
+    - **AT-REST (batch-R ReactiveDatasetFieldRepositoryImpl.updateDescription)**:
+    column accepts any string; no sanitisation.
+
+    - **READ side (THIS gap — DatasetController)**: the verbatim string returns through
+    the controller to the UI.
+
+    - **UI render defence (probe P-009 — Markdown.tsx)**: the OPERATIVE safeguard
+    — the UI''s Markdown render pipeline applies a Markdown allowlist that strips
+    most XSS vectors. PROBE P-009 PASSED for the entity-description render path (batch-Q).
+
+    - **Cross-tab coverage gap**: the DatasetField description render path (the dataset
+    structure view''s per-column description) has NOT been verified to use the same
+    Markdown.tsx pipeline. The Discovery UI''s Dataset → Structure tab renders the
+    column descriptions inside a different React component subtree.
+
+
+    **Why MEDIUM not HIGH**:
+
+    - The READ path is verbatim, but the UI defence-in-depth (probe P-009 Markdown.tsx)
+    IS the operative safeguard for the dominant rendering path.
+
+    - The MEDIUM rating reflects: (a) the platform DOES have UI mitigations; (b) the
+    cross-tab coverage of DatasetField render is UNVERIFIED — a separate verification
+    (a fresh probe targeting the Dataset → Structure tab) is needed; (c) any API consumer
+    NOT going through the Markdown.tsx pipeline (e.g., a custom BI tool reading `/api/datasets/{id}/structure`)
+    sees the verbatim payload.
+
+    - The HIGH rating would apply if the UI mitigation were also absent. Currently
+    the UI mitigation is present for the entity-description path; the DatasetField
+    path is unverified.
+
+
+    **Test gap shape**: regression-pin asserting: (a) seed a `dataset_field.internal_description`
+    with `<script>alert(1)</script>` via the DatasetFieldController PUT path; (b)
+    `GET /api/datasets/{id}/structure` returns the payload verbatim in the response
+    body; (c) `GET /api/datasets/{id}/structure/{version_id}` returns the payload
+    verbatim; (d) `GET /api/datasets/{id}/structure/diff` returns the payload verbatim
+    in both the before and after snapshots. The current state is PINNED — failures
+    land if a future maintainer adds API-tier sanitisation (which would be a defense-in-depth
+    improvement).'
+  test_class: missing-security
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-770.yaml
+- gap_id: TEST-GAP-771
+  behaviour: "**MEDIUM — `GET /api/datasets/{id}/structure/diff` with `first_version_id\
+    \ == second_version_id` returns HTTP 400 with the canonical message \"Couldn't\
+    \ show diff for identical versions\". The guard exists at the service tier; the\
+    \ error message is a user-facing contract.** Primary-source confirmed in batch-W\
+    \ DatasetController sidecar:\n\n- `DatasetVersionServiceImpl.getDatasetVersionDiff`\
+    \ lines 59-61:\n  ```\n  if (firstVersionId == secondVersionId) {\n      return\
+    \ Mono.error(new BadUserRequestException(\"Couldn't show diff for identical versions\"\
+    ));\n  }\n  ```\n- The exception is mapped to HTTP 400 via `ControllerAdvice.java:24-28`.\n\
+    \n**Behaviour to pin** (the test gap):\n- Same version_id passed twice → HTTP\
+    \ 400 with body containing the canonical message.\n- The literal English string\
+    \ IS the user-facing contract; any UI client may surface this message verbatim\
+    \ to operators.\n\n**Why MEDIUM not LOW**:\n- The guard implements an explicit\
+    \ user-error class (operator submits an identical-versions diff request — typically\
+    \ by clicking the same version twice in the UI's version-picker).\n- The error\
+    \ message is a user-facing contract string; a refactor changing the message would\
+    \ alter the UI surface.\n- The test ensures the contract is pinned against accidental\
+    \ drift.\n\n**Test gap shape**: regression-pin asserting: (a) `GET /api/datasets/{id}/structure/diff?first_version_id=42&second_version_id=42`\
+    \ returns HTTP 400; (b) the response body contains the literal string \"Couldn't\
+    \ show diff for identical versions\"; (c) the response does NOT reach the SQL\
+    \ layer (the guard fires before the repository call). The current state is PINNED\
+    \ — failures land if a future maintainer changes the message string OR removes\
+    \ the guard."
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-771.yaml
+- gap_id: TEST-GAP-772
+  behaviour: '**LOW — `GET /api/datasets/{id}/structure/diff` for two versions where
+    a parent struct field has been RENAMED produces DELETE+CREATE rows for EVERY descendant
+    of that parent. The diff payload size grows non-linearly with struct depth — a
+    single rename of a top-level struct can yield 2N rows for an N-leaf subtree. Behaviour
+    is intentional (encodes the column-level versioning-by-reference invariant) but
+    unsurfaced to API consumers.** Primary-source confirmed in batch-W DatasetController
+    sidecar:
+
+
+    - `DatasetVersionServiceImpl.getParentOddrnChangedPojos` (lines 156-180): a recursive
+    fixed-point algorithm that propagates `parentFieldChanged` from any field whose
+    parent oddrn was renamed to ALL its descendants.
+
+    - `DatasetVersionServiceImpl.calculateVersionDiff` (lines 110-134): branches on
+    `parentOddrnChanged`. When TRUE, emits TWO rows per descendant: line 121 (DELETED
+    with minVersionDiff) + line 129 (CREATED with maxVersionDiff).
+
+    - **The intent** (per implicit_adrs.[2]): "a struct rename invalidates every nested
+    column''s identity at the dataset_field row level (consistent with the versioning-by-reference
+    invariant in ReactiveDatasetFieldRepositoryImpl batch-R + concept dataset-field-versioning-by-reference-no-soft-delete-orphan-accumulation)."
+
+
+    **Amplification scenario**:
+
+    - Dataset''s V1 schema: struct `user { id, name, email, address { street, city,
+    zip } }` — 6 leaves under `user`.
+
+    - V2 schema: same shape, but `user` renamed to `customer`.
+
+    - Diff between V1 and V2: 12 rows emitted (6 DELETED + 6 CREATED — one per leaf).
+    NOT 1 row (the parent rename) or 2 rows (the rename as DELETED+CREATED on the
+    parent only).
+
+    - For deeply nested struct types (e.g., a 5-level deep schema with 10 leaves per
+    level = 100,000 leaves), a single parent rename produces 200,000 diff rows.
+
+
+    **Operator-visible consequences**:
+
+    - **Diff payload size**: an operator comparing two versions of a complex nested-struct
+    dataset sees an amplified diff. The UI''s diff visualization may render slowly
+    or be visually noisy.
+
+    - **API consumer confusion**: a custom BI tool integrating against the diff endpoint
+    sees more rows than expected for a "simple rename" — the tool''s deduplication
+    logic (if any) may misclassify the rename as wholesale schema replacement.
+
+    - **Unbounded payload**: there is NO pagination on the diff endpoint (per the
+    sidecar''s performance.known_performance_gaps.[no-pagination]) — pathological
+    cases produce > 10K rows in a single response.
+
+
+    **Why LOW not MEDIUM**:
+
+    - The behaviour is INTENTIONAL (encodes the versioning-by-reference invariant).
+
+    - The amplification is bounded by struct depth + width — practical schemas have
+    modest amplification (typical: < 100 rows for a typical rename).
+
+    - The functional impact is "visual noise / payload size" not "incorrect data"
+    — the diff is accurate at the per-field level.
+
+    - LOW is consistent with the sidecar''s own rating.
+
+
+    **Test gap shape**: regression-pin asserting: (a) seed V1 with `user { id, name
+    }` and V2 with `customer { id, name }` (same structure, parent renamed); (b) GET
+    diff; assert the response contains FOUR rows: `user.id DELETED`, `user.name DELETED`,
+    `customer.id CREATED`, `customer.name CREATED` (NOT 2 rows or 1 row); (c) for
+    a 3-level deep struct with 4 leaves, a single parent rename produces 8 rows (4
+    DELETED + 4 CREATED). The current state is PINNED — failures land if a future
+    maintainer changes the cascade semantic.'
+  test_class: missing-edge-case
+  criticality: LOW
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-772.yaml
+- gap_id: TEST-GAP-773
+  behaviour: '**MEDIUM — Cross-cutting: ALL FIVE batch-W controllers (DataSourceController,
+    CollectorController, NamespaceController, TagController, DatasetController) have
+    ZERO direct HTTP-tier tests. The test coverage gap is systemic: every test currently
+    in the repo is at the service tier (mock-based) or the repository tier (Testcontainers
+    DB) — NO `*ControllerTest.java` exists for any of the 5 controllers. The HTTP
+    boundary (path mapping, SecurityRule wiring, request-body parsing, reactive response
+    shape, ControllerAdvice exception mapping) is unverified.** Primary-source confirmed
+    across all 5 batch-W sidecars:
+
+
+    - **DataSourceController**: ZERO. No `DataSourceControllerTest`, no `DataSourceServiceImplTest`,
+    no `DataSourceServiceTest` (verified by Glob returning ''No files found''). The
+    only test that touches DataSourceService indirectly is `DataEntityServiceTest`
+    (mocks create/list).
+
+    - **CollectorController**: ZERO direct controller tests. `CollectorRepositoryImplTest`
+    (repository tier, Testcontainers) exists but does NOT exercise the controller,
+    service, authorization gate, or token-visibility contract.
+
+    - **NamespaceController**: ZERO direct controller tests. `NamespaceServiceImplTest`
+    (service tier, mock-based) exists with 10 tests but does NOT exercise the controller-tier
+    security wiring.
+
+    - **TagController**: ZERO direct controller tests. `TagRepositoryImplTest` (repository
+    tier, 10 tests) exists but does NOT exercise the controller''s TAG_CREATE / TAG_UPDATE
+    / TAG_DELETE SecurityRule wiring.
+
+    - **DatasetController**: ZERO direct controller tests. `ReactiveDatasetVersionRepositoryImplTest`
+    (repository tier, 2 tests on getDatasetVersion) exists but does NOT exercise the
+    4 endpoints'' HTTP behaviour.
+
+
+    **What the HTTP-tier tests would cover that no other tier can**:
+
+    - **Path mapping**: does the OpenAPI-generated path actually wire to the controller
+    method? (A refactor changing the `@RequestMapping` or `@PostMapping` annotation
+    silently breaks the endpoint without compile-time failure.)
+
+    - **SecurityRule wiring**: does `SecurityConstants.SECURITY_RULES` actually gate
+    the right path → permission? (Test by calling without the permission, expecting
+    403.)
+
+    - **Request body parsing**: does the OpenAPI-generated FormData unwrap correctly
+    into the controller''s `Mono<FormData>` argument? (Test by sending malformed JSON,
+    expecting 400.)
+
+    - **ControllerAdvice exception mapping**: does `BadUserRequestException` map to
+    HTTP 400, `NotFoundException` to 404, `UniqueConstraintException` to 400, `CascadeDeleteException`
+    to 400? (Test by triggering each exception and asserting the status.)
+
+    - **Reactive response shape**: does `Mono<ResponseEntity<...>>` serialize correctly
+    under WebFlux''s reactive codec? (Test for large payloads, empty payloads, streaming.)
+
+
+    **Architectural pattern**: this is the same gap class as the canonicalisation
+    candidate at the system-mission level — the platform''s controllers are intentionally
+    thin OpenAPI-passthrough delegates, AND the test posture is intentionally service-tier
+    mock-heavy. The HTTP boundary is the SOLE place where path mapping + auth wiring
+    + exception mapping converge. The absence of HTTP-tier tests means refactors at
+    the boundary are unverified.
+
+
+    **Aggregate count**: 5 controllers × ~4-6 endpoints each = ~25-30 HTTP-tier endpoints
+    uncovered.
+
+
+    **Why MEDIUM not HIGH**:
+
+    - The functional behaviour IS covered (per-controller service-tier tests catch
+    business-logic regressions).
+
+    - The boundary regressions are RECOVERABLE — a broken path mapping fails on first
+    real call; the platform''s deployment process catches this in staging.
+
+    - HIGH would be inappropriate because each individual missing test is MEDIUM-LOW;
+    the AGGREGATE is MEDIUM because the pattern is systemic.
+
+
+    **Test gap shape**: regression-pin asserting that each of the 5 controllers''
+    endpoints is reachable via WebTestClient with the documented permission and returns
+    the documented status code. The test file is a single fixture exercising all 5
+    controllers'' happy-paths + auth-403 paths + bad-input-400 paths. Establishes
+    a HTTP-tier baseline for the batch-W surface.'
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-773.yaml

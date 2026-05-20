@@ -1,0 +1,72 @@
+gap_id: TEST-GAP-752
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java DataSourceController controller-class:DataSourceController"
+pillars_affected: [P-08, P-10]
+surfaced_by:
+  - "DataSourceController.md:downstream_side_effects.updateDataSource (Critical asymmetry vs S2S UPSERT: the UI mapper applyToPojo uses MapStruct's @MappingTarget and applies ALL fields from DataSourceUpdateFormData. The S2S path narrows to ONLY name + description; the UI path writes the full form. This is the SOURCE OF DRIFT operators experience: a collector overwrites only name + description on its next startup; an operator edit via the UI writes ALL fields.)"
+  - "DataSourceController.md:bugs_limitations_corner_cases.[Silent operator-edit overwrite by next collector startup] (operator-impact: silent UI-edit loss on name/description; no warning at UI write time, no warning at collector overwrite time, no audit log of either event)"
+  - "DataSourceController.md:coherence_check.strengthens.[F-008 upsert_partial_merge_name_and_description_only drift facet] (STRENGTHENS by COUNTERFACTUAL — the UI admin path writes ALL DataSourceUpdateFormData fields)"
+  - "DataSourceController.md:coherence_check.strengthens.[REFACTOR-423 silent overwrite of operator UI edits] (STRENGTHENS with the FILE:LINE of the OPERATOR-SIDE EDIT POINT)"
+  - "DataSourceController.md:implicit_adrs.[UI admin path is FULL-FORM-REPLACE; S2S ingestion path is UPSERT-PARTIAL-MERGE — deliberate asymmetry between operator and collector mutation power]"
+behaviour: |-
+  **HIGH — Cross-path silent-overwrite class: an operator's UI edit via `PUT /api/datasources/{id}` (full-form replace via MapStruct's `@MappingTarget`) is OVERWRITTEN on the next collector ingestion via `POST /ingestion/datasources` (partial-merge of name + description ONLY). NO warning at the UI write time, NO warning at the collector overwrite time, NO audit log of either event.** Primary-source confirmed across batch-W DataSourceController sidecar + cross-link to batch-P IngestionController + batch-S DataSourceIngestionServiceImpl + batch-R ReactiveDataSourceRepositoryImpl sidecars (the 5-vertex triangulation per the sidecar's coherence_check):
+
+  **The two paths**:
+  - **UI path** (`DataSourceController.updateDataSource` lines 38-45 → `DataSourceServiceImpl.update` lines 68-83 → `DataSourceMapper.applyToPojo` at `DataSourceMapper.java:49-56`): MapStruct's `@MappingTarget` over the entire DataSourceUpdateFormData. ALL fields written: name, description, connectionUrl, active flag, namespace_id, etc.
+  - **S2S path** (`IngestionController.createDataSourceEntity` → `DataSourceIngestionServiceImpl.prepareForUpdate` at `DataSourceIngestionServiceImpl.java:74-92` per batch-S sidecar): `new DataSourcePojo(a).setName(i.getName()).setDescription(i.getDescription())`. ONLY name + description written. The collector OVERWRITES whatever was there with the collector's own representation of those two fields.
+
+  **Operator-impact scenario** (the operator-cliff failure mode per LSN-001 / LSN-002 framing):
+  1. Operator opens the Management → Datasources tab, locates the `snowflake-prod` datasource.
+  2. Operator edits the description to "Production warehouse — DO NOT REPORT TO SLACK alert channel" and saves. UI confirms 200; the description is persisted.
+  3. The collector running `odd-collector` (configured with its `odd-collector-config.yaml` containing the canonical name and the legacy description) restarts overnight (a routine deployment).
+  4. On startup, the collector sends `POST /ingestion/datasources` with `name: 'snowflake-prod'` and `description: 'Snowflake production'` (the value from its config file).
+  5. The S2S service path applies the partial merge — name and description are overwritten. The operator's edit is GONE.
+  6. **No notification.** No audit log entry. No "config drift detected" alert. The operator next sees their description and finds it has reverted; they have no signal about what happened.
+
+  **Cross-tier evidence**:
+  - **DataSourceMapper.java:49-56** (`applyToPojo` — UI side): `@Mapping(target = ..., ignore = false)` over every field. Confirmed by batch-W sidecar's primary-source reading.
+  - **DataSourceIngestionServiceImpl.java:74-92** (`prepareForUpdate` — S2S side, per batch-S sidecar): explicit field narrowing to `setName + setDescription`.
+  - **NO audit log on either path** (per batch-W sidecar's downstream_side_effects.[8]: "NO Activity Event emission for ANY data_source mutation. No activityEventEmitter call in DataSourceServiceImpl (verified by Grep — the class imports no ActivityEvent + emits no Activity)"). The Datasources tab shows CURRENT row state, NOT a change history. The two paths' interleaving is invisible to operators.
+
+  **Why HIGH not MEDIUM (the sidecar's own rating)**: this is the canonical operator-cliff failure mode (LSN-001 / LSN-002 family): the operator follows the documented UI workflow, gets a 200 OK, believes the change is persisted, then the next routine collector restart silently reverts the change. The operator has no doc-side anchor warning them that the platform has TWO mutation paths with DIFFERENT field-set semantics — the Management page (live-fetched 2026-05-20) describes only the UI flow.
+
+  **Test gap shape**: regression-pin asserting: (a) `PUT /api/datasources/{id}` writes ALL DataSourceUpdateFormData fields (verifiable by DB read after); (b) a subsequent `POST /ingestion/datasources` for the same ODDRN overwrites ONLY name + description (the operator's other-field edits SURVIVE); (c) NO Activity Event is emitted by either path. The current state is PINNED — failures land if a future maintainer either (a) narrows the UI mapper to match S2S (breaking operator full-form-replace), or (b) broadens the S2S mapper to match UI (breaking collector-tenant constraint), or (c) adds Activity Event emission (changing the audit story).
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/ReactiveDatasetVersionRepositoryImplTest.java (sister repository-tier test; does NOT exercise the cross-path race on DataSource)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DataSourceCrossPathSilentOverwriteTest.java"
+  name: "uiUpdateThenCollectorIngest_collectorOverwritesNameAndDescriptionButPreservesOtherUiFields_assertsNoActivityEventOnEitherPath"
+evidence:
+  - "DataSourceController.md says (downstream_side_effects.updateDataSource): 'Critical asymmetry vs S2S UPSERT: the UI mapper applyToPojo uses MapStruct's @MappingTarget and applies ALL fields from DataSourceUpdateFormData (the FormData fields, whatever the contract declares — typically name, description, connectionUrl, etc.). The S2S path narrows to ONLY name + description; the UI path writes the full form. This is the SOURCE OF DRIFT operators experience: a collector overwrites only name + description on its next startup; an operator edit via the UI writes ALL fields.'"
+  - "DataSourceController.md says (coherence_check.strengthens.[REFACTOR-423]): 'STRENGTHENS with the FILE:LINE of the OPERATOR-SIDE EDIT POINT. Batch-S sidecar already noted operators' UI edits to name/description are overwritten by the next collector startup. THIS sidecar provides the file:line where operator edits happen: DataSourceController.updateDataSource at lines 38-45 → DataSourceServiceImpl.update at lines 68-83 → DataSourceMapper.applyToPojo at DataSourceMapper.java:49-56. An operator editing the datasource name in the UI calls THIS endpoint; the next collector startup that includes the same ODDRN OVERWRITES the operator's name. The collision is silent at both ends — no warning at the UI write time (the operator doesn't know a collector exists for this datasource), no warning at the collector write time (the collector doesn't know an operator edited the name).'"
+  - "DataSourceController.md says (downstream_side_effects.[8]): 'NO Activity Event emission for ANY data_source mutation. No activityEventEmitter call in DataSourceServiceImpl (verified by Grep — the class imports no ActivityEvent + emits no Activity). The Datasources tab (P-08) is the SOLE operator-visible audit surface; it shows CURRENT row state, NOT a change history.'"
+  - "DataSourceController.md says (implicit_adrs.[UI full-form-replace vs S2S partial-merge]): 'UI admin path is FULL-FORM-REPLACE; S2S ingestion path is UPSERT-PARTIAL-MERGE — deliberate asymmetry between operator and collector mutation power. The two paths exist as INTENTIONALLY-distinct service classes (DataSourceServiceImpl vs DataSourceIngestionServiceImpl); the two mappers are INTENTIONALLY-distinct; the two field-set narrowings are INTENTIONALLY-distinct (full-form vs 2-field). The architectural decision is collector-as-tenant + operator-as-admin.' — confidence: HIGH"
+  - "REFACTOR-423 (silent overwrite of operator UI edits — sister REFACTOR pin; this test pins the regression)"
+cross_references:
+  - "REFACTOR-422 (silent no-propagation surface — sister narrowing on S2S path)"
+  - "REFACTOR-423 (silent overwrite of operator UI edits — the canonical reference for this gap)"
+  - "REFACTOR-425 (listDto count-vs-query predicate divergence — sister DataSource bug)"
+  - "ADR-CANDIDATE-142 (partial-merge UPSERT semantics — the ADR this test cross-references)"
+  - "TEST-GAP-749 (NEW batch W — sister DataSource gap on regenerate non-transactional)"
+  - "TEST-GAP-750 (NEW batch W — sister DataSource gap on plaintext token chain)"
+  - "TEST-GAP-751 (NEW batch W — sister DataSource gap on implicit namespace creation)"
+  - "concepts: audit-log-presence-asymmetry-2-tier-audit-story (existing concept — this gap extends to data_source mutations)"
+  - "concepts: upsert-by-oddrn-partial-merge-collector-driven-only-name-description (existing concept — this test pins the operator-impact)"
+  - "DOC-NNN candidate: surface the cross-path silent-overwrite class in the Datasources tab doc page; surface the Activity Feed absence on data_source mutations"
+  - "LSN-001 / LSN-002 (operator-cliff failure-mode case-law — this gap is the classic shape)"
+related_features: [F-008]
+related_pillar_features: ["P-08:F-NN-Datasources-tab", "P-10:F-001"]
+proposed_action: |-
+  Add `DataSourceCrossPathSilentOverwriteTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Four test methods:
+  1. `uiUpdateDataSource_writesAllFieldsViaMapStructApplyToPojo_pinsFullFormReplaceContract` — PUT `/api/datasources/{id}` with `{name, description, connectionUrl, active}`; query DB; assert ALL four fields are updated. PIN the UI full-form contract.
+  2. `s2sIngestionForSameOddrn_overwritesNameAndDescriptionOnly_preservesUiConnectionUrlEdit_pinsCrossPathSilentOverwrite` — sequence: UI updates the datasource with connectionUrl='operator-set-value'; then S2S `POST /ingestion/datasources` with a different name+description (collector's view); assert DB row has the collector's name+description AND the operator's connectionUrl. PIN the asymmetry.
+  3. `bothPathsEmitNoActivityEvent_assertsAuditLogPresenceAsymmetry` — register an ActivityEvent listener; perform a UI PUT and a S2S POST on the same datasource; assert ZERO ActivityEvent emissions across both paths. PIN the audit-log absence.
+  4. `uiUpdateThenS2SIngestThenUiRead_operatorSeesCollectorOverwrittenFields_noWarningSurface` — full operator-cliff scenario: UI edit → collector restart simulation → operator re-reads via GET; assert the description is the collector's value, not the operator's; assert no warning header / no field-level "modified-by" metadata in the response.
+
+  Pair with a follow-up backlog item: add a `last_modified_by_path` audit column to `data_source` (UI / S2S / NULL); emit Activity Events on both paths; surface a UI warning when an operator's edit is about to be silently overwritten on the next collector startup (the warning requires the collector's expected fields to be known — a deeper change).
+
+  Cross-pair with DOC-NNN: surface the cross-path silent-overwrite class in `documentation/docs/features/management.md` (Datasources tab) — operators MUST know that a UI edit to `name` or `description` will be overwritten on the next collector restart.
+batch: 2026-05-20-W
+feature_id: F-008

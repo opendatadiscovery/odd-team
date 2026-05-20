@@ -1,0 +1,62 @@
+gap_id: TEST-GAP-749
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java DataSourceController controller-class:DataSourceController"
+pillars_affected: [P-08, P-10, P-09]
+surfaced_by:
+  - "DataSourceController.md:downstream_side_effects.regenerateDataSourceToken (the service method DataSourceServiceImpl.java:98-106 is NOT @ReactiveTransactional — token generation in-memory + DB write are separately committed)"
+  - "DataSourceController.md:bugs_limitations_corner_cases.[regenerate-not-transactional] (regenerateDataSourceToken is NOT @ReactiveTransactional — token generation in-memory + DB write are separately committed — severity LOW per sidecar, ELEVATED here to CRITICAL when combined with the plaintext-token-on-the-wire chain TEST-GAP-750)"
+  - "DataSourceController.md:performance.hot_paths.regenerateDataSourceToken (NOT @ReactiveTransactional — the 3-call chain `getDto → tokenGenerator.regenerateToken (CPU only) → tokenRepository.updateToken (DB write)` is not isolated; failures between steps 2 and 3 leave the in-memory state ahead of DB)"
+  - "DataSourceController.md:coherence_check.conflicts_surfaced.[regenerate-not-transactional] (NEW finding (file-local): the regenerateDataSourceToken service method at DataSourceServiceImpl.java:98-106 is NOT @ReactiveTransactional)"
+behaviour: |-
+  **CRITICAL — `regenerateDataSourceToken` is the ONE non-transactional mutation in DataSourceServiceImpl (lines 98-106), creating a split-state failure where the operator receives a NEW token in the API response while the DB retains the OLD token.** Primary-source confirmed in batch-W DataSourceController sidecar:
+
+  - `DataSourceServiceImpl.create` (line 52) — IS `@ReactiveTransactional`
+  - `DataSourceServiceImpl.update` (line 69) — IS `@ReactiveTransactional`
+  - `DataSourceServiceImpl.delete` (line 86) — IS `@ReactiveTransactional`
+  - **`DataSourceServiceImpl.regenerateDataSourceToken` (lines 98-106) — is NOT `@ReactiveTransactional`** (verified by sidecar primary-source line-by-line read of the file)
+
+  The service method chain: `getDto(id)` → `tokenGenerator.regenerateToken(existingTokenPojo)` (in-memory) → `tokenRepository.updateToken(newToken)` (DB write).
+
+  **Split-state failure scenario**:
+  1. Step 1 succeeds: `getDto(id)` resolves the existing datasource + token.
+  2. Step 2 succeeds: `tokenGenerator.regenerateToken` creates a new TokenDto in memory.
+  3. Step 3 fails: `tokenRepository.updateToken(newToken)` raises a transient DB error (network blip, statement timeout, lock conflict).
+  4. **The reactive chain bubbles a 500 to the controller.** The Mono fails after step 3 — but **the NEW TokenDto has already been emitted into the response stream** if the chain composition uses `.map(ResponseEntity::ok)` before the DB write completes. Per the controller code at lines 53-59, the response IS constructed from the service's emitted token DTO. The exact failure mode depends on the WebFlux response buffering: a partial response with the new token may reach the client before the 500 propagates.
+  5. **The OLD token remains in the DB.** The collector authenticating with the OLD token continues working. The operator (who captured the NEW token from the partial response) tries to use it — and discovers the collector is still authenticating with the OLD token. **There is no mechanism to recover the in-memory NEW token** because it never persisted.
+
+  **Why CRITICAL not LOW (the sidecar's own rating)**: this gap is INDIVIDUALLY low (rare failure mode), but compounds CRITICALLY with two other adjacent findings:
+  - **TEST-GAP-750 (this batch — end-to-end plaintext token chain at controller tier)**: the new token IS emitted plaintext in the response body. A 500-after-emit can leak the unused token via response logging / APM tools while DB still holds the OLD token. The leaked token has no counterpart — it can't be used to authenticate.
+  - **Per the sidecar's `concept-link to shared-secret-tokens-stored-plaintext`**: the operator's only recovery is to retry the rotation. But retries are NOT idempotent — each retry generates a fresh new token. The DB write that eventually succeeds reflects the LATEST token, but the operator may have copied an earlier one. **Multiple failed-then-retried rotations create a sequence of in-memory tokens that NEVER reach DB but DO reach the response stream.** Forensic investigation cannot reconstruct which token reached which response.
+  - **The destructive rotation has no grace period (per sidecar implicit_adrs.[3])**: there is no "old token still valid for N hours" — once the DB write succeeds, the old token is dead. So the operator's mitigation window is exactly the duration of the failing rotation: zero.
+
+  **Test gap shape**: regression-pin asserting: (a) the service method DOES NOT have `@ReactiveTransactional`; (b) on simulated DB-write failure, the operator's response carries a token that is NOT in the DB; (c) the OLD token still authenticates against `IngestionDataSourceFilter`; (d) a follow-up successful retry creates a DIFFERENT new token, breaking the operator's captured-from-failed-response token. The current state is PINNED to make the design intent visible — any future maintainer adding `@ReactiveTransactional` will see the test invert (the response no longer carries an uncommitted token).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/DataSourceServiceImplRegenerateTokenSplitStateTest.java"
+  name: "regenerateDataSourceToken_dbWriteFailsAfterInMemoryRotation_responseCarriesUncommittedToken_pinsNonTransactionalPosture"
+evidence:
+  - "DataSourceController.md says (downstream_side_effects.regenerateDataSourceToken): 'NOT @ReactiveTransactional — the service-tier annotation is missing. The service: (1) loads the existing DTO via dataSourceRepository.getDto(id); (2) calls tokenGenerator.regenerateToken(existingTokenPojo) → returns a NEW TokenDto; (3) tokenRepository.updateToken(newToken) → UPDATE the in-place row in the token table.'"
+  - "DataSourceController.md says (coherence_check.conflicts_surfaced.[regenerate-not-transactional]): 'NEW finding (file-local): the regenerateDataSourceToken service method at DataSourceServiceImpl.java:98-106 is NOT @ReactiveTransactional (verified by reading the file end-to-end; the surrounding update at line 69 and delete at line 86 ARE annotated, create at line 52 IS annotated). If tokenGenerator.regenerateToken succeeds (in-memory token rotation) but tokenRepository.updateToken fails (DB write fails), the new TokenDto exists in the in-memory pipeline only and the response carries the new token — but the DB still holds the OLD token.'"
+  - "DataSourceController.md says (performance.hot_paths.regenerateDataSourceToken): 'NOT @ReactiveTransactional — the 3-call chain getDto → tokenGenerator.regenerateToken (CPU only) → tokenRepository.updateToken (DB write) is not isolated; failures between steps 2 and 3 leave the in-memory state ahead of DB.'"
+  - "Verified at primary source: DataSourceServiceImpl.java:98-106 (verified absence of @ReactiveTransactional vs lines 52, 69, 86 which DO carry the annotation)"
+  - "concepts.yaml:entities[DataSource].security_aggregate (shared-secret-tokens-stored-plaintext concept extends here — the plaintext token persistence is the multiplier on the split-state failure)"
+cross_references:
+  - "TEST-GAP-750 (NEW batch W — end-to-end plaintext token chain at DataSourceController response — sister gap that converts this LOW-in-isolation to CRITICAL-in-aggregate)"
+  - "TEST-GAP-752 (NEW batch W — cross-path silent-overwrite — sister DataSource bug)"
+  - "concepts: shared-secret-tokens-stored-plaintext (existing concept — this gap is the file-local manifestation)"
+  - "REFACTOR-NNN candidate: add @ReactiveTransactional to DataSourceServiceImpl.regenerateDataSourceToken (lines 98-106) so token-generation + DB-write commit atomically; OR delete the in-memory token before bubbling the failure"
+  - "ADR-CANDIDATE-NNN: destructive token rotation without transactional posture — the maintainer should make this an explicit ADR (the platform's other 3 service methods on DataSourceServiceImpl ARE transactional; the asymmetry is invisible to code-review tools)"
+related_features: [F-008, F-020]
+related_pillar_features: ["P-08:F-NN-Datasources-tab", "P-10:F-001", "P-09:F-001"]
+proposed_action: |-
+  Add `DataSourceServiceImplRegenerateTokenSplitStateTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/`. Four test methods:
+  1. `regenerateDataSourceToken_serviceMethodLacksReactiveTransactional_pinsCurrentNonAtomicPosture` — use reflection or AST inspection to assert that `DataSourceServiceImpl.regenerateDataSourceToken` does NOT carry `@ReactiveTransactional`, while `create`, `update`, `delete` DO. PIN the architectural asymmetry.
+  2. `regenerateDataSourceToken_dbWriteFails_responseCarriesUncommittedToken_pinsSplitState` — use Mockito to inject a failing `tokenRepository.updateToken` that throws after `tokenGenerator.regenerateToken` returns; assert the in-memory NEW TokenDto exists in the failed Mono pipeline; assert the DB row still holds the OLD token; assert the operator-side response bubbles a 500 with no clear remediation hint.
+  3. `regenerateDataSourceToken_dbWriteFailsAndRetrySucceeds_eachAttemptGeneratesNewToken_breaksOperatorCapturedToken` — first call fails (DB blip), operator captures the NEW token from failed-response; second call succeeds (different NEW token persisted to DB); assert the operator's captured token is NOT the persisted one and therefore not usable.
+  4. `regenerateDataSourceToken_oldTokenStillAuthenticatesAgainstIngestionFilterDuringSplitState_pinsCollectorStillWorks` — after failed rotation, send a POST to `/ingestion/datasources` with the OLD token; assert it authenticates successfully. Demonstrates that the destructive rotation's destruction is not actually destructive when split-state.
+
+  Pair with a follow-up backlog item: add `@ReactiveTransactional` to the regenerate path. When the fix lands, tests #2-#4 invert: the response no longer leaks an uncommitted token; the OLD token is reliably dead after a successful rotation.
+batch: 2026-05-20-W
+feature_id: F-020

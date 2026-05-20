@@ -1,0 +1,329 @@
+name: |-
+  DataSource UI-admin path DISJOINT from S2S ingestion path (5-vertex ADR-142/143 triangulation closed at controller tier batch W)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-08
+  - P-09
+  - P-10
+description: |-
+  NEW INVARIANT, batch 2026-05-20W — STRENGTHENS by COUNTERFACTUAL
+  the existing ADR-CANDIDATE-142 + ADR-CANDIDATE-143 triangulation
+  with the FIFTH and final architectural vertex: the UI admin path
+  is DELIBERATELY DISJOINT from the S2S ingestion path. The two paths
+  mutate the SAME data_source row but apply DIFFERENT merge semantics,
+  authentication, authorization, and tenancy rules.
+
+  THE FIVE-VERTEX TRIANGULATION — now closed:
+
+    Vertex 1 — batch P controller (S2S side): IngestionController.createDataSourceEntity
+      lives at /ingestion/datasources. Auth: collector token via Authorization
+      header. Mutation semantics: UPSERT-by-ODDRN with partial-merge of
+      name + description only. Tenancy: namespace inherited from collector
+      (cannot cross namespaces).
+
+    Vertex 2 — batch R repository (shared persistence): ReactiveDataSourceRepositoryImpl
+      backs BOTH paths. The same data_source table row is mutated by both
+      controllers. listDto count-vs-query divergence (REFACTOR-425) lives
+      here.
+
+    Vertex 3 — batch S service (S2S side): DataSourceIngestionServiceImpl.prepareForUpdate
+      lines 74-92 — `new DataSourcePojo(a).setName(i.getName()).setDescription(i.getDescription())`
+      explicit 2-field narrowing. The S2S mapper DataSourceIngestionMapper
+      is distinct from the UI's DataSourceMapper.
+
+    Vertex 4 — batch W controller (UI admin side, NEW THIS BATCH):
+      DataSourceController lives at /api/datasources/*. Auth: 4 UI auth
+      modes (DISABLED / LOGIN_FORM / OAUTH2 / LDAP) + RBAC permissions
+      (DATA_SOURCE_CREATE / UPDATE / DELETE / TOKEN_REGENERATE), OR S2S
+      X-API-Key grants ADMIN scope (bypasses RBAC). Mutation semantics:
+      full-form REPLACE via MapStruct @MappingTarget over ALL
+      DataSourceUpdateFormData fields. Tenancy: operator picks namespace
+      freely (CAN cross namespaces).
+
+    Vertex 5 — batch W controller-tier closure (NEW THIS BATCH):
+      DataSourceServiceImpl is the UI-side service, DISTINCT from
+      DataSourceIngestionServiceImpl. The two service classes never
+      share code paths; the two mappers (DataSourceMapper vs
+      DataSourceIngestionMapper) never share field-set narrowing.
+      The architectural intent is now visible: collectors are
+      CONSTRAINED tenants in the data-source space; operators are
+      ADMINS with full mutation power.
+
+  THE OPERATOR-FACING CONSEQUENCE — silent overwrite class
+  (STRENGTHENS REFACTOR-423):
+
+    An operator editing a datasource's name in the UI calls
+    DataSourceController.updateDataSource → DataSourceServiceImpl.update
+    → DataSourceMapper.applyToPojo (writes ALL form fields). The next
+    collector startup that includes the same ODDRN calls
+    IngestionController.createDataSourceEntity → DataSourceIngestionServiceImpl.prepareForUpdate
+    (writes ONLY name + description). The collector OVERWRITES the
+    operator's name; PRESERVES the operator's connection_url (because
+    the collector never sends it). The drift is one-way and silent.
+    Neither side logs a warning. Neither side emits an Activity Event
+    (audit-log gap; cross-link to audit-log-presence-asymmetry).
+
+  THE PERMISSION ESCALATION BY SIDE-EFFECT — NEW finding at vertex 4:
+
+    DataSourceController.registerDataSource requires DATA_SOURCE_CREATE.
+    The service-tier code at DataSourceServiceImpl.java:56-60 calls
+    `namespaceService.getOrCreate(form.getNamespaceName())` — CREATES
+    a Namespace if absent — WITHOUT the operator needing NAMESPACE_CREATE.
+    An operator with ONLY DATA_SOURCE_CREATE can implicitly create new
+    namespaces by registering datasources with previously-unknown
+    namespace names. The behaviour is undocumented at the doc-site.
+    Same architectural class as the TermController NAMESPACE_CREATE
+    side-door (batch U) — extends the getOrCreate-side-door pattern
+    to 5+ sister services.
+
+  THE NON-TRANSACTIONAL TOKEN-REGENERATE — NEW scope-shaped finding:
+
+    DataSourceServiceImpl.regenerateDataSourceToken (lines 98-106) is
+    NOT @ReactiveTransactional — UNLIKE the surrounding create
+    (line 52), update (line 69), delete (line 86) which ARE annotated.
+    If `tokenGenerator.regenerateToken` succeeds (in-memory token
+    rotation) but `tokenRepository.updateToken` fails (DB write fails),
+    the new token exists in the response body only and is not persisted.
+    The operator sees a SUCCESS response with a new token they cannot
+    use; the COLLECTOR still authenticates with the OLD token (still
+    valid in DB). Failure mode is rare (DB write retries handle most
+    cases) but the inconsistency is real and the missing annotation
+    looks unintentional. Severity LOW (rare; recoverable by retry).
+
+  THE 201-VS-200 STATUS DRIFT — STRENGTHENS existing concept:
+
+    DataSourceController returns 200 (ResponseEntity::ok) for
+    registerDataSource (POST line 35) and updateDataSource (PUT line 44),
+    but openapi.yaml:454 declares 201 for POST and openapi.yaml:482
+    declares 201 for PUT. Same drift class as TagController +
+    TermController + CollectorController + OwnerController + AlertController +
+    IngestionController.postDataEntityList. Codebase-wide pattern;
+    individual fix-cost low, coordination cost high.
+
+  THE UI-ADMIN ENDPOINT HAS NO API-REFERENCE SUB-PAGE — DOC-NNN:
+
+    Per WebFetch 2026-05-20 of /developer-guides/api-reference (200),
+    the API reference hub lists 9 per-feature sub-pages but EXPLICITLY
+    omits Data Sources. Verbatim from the fetched response: 'Data Sources
+    endpoints are not included in this particular documentation page.'
+    Operators wanting to programmatically integrate must read the Swagger
+    UI live. Symmetric gap to /developer-guides/build-and-run/custom-collectors
+    which documents POST /ingestion/datasources but not the UI counterpart.
+
+  WHY THIS MATTERS:
+
+    Operators wiring RBAC policies typically reason about permissions per
+    surface: 'I gave the team DATA_SOURCE_UPDATE on datasource X — they
+    can edit X but cannot touch other datasources.' The 5-vertex picture
+    surfaces nuances the policy author MUST know:
+      - DATA_SOURCE_UPDATE on the UI path writes ALL fields (full-replace).
+      - The collector for that datasource STILL overwrites name + description
+        on next startup (the collector's mutation isn't gated by RBAC).
+      - DATA_SOURCE_CREATE implicitly grants namespace creation.
+      - The list endpoint (GET /api/datasources) has NO RBAC gate at all
+        (any authenticated user enumerates every datasource — read-collaborative
+        posture extension).
+      - Token regeneration is destructive with no grace window — restarting
+        collectors is operator's responsibility, no doc anchor for the
+        procedure.
+
+  SEVERITY MEDIUM — the architectural disjunction is intentional
+  (the asymmetry between collector-as-tenant and operator-as-admin
+  is deliberate per ADR-CANDIDATE-142 + 143). The HIGH-severity items
+  are the cascading consequences: silent overwrite, permission
+  escalation by side-effect, non-transactional token-regenerate,
+  doc-side silence on all five vertices.
+nodes:
+  - odd-platform java DataSourceController controller-class:DataSourceController
+  - odd-platform java IngestionController controller-method:createDataSourceEntity
+  - odd-platform java service service:DataSourceServiceImpl
+  - odd-platform java service service:DataSourceIngestionServiceImpl
+  - odd-platform java repository reactive repository:ReactiveDataSourceRepositoryImpl
+contributors:
+  - |-
+    DataSourceController batch W (PRIMARY SOURCE — vertex 4 + 5,
+    UI admin closure):
+    coherence_check.strengthens.[0,1,2,3] (ADR-142/143 by COUNTERFACTUAL
+    + REFACTOR-422/423/425 strengthening) +
+    coherence_check.conflicts_surfaced.[0,1] (NEW: permission
+    escalation by side-effect; NEW: regenerateDataSourceToken
+    non-transactional) +
+    bugs_limitations_corner_cases.[0,1,2,3,4,5,6,7,8,9] (the 10
+    file-local concerns including read-RBAC gap, namespace side-door,
+    silent overwrite, token-regenerate destructiveness, FTS asymmetry,
+    Activity audit gap, listDto pagination drift, 200-vs-201 drift) +
+    implicit_adrs.[0,1,2,3] (path-based RBAC, full-form-replace
+    vs S2S partial-merge, cascade-delete guard, destructive token
+    rotation) +
+    security.known_security_gaps.[0,1,2,3,4,5] (6 itemised security
+    gaps anchored at file:line)
+  - |-
+    IngestionController.createDataSourceEntity batch P (CORROBORATING
+    — vertex 1, S2S controller side): the S2S path's controller-tier
+    primary source; establishes the disjunction at the HTTP entry-point.
+  - |-
+    DataSourceIngestionServiceImpl batch S (CORROBORATING — vertex 3,
+    S2S service side): the 2-field narrowing primary source
+    (lines 74-92).
+  - |-
+    ReactiveDataSourceRepositoryImpl batch R (CORROBORATING — vertex 2,
+    shared persistence): listDto count-vs-query divergence
+    (REFACTOR-425) at lines 58-82.
+evidence:
+  - |-
+    DataSourceController.md:coherence_check.strengthens (ADR-142/143
+    by COUNTERFACTUAL — vertex 4 + 5 of the triangulation explicitly
+    framed) +
+    DataSourceController.md:bugs_limitations_corner_cases.[1] MEDIUM
+    severity (implicit namespace creation bypasses NAMESPACE_CREATE) +
+    bugs_limitations_corner_cases.[2] MEDIUM severity (silent operator-edit
+    overwrite by next collector startup) +
+    bugs_limitations_corner_cases.[4] LOW severity (regenerateDataSourceToken
+    not @ReactiveTransactional)
+  - |-
+    DataSourceController.md:security.known_security_gaps.[0,1,2,3,4,5]
+    — six itemised security gaps anchored at file:line evidence
+  - |-
+    DataSourceController.md:implicit_adrs.[0,1,2,3] — four implicit
+    ADRs framing the disjunction architecturally (path-based RBAC,
+    UI full-form-replace vs S2S partial-merge, cascade-delete guard,
+    destructive token rotation)
+  - |-
+    Cross-references concept upsert-by-oddrn-partial-merge-collector-driven-only-name-description
+    (the S2S half of the asymmetry — established by batches P+R+S)
+  - |-
+    Cross-references concept namespace-inherited-from-collector-not-payload-collector-scoped-tenancy
+    (the namespace half of the asymmetry — established by batches P+S)
+  - |-
+    Cross-references concept openapi-200-vs-201-status-code-drift
+    (the codebase-wide drift class — strengthened by yet another
+    controller this batch)
+  - |-
+    Cross-references concept read-collaborative-cross-owner-enumeration
+    (the GET /api/datasources surface joins the catalogue)
+  - |-
+    Cross-references concept audit-log-presence-asymmetry-2-tier-audit-story
+    (Activity Feed silent on data_source mutations on BOTH paths)
+  - |-
+    Cross-references concept namespace-create-tag-create-side-doors-via-termcontroller-unguarded-paths
+    (the architectural getOrCreate-as-side-door class — DataSource is
+    now confirmed as a 5th sister service)
+axes_present:
+  - controllers
+  - services
+  - repositories_reactive
+triangulation_count: 5
+cross_batch: true
+cross_batch_refs:
+  - batch-P (IngestionController.createDataSourceEntity — S2S controller, vertex 1)
+  - batch-R (ReactiveDataSourceRepositoryImpl — shared persistence, vertex 2)
+  - batch-S (DataSourceIngestionServiceImpl — S2S service, vertex 3)
+  - batch-W (DataSourceController — UI admin controller AND closure, vertex 4 + 5, THIS INVARIANT)
+severity: MEDIUM
+severity_dim: architecture+security
+mitigations_unimplemented:
+  - |-
+    Document the 5-vertex picture on the operator-facing
+    /features/management page — explicitly distinguish 'collector-owned
+    fields (name + description; overwritten on next startup)' from
+    'operator-owned fields (connection_url, active, etc.; preserved
+    across collector restarts)'. Add admonition admonishing operators
+    that UI edits to name/description are silently overwritten by
+    the next collector startup.
+  - |-
+    Add an /developer-guides/api-reference/data-sources sub-page
+    documenting the 5 endpoints, the 4 DATA_SOURCE_* permissions,
+    the cascade-delete guard, the implicit namespace creation, the
+    destructive token rotation, and the silent UI-edit overwrite.
+    Symmetric with the existing 9 per-feature sub-pages on the API
+    reference hub.
+  - |-
+    Add a service-tier permission check at DataSourceServiceImpl.java:56-60
+    (the namespaceService.getOrCreate side-door) — split into
+    getByName (no permission needed) + create (requires NAMESPACE_CREATE).
+    Same architectural fix as the TermController side-door from batch U.
+  - |-
+    Add @ReactiveTransactional to DataSourceServiceImpl.regenerateDataSourceToken
+    (line 98) — makes the in-memory rotation + DB write atomic;
+    failure mode becomes 500 with old token still valid (consistent
+    with the surrounding 3 methods).
+  - |-
+    Align openapi.yaml (declared 201) with controller actual (returns
+    200) for registerDataSource + updateDataSource. Codebase-wide
+    audit candidate (cross-link to openapi-200-vs-201-status-code-drift-codebase-wide
+    canonicalisation candidate). EITHER fix spec to 200 (silent
+    contract change for SDK consumers, aligns to test reality) OR
+    fix code to 201 (breaks every existing test that asserts isOk()).
+  - |-
+    Add @ActivityLog to the 4 DataSourceServiceImpl mutating methods
+    AND the analogous DataSourceIngestionServiceImpl. Both paths
+    are currently silent on Activity Feed. Requires the
+    ActivityEventTypeDto enum to gain DATA_SOURCE_CREATED /
+    DATA_SOURCE_UPDATED / DATA_SOURCE_DELETED / DATA_SOURCE_TOKEN_REGENERATED
+    values (cross-link to f-006-audit-silence-enum-rooted-deeper-than-schema-rooted).
+  - |-
+    Build-time scanner: enumerate every service method that mutates
+    a data_source row AND verify it emits an Activity Event of the
+    expected type. Same scanner shape as the audit-log-presence-asymmetry
+    cross-pillar audit follow-up.
+  - |-
+    Regression test for the silent-overwrite class: fixture that
+    sequences UI-edit-via-controller → collector-ingest-via-S2S →
+    DB read, asserts the asymmetric merge semantics. Pins both
+    behaviours so neither side can be refactored without surfacing
+    the contract change.
+notes: |-
+  This invariant captures the FIRST end-to-end 5-vertex triangulation
+  of the DataSource architectural picture. Previous batches established
+  the WHAT and WHERE of the disjunction (batches P + R + S); this
+  batch (W) adds the COUNTERFACTUAL vertex via the UI admin controller
+  AND the explicit framing of the architectural intent (collector-as-tenant
+  vs operator-as-admin).
+
+  The picture's load-bearing observations:
+    (a) The two paths mutate the SAME data_source row but apply
+        DIFFERENT merge semantics — silent overwrite class.
+    (b) The architectural disjunction is DELIBERATE (different service
+        classes, different mappers, different field-set narrowing) —
+        the asymmetry is not accidental.
+    (c) The disjunction has consequences operators don't know about
+        — undocumented on every relevant doc page.
+    (d) The disjunction extends to FOUR cross-cutting concerns: status
+        codes, permissions, audit, transactionality.
+
+  Cross-cutting connections:
+    - STRENGTHENS the existing master upsert-by-oddrn-partial-merge-collector-driven-only-name-description
+      (the S2S half of the asymmetry); this invariant adds the UI
+      half + the architectural framing
+    - STRENGTHENS the existing master namespace-inherited-from-collector-not-payload-collector-scoped-tenancy
+      (the S2S half); this invariant adds the UI counterpart
+    - STRENGTHENS the existing master openapi-200-vs-201-status-code-drift
+      (DataSource is now a 7th controller exhibiting the same drift)
+    - STRENGTHENS the existing master namespace-create-tag-create-side-doors-via-termcontroller-unguarded-paths
+      (DataSource is now a 5th sister service with getOrCreate
+      side-door pattern; the cross-pillar pattern now spans Term +
+      DataSource + Owner + Tag + Collector + DataEntityGroup as
+      enumeration sites)
+    - STRENGTHENS the existing master read-collaborative-cross-owner-enumeration
+      (DataSourceController.getDataSourceList joins the catalogue
+      of 24+ surfaces with no SecurityRule)
+    - STRENGTHENS the existing master audit-log-presence-asymmetry-2-tier-audit-story
+      (data_source mutations are Tier-2 unaudited on BOTH paths)
+    - Pairs with collector-plaintext-token-at-rest-end-to-end-sql-to-dom-chain
+      (the regenerateDataSourceToken endpoint surfaces the SAME
+      plaintext-everywhere pattern as regenerateCollectorToken — the
+      DataSource token IS A COLLECTOR TOKEN per the schema; this is
+      the same end-to-end chain)
+
+  Three DOC-NNN candidates flow:
+    (a) /features/management Datasources tab — document the 5
+        operator-facing nuances (collector-overwrite-class, implicit
+        namespace creation, destructive token rotation, RBAC GET-gap,
+        Activity Feed silence)
+    (b) /developer-guides/api-reference/data-sources NEW page — the
+        5 endpoints + 4 permissions + the disjunction with the S2S path
+    (c) /configuration-and-deployment/enable-security/authorization
+        — enumerate the 4 DATA_SOURCE_* permissions verbatim (currently
+        the page does not list specific permissions; operators must
+        discover them via the in-UI policy editor or read PolicyPermissionDto.java)

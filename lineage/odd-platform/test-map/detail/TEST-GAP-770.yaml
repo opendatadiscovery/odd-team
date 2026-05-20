@@ -1,0 +1,66 @@
+gap_id: TEST-GAP-770
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DatasetController controller-class:DatasetController"
+pillars_affected: [P-01, P-09]
+surfaced_by:
+  - "DatasetController.md:bugs_limitations_corner_cases.[Verbatim-storage F-004 read-side surface at the column-level. getDataSetStructureByVersionId / getDataSetStructureLatest return the full DataSetField payload including internal_description — the field where DatasetFieldController PUT writes user-supplied Markdown / HTML payloads verbatim (batch-V + batch-R ReactiveDatasetFieldRepositoryImpl.updateDescription)]"
+  - "DatasetController.md:security.known_security_gaps.[F-004 verbatim-storage XSS-class read-side surface at the column level — getDataSetStructure* endpoints return internal_description verbatim including user-supplied Markdown / HTML / script payloads. UI render-layer defence-in-depth (probe P-009 Markdown.tsx) is the operative safeguard; cross-tab coverage of the DatasetField description render path is unverified]"
+  - "DatasetController.md:tests_coverage_semantic.uncovered_behaviours.[GET /api/datasets/{id}/structure surfaces dataset_field.internal_description verbatim including <script> / Markdown payloads — F-004 read-side fingerprint]"
+behaviour: |-
+  **MEDIUM — `GET /api/datasets/{id}/structure*` (all three variants: by-version, latest, diff) return `dataset_field.internal_description` VERBATIM, including user-supplied Markdown / HTML / script payloads. The DatasetField description PUT path (per batch-V DatasetFieldController + batch-R ReactiveDatasetFieldRepositoryImpl.updateDescription sidecars) writes verbatim with no sanitization, no length cap, no allowlist. THIS controller is the canonical READ surface for those payloads.** Primary-source confirmed in batch-W DatasetController sidecar:
+
+  - `DatasetController.getDataSetStructureByVersionId` (lines 23-30) → response `DataSetStructure` includes `List<DataSetField>` where each `DataSetField.internalDescription` is the verbatim string.
+  - `DatasetController.getDataSetStructureLatest` (lines 33-41) → same.
+  - `DatasetController.getDataSetStructureDiff` (lines 43-50) → response `DataSetVersionDiffList` includes the verbatim before / after snapshots of each column's description.
+  - `ReactiveDatasetVersionRepositoryImpl.java:97-144` — NO sanitisation on the returned `internal_description` field; NO length cap; NO allowlist.
+
+  **The cross-tier picture** (F-004 surface aggregated across 3 batches):
+  - **WRITE side (batch-V DatasetFieldController PUT)**: operator-supplied Markdown / HTML lands in `dataset_field.internal_description` column verbatim.
+  - **AT-REST (batch-R ReactiveDatasetFieldRepositoryImpl.updateDescription)**: column accepts any string; no sanitisation.
+  - **READ side (THIS gap — DatasetController)**: the verbatim string returns through the controller to the UI.
+  - **UI render defence (probe P-009 — Markdown.tsx)**: the OPERATIVE safeguard — the UI's Markdown render pipeline applies a Markdown allowlist that strips most XSS vectors. PROBE P-009 PASSED for the entity-description render path (batch-Q).
+  - **Cross-tab coverage gap**: the DatasetField description render path (the dataset structure view's per-column description) has NOT been verified to use the same Markdown.tsx pipeline. The Discovery UI's Dataset → Structure tab renders the column descriptions inside a different React component subtree.
+
+  **Why MEDIUM not HIGH**:
+  - The READ path is verbatim, but the UI defence-in-depth (probe P-009 Markdown.tsx) IS the operative safeguard for the dominant rendering path.
+  - The MEDIUM rating reflects: (a) the platform DOES have UI mitigations; (b) the cross-tab coverage of DatasetField render is UNVERIFIED — a separate verification (a fresh probe targeting the Dataset → Structure tab) is needed; (c) any API consumer NOT going through the Markdown.tsx pipeline (e.g., a custom BI tool reading `/api/datasets/{id}/structure`) sees the verbatim payload.
+  - The HIGH rating would apply if the UI mitigation were also absent. Currently the UI mitigation is present for the entity-description path; the DatasetField path is unverified.
+
+  **Test gap shape**: regression-pin asserting: (a) seed a `dataset_field.internal_description` with `<script>alert(1)</script>` via the DatasetFieldController PUT path; (b) `GET /api/datasets/{id}/structure` returns the payload verbatim in the response body; (c) `GET /api/datasets/{id}/structure/{version_id}` returns the payload verbatim; (d) `GET /api/datasets/{id}/structure/diff` returns the payload verbatim in both the before and after snapshots. The current state is PINNED — failures land if a future maintainer adds API-tier sanitisation (which would be a defense-in-depth improvement).
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/ReactiveDatasetVersionRepositoryImplTest.java (2 tests on getDatasetVersion; does NOT exercise the verbatim-description payload contract)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DatasetVersionVerbatimDescriptionReadSideTest.java"
+  name: "getDataSetStructure_returnsInternalDescriptionVerbatimIncludingScriptTags_pinsF004ReadSideContract"
+evidence:
+  - "DatasetController.md says (bugs_limitations_corner_cases.[F-004-read-side]): 'Verbatim-storage F-004 read-side surface at the column-level. getDataSetStructureByVersionId / getDataSetStructureLatest return the full DataSetField payload including internal_description — the field where DatasetFieldController PUT writes user-supplied Markdown / HTML payloads verbatim (batch-V + batch-R ReactiveDatasetFieldRepositoryImpl.updateDescription). The read path's UI consumer renders the description via the Markdown.tsx pipeline (probe P-009 PASS for entity-description render); cross-tab coverage of the DatasetField description render path is unverified per F-004 batch-R notes. THIS controller is the canonical READ surface for the F-004 column-level write surface.' — evidence: DatasetController.java:22-41 (getDataSetStructure return shape includes DataSetField.internalDescription) + ReactiveDatasetVersionRepositoryImpl.java:97-144 (no sanitisation, no length cap, no allowlist on the returned internal_description field) + cross-ref to ReactiveDatasetFieldRepositoryImpl batch-R bugs_limitations_corner_cases[1] (verbatim-storage write path) — severity: MEDIUM"
+  - "DatasetController.md says (security.known_security_gaps.[F-004-read-side]): 'F-004 verbatim-storage XSS-class read-side surface at the column level — getDataSetStructure* endpoints return internal_description verbatim including user-supplied Markdown / HTML / script payloads. UI render-layer defence-in-depth (probe P-009 Markdown.tsx) is the operative safeguard; cross-tab coverage of the DatasetField description render path is unverified.'"
+  - "Cross-link to F-004 (4-surface verbatim-storage class)"
+  - "Cross-link to probe P-009 (entity-description render PASS — needs sister probe for DatasetField render)"
+  - "Verified at primary source: DatasetController.java:22-58 + ReactiveDatasetVersionRepositoryImpl.java:97-144"
+cross_references:
+  - "TEST-GAP-767 (NEW batch W — per-entity-scoping bypass; COMPOUNDS with this gap — any authenticated user reads any dataset's description verbatim)"
+  - "TEST-GAP-768 (NEW batch W — per-entity-scoping bypass at diff; the diff payload INCLUDES the F-004 surface)"
+  - "F-004 (4-surface verbatim-storage class — this gap is the column-level read-side vertex)"
+  - "probe P-009 (entity-description render PASS — sister surface that needs verification on DatasetField)"
+  - "REFACTOR-NNN candidate: add API-tier sanitisation OR validation on dataset_field.internal_description (defence-in-depth complement to UI Markdown.tsx)"
+  - "DOC-NNN candidate: surface the verbatim-storage class and the operative UI mitigation on the Data Discovery doc; warn API consumers"
+  - "probe candidate: launch a fresh probe targeting the Dataset → Structure tab's DatasetField description render path to verify the Markdown.tsx pipeline is applied"
+related_features: []
+related_pillar_features: ["P-01:F-NN-dataset-structure-read"]
+proposed_action: |-
+  Add `DatasetVersionVerbatimDescriptionReadSideTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Four test methods:
+  1. `getDataSetStructure_returnsInternalDescriptionVerbatim_includingScriptTags_pinsLatestPathContract` — seed a dataset_field with `internal_description = '<script>alert("F-004")</script>'`; GET `/api/datasets/{id}/structure`; assert the response body contains the literal script tag (verbatim, not URL-encoded, not HTML-entity-escaped).
+  2. `getDataSetStructureByVersionId_returnsVerbatim_pinsByVersionContract` — sister test on the by-version path.
+  3. `getDataSetStructureDiff_returnsVerbatimInBothSnapshots_pinsDiffContract` — seed two versions with different script payloads; GET the diff; assert BOTH script payloads are in the response verbatim (in the before-snapshot and after-snapshot field).
+  4. `getDataSetStructure_returnsLengthUnbounded_pinsNoLengthCapAtApi` — seed `internal_description` with a 50KB string; GET `/api/datasets/{id}/structure`; assert the response carries the full 50KB payload (no truncation).
+
+  Pair with REFACTOR-NNN: add API-tier sanitisation OR validation on `dataset_field.internal_description` writes (DatasetFieldController PUT path); the read path then relies on the at-write defence + the UI Markdown.tsx defence-in-depth.
+
+  Cross-pair with probe candidate: launch a fresh probe targeting the Dataset → Structure tab's DatasetField description render path to verify Markdown.tsx is applied — symmetric to probe P-009 for entity descriptions.
+
+  Cross-pair with DOC-NNN: surface the verbatim-storage class on the Data Discovery doc; warn API consumers (BI tools, custom scripts) that the API returns descriptions verbatim.
+batch: 2026-05-20-W
+feature_id: null

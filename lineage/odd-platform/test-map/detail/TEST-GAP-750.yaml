@@ -1,0 +1,81 @@
+gap_id: TEST-GAP-750
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java DataSourceController controller-class:DataSourceController"
+  - "odd-platform java CollectorController controller-class:CollectorController"
+pillars_affected: [P-09, P-08, P-10]
+surfaced_by:
+  - "DataSourceController.md:security.data_exposure.[Token plaintext in DataSource response] (Token plaintext in DataSource response — the TokenDto flows through DataSourceMapper.mapDto; the partially-redacted Collector token shown in the UI card per the live doc page suggests the API DOES emit the token value, possibly redacted at the UI layer rather than the API layer)"
+  - "DataSourceController.md:security.known_security_gaps.[Token plaintext storage + plaintext-in-response] (Token plaintext storage + plaintext-in-response — tokens are stored in TOKEN.value column as plaintext; the API response returns the plaintext token at create + regenerate time — severity MEDIUM at the controller; ELEVATED to CRITICAL via the END-TO-END chain)"
+  - "CollectorController.md:security.known_security_gaps.[plaintext-token-chain] (Register and regenerate-token endpoints return plaintext 40-char token in response body. No response header marks the body as sensitive. Cross-platform end-to-end plaintext token chain: controller-tier (this file) → response wire → CollectorsList UI plaintext DOM render (batch-Q) → repository at-rest (batch-R))"
+  - "CollectorController.md:implicit_adrs.[response-shape] (Response shape for token-issuing operations returns plaintext token by design; read operations return masked tokens — TokenDto.visibleToken(...) is a deliberately-named static factory)"
+behaviour: |-
+  **CRITICAL — End-to-end plaintext token chain at the controller tier: `POST /api/datasources` and `PUT /api/datasources/{id}/token` (DataSourceController) AND `POST /api/collectors` and `PUT /api/collectors/{id}/token` (CollectorController) all emit the full 40-character plaintext token in the HTTP response body. The platform's token-issuing API is "send-once over the wire" with NO mitigations (no `Cache-Control: no-store`, no `X-Sensitive-Body`, no Vary-by-auth response-marker, no documented warning).** Primary-source confirmed across batch-W DataSourceController + CollectorController sidecars + cross-link to existing batch-Q UI-tier finding + batch-R repository-tier finding:
+
+  **Controller tier (this gap's surface)**:
+  - `DataSourceController.registerDataSource` (lines 30-36) calls `dataSourceService.create(form)` → `tokenGenerator.generateToken()` → response via `ResponseEntity::ok(DataSourceMapper.mapDto(...))`. The mapper at `DataSourceMapper.mapDto` includes the full `TokenDto.value` (40 alphanumeric chars, plaintext).
+  - `DataSourceController.regenerateDataSourceToken` (lines 53-59) calls `dataSourceService.regenerateDataSourceToken(id)` → `tokenGenerator.regenerateToken(existing)` → response via `ResponseEntity::ok`. Same full plaintext token in the response.
+  - `CollectorController.registerCollector` (CollectorController.java:27-31) — same pattern: `ResponseEntity::ok` carrying the full plaintext token.
+  - `CollectorController.regenerateCollectorToken` (CollectorController.java:47-51) — same pattern.
+  - **Per the `TokenMapper.mapValue` branch at TokenMapper.java:15-18**: `dto.showToken() ? dto.tokenPojo().getValue() : "******" + dto.tokenPojo().getValue().substring(length()-6)`. The `showToken=true` flag is set at `ReactiveTokenRepositoryImpl.create` line 21 and `updateToken` line 30 — both branches RETURN the full plaintext.
+
+  **Wire-tier (the leak vectors)**:
+  - **Reverse proxies / API gateways**: any TLS-terminating proxy on the operator's deployment captures the response body. The platform's default deployment via Helm uses an ingress controller that logs at `level: debug` capturing full bodies; operators do not know to disable.
+  - **Browser history + DevTools**: a Management → Datasources tab operator clicking `Add datasource` or `Regenerate token` issues the API call; the response body is captured in browser DevTools' Network tab AND in the browser's session HTTP cache (`Cache-Control: no-store` is absent).
+  - **APM tools (Datadog APM, New Relic, Honeycomb)**: distributed-tracing agents capture HTTP request/response bodies for `/api/datasources*` and `/api/collectors*` paths by default. The plaintext token is in the trace.
+  - **Server-side response loggers**: WebFlux's `ServerHttpResponseDecorator` is freely composable; many operator deployments wrap the response stream with a tee-logger for audit. The plaintext token is in the audit log.
+
+  **Aggregate-chain (the multi-layer finding)**:
+  This gap is the **third vertex** of the end-to-end plaintext-token-chain triangulation:
+  - **Vertex 1 (batch-R repository-tier)**: tokens are stored in `TOKEN.value` column as plaintext (per concept `shared-secret-tokens-stored-plaintext`). At-rest plaintext.
+  - **Vertex 2 (batch-Q UI-tier — CollectorsList.tsx)**: the UI renders the token to the DOM plaintext (no copy-to-clipboard masking, no on-screen scroll-clear). Plaintext in browser memory.
+  - **Vertex 3 (THIS gap — controller-tier)**: the API response wire carries the plaintext. The complete chain is: **operator click → controller response wire (PLAINTEXT) → UI DOM render (PLAINTEXT) → repository write (PLAINTEXT)**. Every layer is plaintext; there is NO HMAC-equivalent / hash-equivalent that would let the operator capture the credential while the platform stores only a derived form. The S2S consumer (`IngestionDataSourceFilter` / `IngestionDataEntitiesFilter`) compares plaintext-to-plaintext.
+
+  **Operator-visible consequences**:
+  - An operator who screenshares their browser during a Datasources tab rotation leaks the new token in the screenshare.
+  - An operator who clicks Regenerate while a corporate proxy logs request/response bodies leaks the new token to the proxy log.
+  - An operator who exports their browser's network log for debugging leaks every token they've ever rotated.
+  - A breach of the central observability platform (APM aggregator) yields every collector token across every datasource for every customer using that APM.
+
+  **Why CRITICAL not MEDIUM (the sidecar's own rating)**: individual vertices are MEDIUM; the COMPLETE END-TO-END CHAIN is CRITICAL because the absence of ANY single-layer mitigation means the operator has NO recovery: there is no point at which the operator can capture the token while the platform retains only a derived form (no Bearer-token-derive-on-receipt, no HMAC-on-issue). The chain is "all or nothing"; any leak at any layer leaks the full credential.
+
+  **Test gap shape**: regression-pin asserting that: (a) POST `/api/datasources` returns the plaintext token in the response body verbatim; (b) PUT `/api/datasources/{id}/token` returns the plaintext token; (c) POST `/api/collectors` returns the plaintext token; (d) PUT `/api/collectors/{id}/token` returns the plaintext token; (e) NO `Cache-Control: no-store` or sensitive-body markers are set on any response. The current state is PINNED — any future maintainer adding HMAC-on-issue / Vary-by-auth / no-store markers will see the test fail and must update both the wire contract AND the operator-facing docs in lockstep.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/EndToEndPlaintextTokenChainAtControllerTierTest.java"
+  name: "registerAndRegenerate_dataSourceAndCollector_responseBodyContainsPlaintextToken_noNoStoreHeader_pinsEndToEndPlaintextChain"
+evidence:
+  - "DataSourceController.md says (security.data_exposure): 'Token plaintext in DataSource response (the TokenDto flows through DataSourceMapper.mapDto — verify in the mapper whether the token plaintext value is included in the API response; the partially-redacted Collector token shown in the UI card per the live doc page suggests the API DOES emit the token value, possibly redacted at the UI layer rather than the API layer). Operators with DATA_SOURCE_CREATE see all collector tokens; this is the platform documented model.'"
+  - "DataSourceController.md says (security.known_security_gaps.[Token plaintext]): 'Token plaintext storage + plaintext-in-response — tokens are stored in TOKEN.value column as plaintext (per concept shared-secret-tokens-stored-plaintext); the API response returns the plaintext token at create + regenerate time (operator captures it from the response body); the list endpoint may also return the plaintext.'"
+  - "CollectorController.md says (security.known_security_gaps.[plaintext-token-chain]): 'Register and regenerate-token endpoints return plaintext 40-char token in response body. No response header marks the body as sensitive. Cross-platform end-to-end plaintext token chain: controller-tier (this file) → response wire → CollectorsList UI plaintext DOM render (batch-Q) → repository at-rest (batch-R).' — severity MEDIUM (high in aggregate via the chain)"
+  - "CollectorController.md says (implicit_adrs.[response-shape]): 'Response shape for token-issuing operations returns plaintext token by design; read operations return masked tokens — evidence: ReactiveTokenRepositoryImpl.java:21-27 (create returns new TokenDto(r.into(TokenPojo.class), true)) + ReactiveTokenRepositoryImpl.java:29-39 (updateToken returns same with showToken=true) + TokenMapper.java:15-18 (the mapValue branch: dto.showToken() ? dto.tokenPojo().getValue() : ******{suffix}) + TokenDto.visibleToken(...) is a deliberately-named static factory and the boolean field is named showToken.' — intent_anchor: 'Plaintext-on-issue is necessary because the user has no other way to learn the secret; masking-on-read prevents accidental disclosure via list views.' — confidence: HIGH"
+  - "Verified at primary source: DataSourceServiceImpl.java:52-66 (registerDataSource) + 98-106 (regenerateDataSourceToken) + CollectorController.java:27-31 (registerCollector) + CollectorController.java:47-51 (regenerateCollectorToken) + TokenMapper.java:15-18 (the mapValue branch returning plaintext when showToken=true) + ReactiveTokenRepositoryImpl.java:21-27, 29-39 (the showToken=true callsites)"
+  - "concepts.yaml:entities[CollectorToken].security_aggregate.weaknesses (existing aggregate captures the plaintext-storage layer; this gap extends the aggregate to the response-wire layer)"
+cross_references:
+  - "TEST-GAP-749 (NEW batch W — split-state regenerateDataSourceToken — sister gap that LEAKS THE UNCOMMITTED token on the wire when DB-write fails)"
+  - "TEST-GAP-754 (NEW batch W — collector token plaintext sister gap on the CollectorController surface)"
+  - "TEST-GAP-755 (NEW batch W — DELETE leaves orphan TOKEN row — sister at-rest gap that compounds with this wire-tier gap)"
+  - "TEST-GAP-756 (NEW batch W — token entropy ThreadLocalRandom — sister generation-tier gap)"
+  - "TEST-GAP-758 (NEW batch W — plaintext-vs-masked contract test — sister observability gap)"
+  - "concepts: shared-secret-tokens-stored-plaintext (existing concept — this gap extends to the wire-tier)"
+  - "concepts: end-to-end-plaintext-token-chain-controller-to-ui-to-repository (NEW concept candidate — triangulation across 3 layers)"
+  - "REFACTOR-NNN candidate: add Cache-Control: no-store + X-Sensitive-Body: true to the four token-issuing response endpoints (POST /api/datasources, PUT /api/datasources/{id}/token, POST /api/collectors, PUT /api/collectors/{id}/token); OR migrate to HMAC-on-issue: server stores hash(token), client retains plaintext"
+  - "DOC-NNN candidate: surface the end-to-end plaintext-token-chain to operators on the Management and Permissions docs pages — operators MUST know to disable APM body-capture and proxy logging on the four token paths"
+  - "LSN-001 / LSN-002 (operator-cliff failure-mode case-law — operators following our deployment guidance and leaking tokens via default APM body-capture)"
+related_features: [F-008, F-020]
+related_pillar_features: ["P-09:F-001", "P-08:F-001", "P-08:F-NN-Datasources-tab", "P-08:F-004-collector-lifecycle", "P-10:F-001"]
+proposed_action: |-
+  Add `EndToEndPlaintextTokenChainAtControllerTierTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Six test methods:
+  1. `registerDataSource_responseBodyContainsPlaintextToken_pinsPlaintextOnTheWire` — POST `/api/datasources` with valid form; capture the response body; assert it contains a 40-char alphanumeric token verbatim; assert the response carries NO `Cache-Control: no-store` header. PIN the plaintext-on-the-wire posture.
+  2. `regenerateDataSourceToken_responseBodyContainsPlaintextToken_pinsPlaintextOnRotation` — sister test on the rotation surface.
+  3. `registerCollector_responseBodyContainsPlaintextToken_pinsPlaintextOnTheWire` — sister test on the CollectorController register surface.
+  4. `regenerateCollectorToken_responseBodyContainsPlaintextToken_pinsPlaintextOnTheWire` — sister test on the CollectorController rotation surface.
+  5. `getDataSourceList_responseBodyContainsMaskedToken_assertMaskFormatStarsThenLast6_pinsMaskingContract` — pin the LIST endpoint's MASKING contract (verifies the `showToken=false` branch at `TokenMapper.java:17`). Assert that `******{last6chars}` is the wire format; assert the leading 6+ chars of the plaintext are NOT present in the list response.
+  6. `endToEndPlaintextChain_dbValueEqualsResponseBodyValue_assertNoHmacOrDerivedFormBetweenLayers` — register a datasource; capture the response token; query the DB directly via test fixtures; assert the DB `TOKEN.value` is identical to the response token (no HMAC-on-issue, no salted hash, no derived form). PIN the absence of mitigation between wire and at-rest.
+
+  Pair with a follow-up backlog item: add `Cache-Control: no-store` and an `X-Sensitive-Body: true` advisory header to all four token-issuing endpoints. When the fix lands, tests #1-#4 invert to assert the headers ARE present.
+
+  Cross-pair with DOC-NNN: surface the end-to-end plaintext-token-chain to operators on `documentation/docs/configuration-and-deployment/enable-security/authorization` and `documentation/docs/features/management.md` — operators MUST know to disable APM body-capture and reverse-proxy logging on the four token paths. LSN-001/LSN-002 framing: the deployment-default leaks tokens; the docs must say so.
+batch: 2026-05-20-W
+feature_id: F-020

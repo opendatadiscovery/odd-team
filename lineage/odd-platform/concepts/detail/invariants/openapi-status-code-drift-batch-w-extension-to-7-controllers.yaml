@@ -1,0 +1,225 @@
+name: |-
+  OpenAPI 200-vs-201 status-code drift — batch W extends to 7+ controllers (DataSource + Collector + Tag confirmed THIS BATCH)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-09
+  - P-11
+description: |-
+  STRENGTHENED INVARIANT, batch 2026-05-20W — extends the existing
+  openapi-200-vs-201-status-code-drift master invariant by
+  confirming the same drift class at THREE NEW controllers from
+  batch W primary-source class-level sidecars.
+
+  THE EXPANDED CONFIRMATION — 7 confirmed instances now:
+
+    Previously confirmed (per existing master invariant):
+      Instance 1 — OwnerController.createOwner (batch E):
+        controller returns 200; openapi declares 201
+      Instance 2 — RoleController.createRole (batch E):
+        same drift
+      Instance 3 — PolicyController.createPolicy (batch E):
+        same drift
+      Instance 4 — IngestionController.postDataEntityList (batch F):
+        spec declares 201 (odd_api.yaml:23-25), controller returns
+        200 (IngestionController.java:44), BaseIngestionTest.java:79
+        locks in 200
+      Instance 5 — TermController.createTerm + .updateTerm (batch U)
+      Instance 6 — AlertController.changeAlertStatus (cross-ref)
+
+    Batch W adds 3 new instances:
+      Instance 7 — DataSourceController.registerDataSource (POST
+        /api/datasources): controller returns 200 (line 35); spec
+        declares 201 (openapi.yaml:454). Same drift.
+      Instance 7b — DataSourceController.updateDataSource (PUT
+        /api/datasources/{id}): controller returns 200 (line 44);
+        spec declares 201 (openapi.yaml:482). Same drift.
+      Instance 8 — CollectorController.registerCollector (POST
+        /api/collectors): controller returns 200 (CollectorController.java:27);
+        spec declares 201 (openapi.yaml:557-563). Same drift.
+      Instance 8b — CollectorController.updateCollector (PUT
+        /api/collectors/{id}): controller returns 200; spec
+        declares 201 (openapi.yaml:586-591). Same drift.
+      Instance 9 — TagController.createTag (POST /api/tags):
+        controller returns 200 (TagController.java:27); spec
+        declares 201 (openapi.yaml:372). Same drift.
+      Instance 9b — TagController.updateTag (PUT /api/tags/{tag_id}):
+        controller returns 200 (TagController.java:51); spec
+        declares 201 (openapi.yaml:400). Same drift.
+
+    Updated count: 9+ endpoint-level instances across 7+ controllers
+    (Owner, Role, Policy, Ingestion, Term, Alert, DataSource,
+    Collector, Tag).
+
+  THE PATTERN'S LOAD-BEARING OBSERVATION:
+
+    The drift is UNIFORM across every controller's createX +
+    updateX endpoint. The architectural shape:
+      - controllers extend OpenAPI-generated *Api interfaces (e.g.
+        TagApi, CollectorApi, DataSourceApi)
+      - the generated interfaces' method signatures don't dictate
+        a specific HTTP status; the contract for status code is
+        in the openapi.yaml's responses block
+      - the controller bodies uniformly use ResponseEntity::ok
+        (which returns 200) or ResponseEntity.noContent (which
+        returns 204)
+      - no controller uses ResponseEntity.status(HttpStatus.CREATED)
+        for the create paths
+      - the OpenAPI spec declares 201 for the create paths
+        (canonical REST shape)
+
+    The drift is PERVASIVE — every createX method on every
+    controller exhibits it. The drift is also LOCKED IN by tests
+    that assert isOk() (HTTP 200), not isCreated() (HTTP 201).
+    Aligning to spec (return 201) would break every existing test;
+    aligning the spec (declare 200) would silently change the
+    contract for downstream SDK consumers.
+
+  ADDITIONAL THIS BATCH OBSERVATION — TagController updateTag's
+  201 is NON-CANONICAL:
+
+    The OpenAPI declares `'201': The resource has been successfully
+    updated` at openapi.yaml:400 for TagController.updateTag. The
+    use of 201 (canonically 'Created') for an UPDATE endpoint is
+    itself unusual — 200 or 204 fits update semantics better. The
+    controller's 200 is more semantically correct than the spec's
+    201. This is consistent with the same drift class observed in
+    TermController.createTerm + .updateTerm (batch U).
+
+    The pattern: the OpenAPI spec author chose 201 for both create
+    AND update; the controller author chose 200 for both. The two
+    decisions are independent; neither references the other.
+    Coordination only happens via shared tests, which lock in 200.
+
+  THE 5-ENDPOINT TAG-PLUS-DATA-SOURCE-PLUS-COLLECTOR CLUSTER:
+
+    Batch W's 5 new endpoint-level instances cluster at the 3
+    Management-tier controllers DataSource + Collector + Tag.
+    Together with the per-controller multi-endpoint counts:
+      - DataSourceController: 2 endpoints affected (POST + PUT)
+      - CollectorController: 2 endpoints affected (POST + PUT)
+      - TagController: 2 endpoints affected (POST + PUT)
+
+    The Management-tier cluster ALONE has 6 affected endpoints.
+    Across the platform, a conservative estimate is 12-18 affected
+    endpoints. The codebase-wide audit candidate (master invariant
+    note) is now ENTERPRISED by this batch.
+
+  SEVERITY LOW — functional impact zero (200 and 201 are both
+  success responses); spec-doc drift; SDK-consumer-impact medium
+  for clients with strict isCreated() checks.
+
+nodes:
+  - odd-platform java DataSourceController controller-class:DataSourceController
+  - odd-platform java CollectorController controller-class:CollectorController
+  - odd-platform java TagController controller-class:TagController
+
+contributors:
+  - |-
+    DataSourceController batch W (PRIMARY SOURCE):
+    bugs_limitations_corner_cases.[10] LOW severity (DELETE returns
+    204; the rest return 200 — inconsistent with the OpenAPI
+    declared response codes — POST declared 201, PUT declared 201 —
+    actual returns are 200)
+  - |-
+    CollectorController batch W (PRIMARY SOURCE):
+    bugs_limitations_corner_cases.[7] LOW severity (Register
+    response returns HTTP 200 instead of HTTP 201 Created as
+    declared in openapi.yaml:557-563; similarly update declares
+    201 in spec line 586-591 and returns 200)
+  - |-
+    TagController batch W (PRIMARY SOURCE):
+    bugs_limitations_corner_cases.[0] MEDIUM (Status-code drift
+    on createTag — controller returns 200 via ResponseEntity::ok
+    line 27; OpenAPI declares 201 at openapi.yaml:372) +
+    bugs_limitations_corner_cases.[1] MEDIUM (Status-code drift
+    on updateTag — controller returns 200 line 51; OpenAPI declares
+    201 at openapi.yaml:400)
+
+evidence:
+  - |-
+    DataSourceController.md:bugs_limitations_corner_cases.[10] —
+    evidence: openapi.yaml:454 (`'201': The resource has been
+    successfully created`), line 482 (`'201': The resource has
+    been successfully updated`), line 502 (Deleted), line 520
+    (`'200': OK`); but the controller hard-codes
+    ResponseEntity.ok() (200) for POST/PUT (lines 35, 44, 58)
+  - |-
+    CollectorController.md:bugs_limitations_corner_cases.[7] —
+    evidence: CollectorController.java:27-31 (ResponseEntity::ok) +
+    CollectorController.java:33-40 (ResponseEntity::ok) +
+    openapi.yaml:557-563 + openapi.yaml:586-591
+  - |-
+    TagController.md:bugs_limitations_corner_cases.[0,1] —
+    evidence: TagController.java:27 + openapi.yaml:372 +
+    TagController.java:51 + openapi.yaml:400
+  - |-
+    Cross-references master concept openapi-200-vs-201-status-code-drift
+    (the original 2-sidecar 4-instance framing; THIS invariant
+    extends to 7+ controllers / 9+ endpoint-level instances)
+
+axes_present:
+  - controllers
+
+triangulation_count: 7
+cross_batch: true
+cross_batch_refs:
+  - batch-E (OwnerController + RoleController + PolicyController — initial 3-instance framing)
+  - batch-F (IngestionController.postDataEntityList — 4th instance)
+  - batch-U (TermController.createTerm + .updateTerm — 5th-6th instances)
+  - batch-W (DataSource + Collector + Tag — 7th-9th instances, THIS INVARIANT extension)
+
+severity: LOW
+severity_dim: documentation
+
+mitigations_unimplemented:
+  - |-
+    Coordinated codebase-wide audit: enumerate every controller
+    method that implements an OpenAPI-generated *Api interface
+    AND verify the response status matches the openapi.yaml's
+    declared response code. Estimated 12-18 endpoints affected.
+    The audit's deliverable is a single PR per direction-fix.
+  - |-
+    Direction A (align spec to code): edit openapi.yaml entries
+    to declare 200 for create + update paths. Silently changes
+    the contract for downstream SDK consumers; aligns to test
+    reality.
+  - |-
+    Direction B (align code to spec): edit every controller method
+    to use ResponseEntity.status(HttpStatus.CREATED). Breaks every
+    existing test that asserts isOk(); surfaces the drift in a
+    single CI run.
+  - |-
+    Build-time scanner: enforce status-code consistency between
+    controller @Override methods and the openapi.yaml's declared
+    response codes. Add to the CI matrix as a gate; future drift
+    is caught at PR time.
+
+notes: |-
+  This invariant captures the FIRST codebase-wide enumeration of
+  the 200-vs-201 status-code drift class. Previous batches
+  established the pattern at individual controllers; batch W
+  extends to 7+ controllers and confirms the drift is platform-wide.
+
+  The drift's load-bearing observation: it is UNIFORM AND
+  UNCOORDINATED. Every controller's createX + updateX exhibits
+  it; no controller has been corrected. The OpenAPI spec is the
+  published artefact; the controllers are the runtime; the tests
+  are the lock-in. The maintainer's call is which direction to
+  align (codebase-wide PR).
+
+  Cross-cutting connections:
+    - STRENGTHENS the master openapi-200-vs-201-status-code-drift
+      (extends to 9+ endpoint-level instances across 7+ controllers)
+    - Pairs with datasource-ui-admin-disjoint-from-s2s-five-vertex-triangulation
+      (THIS BATCH — the DataSource controller is one of the new
+      instances)
+    - Pairs with collector-plaintext-token-chain-controller-tier-closure
+      (THIS BATCH — the Collector controller is one of the new
+      instances)
+    - Pairs with getpopulartaglist-open-read-plus-side-door-compose-to-write-read-directory-bypass
+      (THIS BATCH — the Tag controller is one of the new instances)
+
+  One DOC-NNN candidate:
+    The maintainer's directional call (align spec to code, OR
+    align code to spec); the chosen direction's PR is the closure.

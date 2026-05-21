@@ -57,6 +57,8 @@ In ONE assistant message, fire **6 `Agent` tool calls** with `run_in_background:
 | `panel-practitioner` | sonnet |
 | `panel-skeptic` | sonnet |
 
+**Agent-registration fallback.** The `panel-*` subagent types are registered from `.claude/agents/` at session start. If `/panel` is run in the *same* session that authored or edited those agent files, the new types are not yet in the registry and the `Agent` call errors with "agent type not found". In that case, spawn `subagent_type: general-purpose` instead and make the first line of each prompt: *"Read `.claude/agents/panel-<role>.md` in full and execute it as your system prompt."* — the same pattern `/next-batch` uses for `feature-flow-builder`. A fresh session needs no fallback. This applies to Phase 2 and Phase 3 identically.
+
 Each prompt is the agent's Input block (the agent's own system prompt declares which fields it uses; passing all fields is harmless):
 
 ```

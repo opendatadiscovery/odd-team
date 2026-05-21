@@ -37,7 +37,7 @@ RUN_DIR="$LINEAGE_DIR/meta-reviews/$DATE"
 
 ## Pre-flight (in order — abort if any fails)
 
-1. **`--show` short-circuit.** If the argument is `--show`, read `lineage/$REPO/meta-reviews/$DATE/panel-report.md` (or the newest `meta-reviews/*/panel-report.md`, or the `<date>` given), print it, and exit. No agents.
+1. **`--show` short-circuit.** If the argument is `--show`, read `lineage/$REPO/meta-reviews/$DATE/panel-report.md` (or the most recently modified `meta-reviews/*/panel-report.md`, or the `<date>` given), print it, and exit. No agents.
 2. **`validate` short-circuit.** If the argument is `validate`, jump to the "/panel validate" section below.
 3. **Substrate present.** `lineage/$REPO/manifest.yaml` must exist. Read `COMMIT_ANCHOR` = the substrate commit it records. If absent → abort: "no substrate for $REPO — run the extractor first."
 4. **Run dir.** `mkdir -p "$RUN_DIR/raw"`. If `$RUN_DIR/panel-report.md` already exists, this is a re-run for today — rename the prior `$DATE` dir to `$DATE-aN` before proceeding (do not silently overwrite a prior verdict).
@@ -88,6 +88,7 @@ PANEL_RUN: <DATE>
 PHASE: 2
 WORKSPACE_ROOT_ABS: <WORKSPACE_ROOT>
 LINEAGE_DIR_ABS: <LINEAGE_DIR>
+TARGET_PATH: lineage/<REPO>/meta-reviews/target.md
 PEER_REPORTS_DIR: lineage/<REPO>/meta-reviews/<DATE>/raw/
 PHASE2_MEMO_PATH: lineage/<REPO>/meta-reviews/<DATE>/raw/phase2-<role>.md
 ```

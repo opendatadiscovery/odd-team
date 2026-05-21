@@ -8,8 +8,8 @@ It is a **living, maintainer-owned artefact.** Detail it, correct it, tighten or
 
 ## Status
 
-- `version`: 0.1 — DRAFT
-- `ratified_by_maintainer`: NO  ← until set to yes, every panel report marks the target provisional
+- `version`: 1.0 — ratified
+- `ratified_by_maintainer`: yes — ratified 2026-05-21 by the maintainer
 - `seeded_from`: the maiden panel's chair-drafted definition-of-done (2026-05-21), itself synthesised from `APPROACH.md` §1 (the eight promises), `APPROACH.md` §14 (the honest-coverage axes), and the `CLAUDE.md` mission. **This provenance is the point** — the target is traceable to named sources, not invented.
 - `last_refined`: 2026-05-21
 

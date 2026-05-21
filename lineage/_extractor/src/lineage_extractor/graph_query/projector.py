@@ -1,0 +1,486 @@
+"""Projector — turn a parsed `Substrate` into an in-process property graph.
+
+The graph is a **pure projection**: it adds no facts the canonical files do not
+already state. It joins them. `nodes.jsonl` / `edges.jsonl` / sidecars / the six
+reducers are six loosely-coupled file sets; the projector wires them into one
+traversable labeled-property graph so a query can mix a structural hop with a
+semantic hop in a single walk.
+
+Universal provenance (SCHEMA §1): every node and every edge carries
+`source_file` + `source_line`. A graph element with no provenance is a build
+bug — `project()` raises rather than emit it.
+
+Determinism (SCHEMA §3.1): nodes/edges are added in a fixed label order over
+the already-sorted loader output, so two builds of one commit are identical and
+rustworkx node indices are stable.
+"""
+from __future__ import annotations
+
+import re
+from collections import defaultdict
+from dataclasses import dataclass, field
+from typing import Iterator
+
+import rustworkx
+
+from lineage_extractor.graph_query import config
+from lineage_extractor.graph_query.records import Substrate
+
+# Sidecar sections that are findings in their own right — each becomes a Finding
+# node carrying that section's vector; the remaining sections embed on the Sidecar.
+FINDING_SECTIONS = (
+    "bugs_limitations_corner_cases",
+    "security",
+    "performance",
+    "stress_findings",
+)
+_URL_RE = re.compile(r"https?://[^\s)\]<>\"'`]+")
+_LIST_TOKENS_RE = re.compile(r"(?:entities|operations)\s*:\s*\[([^\]]*)\]")
+
+
+# --------------------------------------------------------------------------
+# Graph element payloads
+
+
+@dataclass
+class GraphNode:
+    """A node payload. `key` is the internal label-prefixed unique id;
+    `node_id` is the human-facing id a query result cites."""
+
+    label: str
+    key: str
+    node_id: str
+    title: str
+    source_file: str
+    source_line: int
+    props: dict = field(default_factory=dict)
+    # (unit_name, text) pairs the embedder turns into vectors. May be empty
+    # (CodeNodes with no descriptor, Doc nodes — graph-only nodes).
+    embed_units: list[tuple[str, str]] = field(default_factory=list)
+
+
+@dataclass
+class GraphEdge:
+    """An edge payload — a typed relationship asserted by `source_file`."""
+
+    type: str
+    source_file: str
+    source_line: int
+    props: dict = field(default_factory=dict)
+
+
+# --------------------------------------------------------------------------
+# The graph
+
+
+class OntologyGraph:
+    """A rustworkx-backed labeled property graph + the indices a query needs."""
+
+    def __init__(self, repo: str) -> None:
+        self.repo = repo
+        self._g: rustworkx.PyDiGraph = rustworkx.PyDiGraph()
+        self._key_to_idx: dict[str, int] = {}
+        self._label_keys: dict[str, list[str]] = defaultdict(list)
+        self._edge_keys: set[tuple[int, int, str]] = set()
+        self.stub_count = 0
+        self.skipped: list[tuple[str, str]] = []
+
+    # -- construction ------------------------------------------------------
+
+    def add_node(self, node: GraphNode) -> int:
+        idx = self._key_to_idx.get(node.key)
+        if idx is not None:
+            return idx
+        idx = self._g.add_node(node)
+        self._key_to_idx[node.key] = idx
+        self._label_keys[node.label].append(node.key)
+        return idx
+
+    def add_edge(self, src_key: str, dst_key: str, edge: GraphEdge) -> bool:
+        """Add a typed edge. Returns False (no-op) if an endpoint is unknown or
+        the (src, dst, type) edge already exists — keeps the graph a simple
+        deterministic multigraph without parallel duplicates."""
+        src = self._key_to_idx.get(src_key)
+        dst = self._key_to_idx.get(dst_key)
+        if src is None or dst is None:
+            return False
+        sig = (src, dst, edge.type)
+        if sig in self._edge_keys:
+            return False
+        self._edge_keys.add(sig)
+        self._g.add_edge(src, dst, edge)
+        return True
+
+    # -- lookup ------------------------------------------------------------
+
+    def has(self, key: str) -> bool:
+        return key in self._key_to_idx
+
+    def get(self, key: str) -> GraphNode | None:
+        idx = self._key_to_idx.get(key)
+        return self._g[idx] if idx is not None else None
+
+    def keys_by_label(self, label: str) -> list[str]:
+        return list(self._label_keys.get(label, ()))
+
+    def all_nodes(self) -> Iterator[GraphNode]:
+        for idx in self._g.node_indices():
+            yield self._g[idx]
+
+    def node_count(self) -> int:
+        return self._g.num_nodes()
+
+    def edge_count(self) -> int:
+        return self._g.num_edges()
+
+    def label_counts(self) -> dict[str, int]:
+        return {label: len(keys) for label, keys in sorted(self._label_keys.items())}
+
+    def edge_type_counts(self) -> dict[str, int]:
+        counts: dict[str, int] = defaultdict(int)
+        for _s, _d, edge in self._g.weighted_edge_list():
+            counts[edge.type] += 1
+        return dict(sorted(counts.items()))
+
+    # -- traversal ---------------------------------------------------------
+
+    def edges_of(self, key: str) -> list[tuple[str, str, str]]:
+        """[(direction, edge_type, other_key)] for one node — `direction` is
+        'out' or 'in'."""
+        idx = self._key_to_idx.get(key)
+        if idx is None:
+            return []
+        out: list[tuple[str, str, str]] = []
+        for _s, dst, edge in self._g.out_edges(idx):
+            out.append(("out", edge.type, self._g[dst].key))
+        for src, _d, edge in self._g.in_edges(idx):
+            out.append(("in", edge.type, self._g[src].key))
+        return out
+
+    def neighbourhood(
+        self, start_key: str, hops: int, edge_filter: set[str] | None = None
+    ) -> dict[str, int]:
+        """Bounded bidirectional BFS — {node_key: hop_distance} within `hops`
+        of `start_key`. The bound is the safety rail against pulling the whole
+        graph into a query result (SCHEMA §4.1)."""
+        start = self._key_to_idx.get(start_key)
+        if start is None:
+            return {}
+        dist: dict[int, int] = {start: 0}
+        frontier = [start]
+        for hop in range(1, hops + 1):
+            nxt: list[int] = []
+            for idx in frontier:
+                for _s, dst, edge in self._g.out_edges(idx):
+                    if edge_filter and edge.type not in edge_filter:
+                        continue
+                    if dst not in dist:
+                        dist[dst] = hop
+                        nxt.append(dst)
+                for src, _d, edge in self._g.in_edges(idx):
+                    if edge_filter and edge.type not in edge_filter:
+                        continue
+                    if src not in dist:
+                        dist[src] = hop
+                        nxt.append(src)
+            frontier = nxt
+            if not frontier:
+                break
+        return {self._g[idx].key: d for idx, d in dist.items()}
+
+
+# --------------------------------------------------------------------------
+# Key helpers — internal label-prefixed unique keys
+
+
+def _code_key(node_id: str) -> str:
+    return f"code::{node_id}"
+
+
+def _sidecar_key(node_id: str) -> str:
+    return f"sidecar::{node_id}"
+
+
+def _reducer_key(label: str, entry_id: str) -> str:
+    return f"{label.lower()}::{entry_id}"
+
+
+# --------------------------------------------------------------------------
+# Projection
+
+
+def project(substrate: Substrate) -> OntologyGraph:
+    """Project a parsed Substrate into an OntologyGraph. Pure, deterministic."""
+    g = OntologyGraph(substrate.repo)
+    g.skipped = list(substrate.skipped)
+
+    node_id_to_sidecar_key: dict[str, str] = {}
+    slug_to_sidecar_key: dict[str, str] = {}
+    concept_name_index: dict[str, str] = {}
+
+    # 1 — CodeNodes (the structural spine).
+    code_ids = {cn.node_id for cn in substrate.code_nodes}
+    for cn in substrate.code_nodes:
+        descriptor = f"{cn.kind} {cn.descriptor} {cn.package} {cn.path}".strip()
+        g.add_node(
+            GraphNode(
+                label=config.L_CODE_NODE,
+                key=_code_key(cn.node_id),
+                node_id=cn.node_id,
+                title=cn.descriptor or cn.node_id,
+                source_file=cn.source_file,
+                source_line=cn.source_line,
+                props={
+                    "axis": cn.axis, "kind": cn.kind, "repo": cn.repo,
+                    "lang": cn.lang, "package": cn.package, "path": cn.path,
+                    "metadata": cn.metadata,
+                },
+                embed_units=[("descriptor", descriptor)] if descriptor else [],
+            )
+        )
+
+    # 2 — Sidecars + Findings + Docs; wire ENRICHED_BY / SURFACES_FINDING / LINKS_DOC.
+    for sc in substrate.sidecars:
+        sc_key = _sidecar_key(sc.node_id)
+        node_id_to_sidecar_key[sc.node_id] = sc_key
+        slug_to_sidecar_key[sc.slug] = sc_key
+        sidecar_embed: list[tuple[str, str]] = []
+        for section in sc.sections:
+            if not section.body or section.body.strip() in ("", "[]"):
+                continue
+            if section.name in FINDING_SECTIONS:
+                f_key = f"finding::{sc.node_id}#{section.name}"
+                g.add_node(
+                    GraphNode(
+                        label=config.L_FINDING,
+                        key=f_key,
+                        node_id=f"{sc.node_id}#{section.name}",
+                        title=f"{section.name} — {sc.slug}",
+                        source_file=sc.source_file,
+                        source_line=section.line,
+                        props={
+                            "finding_kind": section.name,
+                            "severity": _severity(section.body),
+                        },
+                        embed_units=[(section.name, section.body)],
+                    )
+                )
+            else:
+                sidecar_embed.append((section.name, section.body))
+        g.add_node(
+            GraphNode(
+                label=config.L_SIDECAR,
+                key=sc_key,
+                node_id=sc.node_id,
+                title=sc.slug,
+                source_file=sc.source_file,
+                source_line=1,
+                props={
+                    "slug": sc.slug,
+                    "enrichment_status": sc.frontmatter.get("enrichment_status", ""),
+                    "confidence_overall": sc.frontmatter.get("confidence_overall", ""),
+                    "node_kind": sc.frontmatter.get("node_kind", ""),
+                },
+                embed_units=sidecar_embed,
+            )
+        )
+        # ENRICHED_BY — CodeNode -> Sidecar (stub the CodeNode if unscaffolded).
+        if sc.node_id not in code_ids:
+            _add_stub_code_node(g, sc.node_id, sc.source_file)
+        g.add_edge(
+            _code_key(sc.node_id), sc_key,
+            GraphEdge(config.E_ENRICHED_BY, sc.source_file, 1),
+        )
+        # SURFACES_FINDING — Sidecar -> Finding.
+        for section in sc.sections:
+            if section.name in FINDING_SECTIONS and section.body.strip() not in ("", "[]"):
+                g.add_edge(
+                    sc_key, f"finding::{sc.node_id}#{section.name}",
+                    GraphEdge(config.E_SURFACES_FINDING, sc.source_file, section.line),
+                )
+        # LINKS_DOC — Sidecar -> Doc, one per unique URL in docs_link_semantic.
+        for section in sc.sections:
+            if section.name != "docs_link_semantic":
+                continue
+            for url in sorted(set(_URL_RE.findall(section.body))):
+                doc_key = f"doc::{url}"
+                if not g.has(doc_key):
+                    g.add_node(
+                        GraphNode(
+                            label=config.L_DOC, key=doc_key, node_id=url,
+                            title=url, source_file=sc.source_file,
+                            source_line=section.line, props={"url": url},
+                        )
+                    )
+                g.add_edge(sc_key, doc_key,
+                           GraphEdge(config.E_LINKS_DOC, sc.source_file, section.line))
+
+    # 3 — Concepts.
+    for concept in substrate.concepts:
+        c_key = f"concept::{concept.concept_id}"
+        g.add_node(
+            GraphNode(
+                label=config.L_CONCEPT,
+                key=c_key,
+                node_id=concept.concept_id,
+                title=concept.canonical_name,
+                source_file=concept.source_file,
+                source_line=concept.source_line,
+                props={"concept_type": concept.concept_type, "aliases": concept.aliases},
+                embed_units=[("concept", f"{concept.canonical_name}. {concept.body}")],
+            )
+        )
+        for name in [concept.canonical_name, *concept.aliases]:
+            if name:
+                concept_name_index.setdefault(name.strip().lower(), c_key)
+        # MENTIONS_CONCEPT from a concept's own `nodes:` back-reference (audiences).
+        for node_id in concept.cited_node_ids:
+            sc_key = node_id_to_sidecar_key.get(node_id)
+            if sc_key:
+                g.add_edge(sc_key, c_key,
+                           GraphEdge(config.E_MENTIONS_CONCEPT, concept.source_file, 1))
+
+    # 4 — Reducer nodes (ImplicitADR / RefactoringScope / DocGap / TestGap /
+    #     Feature / FeatureReflection).
+    for rn in substrate.reducer_nodes:
+        g.add_node(
+            GraphNode(
+                label=rn.label,
+                key=_reducer_key(rn.label, rn.entry_id),
+                node_id=rn.entry_id,
+                title=rn.title,
+                source_file=rn.source_file,
+                source_line=rn.source_line,
+                props=dict(rn.props),
+                embed_units=[("entry", f"{rn.title}. {rn.body}".strip())],
+            )
+        )
+
+    # 5 — Join edges from reducer nodes back to the sidecars / code nodes they cite.
+    _join_label = {
+        config.L_IMPLICIT_ADR: config.E_IMPLIES_ADR,
+        config.L_DOC_GAP: config.E_HAS_DOC_GAP,
+        config.L_REFACTOR_SCOPE: config.E_HAS_REFACTOR_SCOPE,
+    }
+    all_slugs = sorted(slug_to_sidecar_key)
+    for rn in substrate.reducer_nodes:
+        rkey = _reducer_key(rn.label, rn.entry_id)
+        edge_type = _join_label.get(rn.label)
+        if edge_type:  # markdown reducers cite sidecars by slug
+            for slug in rn.cited_sidecar_slugs:
+                sc_key = _resolve_sidecar(slug, slug_to_sidecar_key, all_slugs)
+                if sc_key:
+                    g.add_edge(sc_key, rkey,
+                               GraphEdge(edge_type, rn.source_file, rn.source_line))
+        elif rn.label == config.L_TEST_GAP:  # cites node_ids
+            for node_id in rn.cited_node_ids:
+                src = node_id_to_sidecar_key.get(node_id) or _code_key(node_id)
+                if not g.has(src):
+                    _add_stub_code_node(g, node_id, rn.source_file)
+                    src = _code_key(node_id)
+                g.add_edge(src, rkey,
+                           GraphEdge(config.E_HAS_TEST_GAP, rn.source_file, rn.source_line))
+        elif rn.label == config.L_FEATURE:  # PART_OF_FEATURE from contributing_nodes
+            for node_id in rn.cited_node_ids:
+                if not g.has(_code_key(node_id)):
+                    _add_stub_code_node(g, node_id, rn.source_file)
+                g.add_edge(_code_key(node_id), rkey,
+                           GraphEdge(config.E_PART_OF_FEATURE, rn.source_file, rn.source_line))
+
+    # 6 — REFLECTED_BY — Feature F-NNN -> FeatureReflection F-NNN (same id).
+    for rn in substrate.reducer_nodes:
+        if rn.label == config.L_FEATURE_REFLECTION:
+            feature_key = _reducer_key(config.L_FEATURE, rn.entry_id)
+            refl_key = _reducer_key(config.L_FEATURE_REFLECTION, rn.entry_id)
+            g.add_edge(feature_key, refl_key,
+                       GraphEdge(config.E_REFLECTED_BY, rn.source_file, rn.source_line))
+
+    # 7 — Structural edges from edges.jsonl (uppercased type), stub missing ends.
+    for edge in substrate.edges:
+        for endpoint in (edge.src, edge.dst):
+            if not g.has(_code_key(endpoint)):
+                _add_stub_code_node(g, endpoint, edge.source_file)
+        g.add_edge(
+            _code_key(edge.src), _code_key(edge.dst),
+            GraphEdge(edge.type.upper(), edge.source_file, edge.source_line, dict(edge.metadata)),
+        )
+
+    # 8 — MENTIONS_CONCEPT from each sidecar's `concepts` section (best-effort
+    #     name match against the concept catalogue).
+    for sc in substrate.sidecars:
+        sc_key = _sidecar_key(sc.node_id)
+        for section in sc.sections:
+            if section.name != "concepts":
+                continue
+            for token in _concept_tokens(section.body):
+                c_key = concept_name_index.get(token.lower())
+                if c_key:
+                    g.add_edge(sc_key, c_key,
+                               GraphEdge(config.E_MENTIONS_CONCEPT, sc.source_file, section.line))
+
+    _assert_provenance(g)
+    return g
+
+
+# --------------------------------------------------------------------------
+# Helpers
+
+
+def _add_stub_code_node(g: OntologyGraph, node_id: str, referenced_by: str) -> None:
+    """Create a placeholder CodeNode for an id referenced by an edge / feature
+    chain / test-gap that has no `nodes.jsonl` row — keeps edges from dangling
+    and makes the graph itself a coverage-gap detector (SCHEMA §1.2)."""
+    key = _code_key(node_id)
+    if g.has(key):
+        return
+    g.add_node(
+        GraphNode(
+            label=config.L_CODE_NODE, key=key, node_id=node_id,
+            title=node_id, source_file=referenced_by, source_line=0,
+            props={"kind": "unresolved", "stub": True},
+        )
+    )
+    g.stub_count += 1
+
+
+def _resolve_sidecar(
+    cited: str, slug_to_key: dict[str, str], all_slugs: list[str]
+) -> str | None:
+    """Resolve a cited sidecar slug to a Sidecar key. Citations across reducer
+    batches use mixed slug conventions (full `odd-platform__java__...` and
+    short `Controller__kind__method` forms); accept an exact match, or a unique
+    `__`-boundary suffix/prefix match. Ambiguous (>1 candidate) -> unresolved."""
+    key = slug_to_key.get(cited)
+    if key:
+        return key
+    candidates = [
+        s for s in all_slugs
+        if s.endswith("__" + cited) or cited.endswith("__" + s)
+    ]
+    return slug_to_key[candidates[0]] if len(candidates) == 1 else None
+
+
+def _severity(text: str) -> str:
+    m = re.search(r"\b(CRITICAL|HIGH|MEDIUM|LOW)\b", text)
+    return m.group(1) if m else ""
+
+
+def _concept_tokens(concepts_section: str) -> list[str]:
+    """Pull entity/operation name tokens from a sidecar `concepts` section."""
+    tokens: list[str] = []
+    for inner in _LIST_TOKENS_RE.findall(concepts_section):
+        for tok in inner.split(","):
+            tok = tok.strip().strip("`\"'")
+            if tok:
+                tokens.append(tok)
+    return tokens
+
+
+def _assert_provenance(g: OntologyGraph) -> None:
+    """SCHEMA §1: a graph element with no provenance is a build bug — raise."""
+    for node in g.all_nodes():
+        if not node.source_file:
+            raise ValueError(f"provenance missing on node {node.key!r} ({node.label})")
+    for _s, _d, edge in g._g.weighted_edge_list():  # noqa: SLF001 — internal check
+        if not edge.source_file:
+            raise ValueError(f"provenance missing on a {edge.type} edge")

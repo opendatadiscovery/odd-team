@@ -1,0 +1,185 @@
+---
+probe_id: P-029
+feature_id: F-018
+test_class: integration
+verified_against_commit: 9ac6436e
+prompt_version: probe-runner/0.1.0
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__TagController__controller-method__getPopularTagList.md
+emitted_at: 2026-05-21T00:00:00Z
+maintainer_curated: false
+status: pending-stress-protocol
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category A — tunables, getPopularTagList page/size):
+  what exact HTTP status does GET /api/tags return for degenerate page/size
+  inputs?
+
+  Static trace from the code (ReactiveTagRepositoryImpl.java:148 computes the
+  SQL OFFSET as `(page - 1) * size`; the LIMIT is `size`; the service
+  signature TagServiceImpl.java:73-74 is primitive `int page, int size`):
+
+    - page=0  -> OFFSET = (0-1)*size = -size -> PostgreSQL rejects a negative
+      OFFSET (SQL state 22023) -> DataAccessException -> hypothesised HTTP 500.
+    - page=-1 -> OFFSET = (-1-1)*size = -2*size -> negative OFFSET -> same.
+    - size=0  -> LIMIT 0 -> a VALID query: empty `items`, correct
+      `pageInfo.total`. Hypothesised HTTP 200.
+    - size=-1 -> LIMIT -1 -> PostgreSQL rejects a negative LIMIT ->
+      DataAccessException -> hypothesised HTTP 500.
+
+  The controller (TagController.java:37-42) applies no @Valid / @Min / @Max,
+  so none of these is caught before the SQL executes. The HYPOTHESIS to
+  confirm: the four cases surface as 500 / 500 / 200 / 500 respectively.
+  This probe pins the actual statuses so the methodology records measured
+  truth rather than a static guess, and so a future input-validation fix
+  (turning the 500s into clean 400s) surfaces as a probe-state change.
+
+  Out of scope: the literal-`null` page/size case (NullPointerException on
+  unboxing at the int-param service boundary) is not exercised here — a
+  Spring @RequestParam typically supplies the OpenAPI default rather than a
+  literal null, so reproducing the NPE requires a non-standard request that
+  is better covered by a focused unit test than this integration probe.
+---
+
+# P-029 — getPopularTagList degenerate page/size HTTP-status pinning
+
+arrange:
+  - kind: docker-compose-up
+
+  # A small, well-known tag directory so the page/size arithmetic is the only
+  # variable. 5 tags, no relations needed (usage count is irrelevant to the
+  # OFFSET/LIMIT boundary being tested).
+  - kind: sql
+    query: |
+      INSERT INTO tag (id, name, important, created_at, updated_at)
+      SELECT 1100 + gs, 'p029_tag_' || lpad((1100 + gs)::text, 4, '0'), false, NOW(), NOW()
+      FROM generate_series(0, 4) AS gs
+      ON CONFLICT (id) DO NOTHING
+
+  # Sanity: confirm exactly 5 probe tags are present before exercising the API.
+  - kind: sql
+    query: |
+      SELECT COUNT(*) AS probe_tag_count
+      FROM tag
+      WHERE id BETWEEN 1100 AND 1104
+        AND deleted_at IS NULL
+
+act:
+  # Case 1 — page=0: OFFSET = (0-1)*size = -size. Expect a SQL-error-driven 5xx.
+  - kind: rest
+    method: GET
+    path: /api/tags?page=0&size=30
+    capture_as: page_zero_response
+
+  # Case 2 — page=-1: OFFSET = (-1-1)*size = -2*size. Expect a SQL-error-driven 5xx.
+  - kind: rest
+    method: GET
+    path: /api/tags?page=-1&size=30
+    capture_as: page_negative_response
+
+  # Case 3 — size=0: LIMIT 0. Expect a valid 200 with an empty items list.
+  - kind: rest
+    method: GET
+    path: /api/tags?page=1&size=0
+    capture_as: size_zero_response
+
+  # Case 4 — size=-1: LIMIT -1. Expect a SQL-error-driven 5xx.
+  - kind: rest
+    method: GET
+    path: /api/tags?page=1&size=-1
+    capture_as: size_negative_response
+
+observe:
+  - kind: http-status
+    from: page_zero_response
+    capture_as: page_zero_status
+
+  - kind: http-status
+    from: page_negative_response
+    capture_as: page_negative_status
+
+  - kind: http-status
+    from: size_zero_response
+    capture_as: size_zero_status
+
+  - kind: http-status
+    from: size_negative_response
+    capture_as: size_negative_status
+
+  # For the size=0 case, also capture the body so the empty-page contract
+  # (empty items + a correct total) can be asserted.
+  - kind: jsonpath
+    from: size_zero_response_body
+    path: "$.items"
+    capture_as: size_zero_items
+
+  - kind: jsonpath
+    from: size_zero_response_body
+    path: "$.pageInfo.total"
+    capture_as: size_zero_total
+
+assert:
+  # HYPOTHESIS (current un-validated-input state). If any assertion FAILS,
+  # the methodology's static trace was wrong about the surfaced status and
+  # the sidecar's stress_findings.tunables must be corrected to the measured
+  # value. If they all PASS, the PROBE-NEEDED entries flip to PROBE-VERIFIED.
+  - "page_zero_status >= 500"          # negative OFFSET -> PostgreSQL SQL error
+  - "page_negative_status >= 500"      # negative OFFSET -> PostgreSQL SQL error
+  - "size_negative_status >= 500"      # negative LIMIT  -> PostgreSQL SQL error
+
+  # size=0 is a VALID query (LIMIT 0): a clean empty page, not an error.
+  - "size_zero_status == 200"
+  - "len(size_zero_items) == 0"
+  - "size_zero_total >= 5"             # pageInfo.total reflects the real directory
+
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM tag WHERE id BETWEEN 1100 AND 1104
+
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  related_sidecars:
+    - lineage/odd-platform/understanding/odd-platform__java__TagController__controller-method__getPopularTagList.md
+    - lineage/odd-platform/understanding/odd-platform__java__repository__reactive__repository__ReactiveTagRepositoryImpl.md
+  refactoring_scopes: []
+  retrospectives: [LSN-019]
+
+file_evidence:
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/TagController.java"
+    lines: "36-44"
+    role: "getPopularTagList — forwards page/size to the service with no @Valid / @Min / @Max"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/TagServiceImpl.java"
+    lines: "72-77"
+    role: "listMostPopular — primitive `int page, int size` service signature"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveTagRepositoryImpl.java"
+    lines: "137-167"
+    role: "listMostPopular — `paginate(..., (page-1)*size, size)` at line 148; the OFFSET/LIMIT arithmetic that turns negative inputs into PostgreSQL SQL errors"
+
+realism_caveats: |
+  - The assertions on the 5xx cases use `>= 500` rather than an exact `== 500`
+    because the platform's reactive exception-translation chain
+    (JooqReactiveOperations -> ExceptionUtils) may map a DataAccessException to
+    500 directly or to a more specific 5xx; the probe pins "the request fails
+    with a server error", and the probe-runner should record the EXACT status
+    observed so the sidecar can be tightened to the measured value.
+
+  - The probe does NOT exercise the literal-`null` page/size variant (the
+    NullPointerException-on-unboxing path). Spring's @RequestParam binding for
+    an OpenAPI-defaulted parameter typically substitutes the default, so a
+    literal null is hard to send through a normal HTTP client; that case is
+    better pinned by a focused service-layer unit test and is left out of this
+    integration probe deliberately.
+
+  - The probe runs under DISABLED auth (stack_profile odd-minimal). The
+    page/size arithmetic boundary is auth-mode-agnostic — the SQL is identical
+    across modes — so DISABLED is sufficient and minimises setup cost.
+
+  - If an input-validation fix later lands on getPopularTagList (e.g. @Min(1)
+    on page, @Min(0) @Max(N) on size, turning the 500s into 400s), this
+    probe's 5xx assertions FLIP — the failing assertion surfaces the fix in
+    CI, at which point the maintainer updates the assertions to the new
+    contract (400 for out-of-range inputs). That is the intended probe
+    lifecycle: pin the current behaviour, surface the fix, update, ship.

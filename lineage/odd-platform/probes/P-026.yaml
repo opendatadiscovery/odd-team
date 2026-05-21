@@ -1,0 +1,136 @@
+---
+probe_id: P-026
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__TagController__controller-method__createTag
+emitted_at: 2026-05-21T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-018
+test_class: integration
+verified_against_commit: 9ac6436e
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category E — resource boundary): POST /api/tags accepts a
+  Flux<TagFormData> bulk payload; the controller .collectList()s it and calls
+  tagService.bulkCreate -> reactiveTagRepository.bulkCreate, whose inherited
+  body (ReactiveAbstractCRUDRepository.java:114-126) is a SINGLE
+  insertManyReturning INSERT under @ReactiveTransactional with NO ON CONFLICT
+  clause. When the SAME batch contains a duplicate name (e.g.
+  [{"name":"dup"},{"name":"dup"}]), the partial unique index tag_name_unique
+  (V0_0_64:105) raises a constraint violation on the second row within the
+  single multi-row INSERT.
+
+  Hypothesis (not confirmable from code alone — depends on R2DBC + jOOQ
+  insertManyReturning emission shape AND Spring reactive-TX rollback
+  semantics): the whole INSERT fails atomically, the @ReactiveTransactional
+  boundary rolls back, ZERO tags are created, and the caller receives a 4xx
+  (UniqueConstraintException -> "Tag with this name already exists" per
+  ExceptionUtils.java:54-56). The risk being pinned: a partial-commit outcome
+  (the distinct names land, only the duplicate is rejected) would be a silent
+  data-shape surprise — the operator submitted a 5-tag batch, got an error,
+  and 4 tags exist anyway.
+
+  Secondary question: a batch where ONE name already exists in the directory
+  (cross-batch duplicate, not in-batch) — same atomicity expectation.
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: sql
+    query: |
+      -- pre-existing tag to exercise the cross-batch-duplicate variation
+      INSERT INTO tag (id, name, important, created_at, updated_at)
+      VALUES (2610, 'p026_preexisting', false, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+  - kind: sql
+    query: |
+      -- baseline count of non-deleted tags before the probe acts
+      SELECT COUNT(*) AS baseline_tag_count FROM tag WHERE deleted_at IS NULL
+act:
+  - kind: rest
+    method: POST
+    path: /api/tags
+    body: |
+      [
+        {"name": "p026_novel_alpha", "important": false},
+        {"name": "p026_dup", "important": false},
+        {"name": "p026_dup", "important": true},
+        {"name": "p026_novel_beta", "important": false}
+      ]
+    capture_as: in_batch_dup_response
+  - kind: rest
+    method: POST
+    path: /api/tags
+    body: |
+      [
+        {"name": "p026_novel_gamma", "important": false},
+        {"name": "p026_preexisting", "important": false}
+      ]
+    capture_as: cross_batch_dup_response
+observe:
+  - kind: capture-status
+    from: in_batch_dup_response
+    capture_as: in_batch_status
+  - kind: capture-status
+    from: cross_batch_dup_response
+    capture_as: cross_batch_status
+  - kind: sql
+    query: |
+      -- did ANY of the in-batch payload's novel tags land despite the error?
+      SELECT COUNT(*) AS in_batch_novel_landed
+      FROM tag
+      WHERE deleted_at IS NULL
+        AND name IN ('p026_novel_alpha', 'p026_novel_beta', 'p026_dup')
+    capture_as: in_batch_novel_landed
+  - kind: sql
+    query: |
+      -- did the cross-batch payload's novel tag land despite the error?
+      SELECT COUNT(*) AS cross_batch_novel_landed
+      FROM tag
+      WHERE deleted_at IS NULL
+        AND name = 'p026_novel_gamma'
+    capture_as: cross_batch_novel_landed
+assert:
+  # Hypothesis: both batches fail with a 4xx (duplicate-name rejection).
+  - "in_batch_status >= 400 and in_batch_status < 500"
+  - "cross_batch_status >= 400 and cross_batch_status < 500"
+  # Hypothesis: atomic rollback — NEITHER batch leaves partial rows behind.
+  # If either count is > 0, the batch insert is NOT atomic and the sidecar's
+  # bugs_limitations_corner_cases entry must be upgraded with the partial-
+  # commit failure mode.
+  - "in_batch_novel_landed == 0"
+  - "cross_batch_novel_landed == 0"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM tag WHERE name IN
+        ('p026_novel_alpha', 'p026_novel_beta', 'p026_dup',
+         'p026_novel_gamma', 'p026_preexisting')
+  - kind: sql
+    query: |
+      DELETE FROM tag WHERE id = 2610
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__TagController__controller-method__createTag
+    - odd-platform__java__service__TagServiceImpl
+    - odd-platform__java__repository__reactive__repository__ReactiveTagRepositoryImpl
+  retrospectives: [LSN-019]
+realism_caveats: |
+  - The probe runs under DISABLED auth (createTag's TAG_CREATE gate is
+    auth-mode-agnostic; DISABLED reduces setup cost). A complementary
+    security probe would assert the TAG_CREATE 403 path under LOGIN_FORM.
+  - The probe does NOT verify the in-batch ordering of insertManyReturning
+    (jOOQ emits a single multi-VALUES INSERT; PostgreSQL evaluates the
+    unique index per row but the failure surfaces as one statement error).
+    It verifies only the operator-visible outcome: status code + whether
+    rows persisted.
+  - If the assertion `in_batch_novel_landed == 0` FAILS, the batch INSERT
+    is NOT atomic under the inherited @ReactiveTransactional — re-read
+    ReactiveAbstractCRUDRepository.insertManyReturning and the R2DBC
+    transaction-manager wiring; the partial-commit case is a HIGH-severity
+    data-shape bug that the current sidecar records only as a hypothesis.
+  - The probe does not exercise the empty-batch path (POST /api/tags with
+    `[]`); per ReactiveAbstractCRUDRepository.java:115-117 that short-
+    circuits to Flux.just() — a 200 with an empty Flux<Tag>, statically
+    determinable, no probe needed.

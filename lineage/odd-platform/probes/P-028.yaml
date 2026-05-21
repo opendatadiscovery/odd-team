@@ -1,0 +1,124 @@
+---
+probe_id: P-028
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__TermController__controller-method__createTermTagsRelations
+emitted_at: 2026-05-21T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-018
+test_class: integration
+verified_against_commit: ede5d277be6251b0826026035707c1fb6dbb24b6
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question for TermController#createTermTagsRelations,
+  Category E (resource boundaries — concurrency).
+
+  TagServiceImpl.getOrCreateTagsByName:80-86 -> divideTagsByExistence
+  :144-159 is a read-then-write: it first SELECTs existing tags by name
+  (ReactiveTagRepositoryImpl.listByNames:120-125, soft-delete-filtered),
+  then bulkCreates the names not found. There is NO ON CONFLICT clause
+  on the directory INSERT (ReactiveAbstractCRUDRepository.bulkCreate
+  :114-126 -> insertManyReturning, a plain INSERT). The `tag` table
+  carries a partial unique index on (name) WHERE the row is not
+  soft-deleted.
+
+  Hypothesis: two concurrent PUT /api/terms/{a}/tags and
+  PUT /api/terms/{b}/tags requests that each submit the SAME
+  never-before-seen tag name both pass listByNames ("not present"),
+  both call bulkCreate, and exactly ONE INSERT wins on the unique
+  index — the loser receives a database integrity-constraint
+  violation surfaced as a 4xx error response to the caller. The
+  term-tag path has NO retry: the operator-visible result is a failed
+  PUT for a tag name that, by the time they retry, already exists.
+
+  NOTE: this contrasts with the term-tag RELATION insert
+  (createTermRelations, ReactiveTagRepositoryImpl.java:326-347) which
+  DOES use .onDuplicateKeyIgnore() — so the tag_to_term primary-key
+  collision is silent; only the global `tag` DIRECTORY insert races.
+---
+arrange:
+  - kind: docker-compose-up
+    note: |
+      Local odd-platform build from commit ede5d277 against
+      docker-compose Postgres, auth.type=DISABLED.
+  - kind: sql
+    query: |
+      INSERT INTO namespace (id, name, is_deleted)
+      VALUES (8001, 'p028-namespace', false);
+  - kind: sql
+    query: |
+      INSERT INTO term (id, name, definition, namespace_id, is_deleted)
+      VALUES
+        (8001, 'p028-term-a', 'probe term A', 8001, false),
+        (8002, 'p028-term-b', 'probe term B', 8001, false);
+  - kind: sql
+    query: |
+      -- confirm the racing name does NOT exist before the act phase
+      DELETE FROM tag WHERE name = 'p028-race-tag';
+act:
+  - kind: rest-concurrent
+    name: concurrent_novel_tag
+    note: |
+      Fire both PUTs as close to simultaneously as possible (two
+      threads / two HTTP clients, no inter-request delay). Both submit
+      the identical novel name 'p028-race-tag'.
+    requests:
+      - method: PUT
+        path: /api/terms/8001/tags
+        body: '{"tag_name_list": ["p028-race-tag"]}'
+        capture_as: race_response_a
+      - method: PUT
+        path: /api/terms/8002/tags
+        body: '{"tag_name_list": ["p028-race-tag"]}'
+        capture_as: race_response_b
+observe:
+  - kind: rest_response
+    target: race_response_a
+    capture:
+      - status_code
+      - body
+  - kind: rest_response
+    target: race_response_b
+    capture:
+      - status_code
+      - body
+  - kind: sql
+    query: |
+      SELECT count(*) AS directory_rows
+      FROM tag WHERE name = 'p028-race-tag' AND deleted_at IS NULL
+    capture_as: directory_state
+assert:
+  - "directory_state.directory_rows == 1  # the partial unique index permits exactly one live row for the name"
+  # The probe-runner records which outcome holds; both are documentable.
+  # Hypothesis (race loses, no retry): one of {race_response_a, race_response_b}
+  #   is 200 and the other is 4xx (UniqueConstraintException-translated).
+  # Alternative (both succeed): the second request's listByNames runs
+  #   AFTER the first commits, so it finds the existing row and skips
+  #   bulkCreate — no collision. The probe-runner reports which.
+  - "(race_response_a.status_code == 200) or (race_response_b.status_code == 200)  # at least one succeeds"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM tag_to_term WHERE term_id IN (8001, 8002);
+      DELETE FROM term WHERE id IN (8001, 8002);
+      DELETE FROM namespace WHERE id = 8001;
+      DELETE FROM tag WHERE name = 'p028-race-tag';
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__TermController__controller-method__createTermTagsRelations
+    - odd-platform__java__DataEntityController__controller-method__createDataEntityTagsRelations
+  retrospectives: [LSN-019]
+realism_caveats: |
+  The race window between listByNames and bulkCreate is narrow; a
+  single probe run may not hit it. The probe-runner should run the
+  concurrent act step N times (recommend >= 20) and report whether
+  the loser-4xx outcome was ever observed. If never observed, the
+  finding is "race is theoretically present (no ON CONFLICT) but not
+  reproducible at single-host concurrency" — still a documentable
+  caveat for high-concurrency deployments, severity LOW. The probe
+  does NOT cover the reactive-transaction interaction: both upsertTags
+  calls run inside @ReactiveTransactional, so the losing INSERT also
+  rolls back its term-relation writes — the caller loses the WHOLE
+  PUT, not just the directory row.

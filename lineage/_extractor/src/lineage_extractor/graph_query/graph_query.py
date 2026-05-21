@@ -284,21 +284,31 @@ class GraphQuery:
     # (adrs/drafts/agentic-graph-retriever.md). The agent is the intelligence;
     # these never reason, never iterate — they just answer one question each.
 
-    def search(self, text: str, *, k: int = 12) -> list[QueryResult]:
+    def search(
+        self, text: str, *, k: int = 12, label_filter: set[str] | None = None,
+    ) -> list[QueryResult]:
         """Pure semantic search — vector top-k entry points, NO graph expansion.
-        Degrades to keyword search when the embedding half is unavailable."""
-        seeds = (self._vector_seeds(text, k) if self.vectors.available
-                 else self._keyword_seeds(text, k))
+        Degrades to keyword search when the embedding half is unavailable.
+        `label_filter` scopes results to specific node labels — used by the
+        reducers to dedup a fresh finding against only its own artefact's
+        nodes (e.g. a RefactoringScope finding against RefactoringScope nodes)."""
+        # When filtering, over-fetch so the post-filter slice still yields ~k.
+        pool = k * 8 if label_filter else k
+        seeds = (self._vector_seeds(text, pool) if self.vectors.available
+                 else self._keyword_seeds(text, pool))
         via = "vector" if self.vectors.available else "keyword"
         out: list[QueryResult] = []
         for key, score in seeds:
             node = self.graph.get(key)
-            if node is not None:
-                out.append(QueryResult(
-                    label=node.label, node_id=node.node_id, title=node.title,
-                    source_file=node.source_file, source_line=node.source_line,
-                    score=score, hop=0, via=via, props=node.props))
-        return _dedup_by_node_id(out)
+            if node is None:
+                continue
+            if label_filter and node.label not in label_filter:
+                continue
+            out.append(QueryResult(
+                label=node.label, node_id=node.node_id, title=node.title,
+                source_file=node.source_file, source_line=node.source_line,
+                score=score, hop=0, via=via, props=node.props))
+        return _dedup_by_node_id(out)[:k]
 
     def node(self, node_id: str) -> dict | None:
         """The full content of one node — every graph node sharing this node_id

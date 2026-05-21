@@ -63,13 +63,16 @@ Slug rule for the output filename: replace spaces and special chars with `__` be
 
 Verify all expected sidecar paths exist on disk before proceeding (Glob + ls). For any missing → log + continue with the present subset.
 
-In ONE assistant message, fire 5 Agent tool calls IN PARALLEL with `run_in_background: false`. Subagent types + prompts:
+**Pre-step — warm the graph (rev 7.1).** Before spawning the reducers, run ONCE:
+`lineage/_extractor/.venv/bin/lineage-extractor graph-build odd-platform`. This rebuilds the ephemeral graph + vector index from the canonical `detail/` files (cache-checked) so every reducer's dedup `graph-search` hits a current, warm index reflecting all *committed* prior findings — and the 5 reducers do not each cold-build in parallel. Per `adrs/drafts/agentic-graph-retriever.md`.
 
-- `concept-merger` — refresh `concepts/` from the new sidecars, dedup via grep-then-narrow-Read on `concepts/index.yaml`.
-- `adr-archaeologist` — refresh `implicit-adrs/` + `refactoring-scopes/`, dedup via grep on the respective index.md files. Write append-files (`*/index-batch-{theme_id}-append.md`) for index updates.
-- `doc-gap-finder` — refresh `doc-gaps/`, dedup via grep on `doc-gaps/index.md`. WebFetch if available; otherwise inherit from neighbour sidecars per stale-probe cadence.
-- `test-coverage-mapper` — refresh `test-map/`, dedup via grep on `test-map/index.yaml`. Output a `test-map/index.delta.yaml` for the orchestrator to merge.
-- `general-purpose` (acting as feature-flow-builder per its system prompt at `.claude/agents/feature-flow-builder.md`) — refresh `feature-flows/`, dedup via grep on `feature-flows/index.yaml`. Detail-file writes must use YAML-safe scalars: never emit a bare scalar containing `: ` or starting with `@` — use `|-` block scalar.
+In ONE assistant message, fire 5 Agent tool calls IN PARALLEL with `run_in_background: false`. Each reducer dedups via **semantic `graph-search`** per `playbooks/registry-search-spawn.md` (rev 7.1 — superseding the registry-search grep). Subagent types:
+
+- `concept-merger` — refresh `concepts/` from the new sidecars; dedup `graph-search --label Concept`.
+- `adr-archaeologist` — refresh `implicit-adrs/` + `refactoring-scopes/`; dedup `graph-search --label ImplicitADR` / `--label RefactoringScope`. Write append-files (`*/index-batch-{theme_id}-append.md`) for index updates.
+- `doc-gap-finder` — refresh `doc-gaps/`; dedup `graph-search --label DocGap`. WebFetch if available; otherwise inherit from neighbour sidecars per stale-probe cadence.
+- `test-coverage-mapper` — refresh `test-map/`; dedup `graph-search --label TestGap`. Output a `test-map/index.delta.yaml` for the orchestrator to merge.
+- `feature-flow-builder` — refresh `feature-flows/`; dedup `graph-search --label Feature`. Detail-file writes must use YAML-safe scalars: never emit a bare scalar containing `: ` or starting with `@` — use `|-` block scalar.
 
 Per-agent prompts follow the same shape as batch H's reducer prompts (see `lineage/odd-platform/investigator-log.md` batch H entry for the canonical structure). The 5 new sidecar paths are the only sidecars to read in full; PROCESSED_NODE_IDS for the prior batches inherits from the existing index frontmatters.
 

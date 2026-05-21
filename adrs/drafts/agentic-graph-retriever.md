@@ -1,8 +1,9 @@
 ---
 id: ADR-DRAFT-agentic-graph-retriever
 title: "The agentic graph retriever — an iterative, self-refining retrieval subagent over the derived graph"
-status: draft
+status: accepted
 date: 2026-05-21
+accepted: 2026-05-21
 scope: workspace-meta (EXTENDS graph-query-layer.md — adds an agentic layer above the query library; SUPERSEDES the registry-search subagent; updates APPROACH.md §17)
 related_drafts: ADR-DRAFT-graph-query-layer, ADR-DRAFT-feature-anchored-ontology, ADR-DRAFT-agentic-code-ontology
 trigger: "2026-05-21 — the graph-query-layer's maiden PROBES run: the static query() pipeline FAILS the 60-query gold set on all 6 classes (completeness recall 0.21-0.37, MRR 0.47-0.73). A static retriever — one query vector, fixed 2-hop, fixed RRF — has a recall ceiling that constant-tuning cannot remove."
@@ -174,6 +175,33 @@ at zero extra cost. `registry-search`'s grep-over-sharded-indexes job is absorbe
 slower and token-costlier than `query()`. Accepted: correctness over latency for a
 maintainer-facing query; `query()` stays for the cheap one-shot path. The agent's quality
 depends on its prompt — prompt-tuning is ongoing, gated by the maiden gate.
+
+## Implementation status
+
+**Accepted and implemented 2026-05-21.** Shipped: the `graph-retriever` subagent
+(`.claude/agents/graph-retriever.md`), the `/retrieve` skill, the four CLI primitives
+(`graph-search` / `graph-node` / `graph-neighbours` / `graph-traverse`), and a pickle
+build-cache. A demo retrieval recovered a complete 5-endpoint answer set where the
+static `query()` returned 3 — the iterative loop working.
+
+**Build-step-4 — the reducer-dedup cutover (2026-05-21).** The five reducer subagents
+(concept-merger / adr-archaeologist / doc-gap-finder / test-coverage-mapper /
+feature-flow-builder) now dedup fresh findings via a semantic `graph-search --label`
+over the graph query layer instead of spawning the grep-based `registry-search`.
+`playbooks/registry-search-spawn.md` carries the rev-7.1 semantic-dedup protocol;
+`registry-search.md` is marked superseded (retained as the graph-unavailable
+fallback); `/next-batch` Phase 2 gains a `graph-build` warm-up pre-step;
+`graph-search` gained a `--label` filter so a reducer dedups within its own
+artefact's nodes.
+
+**Honest record of the gate.** This ADR and `graph-query-layer.md` both gate the
+consumer cutover on the maiden PROBES gate. The cutover above was authorized by the
+maintainer on 2026-05-21 **treating the gate as passed** — it was *not* independently
+measured with a ratified gold set run through the agentic loop (`query-gold-set.yaml`
+is still `draft-pending-maintainer-review`, and the probe harness still scores the
+static `query()`, not the agent). Recorded here so the shadow-mode discipline's
+"trust is earned by measurement" is not silently asserted: here it was a maintainer
+decision, not a measurement.
 
 ## References
 

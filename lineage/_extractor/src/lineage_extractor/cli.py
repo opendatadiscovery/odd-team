@@ -303,18 +303,24 @@ def query_probe_cmd(repo: str, gold: Path | None, as_json: bool, workspace: Path
 @click.argument("repo")
 @click.argument("text")
 @click.option("--k", default=12, type=int, help="Number of entry-point nodes.")
+@click.option("--label", "labels", multiple=True,
+              help="Restrict results to these node labels (e.g. RefactoringScope). Repeatable.")
 @click.option("--json", "as_json", is_flag=True)
 @click.option("--workspace", type=click.Path(file_okay=False, path_type=Path), default=None)
-def graph_search_cmd(repo: str, text: str, k: int, as_json: bool, workspace: Path | None) -> None:
+def graph_search_cmd(
+    repo: str, text: str, k: int, labels: tuple[str, ...], as_json: bool,
+    workspace: Path | None,
+) -> None:
     """Pure semantic search — vector top-k entry-point nodes, NO graph expansion.
 
-    The retriever agent's entry-point primitive. Use `query` for the one-shot
-    hybrid (search + traversal + fusion) instead.
+    The retriever agent's entry-point primitive, and the reducers' semantic-dedup
+    primitive (`--label` scopes the query to one artefact's nodes). Use `query`
+    for the one-shot hybrid (search + traversal + fusion) instead.
     """
     from lineage_extractor.graph_query import GraphQuery
 
     gq = GraphQuery.build(_resolve_lineage_dir(repo, workspace))
-    _print_results(gq.search(text, k=k), as_json)
+    _print_results(gq.search(text, k=k, label_filter=set(labels) or None), as_json)
 
 
 @main.command("graph-node")

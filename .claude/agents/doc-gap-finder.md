@@ -255,23 +255,21 @@ When `MODE: full` (no prior artefact, prompt-version bumped, or `--full`), fall 
 
 If `system-mission.md` does not exist, fall back to rev-2 behaviour and flag the situation.
 
-## Rule (rev 2) — Dedup via `registry-search` subagent; never load the sharded index directly
+## Rule (rev 7.1) — Dedup via semantic search over the graph query layer
 
-**Supersedes rev-1's read-the-full-prior-artefact pattern for dedup.** After slice 6, `doc-gaps.md` shards into `doc-gaps/{index.md, detail/{DOC-GAP-NNN}.md}`. The full registry lives across ~100 detail files; loading the entire `index.md` into your own context defeats the rev-2 cost-ceiling fix.
+**Through rev 2-7, dedup spawned the `registry-search` subagent — a grep over the sharded `doc-gaps/index.md`. Grep matches *vocabulary*; it misses a drift phrased in different words. Rev 7.1 routes dedup through the derived graph query layer — a semantic similarity query that matches *meaning*.** Follow `playbooks/registry-search-spawn.md` (the rev-7.1 semantic-dedup protocol). The sharded shape is unchanged — `doc-gaps/{index.md, detail/{DOC-GAP-NNN}.md}`; you still never load the full `index.md`.
 
-For every fresh DOC-GAP candidate you're about to commit, spawn the `registry-search` subagent following `playbooks/registry-search-spawn.md`:
+For every fresh DOC-GAP candidate you're about to commit:
 
-- Pass `INDEX_PATH=lineage/{repo}/doc-gaps/index.md`, `ARTEFACT_KIND=doc-gaps`.
-- `QUERY_TEXT` is the candidate's discriminating fields: drift description + the live URL + WebFetch status code + the contributing sidecar's `docs_link_semantic.doc_drift_findings[N]` text + concept anchor.
-
-Act on the verdict (see `playbooks/registry-search-spawn.md` for the full tree):
-- `0 matches — create new` → mint NEXT_AVAILABLE_ID + 1, write `detail/{NEW_ID}.md` with full entry (severity, category, URL, last_verified_status, drift narrative, proposed wording, related concepts), append headline to `index.md` matching `lineage/_extractor/registry-shard/shard.py:_index_headline_doc_gap` shape.
-- `1 strong match — strengthen {DOC-GAP-NNN}` → read `detail/{DOC-GAP-NNN}.md`, append `## STRENGTHENS — {new_sidecar} (batch {batch_id})` block with the new sidecar's contribution to `surfaced_by` + any new evidence (different page URL where the same drift appears, a refined wording proposal, etc.). Do NOT rewrite existing prose. Update index headline ONLY if severity / category / verification-status changed.
-- `N candidates — maintainer-triage-ambiguous` → mint NEW_ID with `maintainer_triage_pending: true` + ambiguity block; surface in next investigator-log entry.
+- Run, from the workspace root: `lineage/_extractor/.venv/bin/lineage-extractor graph-search {repo} "{QUERY_TEXT}" --label DocGap --k 8 --json`. `QUERY_TEXT` is the candidate's discriminating fields: drift description + the live URL + WebFetch status code + the contributing sidecar's `docs_link_semantic.doc_drift_findings[N]` text + concept anchor.
+- For each promising candidate, `graph-node {repo} "{DOC-GAP-NNN}" --json` to read its full content. Then decide:
+- **No candidate is the same drift** → mint NEXT_AVAILABLE_ID, write `detail/{NEW_ID}.md` with the full entry (severity, category, URL, last_verified_status, drift narrative, proposed wording, related concepts), append a headline to `index.md` matching `lineage/_extractor/registry-shard/shard.py:_index_headline_doc_gap`.
+- **One candidate IS the same drift** → read `detail/{DOC-GAP-NNN}.md`, append a `## STRENGTHENS — {new_sidecar} (batch {batch_id})` block with the new sidecar's contribution to `surfaced_by` + any new evidence (a different page URL where the same drift appears, a refined wording proposal). Do NOT rewrite existing prose. Update the index headline ONLY if severity / category / verification-status changed.
+- **Two or more candidates are plausibly the same and you cannot disambiguate** → mint NEW_ID with `maintainer_triage_pending: true` + an ambiguity block; surface in the next investigator-log entry.
 
 Never auto-merge across HIGH-confidence candidates (e.g., two DOC-GAP entries on adjacent doc pages that LOOK like the same drift but might be distinct page-level issues). Merges are maintainer-triggered.
 
-**Per-finding context budget**: ≤ 30 KB. Per-batch total: ≤ 200 KB regardless of registry size. The rev-2 cost-ceiling promise.
+**Per-finding context budget**: ≤ 30 KB (the `graph-search` result + 1-2 `graph-node` reads). Per-batch total: ≤ 200 KB regardless of registry size.
 
 ## Exit
 

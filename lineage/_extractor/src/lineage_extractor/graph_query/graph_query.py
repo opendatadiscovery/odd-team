@@ -172,7 +172,9 @@ class GraphQuery:
                 )
             )
         fused.sort(key=lambda r: (-r.score, r.hop, r.node_id))
-        return _cap(fused[:limit])
+        # A node and its sidecar share a node_id — collapse them to one result
+        # so the same logical node is never listed twice.
+        return _cap(_dedup_by_node_id(fused)[:limit])
 
     # -- shape B: pure graph predicate ------------------------------------
 
@@ -205,7 +207,7 @@ class GraphQuery:
                 )
             )
         out.sort(key=lambda r: r.node_id)
-        return _cap(out[:limit])
+        return _cap(_dedup_by_node_id(out)[:limit])
 
     # -- shape C: provenance / impact-of-a-file ---------------------------
 
@@ -237,7 +239,7 @@ class GraphQuery:
                 )
             )
         out.sort(key=lambda r: (r.hop, r.label, r.node_id))
-        return _cap(out[:limit])
+        return _cap(_dedup_by_node_id(out)[:limit])
 
     # -- introspection -----------------------------------------------------
 
@@ -327,6 +329,17 @@ def _matches(props: dict, where: dict | None) -> bool:
         elif actual != expected:
             return False
     return True
+
+
+def _dedup_by_node_id(results: list[QueryResult]) -> list[QueryResult]:
+    """Collapse results that share a `node_id` — a CodeNode and its Sidecar are
+    one logical node and must not occupy two result slots. Input is assumed
+    sorted best-first, so the first occurrence (best-ranked) is kept."""
+    seen: dict[str, QueryResult] = {}
+    for r in results:
+        if r.node_id not in seen:
+            seen[r.node_id] = r
+    return list(seen.values())
 
 
 def _cap(results: list[QueryResult]) -> list[QueryResult]:

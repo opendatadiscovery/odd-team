@@ -1,0 +1,60 @@
+gap_id: TEST-GAP-886
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java TermController controller-method:createTermTagsRelations"
+pillars_affected: [P-01, P-04]
+surfaced_by:
+  - "odd-platform__java__TermController__controller-method__createTermTagsRelations.md:tests_coverage_semantic.uncovered_behaviours.[Replace-all semantics — submitting tag_name_list:['x'] on a term currently tagged {a, b} removes a and b and leaves {x}]"
+  - "odd-platform__java__TermController__controller-method__createTermTagsRelations.md:tests_coverage_semantic.uncovered_behaviours.[Empty-list clear — tag_name_list:[] removes ALL tag relations for the term]"
+  - "odd-platform__java__TermController__controller-method__createTermTagsRelations.md:tests_coverage_semantic.uncovered_behaviours.[Auto-create-on-miss — tag_name_list:['never-seen-name'] creates a fresh tag directory row with important=false]"
+behaviour: |-
+  **HIGH — `PUT /api/terms/{term_id}/tags` (createTermTagsRelations) is a REPLACE-ALL operation despite the `create*` operationId, and an empty `tag_name_list` silently clears EVERY tag relation on the term. Unlike the data-entity tag path (`tag_to_data_entity` carries an `external` column, so the replace-all has an ingested-tag carve-out), `tag_to_term` has NO `external` or `origin` column — the term-tag replace-all removes EVERY relation absent from the submitted list with no provenance protection. A buggy client that forgets to populate `tag_name_list` wipes the term's tag set.** Method-level primary source from the batch-X-TAGGING `createTermTagsRelations` controller-method sidecar:
+
+  - `TermController.createTermTagsRelations` (`:129-136`): reads `Mono<TagsFormData>`, calls `termService.upsertTags(termId, fd)`, lifts the `Flux<Tag>` into 200. The operationId says `create`; the service method is `upsertTags`.
+  - `TermServiceImpl.upsertTags` (`:254-264`, `@ReactiveTransactional`): `new HashSet<>(tagsFormData.getTagNameList())` -> `tagService.deleteRelationsWithTerm(termId, names)` FIRST (`:256`) -> `getOrCreateTagsByName` + `createRelationsWithTerm` -> `updateTagVectorsForTerm`.
+  - `TagServiceImpl.deleteRelationsWithTerm` (`:124-134`): reads CURRENT term tags via `listByTerm`, computes `idsToDelete = currentTags where name NOT IN submittedNames`, hard-deletes those `tag_to_term` rows. The parameter is internally named `tagsToKeep` — revealing the replace-all intent that the API surface hides.
+  - **The empty-list path**: `TagsFormData` declares `tag_name_list` REQUIRED (`components.yaml:2219-2220`) but with NO `minItems` — an empty array `[]` is a valid request. `deleteRelationsWithTerm(termId, emptySet)` computes `idsToDelete = currentTags where name NOT IN {}` — i.e. EVERY current tag.
+  - **The auto-create side effect**: `getOrCreateTagsByName` -> `divideTagsByExistence` (`:144-159`) `bulkCreate`s any name not in the directory with `important = false` hardcoded (`:155`). The OpenAPI spec acknowledges this (`openapi.yaml:3186`) but no test verifies it.
+  - **No external carve-out**: `tag_to_term` (`V0_0_35__add_terms.sql:18-28`) has no `external` / `origin` column; `listByTerm` filters only `TAG.DELETED_AT.isNull()` — there is no ingested-tag set to preserve (terms are a UI/API-authored concept with no ingestion-side tagging path).
+
+  **Three distinct sub-behaviours, all unpinned:**
+  - **Replace-all** — `PUT` with `['x']` on a term tagged `{a,b}` ends with `{x}`; `a` and `b` are hard-deleted. There is no separate DELETE endpoint — replace-all IS the removal mechanism.
+  - **Empty-list-clears-all** — `{"tag_name_list": []}` removes ALL term tags. A client bug silently wipes the set.
+  - **Auto-create-on-miss** — `['never-seen-name']` mints a `tag` directory row with `important = false`, visible to subsequent `GET /api/tags` callers.
+
+  **Why HIGH**: the replace-all is the central operator-surprising semantic (the operationId says `create`). A regression making `deleteRelationsWithTerm` additive would silently change the contract with the build still green — this is exactly the cross-layer behaviour a unit test with a mocked `TagService` cannot catch.
+
+  **Test gap shape**: a `WebTestClient` / `@SpringBootTest` integration test promoting probe P-027's arrange/act/assert: (a) seed a term tagged `{a,b}`, `PUT` `['x']`, assert the term ends tagged exactly `{x}`; (b) `PUT` `[]`, assert ALL term-tag relations gone; (c) `PUT` `['novel']`, assert a fresh `tag` row exists with `important = false` and is visible via `GET /api/tags`. The current state is PINNED — failures land if a future maintainer makes the operation additive.
+test_class: missing-integration
+criticality_rationale: |-
+  HIGH per Rule 3: the createTermTagsRelations sidecar rates the replace-all, empty-list-clear, and auto-create behaviours HIGH (the worst-coverage class on the node is integration). The empty-list-clears-all is a silent-data-loss surface (a client bug wipes a term's tags). F-018's drift_class_summary carries the side-channel-mint and replace-all-with-misleading-method-name classes. Not CRITICAL — the loss is recoverable (re-submit the correct list) and there is no security boundary crossed. pillars_affected len 2 (P-01, P-04); cross-pillar bump bounded by the sidecar's HIGH — HIGH stands.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/TermTagRelationsReplaceAllTest.java"
+  name: "createTermTagsRelations_isReplaceAll_emptyListClearsAll_autoCreatesMissingTags_pinsP027"
+evidence:
+  - "createTermTagsRelations sidecar says (tests_coverage_semantic.uncovered_behaviours.[replace-all]): 'Replace-all semantics — submitting tag_name_list:[x] on a term currently tagged {a, b} removes a and b and leaves {x}.' criticality HIGH; note: 'This is the central operator-surprising semantic (operationId says create); pinned by probe P-027.'"
+  - "createTermTagsRelations sidecar says (tests_coverage_semantic.uncovered_behaviours.[empty-list]): 'Empty-list clear — tag_name_list:[] removes ALL tag relations for the term.' criticality HIGH; note: 'A buggy client that forgets to populate the array silently clears a term's tags; pinned by probe P-027.'"
+  - "createTermTagsRelations sidecar says (tests_coverage_semantic.uncovered_behaviours.[auto-create]): 'Auto-create-on-miss — tag_name_list:[never-seen-name] creates a fresh tag directory row with important = false, visible to subsequent GET /api/tags/popular callers.' criticality HIGH; note: 'The OpenAPI spec promises this (openapi.yaml:3186); no test verifies the promise holds; pinned by probe P-027.'"
+  - "createTermTagsRelations sidecar says (bugs_limitations_corner_cases): 'Empty tag_name_list silently clears ALL term tags. TagsFormData declares tag_name_list REQUIRED (components.yaml:2219-2220) but an empty array [] satisfies the constraint — there is no minItems. deleteRelationsWithTerm(termId, emptySet) computes idsToDelete = currentTags where name NOT IN {} — i.e. EVERY current tag.' severity MEDIUM"
+  - "Verified no existing test: the sidecar reports grep for upsertTags / createTermTagsRelations / deleteRelationsWithTerm / createRelationsWithTerm across odd-platform-api/src/test returned NO matches; independently confirmed via Glob — no Term*.java test file exists in odd-platform-api/src/test."
+cross_references:
+  - "lineage/odd-platform/probes/P-027.yaml (the replace-all + auto-create + empty-list probe — this gap promotes P-027 to a CI test)"
+  - "TEST-GAP-303 (existing batch-G — the data-entity sibling REPLACE-ALL for INTERNAL tags. DISTINCT NODE: tag_to_data_entity HAS an external column (ingested-tag carve-out); tag_to_term has NO external/origin column — the term replace-all removes EVERY relation with no provenance protection)"
+  - "TEST-GAP-301 (existing batch-G — data-entity auto-create-on-miss; sister side-channel, distinct node)"
+  - "feature-flows:F-018 — the term-tag write path is one of three documented side-channels into the global tag directory (the others being data-entity and S2S ingestion)"
+related_features: [F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `TermTagRelationsReplaceAllTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Promote probe P-027 to CI:
+  1. `createTermTagsRelations_replaceAll_removesUnsubmittedTags` — seed a term tagged `{a,b}`; `PUT /api/terms/{id}/tags` with `{"tag_name_list":["x"]}`; assert the term ends tagged exactly `{x}` (a and b hard-deleted from tag_to_term).
+  2. `createTermTagsRelations_emptyList_clearsAllTermTags` — seed a term tagged `{a,b}`; `PUT` `{"tag_name_list":[]}`; assert ZERO tag_to_term rows for the term.
+  3. `createTermTagsRelations_autoCreatesMissingTag_withImportantFalse` — `PUT` `{"tag_name_list":["never-seen"]}`; assert a fresh `tag` row exists with `important = false`; assert it appears in `GET /api/tags`.
+  4. `createTermTagsRelations_reInsertOfExistingRelation_isIdempotent` — `PUT` the same list twice; assert no primary-key violation (createTermRelations uses onDuplicateKeyIgnore).
+
+  Pair with a DOC-NNN: document the term-tag PUT as replace-all and warn that an empty `tag_name_list` clears all term tags. Pair with a follow-up backlog item to consider a `minItems: 1` on `TagsFormData.tag_name_list` OR an explicit empty-list guard.
+batch: 2026-05-21-X-TAGGING
+feature_id: F-018

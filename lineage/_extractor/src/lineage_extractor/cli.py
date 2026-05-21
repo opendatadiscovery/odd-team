@@ -15,7 +15,7 @@ import click
 
 from lineage_extractor import __version__
 from lineage_extractor.extractors import run_extraction
-from lineage_extractor.manifest import load_manifest, save_manifest
+from lineage_extractor.manifest import load_manifest, save_manifest, today_iso
 from lineage_extractor.repo import resolve_repo_path
 from lineage_extractor.validators import format_result, validate_sidecar
 
@@ -152,6 +152,302 @@ def probe(workspace: Path | None) -> None:
     if not probes_file.is_file():
         raise click.ClickException(f"Probes file not found: {probes_file}")
     click.echo("probe runner not yet implemented (pending second-slice commit)")
+
+
+# --------------------------------------------------------------------------
+# Derived graph query layer (adrs/drafts/graph-query-layer.md)
+
+
+@main.command("graph-build")
+@click.argument("repo")
+@click.option("--no-embeddings", is_flag=True, help="Graph-only build — skip the vector index.")
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Workspace root (default: parent of lineage/).",
+)
+def graph_build_cmd(repo: str, no_embeddings: bool, workspace: Path | None) -> None:
+    """Build (or refresh) the ephemeral graph query layer for REPO and report stats.
+
+    The graph + vector index are written under lineage/{repo}/graph/ — git-ignored,
+    deterministically rebuilt from the canonical files, never committed.
+    """
+    from lineage_extractor.graph_query import GraphQuery
+
+    lineage_dir = _resolve_lineage_dir(repo, workspace)
+    gq = GraphQuery.build(lineage_dir, embeddings=not no_embeddings)
+    _write_build_info(lineage_dir, gq)
+    s = gq.stats()
+    click.echo(f"graph query layer built for {s['repo']}")
+    click.echo(f"  nodes={s['nodes']}  edges={s['edges']}  stub_nodes={s['stub_nodes']}")
+    click.echo(f"  labels: {s['labels']}")
+    click.echo(f"  edge_types: {s['edge_types']}")
+    click.echo(f"  embeddings_available={s['embeddings_available']}  "
+               f"vectors={s['vector_count']}  model={s['embedding_model']}")
+    if s["skipped_files"]:
+        click.echo(f"  skipped_files={s['skipped_files']} (see graph/build-info.yaml)")
+
+
+@main.command("query")
+@click.argument("repo")
+@click.argument("text")
+@click.option("--k", default=8, type=int, help="Vector top-k seed count.")
+@click.option("--hops", default=2, type=int, help="Bounded traversal radius.")
+@click.option("--label", "labels", multiple=True, help="Restrict results to these node labels.")
+@click.option("--edge", "edges", multiple=True, help="Restrict traversal to these edge types.")
+@click.option("--limit", default=20, type=int, help="Max results.")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON for machine consumers.")
+@click.option("--no-embeddings", is_flag=True, help="Graph-only (keyword-seeded) query.")
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+)
+def query_cmd(
+    repo: str, text: str, k: int, hops: int, labels: tuple[str, ...],
+    edges: tuple[str, ...], limit: int, as_json: bool, no_embeddings: bool,
+    workspace: Path | None,
+) -> None:
+    """Hybrid query over REPO's ontology — vector entry points + graph traversal.
+
+    Returns a bounded, ranked, fully-cited result slice. Example:
+
+        lineage-extractor query odd-platform "per-alert authorization gap"
+    """
+    from lineage_extractor.graph_query import GraphQuery
+
+    lineage_dir = _resolve_lineage_dir(repo, workspace)
+    gq = GraphQuery.build(lineage_dir, embeddings=not no_embeddings)
+    results = gq.query(
+        text, k=k, hops=hops, limit=limit,
+        edge_filter={e.upper() for e in edges} or None,
+        label_filter=set(labels) or None,
+    )
+    _print_results(results, as_json)
+
+
+@main.command("provenance")
+@click.argument("repo")
+@click.argument("path_fragment")
+@click.option("--hops", default=1, type=int, help="Neighbourhood radius around direct matches.")
+@click.option("--limit", default=50, type=int)
+@click.option("--json", "as_json", is_flag=True)
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+)
+def provenance_cmd(
+    repo: str, path_fragment: str, hops: int, limit: int, as_json: bool,
+    workspace: Path | None,
+) -> None:
+    """Impact-of-a-file: every ontology artefact whose claims rest on PATH_FRAGMENT.
+
+    PATH_FRAGMENT matches both a code path and a lineage source file. Example:
+
+        lineage-extractor provenance odd-platform AlertServiceImpl.java
+    """
+    from lineage_extractor.graph_query import GraphQuery
+
+    lineage_dir = _resolve_lineage_dir(repo, workspace)
+    gq = GraphQuery.build(lineage_dir, embeddings=False)  # shape C is graph-only
+    _print_results(gq.provenance(path_fragment, hops=hops, limit=limit), as_json)
+
+
+@main.command("query-probe")
+@click.argument("repo")
+@click.option("--gold", type=click.Path(path_type=Path), default=None,
+              help="Gold-set path (default: lineage/{repo}/query-gold-set.yaml).")
+@click.option("--json", "as_json", is_flag=True)
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+)
+def query_probe_cmd(repo: str, gold: Path | None, as_json: bool, workspace: Path | None) -> None:
+    """Score the graph query layer against REPO's maintainer-authored gold set.
+
+    Implements PROBES family 1 (retrieval quality) + the family-2 payload-ceiling
+    check. Exits non-zero only when an authored gold set fails the gate.
+    """
+    from lineage_extractor.graph_query import probe
+
+    lineage_dir = _resolve_lineage_dir(repo, workspace)
+    report = probe.run(lineage_dir, gold)
+    if as_json:
+        import json
+
+        click.echo(json.dumps(report.__dict__, indent=2, default=str))
+    else:
+        click.echo(f"probe status: {report.status}")
+        for intent, row in report.per_class.items():
+            mark = "PASS" if row["pass"] else "FAIL"
+            click.echo(f"  [{mark}] {intent:18s} mean={row['mean']:.4f} "
+                       f"floor={row['floor']} n={row['query_count']}")
+        if report.status == "scored":
+            click.echo(f"  payload-ceiling breaches: {report.payload_ceiling_breaches}")
+            click.echo(f"  overall: {'PASS' if report.overall_pass else 'FAIL'}")
+        for note in report.notes:
+            click.echo(f"  note: {note}")
+    if report.status == "scored" and not report.overall_pass:
+        sys.exit(1)
+
+
+# --------------------------------------------------------------------------
+# Agentic-retriever primitives (adrs/drafts/agentic-graph-retriever.md).
+# Small, composable, deterministic tools the graph-retriever subagent calls.
+
+
+@main.command("graph-search")
+@click.argument("repo")
+@click.argument("text")
+@click.option("--k", default=12, type=int, help="Number of entry-point nodes.")
+@click.option("--label", "labels", multiple=True,
+              help="Restrict results to these node labels (e.g. RefactoringScope). Repeatable.")
+@click.option("--json", "as_json", is_flag=True)
+@click.option("--workspace", type=click.Path(file_okay=False, path_type=Path), default=None)
+def graph_search_cmd(
+    repo: str, text: str, k: int, labels: tuple[str, ...], as_json: bool,
+    workspace: Path | None,
+) -> None:
+    """Pure semantic search — vector top-k entry-point nodes, NO graph expansion.
+
+    The retriever agent's entry-point primitive, and the reducers' semantic-dedup
+    primitive (`--label` scopes the query to one artefact's nodes). Use `query`
+    for the one-shot hybrid (search + traversal + fusion) instead.
+    """
+    from lineage_extractor.graph_query import GraphQuery
+
+    gq = GraphQuery.build(_resolve_lineage_dir(repo, workspace))
+    _print_results(gq.search(text, k=k, label_filter=set(labels) or None), as_json)
+
+
+@main.command("graph-node")
+@click.argument("repo")
+@click.argument("node_id")
+@click.option("--json", "as_json", is_flag=True)
+@click.option("--workspace", type=click.Path(file_okay=False, path_type=Path), default=None)
+def graph_node_cmd(repo: str, node_id: str, as_json: bool, workspace: Path | None) -> None:
+    """The full content of one node — labels, props, provenance, every section's
+    text, and the sections of any finding it surfaces. The retriever reads this
+    to judge a candidate's relevance.
+    """
+    from lineage_extractor.graph_query import GraphQuery
+
+    gq = GraphQuery.build(_resolve_lineage_dir(repo, workspace), embeddings=False)
+    detail = gq.node(node_id)
+    if detail is None:
+        raise click.ClickException(f"node not found: {node_id}")
+    if as_json:
+        import json
+
+        click.echo(json.dumps(detail, indent=2, default=str))
+        return
+    click.echo(f"{detail['node_id']}  {detail['labels']}")
+    click.echo(f"  cite: {detail['source_file']}:{detail['source_line']}")
+    click.echo(f"  props: {detail['props']}")
+    click.echo(f"  neighbours: {detail['neighbour_count']}")
+    for sec in detail["sections"]:
+        click.echo(f"  --- {sec['section']} ---")
+        click.echo(f"  {sec['text'][:600]}")
+
+
+@main.command("graph-neighbours")
+@click.argument("repo")
+@click.argument("node_id")
+@click.option("--json", "as_json", is_flag=True)
+@click.option("--workspace", type=click.Path(file_okay=False, path_type=Path), default=None)
+def graph_neighbours_cmd(repo: str, node_id: str, as_json: bool, workspace: Path | None) -> None:
+    """A node's adjacency — one row per edge: direction, edge type, neighbour
+    id / label / title. Lets the retriever decide which edges to walk.
+    """
+    from lineage_extractor.graph_query import GraphQuery
+
+    gq = GraphQuery.build(_resolve_lineage_dir(repo, workspace), embeddings=False)
+    rows = gq.neighbours(node_id)
+    if as_json:
+        import json
+
+        click.echo(json.dumps(rows, indent=2, default=str))
+        return
+    if not rows:
+        click.echo("  (no neighbours / node not found)")
+        return
+    for r in rows:
+        arrow = "->" if r["direction"] == "out" else "<-"
+        click.echo(f"  {arrow} {r['edge_type']:18s} [{r['label']}] {r['node_id'][:64]}")
+    click.echo(f"\n  {len(rows)} edge(s)")
+
+
+@main.command("graph-traverse")
+@click.argument("repo")
+@click.argument("node_id")
+@click.option("--depth", default=2, type=int, help="Traversal depth (agent-chosen).")
+@click.option("--edge", "edges", multiple=True, help="Restrict to these edge types.")
+@click.option("--limit", default=80, type=int)
+@click.option("--json", "as_json", is_flag=True)
+@click.option("--workspace", type=click.Path(file_okay=False, path_type=Path), default=None)
+def graph_traverse_cmd(
+    repo: str, node_id: str, depth: int, edges: tuple[str, ...], limit: int,
+    as_json: bool, workspace: Path | None,
+) -> None:
+    """A bounded subgraph around NODE_ID — the retriever picks the depth and the
+    edge filter when it judges the answer sits in a node's neighbourhood.
+    """
+    from lineage_extractor.graph_query import GraphQuery
+
+    gq = GraphQuery.build(_resolve_lineage_dir(repo, workspace), embeddings=False)
+    results = gq.subgraph(
+        node_id, depth=depth, limit=limit,
+        edge_filter={e.upper() for e in edges} or None,
+    )
+    _print_results(results, as_json)
+
+
+def _resolve_lineage_dir(repo: str, workspace: Path | None) -> Path:
+    workspace_root = workspace or _default_workspace_root()
+    lineage_dir = workspace_root / "lineage" / repo
+    if not lineage_dir.is_dir():
+        raise click.ClickException(f"lineage dir not found: {lineage_dir}")
+    return lineage_dir
+
+
+def _print_results(results: list, as_json: bool) -> None:
+    if as_json:
+        import json
+
+        click.echo(json.dumps([r.as_dict() for r in results], indent=2))
+        return
+    if not results:
+        click.echo("  (no results)")
+        return
+    for r in results:
+        click.echo(f"  {r.score:8.5f}  h{r.hop}  [{r.label}]  {r.title[:72]}")
+        click.echo(f"            {r.cite()}  · {r.via}")
+    click.echo(f"\n  {len(results)} result(s)")
+
+
+def _write_build_info(lineage_dir: Path, gq: object) -> None:
+    """Write the ephemeral graph/build-info.yaml observability file."""
+    from lineage_extractor.graph_query import config as gq_config
+
+    s = gq.stats()  # type: ignore[attr-defined]
+    info_path = gq_config.graph_dir(lineage_dir) / gq_config.BUILD_INFO_FILENAME
+    info_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "builder_version": gq_config.BUILDER_VERSION,
+        "built_at": today_iso(),
+        **{k: v for k, v in s.items() if k != "embedding_stats"},
+        "embedding_stats": s["embedding_stats"],
+    }
+    from ruamel.yaml import YAML
+
+    yaml = YAML()
+    yaml.indent(mapping=2, sequence=4, offset=2)
+    with info_path.open("w") as fh:
+        fh.write(gq_config.GENERATED_HEADER.format(repo=lineage_dir.name))
+        yaml.dump(payload, fh)
 
 
 def _default_workspace_root() -> Path:

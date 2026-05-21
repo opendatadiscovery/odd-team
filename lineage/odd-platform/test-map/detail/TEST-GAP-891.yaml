@@ -1,0 +1,55 @@
+gap_id: TEST-GAP-891
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java TagController controller-method:updateTag"
+pillars_affected: [P-01, P-08]
+surfaced_by:
+  - "odd-platform__java__TagController__controller-method__updateTag.md:tests_coverage_semantic.uncovered_behaviours.[updateTag rename propagates the new name into search_entrypoint.tag_vector of carrying entities]"
+  - "odd-platform__java__TagController__controller-method__updateTag.md:tests_coverage_semantic.uncovered_behaviours.[updateTag triple search-vector refresh — assert all three updateChangedTagVectors calls fire on update]"
+behaviour: |-
+  **HIGH — renaming a tag via `PUT /api/tags/{tag_id}` (updateTag) propagates the new name into the full-text search vectors of every data entity, dataset, and term carrying it — a tag rename SILENTLY CHANGES which entities surface for a full-text search of the tag name. The propagation runs THREE concurrent FTS-vector refreshes inside the transaction (`updateSearchVectors` triple-`Mono.zip`). Nothing pins this: a refactor dropping the `flatMap(this::updateSearchVectors)` would compile, pass every existing test, and leave the search index stale after every rename. Additionally, whether the FTS upsert OVERWRITES or APPENDS the old name's token is statically unresolved (probe P-025) — if it appends, a search for the OLD name still surfaces the entities after a rename.** Method-level primary source from the batch-X-TAGGING `updateTag` controller-method sidecar:
+
+  - `TagServiceImpl.update` (`:44-55`, `@ReactiveTransactional`): after persisting the renamed `tag` row, `flatMap(this::updateSearchVectors)` (`:53`).
+  - `updateSearchVectors` (`:161-167`): a `Mono.zip` of THREE concurrent calls — `reactiveSearchEntrypointRepository.updateChangedTagVectors` (entity `tag_vector`), `.updateChangedTagStructureVector` (dataset-structure vector), `reactiveTermSearchEntrypointRepository.updateChangedTagVectors` (term-search vector).
+  - `updateChangedTagVectors` (`ReactiveSearchEntrypointRepositoryImpl.java:319-341`): joins `TAG -> TAG_TO_DATA_ENTITY -> DATA_ENTITY` (filtered `DATA_ENTITY.HOLLOW.isFalse()`) and `buildVectorUpsert(..., true)` upserts `SEARCH_ENTRYPOINT.TAG_VECTOR` per carrying entity.
+  - The `true` flag's meaning (overwrite vs append) is NOT resolvable within the sidecar's 1-hop budget — probe P-025 emitted.
+  - This `update` path refreshes 3 vectors; the sibling `delete` path refreshes only 1 (the asymmetry is a delete-side gap, not an updateTag gap — see TEST-GAP-762 family).
+
+  **Two distinct sub-behaviours, both unpinned:**
+  - **Propagation correctness** — after a rename, a full-text search of the NEW name returns the carrying entities. A regression dropping `flatMap(this::updateSearchVectors)` would leave the search index stale — silent, CI-green.
+  - **Triple-refresh completeness + overwrite semantics** — all three `updateChangedTag*Vectors` calls must fire (a regression collapsing the `Mono.zip` to a single call silently breaks the term-search OR structure-vector FTS index); AND the upsert must OVERWRITE the old name (if `buildVectorUpsert`'s `true` flag means append, a search for the OLD name still surfaces the entity — P-025 assertion H2).
+
+  **Why HIGH**: a tag rename silently changing search results is a discovery-surface correctness contract; the propagation is the highest-leverage gap on the node (per the sidecar's gaps paragraph). The overwrite-vs-append uncertainty is load-bearing for the "rename leaves no stale token" claim.
+
+  **Test gap shape**: a Testcontainers-backed `@SpringBootTest` test promoting probe P-025: seed a tag attached to a data entity, a dataset field, and a term; `PUT /api/tags/{id}` renaming it; assert (a) a full-text search of the NEW name returns all three carrying entities; (b) a full-text search of the OLD name returns NONE of them (overwrite, not append); (c) all three vector tables (`search_entrypoint.tag_vector`, the dataset-structure vector, `term_search_entrypoint.tag_vector`) reflect the new name. The current state is PINNED — a dropped `updateSearchVectors` or a collapsed `Mono.zip` fails the test.
+test_class: missing-integration
+criticality_rationale: |-
+  HIGH per Rule 3: the updateTag sidecar rates the search-vector propagation HIGH (the highest-leverage gap on the node per its gaps paragraph) and the triple-refresh completeness MEDIUM. A tag rename silently changing full-text-search results is a discovery-surface correctness drift. Not CRITICAL — no security boundary or data loss (the underlying relations are intact; only the FTS index drifts); the gap is the absence of a CI catcher. pillars_affected len 2; cross-pillar bump bounded by the sidecar's HIGH — HIGH stands.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/TagRepositoryImplTest.java:217-235 (testUpdateTag — repository-layer; VERIFIED: exercises the bare reactiveTagRepository.update round-trip only — asserts the renamed name persists; does NOT exercise the service-layer updateSearchVectors triple-zip, the FTS propagation, or the controller perimeter)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/TagRenameSearchVectorPropagationTest.java"
+  name: "updateTag_rename_propagatesNewNameIntoThreeSearchVectors_overwritesOldName_pinsP025"
+evidence:
+  - "updateTag sidecar says (tests_coverage_semantic.uncovered_behaviours.[0]): 'updateTag rename propagates the new name into search_entrypoint.tag_vector of carrying entities — assert a full-text search of the new name returns the entities, and the old name does not.' criticality HIGH; note: 'Pinned by P-025. The static trace confirms the propagation; only a probe verifies the overwrite-vs-append behaviour of buildVectorUpsert.'"
+  - "updateTag sidecar says (tests_coverage_semantic.uncovered_behaviours): 'updateTag triple search-vector refresh — assert all three updateChangedTagVectors calls fire on update (a regression collapsing the Mono.zip to a single call would silently break the term-search FTS index).' criticality MEDIUM"
+  - "updateTag sidecar says (gaps): 'The highest-leverage gap is integration coverage of the search-vector propagation (P-025): a tag rename silently changes which data entities surface in full-text search, and nothing pins that today — a refactor that drops the flatMap(this::updateSearchVectors) at TagServiceImpl.java:53 would compile, pass every existing test, and leave the search index stale after every rename.'"
+  - "Verified at primary source: read TagRepositoryImplTest.java:217-235 — testUpdateTag calls reactiveTagRepository.update(createdTag) and asserts the name changed; it is a bare repository round-trip with NO service-layer updateSearchVectors coverage."
+cross_references:
+  - "lineage/odd-platform/probes/P-025.yaml (the rename FTS-propagation + overwrite-vs-append probe — this gap promotes P-025 to a CI test)"
+  - "feature-flows:F-018 — the FTS-vector refresh on tag rename is part of the tagging feature's search-index-consistency story"
+  - "TEST-GAP-762 (existing batch-W — the deleteTag path refreshes only 1 vector vs updateTag's 3 — the asymmetry; TEST-GAP-762's cascade gap is the delete-side counterpart of this update-side propagation contract)"
+related_features: [F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `TagRenameSearchVectorPropagationTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Promote probe P-025 to CI:
+  1. `updateTag_rename_searchByNewNameReturnsCarryingEntities` — seed a tag attached to a data entity, a dataset field, and a term; `PUT /api/tags/{id}` renaming it; full-text search the NEW name; assert all three carrying entities are returned.
+  2. `updateTag_rename_searchByOldNameReturnsNothing_pinsOverwriteNotAppend` — after #1, full-text search the OLD name; assert NONE of the three entities are returned. PINS overwrite semantics (P-025 assertion H2).
+  3. `updateTag_rename_refreshesAllThreeVectorTables` — after #1, assert `search_entrypoint.tag_vector`, the dataset-structure vector, and `term_search_entrypoint.tag_vector` all reflect the new name (guarding against a collapsed Mono.zip).
+
+  If P-025 shows append-not-overwrite, test #2 becomes a FAILING regression-pin flagging a stale-token bug. Pair with a DOC-NNN: the live tagging page does not state that renaming a tag refreshes full-text search vectors — surface the user-observable effect.
+batch: 2026-05-21-X-TAGGING
+feature_id: F-018

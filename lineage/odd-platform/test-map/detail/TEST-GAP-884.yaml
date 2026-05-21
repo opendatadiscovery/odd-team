@@ -1,0 +1,55 @@
+gap_id: TEST-GAP-884
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java TagController controller-method:createTag"
+pillars_affected: [P-01, P-08]
+surfaced_by:
+  - "odd-platform__java__TagController__controller-method__createTag.md:tests_coverage_semantic.uncovered_behaviours.[createTag in-batch duplicate — POST [{name:a},{name:a}]; assert atomic rollback (zero rows created) and a 4xx]"
+  - "odd-platform__java__TagController__controller-method__createTag.md:tests_coverage_semantic.uncovered_behaviours.[createTag duplicate-name failure (cross-batch) — POST a name that already exists; assert UniqueConstraintException translates to a 4xx, not a 500]"
+behaviour: |-
+  **HIGH — `POST /api/tags` (createTag) bulk-create atomicity on a duplicate name is UNVERIFIED. The endpoint accepts a `BulkTagFormData` array and delegates to the inherited `ReactiveAbstractCRUDRepository.bulkCreate` (`:114-126`), which emits a single `insertManyReturning` multi-row INSERT with NO `ON CONFLICT` clause. A payload `[{"name":"a"},{"name":"a"}]` (in-batch self-duplicate) or a payload containing a name already present in the directory (cross-batch duplicate) hits the partial unique index `tag_name_unique` (`V0_0_64__remove_is_deleted_field.sql:105`). Whether the whole INSERT rolls back ATOMICALLY (zero rows created) or PARTIALLY COMMITS (the distinct names land) is NOT statically determinable — it depends on the R2DBC insertManyReturning emission shape and Spring's reactive-TX rollback semantics. A partial-commit outcome is a silent data-shape bug: the operator submits a 5-tag batch, gets a 4xx error, and 4 tags exist anyway.** Method-level primary source from the batch-X-TAGGING `createTag` controller-method sidecar:
+
+  - `TagController.createTag` (`:22-28`): `.collectList()`s the inbound `Flux<TagFormData>`, hands the list to `tagService.bulkCreate`. 3-line delegation, no business logic.
+  - `TagServiceImpl.bulkCreate` (`:37-42`): `tags.stream().map(tagMapper::mapToPojo).toList()` then `reactiveTagRepository.bulkCreate(pojos).map(tagMapper::mapToTag)`. NO `@ReactiveTransactional` at the service tier.
+  - `ReactiveAbstractCRUDRepository.bulkCreate` (`:114-126`, `@ReactiveTransactional`): empty-collection short-circuit to `Flux.just()` (`:115-117`); else a single `insertManyReturning` multi-row INSERT with NO `ON CONFLICT`. The transactional boundary is INHERITED here, not at the controller or service.
+  - The duplicate translates: a `tag_name_unique` partial-index violation maps via `JooqReactiveOperations` -> `UniqueConstraintException("Tag with this name already exists")` per `ExceptionUtils.java:54-56`.
+
+  **Two distinct sub-behaviours, both unpinned:**
+  - **In-batch self-duplicate atomicity** — `[{"name":"a"},{"name":"a"}]`: the second row collides on `tag_name_unique`. Does the whole multi-row INSERT roll back (zero `a` rows), or does the first `a` land and the second fail? P-026 pins this.
+  - **Cross-batch duplicate** — a name already in the directory: `createTag` is fail-on-duplicate (no upsert — the deliberate counterpart of the Collector path's `getOrInjectTagByName`). The whole batch fails. The caller cannot tell WHICH name collided from the exception text.
+
+  **Why this is a data-shape contract, not a cosmetic gap**: a partial-commit regression is BOTH silent and operator-visible — a failed batch that left rows behind. Converting probe P-026 into a Testcontainers `@SpringBootTest` would put the data-shape contract permanently under CI.
+
+  **Test gap shape**: a `WebTestClient` / `@SpringBootTest` test asserting (a) `POST /api/tags` with `[{"name":"x"},{"name":"x"}]` returns a 4xx AND a follow-up `GET /api/tags?query=x` returns zero rows (atomic rollback — NO partial commit); (b) `POST /api/tags` with a name already in the directory returns a 4xx with the UniqueConstraintException message and NO 500; (c) the `tag_name_unique` partial index's WHERE predicate is verifiable via `pg_indexes`. The current state is PINNED at whatever P-026 establishes.
+test_class: missing-integration
+criticality_rationale: |-
+  HIGH per Rule 3: the createTag sidecar rates the in-batch / cross-batch duplicate behaviours HIGH (the highest-leverage gap on the node per its gaps paragraph). F-018's drift_class_summary carries `toctou_between_list_by_names_and_bulk_create` and the bulkCreate-no-ON-CONFLICT class. Not CRITICAL — the failure mode is a data-shape surprise, not a security boundary or unrecoverable loss; the sidecar itself flags severity MEDIUM-to-HIGH (HIGH if P-026 shows partial commit). HIGH is the honest pin pending P-026.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/TagRepositoryImplTest.java:50-67 (testBulkCreateTag — repository-layer happy path; VERIFIED: exercises bulkCreate with 3 all-novel UUID names only — no duplicate, no controller perimeter, no atomicity assertion)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/TagCreateBulkAtomicityTest.java"
+  name: "createTag_inBatchAndCrossBatchDuplicate_rollsBackAtomically_pinsP026"
+evidence:
+  - "createTag sidecar says (tests_coverage_semantic.uncovered_behaviours.[in-batch duplicate]): 'createTag in-batch duplicate — POST [{name:a},{name:a}]; assert atomic rollback (zero rows created) and a 4xx.' criticality HIGH; note: 'Pinned by P-026. The risk: a partial-commit outcome would be a silent data-shape bug.'"
+  - "createTag sidecar says (tests_coverage_semantic.uncovered_behaviours.[cross-batch duplicate]): 'createTag duplicate-name failure (cross-batch) — POST a name that already exists in the directory; assert UniqueConstraintException translates to a 4xx, not a 500.' criticality HIGH; note: 'Pinned by P-026 (atomicity + status-code).'"
+  - "createTag sidecar says (bugs_limitations_corner_cases): 'In-batch duplicate-name atomicity is UNVERIFIED — bulkCreate's inherited body emits a single insertManyReturning multi-row INSERT with no ON CONFLICT (ReactiveAbstractCRUDRepository.java:114-126). Whether the whole INSERT rolls back atomically or partially commits depends on the R2DBC insertManyReturning emission shape and Spring's reactive-TX rollback semantics — NOT statically determinable.' severity MEDIUM (HIGH if P-026 shows partial commit)"
+  - "Verified at primary source: read TagRepositoryImplTest.java — testBulkCreateTag (lines 50-67) creates 3 tags via createTestTagList (all UUID.randomUUID names, all novel) and asserts via containsAll — no duplicate name, no atomicity assertion, no controller perimeter."
+cross_references:
+  - "lineage/odd-platform/probes/P-026.yaml (the createTag in-batch/cross-batch duplicate-atomicity probe — this gap promotes P-026 to a CI test)"
+  - "feature-flows:F-018 drift_class_summary.[toctou_between_list_by_names_and_bulk_create] (sister concurrency facet on the same bulkCreate-no-ON-CONFLICT surface)"
+  - "TEST-GAP-763 (existing F-018 TOCTOU side-door write — distinct: that is the cross-request listByNames/bulkCreate race; THIS is the createTag perimeter's in-batch atomicity)"
+related_features: [F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `TagCreateBulkAtomicityTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Promote probe P-026 to CI:
+  1. `createTag_inBatchSelfDuplicate_rollsBackAtomically_zeroRowsCreated` — `POST /api/tags` with `[{"name":"x"},{"name":"x"}]`; assert 4xx; then `GET /api/tags?query=x` returns zero rows. PINS atomic rollback (no partial commit).
+  2. `createTag_crossBatchDuplicate_returns4xxNot500` — seed a tag `"existing"`; `POST /api/tags` with `[{"name":"existing"}]`; assert 4xx (NOT 500) with the UniqueConstraintException message.
+  3. `createTag_mixedBatch_oneDuplicateAbortsWholeBatch` — seed `"existing"`; `POST /api/tags` with `[{"name":"novel1"},{"name":"existing"},{"name":"novel2"}]`; assert 4xx; then assert NEITHER `novel1` NOR `novel2` exists (fail-on-duplicate aborts the whole batch).
+  4. `createTag_emptyBody_returns200WithEmptyList` — `POST /api/tags` with `[]`; assert HTTP 200 + empty items (the short-circuit at ReactiveAbstractCRUDRepository.java:115-117).
+
+  If P-026 shows partial commit, tests #1 and #3 become FAILING regression-pins flagging a real bug (raise REFACTOR-NNN to add `ON CONFLICT` or a pre-flight dedup). If P-026 shows atomic rollback, the tests pin the correct behaviour.
+batch: 2026-05-21-X-TAGGING
+feature_id: F-018

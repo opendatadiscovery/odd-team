@@ -1,0 +1,57 @@
+gap_id: TEST-GAP-890
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java TagController controller-method:deleteTag"
+  - "odd-platform java TagController controller-method:updateTag"
+pillars_affected: [P-01, P-08, P-09]
+surfaced_by:
+  - "odd-platform__java__TagController__controller-method__deleteTag.md:bugs_limitations_corner_cases.[The external guard checks only the DATA-ENTITY side — getDto's boolOr(tag_to_data_entity.external) aggregate does NOT consult tag_to_dataset_field.origin]"
+  - "odd-platform__java__TagController__controller-method__updateTag.md:bugs_limitations_corner_cases.[The !external guard reads only the data-entity aggregate, not dataset-field origins]"
+  - "odd-platform__java__TagController__controller-method__deleteTag.md:security.known_security_gaps.[The !external guard protects only the data-entity side]"
+behaviour: |-
+  **HIGH — the `!external` Collector-ownership guard on `updateTag` and `deleteTag` reads ONLY the `tag_to_data_entity` aggregate (`boolOr(tag_to_data_entity.external)`) — it does NOT consult `tag_to_dataset_field.origin`. A tag whose ONLY Collector-set provenance is an `EXTERNAL` `tag_to_dataset_field` row (with no `external` data-entity relation) PASSES the `.filter(!external)` guard and CAN be renamed or deleted by a UI user holding `TAG_UPDATE` / `TAG_DELETE` — silently overwriting or orphaning a Collector-owned dataset-field tag link. The guard's intent (Collector-pushed tags are immutable to the UI) is partially defeated for the dataset-field provenance channel.** Method-level primary source from the batch-X-TAGGING `updateTag` + `deleteTag` controller-method sidecars:
+
+  - `TagServiceImpl.delete` (`:62-63`) and `TagServiceImpl.update` (`:49-50`): both apply `.filter(tagDto -> !tagDto.external())` else `BadUserRequestException("Can't delete/update tag which has external relations")`.
+  - `getDto`'s `external()` aggregate (`ReactiveTagRepositoryImpl.java:54-66`): `coalesce(boolOr(tag_to_data_entity.external), false)` — a `LEFT JOIN tag_to_data_entity` ONLY. It does NOT join `tag_to_dataset_field`.
+  - `tag_to_dataset_field` carries a `TagOrigin` enum column (`INTERNAL` / `EXTERNAL` / `EXTERNAL_STATISTICS`, `TagOrigin.java:3-7`), NOT a boolean `external`. The guard's `boolOr(tag_to_data_entity.external)` aggregate cannot see it.
+  - Consequence: a tag with INTERNAL (or no) data-entity relations + an `EXTERNAL` `tag_to_dataset_field` relation has `tagDto.external() == false` -> passes the guard -> is UI-mutable.
+
+  **Two distinct surfaces, both unpinned (the SAME guard gap, two operations):**
+  - **deleteTag** — a UI user with `TAG_DELETE` deletes such a tag. The `tag_to_dataset_field` row (a Collector-set EXTERNAL relation) is left orphaned referencing the soft-deleted tag (compounding the asymmetric-cascade orphan accumulation of TEST-GAP-762).
+  - **updateTag** — a UI user with `TAG_UPDATE` renames such a tag. On the Collector's next push, the rename may be silently overridden, OR the renamed tag diverges from the Collector's expected name — the exact Collector-vs-UI reconciliation is the broader concern; the immediate gap is that the guard meant to PREVENT UI mutation of Collector-owned tags does not fire.
+
+  **Why HIGH**: this is a partial defeat of an intentional cross-pillar ownership invariant (Collector owns the `external` bit; UI cannot mutate Collector-owned tags). The guard is asymmetric by construction — it protects the data-entity provenance channel but not the dataset-field provenance channel. A test asserting the guard fires for BOTH provenance channels is the regression catcher; today nothing asserts even the data-entity-side guard, let alone the dataset-field gap.
+
+  **Test gap shape**: a `WebTestClient` / `@SpringBootTest` security test asserting (a) `updateTag` / `deleteTag` of a tag with an `external = true` `tag_to_data_entity` relation returns 4xx with the canonical message (the guard FIRES — the data-entity channel); (b) `updateTag` / `deleteTag` of a tag whose only Collector provenance is an `EXTERNAL` `tag_to_dataset_field` relation — assert the CURRENT behaviour (the guard does NOT fire — the call SUCCEEDS). Test (b) PINS the gap as the current state; when the guard is fixed to consult `tag_to_dataset_field.origin`, test (b) inverts to assert a 4xx.
+test_class: missing-security
+criticality_rationale: |-
+  HIGH per Rule 3: the deleteTag and updateTag sidecars rate the guard-gap MEDIUM in isolation (the sidecars' own rating, severity MEDIUM in known_security_gaps). It is a partial defeat of a cross-pillar ownership invariant (Collector vs UI). Rule's cross-pillar bump applies — pillars_affected len 3 (P-01, P-08, P-09) and the gap spans the ingestion/UI boundary (the Collector-set EXTERNAL dataset-field relation is the ingestion-pillar artefact a UI mutation destroys); +1 step from MEDIUM lands HIGH. F-018's drift_class_summary carries `external_tag_guard_protects_collector_pushed_tags_from_ui_overwrite_positive_invariant` — this gap pins the NEGATIVE corollary (the channel the guard misses).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/TagExternalGuardCoverageTest.java"
+  name: "externalGuard_firesForDataEntityProvenance_butMissesDatasetFieldOriginChannel_pinsGuardGap"
+evidence:
+  - "deleteTag sidecar says (bugs_limitations_corner_cases): 'The external guard checks only the DATA-ENTITY side — getDto's boolOr(tag_to_data_entity.external) aggregate (ReactiveTagRepositoryImpl.java:58) does NOT consult tag_to_dataset_field.origin (which carries a TagOrigin enum — INTERNAL / EXTERNAL — not a boolean, and is not joined by getDto). A tag whose ONLY Collector-set origin is an EXTERNAL tag_to_dataset_field row, with no external data-entity relation, passes the .filter(!external) guard at TagServiceImpl.java:62 and CAN be deleted by a UI user — silently orphaning a Collector-set dataset-field tag link.' severity MEDIUM"
+  - "updateTag sidecar says (bugs_limitations_corner_cases): 'The !external guard reads only the data-entity aggregate, not dataset-field origins — TagServiceImpl.update's guard tests tagDto.external(), which is boolOr(tag_to_data_entity.external). A tag with INTERNAL data-entity relations but EXTERNAL tag_to_dataset_field relations (origin EXTERNAL / EXTERNAL_STATISTICS) would pass the guard and be renamable via the UI, even though it carries Collector-set dataset-field assignments.' severity MEDIUM"
+  - "deleteTag sidecar says (security.known_security_gaps): 'The !external guard protects only the data-entity side — a tag whose only Collector-set origin is an EXTERNAL tag_to_dataset_field row can be deleted by a UI user holding TAG_DELETE, silently destroying a Collector-owned dataset-field tag association.' severity MEDIUM"
+  - "Verified at primary source via the sidecars: ReactiveTagRepositoryImpl.java:54-66 (getDto LEFT JOINs only TAG_TO_DATA_ENTITY) + TagServiceImpl.java:49-50, 62-63 (the two guards reading the same data-entity-only aggregate) + TagOrigin.java:3-7 (tag_to_dataset_field uses an enum, not a boolean)"
+cross_references:
+  - "TEST-GAP-765 (existing batch-W — STRENGTHENED this batch with method-level evidence — the !external guard on update + delete. DISTINCT from THIS gap: TEST-GAP-765 pins that the guard FIRES for external relations; TEST-GAP-890 pins that the guard MISSES the tag_to_dataset_field.origin provenance channel — the data-entity-only aggregate is blind to it)"
+  - "TEST-GAP-762 (existing batch-W — the deleteTag asymmetric cascade leaves tag_to_dataset_field orphans; this guard gap COMPOUNDS it — a Collector-owned dataset-field relation that the guard fails to protect becomes the orphan)"
+  - "feature-flows:F-018 drift_class_summary.[external_tag_guard_protects_collector_pushed_tags_from_ui_overwrite_positive_invariant] — this gap is the NEGATIVE corollary"
+  - "REFACTOR-NNN candidate: extend getDto's external() aggregate to also consult tag_to_dataset_field.origin (treat origin IN (EXTERNAL, EXTERNAL_STATISTICS) as external)"
+related_features: [F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging", "P-09:F-001"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `TagExternalGuardCoverageTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Four test methods:
+  1. `updateTag_tagWithExternalDataEntityRelation_returns4xx_guardFires` — seed a tag with an `external = true` `tag_to_data_entity` relation; `PUT /api/tags/{id}`; assert 4xx with "Can't update tag which has external relations". PINS the guard fires for the data-entity channel.
+  2. `deleteTag_tagWithExternalDataEntityRelation_returns4xx_guardFires` — same setup; `DELETE`; assert 4xx with "Can't delete tag which has external relations".
+  3. `updateTag_tagWithOnlyExternalDatasetFieldOrigin_succeeds_pinsGuardGap` — seed a tag with NO external data-entity relation but an `EXTERNAL`-origin `tag_to_dataset_field` relation; `PUT`; assert the call SUCCEEDS (the guard does NOT fire — the gap). PIN the current state.
+  4. `deleteTag_tagWithOnlyExternalDatasetFieldOrigin_succeeds_pinsGuardGap` — same setup; `DELETE`; assert the call succeeds and the `tag_to_dataset_field` row is left orphaned.
+
+  Pair with REFACTOR-NNN: extend `getDto`'s `external()` aggregate to also consult `tag_to_dataset_field.origin`. When the fix lands, tests #3-#4 invert to assert a 4xx.
+batch: 2026-05-21-X-TAGGING
+feature_id: F-018

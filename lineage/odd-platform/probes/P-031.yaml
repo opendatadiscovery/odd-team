@@ -1,0 +1,142 @@
+---
+probe_id: P-031
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__openapi__tags__openapi-tag__tag.md
+emitted_at: 2026-05-21T00:00:00Z
+status: pending-stress-protocol
+renumber_note: |
+  PLACEHOLDER ID. P-025 / P-026 / P-027 / P-028 were all claimed by
+  concurrent TAGGING-batch sibling runs while this probe was being
+  written (Glob/Write race). The probe-runner should renumber this to
+  the next free P-NNN on its next sweep and update the sidecar's
+  stress_findings.probes_emitted + stress_findings.request_inputs
+  evidence references accordingly.
+feature_id: F-018
+test_class: integration
+verified_against_commit: ede5d277
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category F — request-input naming alignment): the
+  `getPopularTagList` operation (GET /api/tags) declares its optional `ids`
+  query parameter via the SHARED `IdsParam` component
+  (odd-platform-specification/components.yaml:4239-4248), whose
+  `description:` field reads literally "Entity ids". The TagController
+  signature binds that parameter as `List<Long> ids` and passes it to
+  `tagService.listMostPopular(query, ids, page, size)`
+  (TagController.java:36-44). The TagController + TagServiceImpl sidecars
+  both describe `ids` as a TAG-id-set filter on the tag directory, NOT a
+  data-entity-id filter.
+
+  This probe pins what `ids` actually filters. Hypothesis: supplying
+  `ids=[tagId_A, tagId_B]` restricts the response to exactly the tag rows
+  whose `tag.id` is in that set (intersected with the `query` substring
+  filter and the popularity pipeline). If the hypothesis holds, the shared
+  `IdsParam` description "Entity ids" is operator-misleading for this
+  operation — an OpenAPI consumer reading the rendered spec for
+  `getPopularTagList` would supply data-entity ids and receive an empty or
+  nonsensical result. The probe also records whether supplying a value that
+  is NOT a tag id returns empty (confirming the bind is `TAG.ID`, not a
+  `tag_to_data_entity.data_entity_id` join).
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name)
+      VALUES (9050, '//probe-source-idsparam/db', 'probe-source-idsparam')
+      ON CONFLICT (id) DO NOTHING
+  - kind: sql
+    query: |
+      INSERT INTO data_entity
+        (id, oddrn, external_name, data_source_id, type_id, hollow, view_count,
+         source_created_at, source_updated_at)
+      VALUES (9510, '//probe-source-idsparam/db/tables/idsparam_entity', 'idsparam_entity',
+              9050, 1, false, 0, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+  # Three tags at known ids. id 9510 deliberately COLLIDES with the
+  # data_entity id above so the test can distinguish "filters by tag.id"
+  # from "filters by data_entity_id".
+  - kind: sql
+    query: |
+      INSERT INTO tag (id, name, important, created_at, updated_at)
+      VALUES (9501, 'idsparam_tag_alpha', false, NOW(), NOW()),
+             (9502, 'idsparam_tag_beta',  false, NOW(), NOW()),
+             (9510, 'idsparam_tag_gamma', false, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+act:
+  # (1) ids = two tag ids -> expect exactly those two tags back.
+  - kind: rest
+    method: GET
+    path: /api/tags?page=1&size=30&ids=9501&ids=9502
+    capture_as: by_tag_ids_response
+  # (2) ids = an id (9510) that exists as BOTH a tag id and a data_entity
+  #     id -> if the bind is TAG.ID, tag id 9510 ('idsparam_tag_gamma')
+  #     comes back; if the bind were data_entity_id, the result differs.
+  - kind: rest
+    method: GET
+    path: /api/tags?page=1&size=30&ids=9510
+    capture_as: colliding_id_response
+  # (3) ids = a value that is neither a tag id nor a data_entity id.
+  - kind: rest
+    method: GET
+    path: /api/tags?page=1&size=30&ids=9999990
+    capture_as: nonexistent_id_response
+observe:
+  - kind: jsonpath
+    from: by_tag_ids_response_body
+    path: "$.items[*].id"
+    capture_as: by_tag_ids_returned
+  - kind: jsonpath
+    from: colliding_id_response_body
+    path: "$.items[*].id"
+    capture_as: colliding_id_returned
+  - kind: jsonpath
+    from: nonexistent_id_response_body
+    path: "$.items[*].id"
+    capture_as: nonexistent_id_returned
+assert:
+  # Hypothesis: `ids` filters by tag.id.
+  - "set(by_tag_ids_returned) == {9501, 9502}"
+  # The colliding id resolves as a TAG id (returns tag 9510), proving the
+  # bind targets TAG.ID and not tag_to_data_entity.data_entity_id.
+  - "set(colliding_id_returned) == {9510}"
+  # A value that is no tag id yields an empty page — confirming the filter
+  # is exact tag-id set membership, and that the `IdsParam` description
+  # "Entity ids" misdescribes the parameter for this operation.
+  - "len(nonexistent_id_returned) == 0"
+cleanup:
+  - kind: sql
+    query: "DELETE FROM tag WHERE id IN (9501, 9502, 9510)"
+  - kind: sql
+    query: "DELETE FROM data_entity WHERE id = 9510"
+  - kind: sql
+    query: "DELETE FROM data_source WHERE id = 9050"
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__openapi__tags__openapi-tag__tag
+    - odd-platform__java__TagController__controller-class__TagController
+    - odd-platform__java__service__TagServiceImpl
+  retrospectives: [LSN-020]
+realism_caveats: |
+  - This probe does NOT verify the popularity-ordering drift — that is
+    pinned separately by P-010 (LSN-019). This probe isolates ONE
+    question: does the `ids` parameter filter by tag.id, as the
+    TagController / TagServiceImpl sidecars claim, while the shared
+    `IdsParam` component describes it as "Entity ids"?
+  - If assertion (1) FAILS (the two tags are not returned, or extra rows
+    appear), the `ids` bind is not a plain `TAG.ID.in(ids)` predicate and
+    the file-analyser's reading of the cross-referenced sidecars is wrong;
+    re-trace the `getPopularTagList` -> `listMostPopular` ->
+    ReactiveTagRepositoryImpl chain to find the actual bind column.
+  - The probe runs under DISABLED auth. The `ids` filter semantics are
+    auth-mode-agnostic; DISABLED minimises setup cost.
+  - The `IdsParam` component is SHARED across operations
+    (components.yaml:4239-4248; also referenced at openapi.yaml:139 for a
+    data-entity-scoped operation where "Entity ids" IS accurate). The
+    finding is operation-LOCAL: the description is correct for the other
+    consumer and misleading for `getPopularTagList`. A complementary
+    static check (no probe needed) is whether the tag-scoped operation
+    should reference a dedicated `TagIdsParam`-style component instead.

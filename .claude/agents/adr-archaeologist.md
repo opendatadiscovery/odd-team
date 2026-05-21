@@ -382,24 +382,22 @@ Both `implicit-adrs.md` AND `refactoring-scopes.md` carry `processed_node_ids:` 
 
 If `system-mission.md` does not exist, fall back to rev-2 behaviour and flag the situation.
 
-## Rule 7 (rev 2) — Dedup via `registry-search` subagent; never load the sharded index directly
+## Rule 7 (rev 7.1) — Dedup via semantic search over the graph query layer
 
-**Supersedes rev-1's read-the-full-prior-artefact pattern for dedup.** After slice 6, `implicit-adrs.md` and `refactoring-scopes.md` shard into `implicit-adrs/{index.md, detail/{ID}.md}` and `refactoring-scopes/{index.md, detail/{ID}.md}`. The full registry lives across hundreds of files; loading the entire `index.md` into your own context defeats the rev-2 cost-ceiling fix.
+**Through rev 2-7, dedup spawned the `registry-search` subagent — a grep over the sharded `implicit-adrs/index.md` + `refactoring-scopes/index.md`. Grep matches *vocabulary*; it misses a decision or a gap phrased in different words. Rev 7.1 routes dedup through the derived graph query layer — a semantic similarity query that matches *meaning*.** Follow `playbooks/registry-search-spawn.md` (the rev-7.1 semantic-dedup protocol). The sharded shape is unchanged — `implicit-adrs/{index.md, detail/{ID}.md}` and `refactoring-scopes/{index.md, detail/{ID}.md}`; you still never load the full `index.md`.
 
-For every fresh ADR-candidate AND every fresh refactoring scope you're about to commit, spawn the `registry-search` subagent following `playbooks/registry-search-spawn.md`:
+For every fresh ADR-candidate AND every fresh refactoring scope you're about to commit, run a `graph-search` from the workspace root:
 
-- **For ADR candidates** — pass `INDEX_PATH=lineage/{repo}/implicit-adrs/index.md`, `ARTEFACT_KIND=implicit-adrs`. `QUERY_TEXT` is the candidate's discriminating prose (decision statement + source sidecar's `implicit_adrs[N]` line + supporting sidecars' slugs).
-- **For refactoring scopes** — pass `INDEX_PATH=lineage/{repo}/refactoring-scopes/index.md`, `ARTEFACT_KIND=refactoring-scopes`. `QUERY_TEXT` is the candidate's discriminating prose (scope title + source sidecar's `bugs_limitations_corner_cases[N]` text + node anchor + cross-references).
-
-Act on the verdict per the playbook's decision tree (`0 matches — create new` / `1 strong match — strengthen {ID}` / `N candidates — maintainer-triage-ambiguous`).
-
-When strengthening: read ONLY `detail/{ID}.md`, append the new sidecar to its `surfaced_by` list, append a `## STRENGTHENS — {new_sidecar} (batch {batch_id})` block with the new evidence. Do NOT rewrite existing prose. Update the index headline ONLY if severity / classification / category changed.
-
-When minting new: write `detail/{NEW_ID}.md` with the full entry, append a multi-paragraph headline to `index.md` matching the existing entries' shape (see `lineage/_extractor/registry-shard/shard.py:_index_headline_md` and `_index_headline_adr` for the canonical shape).
+- **For ADR candidates** — `lineage/_extractor/.venv/bin/lineage-extractor graph-search {repo} "{QUERY_TEXT}" --label ImplicitADR --k 8 --json`. `QUERY_TEXT` is the candidate's discriminating prose (decision statement + source sidecar's `implicit_adrs[N]` line + supporting sidecars' slugs).
+- **For refactoring scopes** — the same command with `--label RefactoringScope`. `QUERY_TEXT` is the scope title + source sidecar's `bugs_limitations_corner_cases[N]` text + node anchor + cross-references.
+- For each promising candidate, `graph-node {repo} "{ID}" --json` to read its full content. Then decide:
+  - **No candidate is the same** → mint NEXT_AVAILABLE_ID, write `detail/{NEW_ID}.md` with the full entry, append a multi-paragraph headline to `index.md` matching the existing entries' shape (`lineage/_extractor/registry-shard/shard.py:_index_headline_md` / `_index_headline_adr`).
+  - **One candidate IS the same** → read ONLY `detail/{ID}.md`, append the new sidecar to `surfaced_by`, append a `## STRENGTHENS — {new_sidecar} (batch {batch_id})` block with the new evidence. Do NOT rewrite existing prose. Update the index headline ONLY if severity / classification / category changed.
+  - **Two or more candidates ambiguous** → mint NEW_ID with `maintainer_triage_pending: true` + an ambiguity block; surface in the investigator-log.
 
 Never auto-merge across HIGH-confidence candidates. Maintainer-triggered merges only.
 
-**Per-finding context budget**: ≤ 30 KB (the subagent's response + 1-2 detail files when strengthening). Per-batch reducer total: ≤ 200 KB regardless of registry size. This is the rev-2 cost-ceiling promise.
+**Per-finding context budget**: ≤ 30 KB (the `graph-search` result + 1-2 `graph-node` reads when strengthening). Per-batch reducer total: ≤ 200 KB regardless of registry size.
 
 ## Exit
 

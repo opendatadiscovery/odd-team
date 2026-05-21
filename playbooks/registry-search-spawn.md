@@ -1,89 +1,122 @@
 ---
 trigger: any reducer subagent (concept-merger / adr-archaeologist / doc-gap-finder / test-coverage-mapper / feature-flow-builder) is about to commit a fresh finding from a new sidecar; needs to know whether the finding should strengthen an existing entry or mint a new ID
-applies_to: cross-pillar — universal to the agentic-code-ontology layer (rev 2 slice 7)
-goal: cut per-batch reducer-context tokens from 200-800 KB of monolithic prior-artefact reads to ~50-150 KB by routing dedup through the registry-search subagent
-case_law: 2026-05-12 batch F test-coverage-mapper stream-idle timeout; 2026-05-12 batches B/E rate-limit hits — all caused by reducers loading the full monolith every batch. Rev 2 introduces this protocol as the structural fix.
+applies_to: cross-pillar — universal to the agentic-code-ontology layer (rev 7.1 — the agentic-retriever cutover)
+goal: dedup a fresh finding against the existing registry by SEMANTIC similarity over the derived graph query layer, not by textual grep — catches a duplicate phrased in different vocabulary, which the grep-based registry-search missed
+case_law: 2026-05-12 batches B/E/F reducer monolith-load timeouts (the rev-2 sharding fix); graph-query-layer.md PROBES failure-pressure #3 — "synonym blindness: grep over sharded indexes misses a finding phrased with different vocabulary" — the gap this rev-7.1 protocol closes
+supersedes: the rev-2 "spawn the registry-search subagent" mechanism. The filename is kept (`registry-search-spawn.md`) for reference stability across the 5 reducer prompts; the PROTOCOL below is the rev-7.1 semantic-dedup flow.
 ---
 
-# Registry-search spawn — PROTOCOL (rev 2)
+# Semantic dedup — PROTOCOL (rev 7.1)
+
+A reducer, before committing a fresh finding, must decide: **strengthen an existing
+registry entry, or mint a new ID?** Through rev 2-7 that decision was fed by the
+`registry-search` subagent — a grep over the sharded `index.{md,yaml}` files.
+Grep matches *vocabulary*; it misses a duplicate finding phrased in different
+words. Rev 7.1 routes the decision through the **derived graph query layer**
+(`adrs/drafts/agentic-graph-retriever.md`): a `graph-search` is a vector
+similarity query — it matches *meaning*. This is the registry-search → agentic
+retriever cutover for the reducer-dedup consumer.
 
 ## When to fire
 
-Every time one of the 5 reducer subagents (`concept-merger`, `adr-archaeologist`, `doc-gap-finder`, `test-coverage-mapper`, `feature-flow-builder`) is about to commit a fresh finding from a new sidecar. The reducer fires this protocol BEFORE writing to the sharded registry (`{artefact}/index.{md|yaml}` + `{artefact}/detail/{id}.{md|yaml}`).
+Every time one of the 5 reducer subagents is about to commit a fresh finding from
+a new sidecar — BEFORE writing to the sharded registry (`{artefact}/index.{md|yaml}`
++ `{artefact}/detail/{id}.{md|yaml}`).
 
-Skipped (falls back to "always mint new") only when:
+Falls back to "always mint new" only when: the sharded index does not yet exist
+(first batch after a fresh shard); or the maintainer passes `--no-dedup`.
 
-- The sharded index file does not yet exist (first batch after a fresh shard — happens once per repo per artefact).
-- The reducer's `prompt_version` has bumped MAJOR and the registry shape is incompatible.
-- The maintainer passes `--no-dedup` (debug-only override).
+## Pre-step (the orchestrator does this once, before the parallel reducers)
+
+The orchestrator (`/next-batch` Phase 2, or a maintainer driving a batch) runs
+**`lineage/_extractor/.venv/bin/lineage-extractor graph-build {repo}`** ONCE before
+spawning the reducer phase. This rebuilds the ephemeral graph + vector index from
+the canonical `detail/` files (cache-checked — sub-second when the substrate is
+unchanged) so every reducer's `graph-search` hits a current, warm index that
+reflects all *committed* prior findings. The reducers never build it themselves
+in parallel.
 
 ## Inputs the reducer prepares
 
-For each fresh finding it is about to commit, the reducer gathers:
+For each fresh finding it is about to commit:
 
 ```
-QUERY_TEXT: |
-  <the verbatim discriminating sidecar field — e.g. the full
-   `bugs_limitations_corner_cases[N]` entry, or `implicit_adrs[N]` line,
-   or `tests_coverage_semantic.uncovered_behaviours[N]`, etc.>
-  Source sidecar: {slug}.md
-  Source field path: bugs_limitations_corner_cases.[N]
-  Cross-references in source: [REFACTOR-NNN, TEST-GAP-NNN, DOC-GAP-NNN, ...]
-  Node anchor: {node_id} ({file}:{line})
-
-INDEX_PATH: <absolute path to the target artefact's sharded index>
-ARTEFACT_KIND: <concepts | implicit-adrs | refactoring-scopes | doc-gaps | test-map>
-MAX_CANDIDATES: 5     # default; can be increased to 10 for cross-cutting categories
+QUERY_TEXT:     the verbatim discriminating sidecar field — the full
+                bugs_limitations_corner_cases[N] entry / implicit_adrs[N] line /
+                uncovered_behaviours[N] / concept descriptor. Pick the single
+                MOST discriminating field; that is the reducer's judgment call.
+ARTEFACT_LABEL: the graph node label of the reducer's own artefact —
+                concept-merger        -> Concept
+                adr-archaeologist     -> ImplicitADR  (ADR candidates)
+                                       + RefactoringScope  (gap-shaped scopes)
+                doc-gap-finder        -> DocGap
+                test-coverage-mapper  -> TestGap
+                feature-flow-builder  -> Feature
+INDEX_PATH:     the sharded index path — used ONLY by the grep fallback below.
 ```
 
-The reducer's orchestrator passes these in the Task tool's prompt to the `registry-search` subagent.
+## The dedup query
 
-## Reducer's decision tree on the subagent's output
+Run, from the workspace root:
 
-The subagent returns a YAML block of candidates + a `verdict:` line. The reducer acts on the verdict:
+```
+lineage/_extractor/.venv/bin/lineage-extractor graph-search {repo} "{QUERY_TEXT}" \
+    --label {ARTEFACT_LABEL} --k 8 --json
+```
 
-| Verdict | Reducer's next move |
+It returns up to 8 existing entries of your artefact's label, ranked by semantic
+similarity to the finding. For each promising candidate, read its full content:
+
+```
+lineage/_extractor/.venv/bin/lineage-extractor graph-node {repo} "{node_id}" --json
+```
+
+`graph-node` returns the entry's sections, props (severity / category), and
+provenance — enough to judge "same finding?" without loading the whole index.
+
+## The reducer's decision (judgment, on the candidates)
+
+The reducer reads the candidates and decides — this is the reducer's
+intelligence, not a mechanical verdict line:
+
+| Situation | Reducer's next move |
 |---|---|
-| `verdict: 0 matches — create new` | Mint NEXT_AVAILABLE_ID + 1. Write `{artefact}/detail/{NEW_ID}.{md|yaml}` with the full new entry. Append a multi-paragraph headline to `{artefact}/index.{md|yaml}` (use the same headline shape as the existing entries — see `lineage/_extractor/registry-shard/shard.py`'s `_index_headline_*` functions for the canonical format). Record `surfaced_by: [{slug}.md:{field-path}]` in the new entry. |
-| `verdict: 1 strong match — strengthen {ID}` | Read `{artefact}/detail/{ID}.{md|yaml}`. Append to it: the new sidecar slug to `surfaced_by`, any new file:line evidence to the evidence block, any refinement narrative under a `STRENGTHENS — {new_sidecar} (batch {batch_id})` heading. Do NOT rewrite existing prose. Update the headline in `{artefact}/index.{md|yaml}` ONLY if the new evidence changes severity / classification / category — otherwise leave the headline untouched (the detail file carries the strengthen). |
-| `verdict: N candidates — maintainer-triage-ambiguous` | Mint NEXT_AVAILABLE_ID + 1 as if creating new, BUT add `maintainer_triage_pending: true` to the new entry's frontmatter + a top-of-entry block: `## Maintainer triage pending\n\nregistry-search surfaced {N} ambiguous candidates: {ID1}, {ID2}, ... — please confirm whether to merge or keep separate.`. Surface the ambiguity in the batch's investigator-log entry (`lineage/{repo}/investigator-log.md`'s next batch block) so the maintainer triages explicitly during the per-batch review pass. |
+| **No candidate is the same finding** (low similarity, or different subject on inspection) | Mint NEXT_AVAILABLE_ID. Write `{artefact}/detail/{NEW_ID}.{md\|yaml}` with the full new entry. Append a multi-paragraph headline to `{artefact}/index.{md\|yaml}` in the existing entries' shape (see `lineage/_extractor/registry-shard/shard.py`). Record `surfaced_by: [{slug}.md:{field-path}]`. |
+| **One candidate IS the same finding** | Read `{artefact}/detail/{ID}`. Append: the new sidecar slug to `surfaced_by`, new file:line evidence to the evidence block, refinement narrative under a `STRENGTHENS — {new_sidecar} (batch {batch_id})` heading. Do NOT rewrite existing prose. Update the index headline only if severity / classification / category changed. |
+| **Two or more candidates are plausibly the same and you cannot disambiguate** | Mint a new ID, BUT add `maintainer_triage_pending: true` to the entry frontmatter + a top block naming the ambiguous candidate IDs. Surface it in the batch's investigator-log entry for the maintainer's per-batch review. NEVER auto-merge HIGH-confidence candidates — merges are maintainer-triggered. |
 
-The reducer NEVER auto-merges across HIGH-confidence candidates. Per rev-2 risk mitigation (`adrs/drafts/feature-anchored-ontology.md` "Emergent-feature registry never converges" row), merges are maintainer-triggered.
+Apply your artefact's own strengthen logic (concept-merger merges `contributors` /
+`nodes` / aggregates; test-coverage-mapper appends regression targets; etc.) — that
+logic is unchanged by this cutover; only the candidate-surfacing mechanism changed.
 
-## Why this is mechanical, not heuristic
+## Fallback — graph layer unavailable
 
-- The reducer's decision is determined by the subagent's verdict line.
-- The subagent's verdict is determined by textual overlap (file:line anchors, distinctive phrases, cross-reference IDs).
-- The reducer's write back to the sharded registry is shape-bound by the index headline format established at shard time.
-
-The judgment surface the reducer keeps: the QUERY_TEXT choice (which sidecar field to dedup against — typically the most discriminating one). All else is rails.
+`graph-search` degrades to keyword search on its own when the embedding half is
+unavailable, so it almost always returns *something*. If the graph layer is fully
+absent — no `lineage/_extractor/.venv/`, or `graph-build` errors — fall back to a
+`grep` over `INDEX_PATH` for the finding's file:line anchors + distinctive
+identifiers (the legacy registry-search heuristic), and log
+`dedup_fallback: grep` in the batch's investigator-log entry.
 
 ## Exit criteria per finding
 
-- Either a new detail file landed at `{artefact}/detail/{NEW_ID}.{md|yaml}` + an index headline appended, OR
-- An existing detail file gained a STRENGTHENS block, OR
-- A new detail file landed with `maintainer_triage_pending: true` and the ambiguity is surfaced in the batch's investigator-log entry.
-
-In all three cases: the reducer's context per finding is bounded by the subagent's response size (~5-20 KB) + the detail-file read (when strengthening; ~3-30 KB) — NOT by the full registry size.
+Either a new `detail/{NEW_ID}` + index headline landed; OR an existing detail file
+gained a STRENGTHENS block; OR a new detail file landed with
+`maintainer_triage_pending: true` and the ambiguity is in the investigator-log.
+Per-finding reducer context stays bounded by the `graph-search` result (~5-15 KB)
++ the `graph-node` reads — never the full registry.
 
 ## Per-batch aggregated invariants
 
-After processing all findings in a batch:
-
-- `{artefact}/index` is consistent: every detail file has an index entry; every index entry has a detail file.
-- `processed_sidecars:` block at the head of the index (rev 2 carries this forward from rev 1's monolith) lists every sidecar that contributed this batch.
-- The batch's investigator-log entry records: per-reducer findings-count + new-entry-count + strengthen-count + ambiguous-count.
-
-## Fail-modes
-
-- **registry-search returns a malformed YAML block** → reducer treats as `verdict: 0 matches — create new` and logs a quality warning. The maintainer sees the warning in the next investigator-log entry and re-runs the offending finding manually.
-- **Mint-new collides with an existing ID** (the prior NEXT_AVAILABLE_ID was wrong — likely a hand-edit drift) → reducer aborts the finding, escalates with the existing detail file's content + the new one's content side-by-side, asks the maintainer to triage. Do not silently overwrite.
-- **detail file the verdict points to does not exist** (the index entry references a detail that was deleted out-of-band) → reducer treats as `verdict: 0 matches — create new` AND logs `registry_inconsistency: true` in the batch's investigator-log entry. The maintainer re-runs `shard.py` to re-sync.
+- every detail file has an index entry; every index entry has a detail file
+  (reconciled by `rebuild_indexes.py` in Phase 3);
+- the batch's investigator-log entry records per-reducer new / strengthen /
+  ambiguous counts + any `dedup_fallback: grep`.
 
 ## Cross-references
 
-- `adrs/drafts/feature-anchored-ontology.md` rev 2 — principle 6 (sharding) + principle 7 (registry-search subagent) + slice 7 (this protocol's host slice).
-- `.claude/agents/registry-search.md` — the subagent's system prompt (what it reads, what it returns, the safety rules).
-- `.claude/agents/{concept-merger,adr-archaeologist,doc-gap-finder,test-coverage-mapper,feature-flow-builder}.md` — the 5 reducer prompts that call this playbook.
-- `lineage/_extractor/registry-shard/shard.py` — the conversion script + canonical headline-shape functions.
-- `playbooks/reducer-incremental-mode.md` — the rev-1 playbook this rev-2 protocol succeeds (rev-1's compact-head approach is OBSOLETE under rev 2; this playbook replaces it).
+- `adrs/drafts/agentic-graph-retriever.md` — the cutover decision (rev 7.1); the reducer-dedup consumer is build-step-4.
+- `adrs/drafts/graph-query-layer.md` — the derived graph query layer + the `graph-search` / `graph-node` primitives.
+- `.claude/agents/registry-search.md` — the SUPERSEDED grep subagent; kept only as the documented graph-unavailable fallback.
+- `.claude/agents/{concept-merger,adr-archaeologist,doc-gap-finder,test-coverage-mapper,feature-flow-builder}.md` — the 5 reducer prompts that follow this playbook.
+- `lineage/_extractor/registry-shard/{shard.py,rebuild_indexes.py}` — canonical headline shapes + the Phase-3 index reconciliation.

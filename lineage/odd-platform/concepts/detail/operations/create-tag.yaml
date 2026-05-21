@@ -1,0 +1,216 @@
+name: Create Tag (bulk, fail-on-duplicate)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-08
+  - P-09
+description: |-
+  NEW OPERATION, batch X-TAGGING (2026-05-21) — captures
+  `POST /api/tags` at the operation-concept level. Previously the
+  operation was only implicit inside the Tag entity; the `createTag`
+  controller-method sidecar promotes it to a first-class catalog
+  citizen. The `get-popular-tag-list` operation's notes already
+  reference "Pairs with create-tag" — this entry fills that referenced
+  but previously-unminted slot.
+
+  THE ENDPOINT:
+    POST /api/tags -> HTTP 200 (de facto; OpenAPI declares 201).
+    Gated by TAG_CREATE permission (Management scope, NO_CONTEXT) via
+    SecurityConstants.SECURITY_RULES at SecurityConstants.java:138.
+
+  THE CHAIN:
+    TagController.createTag (TagController.java:22-28) — 3-line
+    reactive delegation: `tagFormData.collectList()` materialises the
+    inbound `Flux<TagFormData>` bulk body, hands the `List<TagFormData>`
+    to `tagService.bulkCreate`, wraps the resulting `Flux<Tag>` in
+    `ResponseEntity::ok`.
+    -> TagServiceImpl.bulkCreate (TagServiceImpl.java:37-42) —
+       single-step delegation, NO `@ReactiveTransactional` of its own.
+    -> inherited ReactiveAbstractCRUDRepository.bulkCreate
+       (:114-126, `@ReactiveTransactional`) — empty-collection
+       short-circuit to `Flux.just()`, else stamps
+       `DateTimeUtil.generateNow()` and emits a single
+       `insertManyReturning` multi-row INSERT with NO `ON CONFLICT`.
+
+  THE OPERATION SHAPE — bulk + fail-on-duplicate:
+    The request body is `BulkTagFormData` (a `type: array` of
+    `TagFormData`), so a single call creates N tags. The operation
+    is FAIL-ON-DUPLICATE, NOT upsert: a `name` already present in the
+    non-deleted directory hits the partial unique index
+    `tag_name_unique` and translates to
+    `UniqueConstraintException("Tag with this name already exists")`
+    via ExceptionUtils.java:54-56. This is the deliberate counterpart
+    to the upsert-shaped `getOrInjectTagByName` the Collector path
+    uses (see the `spec-documented-auto-create-with-scope-asymmetry`
+    invariant for the side-door write paths).
+
+  TWO DRIFTS A CAREFUL OPERATOR SHOULD KNOW:
+    Drift 1 — status-code: the controller returns HTTP 200 via
+    `ResponseEntity::ok` (TagController.java:27); the OpenAPI operation
+    declares `201` (openapi.yaml:372). Same drift class as `updateTag`
+    and `TermController.createTerm`. See the
+    `openapi-200-vs-201-status-code-drift-codebase-wide` candidate.
+    Drift 2 — response-shape: the controller returns
+    `Mono<ResponseEntity<Flux<Tag>>>` (a nested reactive shape); the
+    OpenAPI operation declares `TagList`, a static array
+    (openapi.yaml:377). Behaviourally equivalent at the buffered HTTP
+    wire but a spec-vs-code shape drift.
+
+  IN-BATCH DUPLICATE ATOMICITY — UNVERIFIED (probe P-026):
+    A payload `[{"name":"a"},{"name":"a"}]` hits `tag_name_unique` on
+    the second row. Whether the whole `insertManyReturning` INSERT
+    rolls back atomically (zero rows) or partially commits (the
+    distinct names land) is NOT statically determinable — it depends
+    on R2DBC's emission shape + Spring's reactive-TX rollback
+    semantics. A partial-commit outcome would be a silent data-shape
+    surprise. Pinned by probe P-026 (lineage/odd-platform/probes/P-026.yaml).
+
+nodes:
+  - odd-platform java TagController controller-method:createTag
+  - odd-platform openapi tags openapi-tag:tag
+
+contributors:
+  - |-
+    TagController.createTag batch X-TAGGING (PRIMARY SOURCE —
+    controller-method tier):
+    concepts.operations[createTag (lines 22-28) — bulk tag-vocabulary
+    create; fail-on-duplicate] +
+    concepts.invariants[bulkCreate is fail-on-duplicate, NOT upsert;
+    no ON CONFLICT clause] +
+    implicit_adrs[Bulk-create is the operator-explicit fail-on-duplicate
+    API shape] + bugs_limitations_corner_cases (status-code drift,
+    response-shape drift, in-batch duplicate atomicity P-026)
+  - |-
+    openapi-tag tag batch X-TAGGING (CORROBORATING — contract tier):
+    concepts.operations[createTag — POST /api/tags, BulkTagFormData
+    request, 201/TagList declared] +
+    invariants[createTag declares 201 but the controller returns 200] +
+    stress_findings.name_behavior_pairs (singular summary 'Create a
+    tag' understates the bulk-array shape — MINOR drift)
+
+evidence:
+  - 'TagController.java:22-28 (the 3-line reactive delegation)'
+  - 'createTag.md:concepts.operations[createTag]'
+  - 'createTag.md:implicit_adrs[Bulk-create is the operator-explicit fail-on-duplicate API shape]'
+  - 'createTag.md:bugs_limitations_corner_cases (status-code drift; in-batch duplicate atomicity)'
+  - 'TagServiceImpl.java:37-42 (single-step delegation, no @ReactiveTransactional)'
+  - 'ReactiveAbstractCRUDRepository.java:114-126 (the inherited bulkCreate — no ON CONFLICT)'
+  - 'SecurityConstants.java:138 (TAG_CREATE permission gate)'
+  - 'odd-platform-specification/openapi.yaml:372 (declared 201) + :377 (declared TagList)'
+  - 'openapi-tag__tag.md:invariants[createTag declares 201; controller returns 200]'
+  - 'P-026 (probe pinning the in-batch duplicate-atomicity contract)'
+
+axes_present:
+  - controllers
+  - openapi_tags
+
+security_aggregate:
+  overall: MEDIUM
+  auth_modes_relevant:
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
+  ingestion_filter_relevance: NO
+  authorization_consistency:
+    verdict: CONSISTENT
+    detail: |-
+      Gated at the controller perimeter via SecurityConstants.SECURITY_RULES
+      (TAG_CREATE, Management scope, NO_CONTEXT). NO @PreAuthorize on the
+      method; NO programmatic permission check in TagServiceImpl.bulkCreate
+      or the inherited repository method — controller-perimeter-only is the
+      consistent platform shape for write endpoints.
+  owner_scoping:
+    verdict: N/A
+    detail: The tag table has no owner_id column; createTag produces flat globally-shared vocabulary rows.
+  strengths:
+    - |-
+      Atomicity of the multi-row INSERT comes from the inherited
+      @ReactiveTransactional on ReactiveAbstractCRUDRepository.bulkCreate.
+    - |-
+      external = true is NOT settable from TagFormData — a UI/API caller
+      cannot impersonate a Collector-created tag.
+  weaknesses:
+    - |-
+      HIGH — side-door directory growth — DATA_ENTITY_TAGS_UPDATE /
+      TERM_TAGS_UPDATE / DATASET_FIELD_TAGS_UPDATE and S2S ingestion mint
+      global tag rows WITHOUT TAG_CREATE, while createTag itself requires
+      it. The live permissions page does not document this. See the
+      `spec-documented-auto-create-with-scope-asymmetry-tag-side-door-past-tag-create`
+      invariant.
+    - |-
+      MEDIUM — authorisation is path-pattern-matched only; a /api/tags
+      path rename without a SECURITY_RULES update would silently un-gate
+      createTag (REFACTOR-217 drift class).
+    - |-
+      MEDIUM — no audit log — a new tag appearing in the global directory
+      produces no Activity Feed entry; the create is not attributable to
+      a user or a time. See the audit-log-presence-asymmetry invariant.
+    - |-
+      LOW — no tag-name validation — empty / whitespace / control-char /
+      unbounded-length names are accepted into the global directory.
+  cross_file_inconsistencies:
+    - |-
+      The openapi-tag tag sidecar and the createTag method sidecar agree
+      on the 200-vs-201 status-code drift — corroborating, no conflict.
+  contributing_files:
+    - createTag.md
+    - openapi-tag__tag.md
+  evidence:
+    - 'createTag.md:security.authorization_assertions'
+    - 'createTag.md:security.known_security_gaps'
+    - 'openapi-tag__tag.md:invariants[no security: block, no securitySchemes]'
+
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+    - |-
+      Runs once per Management -> Tags 'create' action — not a rendering
+      or polling path. odd-platform java TagController controller-method:createTag
+  throughput_shape:
+    verdict: BATCH_FRIENDLY
+    detail: |-
+      createTag accepts a Flux<TagFormData> array; the inherited bulkCreate
+      emits ONE multi-row INSERT regardless of batch size (no per-element
+      round-trip; it does NOT partition like the Collector ingestData path).
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: |-
+      Stateless controller; concurrency-protection on the create path is
+      the tag_name_unique partial unique index (B-tree-level conflict
+      serialisation), not an application lock.
+  weaknesses:
+    - |-
+      LOW — no maxItems cap on the bulk body — a 100000-element
+      BulkTagFormData is accepted, fully .collectList()-materialised in
+      memory, and emitted as one very large multi-row INSERT.
+  contributing_files:
+    - createTag.md
+  evidence:
+    - 'createTag.md:performance.resource_allocation'
+    - 'createTag.md:performance.known_performance_gaps'
+
+notes: |-
+  CAPTURED batch X-TAGGING (2026-05-21). createTag is the
+  operator-explicit, gated, fail-on-duplicate entry-point into the Tag
+  directory — the deliberate counterpart to the silent-idempotent
+  Collector-path getOrInjectTagByName.
+
+  Cross-cutting connections:
+    - Pairs with the Tag entity (lifecycle)
+    - Pairs with `get-popular-tag-list` (the read counterpart; that
+      operation's notes already reference this slot)
+    - Pairs with `delete-tag-with-asymmetric-cascade` (the delete
+      counterpart)
+    - Pairs with `update-tag` (the rename counterpart)
+    - Pairs with `spec-documented-auto-create-with-scope-asymmetry-tag-side-door-past-tag-create`
+      (the side-door write paths that bypass this operation's TAG_CREATE gate)
+    - Pairs with `openapi-200-vs-201-status-code-drift-codebase-wide`
+      (the status-code drift)
+related_operations:
+  - delete-tag-with-asymmetric-cascade
+  - get-popular-tag-list
+  - update-tag
+related_pillar_features:
+  - P-01:F-018
+maintainer_curated: false

@@ -1,0 +1,208 @@
+---
+probe_id: P-025
+feature_id: F-018
+test_class: integration
+verified_against_commit: 9ac6436e
+prompt_version: probe-runner/0.1.0
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__TagController__controller-method__updateTag
+emitted_at: 2026-05-21T00:00:00Z
+maintainer_curated: false
+status: pending-stress-protocol
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category B / Category E — updateTag search-vector
+  propagation): TagServiceImpl.update calls updateSearchVectors
+  (TagServiceImpl.java:53,161-167), which runs three concurrent FTS-upsert
+  queries. The first, ReactiveSearchEntrypointRepositoryImpl.updateChangedTagVectors
+  (ReactiveSearchEntrypointRepositoryImpl.java:319-341), JOINs
+  TAG -> TAG_TO_DATA_ENTITY -> DATA_ENTITY and writes SEARCH_ENTRYPOINT.TAG_VECTOR
+  per data entity carrying the tag. STATIC TRACE CONCLUSION: renaming a tag
+  via PUT /api/tags/{id} DOES propagate the new tag name into the
+  search_entrypoint.tag_vector of every data entity carrying that tag, so a
+  full-text search for the NEW name should return those entities, and a
+  search for the OLD name should NOT.
+
+  This probe pins that conclusion in CI. The two hypotheses it tests:
+  (H1) after a rename, GET /api/search... for the NEW tag name returns the
+       data entities carrying the tag (search vector refreshed);
+  (H2) after a rename, search for the OLD tag name no longer returns those
+       entities (the old token was overwritten, not appended).
+
+  Secondary question (out of static scope): whether updateChangedTagVectors
+  is a full overwrite of TAG_VECTOR or an append — buildVectorUpsert is
+  called with the `true` flag at ReactiveSearchEntrypointRepositoryImpl.java:338
+  (argument name not resolved in this sidecar's 1-hop budget). If H2 FAILS
+  (old name still searchable), the upsert appends rather than replaces, and
+  a tag rename leaves stale search tokens — an operator-visible drift.
+---
+
+# P-025 — updateTag (rename) FTS search-vector propagation to carrying entities
+
+arrange:
+  - kind: docker-compose-up
+
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name)
+      VALUES (2510, '//probe-source-P-025/db', 'probe-source-P-025')
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      INSERT INTO data_entity
+        (id, oddrn, external_name, data_source_id, type_id, hollow, view_count,
+         source_created_at, source_updated_at)
+      VALUES (2510, '//probe-source-P-025/db/tables/p025_tagged_entity', 'p025_tagged_entity',
+              2510, 1, false, 0, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+
+  # A single tag with a distinctive original name.
+  - kind: sql
+    query: |
+      INSERT INTO tag (id, name, important, created_at, updated_at)
+      VALUES (2510, 'p025originalname', false, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      INSERT INTO tag_to_data_entity (tag_id, data_entity_id, external)
+      VALUES (2510, 2510, false)
+      ON CONFLICT (tag_id, data_entity_id) DO NOTHING
+
+  # Prime the search_entrypoint.tag_vector for the entity by triggering the
+  # same code path the assignment flow would: call updateChangedTagVectors
+  # via a no-op update first, so the BEFORE state is a populated vector
+  # containing 'p025originalname'.
+  - kind: rest
+    method: PUT
+    path: /api/tags/2510
+    body: '{"name": "p025originalname", "important": false}'
+    capture_as: prime_response
+
+observe:
+  # BEFORE state: search for the original name should return the entity.
+  - kind: rest
+    method: GET
+    path: /api/search/data_entity?query=p025originalname
+    capture_as: search_before_rename
+
+act:
+  # Rename the tag. The new name is equally distinctive and shares no token
+  # with the old name, so a search for either is unambiguous.
+  - kind: rest
+    method: PUT
+    path: /api/tags/2510
+    body: '{"name": "p025renamedvalue", "important": false}'
+    capture_as: rename_response
+
+observe:
+  - kind: jsonpath
+    from: rename_response_body
+    path: "$.name"
+    capture_as: renamed_tag_name
+
+  # AFTER state H1: search for the NEW name should now return the entity.
+  - kind: rest
+    method: GET
+    path: /api/search/data_entity?query=p025renamedvalue
+    capture_as: search_new_name
+
+  # AFTER state H2: search for the OLD name should no longer return it.
+  - kind: rest
+    method: GET
+    path: /api/search/data_entity?query=p025originalname
+    capture_as: search_old_name
+
+  # Direct DB read of the search vector for the entity — ground truth.
+  - kind: sql
+    query: |
+      SELECT tag_vector::text AS tag_vector_text
+      FROM search_entrypoint
+      WHERE data_entity_id = 2510
+    capture_as: tag_vector_after_rename
+
+assert:
+  - "rename_response.status == 200"
+  - "renamed_tag_name == 'p025renamedvalue'"
+
+  # H1 — the new name propagated into the carrying entity's search vector.
+  - "'p025renamedvalu' in tag_vector_after_rename.tag_vector_text  # ts lexeme stem"
+
+  # H2 — the old token was OVERWRITTEN, not appended. If this FAILS, the
+  # FTS upsert appends and tag renames leave stale searchable tokens.
+  - "'p025originalnam' not in tag_vector_after_rename.tag_vector_text  # ts lexeme stem"
+
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM tag_to_data_entity WHERE tag_id = 2510
+  - kind: sql
+    query: |
+      DELETE FROM search_entrypoint WHERE data_entity_id = 2510
+  - kind: sql
+    query: |
+      DELETE FROM tag WHERE id = 2510
+  - kind: sql
+    query: |
+      DELETE FROM data_entity WHERE id = 2510
+  - kind: sql
+    query: |
+      DELETE FROM data_source WHERE id = 2510
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  related_sidecars:
+    - odd-platform__java__TagController__controller-method__updateTag
+    - odd-platform__java__service__TagServiceImpl
+  retrospectives: [LSN-019]
+  test_gaps:
+    - TEST-GAP-updateTag-search-vector-propagation
+  related_concepts:
+    - "Manual Object Tagging"
+    - "Tag Directory"
+    - "Full-text search entrypoint"
+
+file_evidence:
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/TagServiceImpl.java"
+    lines: "44-55"
+    role: "update method — flatMap(this::updateSearchVectors) at line 53"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/TagServiceImpl.java"
+    lines: "161-167"
+    role: "updateSearchVectors helper — Mono.zip of three concurrent FTS upserts"
+  - file: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveSearchEntrypointRepositoryImpl.java"
+    lines: "319-341"
+    role: "updateChangedTagVectors — JOIN TAG->TAG_TO_DATA_ENTITY->DATA_ENTITY, buildVectorUpsert into SEARCH_ENTRYPOINT.TAG_VECTOR"
+
+realism_caveats: |
+  - The assertions match ts_vector LEXEME STEMS ('p025renamedvalu',
+    'p025originalnam') rather than literal words, because PostgreSQL's
+    to_tsvector with the configured FTS dictionary stems and lowercases
+    tokens. The exact stem depends on the FTS config in
+    FTS_CONFIG_DETAILS_MAP.get(FTSEntity.DATA_ENTITY); if the probe-runner
+    finds the stems differ, it should read the actual tag_vector_text
+    capture and adjust the substring. The lexemes were chosen to be
+    alphanumeric-only to minimise stemming surprises.
+
+  - The probe primes the BEFORE state with a no-op PUT (same name) so the
+    search_entrypoint.tag_vector row exists before the rename. If the
+    assignment flow (PUT /api/dataentities/{id}/tags) is preferred as the
+    priming mechanism, the probe can be re-arranged — but the no-op PUT
+    exercises the exact updateChangedTagVectors path under test, which is
+    the cleaner pin.
+
+  - search_old_name (H2) is captured but not asserted via the REST search
+    endpoint — the assertion is on the DB tag_vector text, which is ground
+    truth and not subject to search-ranking thresholds. If a future
+    maintainer wants the end-to-end signal, add an assertion that
+    search_old_name_body.items does not contain data_entity 2510.
+
+  - Runs under DISABLED auth — the search-vector refresh is auth-mode
+    agnostic; DISABLED minimises setup cost.
+
+  - This probe does NOT verify the updateChangedTagStructureVector arm
+    (the structure-search vector, TagServiceImpl.java:164) — that arm only
+    fires for tags attached to DATASET FIELDS, and the fixture here tags a
+    data entity. A complementary probe (P-025-B, future) should attach the
+    tag to a dataset field and assert structure-search propagation.

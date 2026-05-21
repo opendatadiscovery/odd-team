@@ -1,0 +1,222 @@
+name: Update Tag (rename + Important-flag toggle, search-vector-symmetric)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-08
+  - P-09
+description: |-
+  NEW OPERATION, batch X-TAGGING (2026-05-21) — captures
+  `PUT /api/tags/{tag_id}` at the operation-concept level. Previously
+  the operation was only implicit inside the Tag entity and referenced
+  obliquely by the `tagserviceimpl-asymmetric-search-vector-refresh-update-3-delete-1`
+  invariant; the `updateTag` controller-method sidecar promotes it to
+  a first-class catalog citizen.
+
+  THE ENDPOINT:
+    PUT /api/tags/{tag_id} -> HTTP 200 (de facto; OpenAPI declares 201).
+    Gated by TAG_UPDATE permission (Management scope, NO_CONTEXT) via
+    SecurityConstants.SECURITY_RULES at SecurityConstants.java:138-142.
+
+  THE CHAIN:
+    TagController.updateTag (TagController.java:46-52) — 2-line
+    reactive delegation: `tagFormData.flatMap(fd -> tagService.update(tagId, fd)).map(ResponseEntity::ok)`.
+    -> TagServiceImpl.update (TagServiceImpl.java:44-55, @ReactiveTransactional):
+       Step 1: getDto(tagId) -> NotFoundException if absent.
+       Step 2: `!external` filter -> BadUserRequestException
+               ("Can't update tag which has external relations") if the
+               tag has any Collector-set data-entity relation. See the
+               `external-relations-immutable-to-ui-users-cross-method-guard-tagserviceimpl`
+               invariant.
+       Step 3: tagMapper.applyToPojo(formData, pojo) applies BOTH name
+               and important.
+       Step 4: reactiveTagRepository.update persists.
+       Step 5: updateSearchVectors (TagServiceImpl.java:161-167) — a
+               Mono.zip of THREE concurrent FTS-vector refreshes.
+
+  SEARCH-VECTOR SYMMETRY — update refreshes 3, delete refreshes 1:
+    Renaming a tag propagates the new name into
+    search_entrypoint.tag_vector of every data entity carrying it
+    (ReactiveSearchEntrypointRepositoryImpl.java:319-341 joins
+    TAG -> TAG_TO_DATA_ENTITY -> DATA_ENTITY). The `update` path
+    refreshes all three vectors (entity tag_vector + dataset-structure
+    vector + term-side vector); the sibling `delete` path refreshes
+    only one. The asymmetry is a delete-side gap, NOT an updateTag
+    gap — updateTag is the search-index-consistent operation. See the
+    `tagserviceimpl-asymmetric-search-vector-refresh-update-3-delete-1`
+    invariant.
+
+  DRIFTS / LIMITATIONS A CAREFUL OPERATOR SHOULD KNOW:
+    Drift 1 — status-code: the controller returns HTTP 200 via
+    `ResponseEntity::ok` (TagController.java:51); the OpenAPI operation
+    declares 201 (openapi.yaml:400). Same drift class as createTag.
+    Limitation 2 — response Tag omits external + usedCount: the
+    terminal `.map(tagMapper::mapToTag)` uses the bare-pojo overload
+    (TagMapper.java:26), which maps only id/name/important; the
+    OpenAPI Tag schema declares external + usedCount, so a consumer
+    of PUT /api/tags/{tag_id} receives those two fields as null —
+    inconsistent with getPopularTagList's Tag items (which DO populate
+    them). The mapToTag(TagDto) overload that WOULD populate them is
+    available but unused on this path.
+    Limitation 3 — `!external` guard reads only the data-entity
+    aggregate: boolOr(tag_to_data_entity.external) — it does NOT
+    consult tag_to_dataset_field origins. A tag with INTERNAL
+    data-entity relations but EXTERNAL tag_to_dataset_field relations
+    passes the guard and is renamable. Same gap shape as deleteTag.
+    Limitation 4 — TOCTOU window between getDto and update — no
+    SELECT ... FOR UPDATE, no optimistic-lock version column; a
+    concurrent Collector ingestion attaching an external relation
+    between the read and the write is not detected.
+
+nodes:
+  - odd-platform java TagController controller-method:updateTag
+  - odd-platform openapi tags openapi-tag:tag
+
+contributors:
+  - |-
+    TagController.updateTag batch X-TAGGING (PRIMARY SOURCE —
+    controller-method tier):
+    concepts.operations[updateTag (lines 46-52) — rename +
+    Important-flag toggle] +
+    concepts.invariants[Renaming a tag refreshes the FTS search vectors
+    of every data entity carrying it; the update path is
+    search-vector-symmetric (3 refreshes)] +
+    implicit_adrs[Renaming a tag is a search-index-consistent operation] +
+    bugs_limitations_corner_cases (status-code drift; response omits
+    external/usedCount; the !external guard reads only the data-entity
+    aggregate; TOCTOU window)
+  - |-
+    openapi-tag tag batch X-TAGGING (CORROBORATING — contract tier):
+    concepts.operations[updateTag — PUT /api/tags/{tag_id}, TagFormData
+    request, 201/Tag declared] +
+    invariants[updateTag declares 201 but the controller returns 200]
+
+evidence:
+  - 'TagController.java:46-52 (the 2-line reactive delegation)'
+  - 'updateTag.md:concepts.operations[updateTag]'
+  - 'updateTag.md:implicit_adrs[Renaming a tag is a search-index-consistent operation]'
+  - 'updateTag.md:bugs_limitations_corner_cases (status-code drift; response omits external/usedCount; TOCTOU)'
+  - 'TagServiceImpl.java:44-55 (the @ReactiveTransactional update pipeline) + :161-167 (updateSearchVectors triple-zip)'
+  - 'ReactiveSearchEntrypointRepositoryImpl.java:319-341 (the FTS-vector upsert join)'
+  - 'SecurityConstants.java:138-142 (TAG_UPDATE permission gate)'
+  - 'odd-platform-specification/openapi.yaml:400 (declared 201)'
+  - 'openapi-tag__tag.md:invariants[updateTag declares 201; controller returns 200]'
+
+axes_present:
+  - controllers
+  - openapi_tags
+
+security_aggregate:
+  overall: MEDIUM
+  auth_modes_relevant:
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
+  ingestion_filter_relevance: NO
+  authorization_consistency:
+    verdict: CONSISTENT
+    detail: |-
+      Gated at the controller perimeter via SecurityConstants.SECURITY_RULES
+      (TAG_UPDATE, Management scope, NO_CONTEXT). NO @PreAuthorize on the
+      method; the service tier has zero @PreAuthorize and zero programmatic
+      permission checks — controller-perimeter-only is the consistent
+      platform shape.
+  owner_scoping:
+    verdict: N/A
+    detail: The tag table has no owner_id column; any caller holding TAG_UPDATE can rename any tag.
+  strengths:
+    - |-
+      `!external` guard prevents UI users from renaming Collector-set tags
+      (cross-method consistent with delete + updateRelationsWithDataEntity).
+    - |-
+      @ReactiveTransactional boundary — the rename + triple FTS refresh
+      run atomically; search-index consistency is part of the awaited
+      response, not fire-and-forget.
+  weaknesses:
+    - |-
+      MEDIUM — service-tier zero-checks posture — the controller perimeter
+      is the SOLE authorisation defence; a /api/tags/{tag_id} path rename
+      (REFACTOR-217 class) silently bypasses TAG_UPDATE.
+    - |-
+      MEDIUM — no audit log on the rename path — updateTag produces no
+      Activity Feed entry; a malicious or mistaken rename of a widely-used
+      tag is untraceable.
+    - |-
+      MEDIUM — the `!external` guard reads only the tag_to_data_entity
+      aggregate, never tag_to_dataset_field origins — a tag with EXTERNAL
+      dataset-field relations is renamable by a UI user.
+    - |-
+      LOW — no request-body validation on the tag-name shape — arbitrary
+      content is accepted and propagates into FTS vectors.
+  cross_file_inconsistencies:
+    - |-
+      The openapi-tag tag sidecar and the updateTag method sidecar agree
+      on the 200-vs-201 status-code drift — corroborating, no conflict.
+  contributing_files:
+    - updateTag.md
+    - openapi-tag__tag.md
+  evidence:
+    - 'updateTag.md:security.authorization_assertions'
+    - 'updateTag.md:security.known_security_gaps'
+
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+    - |-
+      Runs once per Management -> Tags edit action — low frequency
+      relative to the read path. The per-call cost is dominated by
+      updateSearchVectors. odd-platform java TagController controller-method:updateTag
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: |-
+      PUT /api/tags/{tag_id} takes one id; there is no bulk-update
+      endpoint (the bulk shape exists only for createTag).
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: |-
+      Stateless controller; no row-level locking on the write path —
+      concurrent renames of the same tag race to last-write-wins
+      (no version column).
+  weaknesses:
+    - |-
+      LOW — updateTag runs three concurrent search-vector update queries
+      on EVERY edit, even a trivial important-flag flip with no name
+      change; there is no name-changed short-circuit.
+    - |-
+      LOW — the FTS-upsert cost is unbounded in the tag's usage breadth —
+      renaming a tag attached to a very large number of entities triggers
+      a proportionally large search_entrypoint upsert inside the request
+      transaction.
+  contributing_files:
+    - updateTag.md
+  evidence:
+    - 'updateTag.md:performance.hot_paths'
+    - 'updateTag.md:performance.known_performance_gaps'
+
+notes: |-
+  CAPTURED batch X-TAGGING (2026-05-21). updateTag is the
+  search-index-consistent counterpart to the asymmetric delete path —
+  it correctly refreshes all three FTS vectors. The asymmetry the
+  `tagserviceimpl-asymmetric-search-vector-refresh-update-3-delete-1`
+  invariant captures is a delete-side gap; updateTag is the
+  well-behaved sibling.
+
+  Cross-cutting connections:
+    - Pairs with the Tag entity (lifecycle)
+    - Pairs with `create-tag` (the create counterpart)
+    - Pairs with `delete-tag-with-asymmetric-cascade` (the delete
+      counterpart — the search-vector-asymmetric sibling)
+    - Pairs with `get-popular-tag-list` (the read counterpart)
+    - Pairs with `external-relations-immutable-to-ui-users-cross-method-guard-tagserviceimpl`
+      (the !external guard at step 2)
+    - Pairs with `tagserviceimpl-asymmetric-search-vector-refresh-update-3-delete-1`
+      (update is the 3-refresh side of that asymmetry)
+    - Pairs with `openapi-200-vs-201-status-code-drift-codebase-wide`
+      (the status-code drift)
+related_operations:
+  - create-tag
+  - delete-tag-with-asymmetric-cascade
+  - get-popular-tag-list
+related_pillar_features:
+  - P-01:F-018
+maintainer_curated: false

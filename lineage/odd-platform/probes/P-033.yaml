@@ -1,0 +1,116 @@
+---
+probe_id: P-033
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__TagController__controller-method__deleteTag.md
+emitted_at: 2026-05-21T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-018
+test_class: integration
+verified_against_commit: 9ac6436e9bd36ba132d765076c6bbd5916fde729
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category B / E): TagServiceImpl.delete refreshes search
+  vectors ASYMMETRICALLY vs update. update() calls updateSearchVectors() which
+  Mono.zips THREE refreshes — search_entrypoint.tag_vector (data-entity FTS),
+  search_entrypoint structure vector, and term_search_entrypoint.tag_vector
+  (TagServiceImpl.java:161-167). delete() calls only
+  reactiveTermSearchEntrypointRepository.updateChangedTagVectors(tagId) — ONE
+  refresh (TagServiceImpl.java:68-69). TWO hypotheses to pin:
+  (H1) After delete, the data-entity-side search_entrypoint.tag_vector still
+  contains the deleted tag's name token (the main search-entrypoint vector is
+  never refreshed on the delete path), so a global search for the deleted tag
+  name still surfaces the previously-tagged data entities until an unrelated
+  data-entity write refreshes that row.
+  (H2) The single term-side refresh that DOES run executes AFTER
+  deleteTermRelations(tagId) has already hard-deleted the tag_to_term rows
+  (delete chain: line 64 zip, line 68 refresh). ReactiveTermSearchEntrypoint
+  RepositoryImpl.updateChangedTagVectors queries `TAG_TO_TERM WHERE TAG_ID =
+  tagId` (line 141-144) to find which terms to re-index — but those rows are
+  gone, so the CTE is empty and ZERO term rows are re-indexed. The deleted
+  tag's name therefore also lingers in term_search_entrypoint.tag_vector for
+  any term it was attached to.
+---
+arrange:
+  - kind: docker-compose-up
+    compose_profile: odd-minimal
+  - kind: sql
+    query: |
+      INSERT INTO tag (id, name, important, deleted_at)
+      VALUES (8811, 'p033zzqxtag', false, NULL);
+  - kind: sql
+    query: |
+      INSERT INTO data_entity (id, oddrn, external_name, hollow, type_id)
+      VALUES (8812, '//probe-source/p033/de', 'p033_de', false, 1);
+  - kind: sql
+    query: |
+      INSERT INTO tag_to_data_entity (tag_id, data_entity_id, external)
+      VALUES (8811, 8812, false);
+  - kind: sql
+    query: |
+      INSERT INTO tag_to_term (tag_id, term_id)
+      SELECT 8811, t.id FROM term t LIMIT 1;
+  - kind: rest
+    # touch each entity so its FTS tag_vector is populated with 'p033zzqxtag'
+    # before the delete (a tag write that goes through update vectors, or a
+    # data-entity re-ingest — use whatever the odd-minimal harness exposes to
+    # force a search_entrypoint refresh for data entity 8812 and the term)
+    method: PUT
+    path: /api/tags/8811
+    body: { name: "p033zzqxtag", important: false }
+    capture_as: warmup_response
+observe:
+  - kind: sql
+    query: |
+      SELECT count(*) AS c FROM search_entrypoint
+      WHERE tag_vector @@ to_tsquery('p033zzqxtag')
+    capture_as: de_vector_before_delete
+  - kind: sql
+    query: |
+      SELECT count(*) AS c FROM term_search_entrypoint
+      WHERE tag_vector @@ to_tsquery('p033zzqxtag')
+    capture_as: term_vector_before_delete
+act:
+  - kind: rest
+    method: DELETE
+    path: /api/tags/8811
+    capture_as: delete_response
+observe_after:
+  - kind: sql
+    query: |
+      SELECT count(*) AS c FROM search_entrypoint
+      WHERE tag_vector @@ to_tsquery('p033zzqxtag')
+    capture_as: de_vector_after_delete
+  - kind: sql
+    query: |
+      SELECT count(*) AS c FROM term_search_entrypoint
+      WHERE tag_vector @@ to_tsquery('p033zzqxtag')
+    capture_as: term_vector_after_delete
+assert:
+  - "delete_response.status == 204"
+  - "de_vector_before_delete[0].c >= 1"
+  - "de_vector_after_delete[0].c >= 1   # H1 — data-entity tag_vector NOT refreshed on delete; deleted tag name still indexed"
+  - "term_vector_after_delete[0].c == term_vector_before_delete[0].c  # H2 — term-side refresh runs after the tag_to_term rows are gone; CTE empty, no re-index"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__TagController__controller-method__deleteTag
+    - odd-platform__java__service__TagServiceImpl
+  retrospectives: [LSN-019]
+realism_caveats: |
+  H2 is the sharper claim and depends on the ordering of the delete chain:
+  Flux.zip at TagServiceImpl.java:64-65 (which contains deleteTermRelations)
+  is composed with .then(...) before the .flatMap that runs the term-side
+  vector refresh at :68-69 — so the tag_to_term rows are deleted before the
+  refresh observes them. If term_vector_after_delete DROPS to 0 instead of
+  staying equal, the refresh somehow still found the terms (e.g. the buildVector
+  Upsert deletes-then-inserts and the empty CTE caused a delete of the stale
+  rows) — in that case H2 is wrong and the term-side IS cleaned, just by an
+  empty-upsert side effect rather than a positive re-index; re-read
+  jooqFTSHelper.buildVectorUpsert to classify. The probe assumes to_tsquery
+  with the platform's FTS config; if the search uses a non-default text-search
+  config the query operator may need the explicit regconfig. The warmup PUT
+  assumes 'p033zzqxtag' tokenises as a single lexeme under that config (it is
+  an alnum string with no separators, chosen to survive stemming).

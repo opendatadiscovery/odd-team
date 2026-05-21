@@ -2190,3 +2190,41 @@ Each of these would have been a maintainer's empirical-test discovery under the 
 - **3 new broken-yaml-pending-fix files** (from concept-merger output containing backticks in non-block-scalar contexts). Preserved per SKILL phase 3 step 8; recoverable next batch when the reducer prompt's YAML-safe rule applies.
 - **265 detail-without-index in refactoring-scopes / 114 in implicit-adrs / 76+4 in doc-gaps** — known pre-existing reducer noise, not a regression from this batch.
 
+---
+
+## Batch X-TAGGING (2026-05-21) — full tagging-surface coverage
+
+A maintainer-directed batch (not a `sprint-themes.yaml` pick) to fully cover the **tagging** functionality, scoped with the new graph query layer.
+
+### Scope (via the graph query layer)
+
+The tag surface was partially enriched — `TagController` (class), `TagServiceImpl`, `ReactiveTagRepositoryImpl`, `createDataEntityTagsRelations`, and ~12 tag concepts already existed. A catalog query over `nodes.jsonl` + `understanding/` found the gap: **7 un-enriched tag-surface nodes** — the four `TagController` methods (createTag / deleteTag / getPopularTagList / updateTag), `TermController.createTermTagsRelations`, `DatasetFieldController.updateDatasetFieldTags`, and the `openapi-tag:tag` rollup.
+
+### Phase 1 — enrichment
+
+7 file-analyser subagents (one socket-failed mid-run, retried clean) → 7 new sidecars, 9 probe-skeletons (P-025..P-033). Headline findings:
+- **getPopularTagList** is misnamed at all three layers — the SQL truncates by `TAG.ID ASC` before counting, returning the OLDEST `size` tags, not the most popular (LSN-019; pinned by P-010). No `SecurityRule` → any authenticated user enumerates the whole global tag directory.
+- **deleteTag** is asymmetric — soft-deletes the tag row, hard-deletes only 2 of 3 relation tables (`tag_to_dataset_field` orphaned), refreshes 1 FTS vector vs update's 3, and that single refresh runs *after* its source rows are deleted.
+- **createTag / createTermTagsRelations / updateDatasetFieldTags** auto-create global tag rows, side-dooring past the MANAGEMENT-scoped `TAG_CREATE` permission.
+- **updateDatasetFieldTags** INSERTs the relation with `origin` unset, relying on the DB column default — possibly dead for any non-empty payload (P-030).
+- createTag / updateTag carry a 200-vs-201 status-code drift.
+
+### Phase 2 — reducers (5, parallel)
+
+- concept-merger: 6 new concepts (4 operations + 2 invariants) + 4 strengthened.
+- adr-archaeologist: 4 ADR candidates (ADR-CANDIDATE-203..206) + 9 strengthened; 12 refactoring scopes (REFACTOR-487..498, 2 HIGH) + 2 strengthened.
+- doc-gap-finder: 1 new (DOC-GAP-260) + 6 strengthened.
+- test-coverage-mapper: 15 new TEST-GAPs (TEST-GAP-883..897 — 1 CRITICAL, 9 HIGH) + 5 strengthened.
+- feature-flow-builder: F-018 (Manual Object Tagging) recomposed — +7 contributing nodes, +11 drift facets, +7 strengthens.
+
+### Phase 3 — merge
+
+`yaml_safe_fix.py` then `rebuild_indexes.py all` — the YAML indexes (test-map 894, concepts 421, feature-flows 30) regenerated cleanly from `detail/`. `coverage.py` refreshed `manifest.yaml`.
+
+### Follow-ups
+
+- **Markdown-index merge deferred.** The implicit-adrs / refactoring-scopes / doc-gaps `index.md` headline merge is left as `index-batch-X-TAGGING-append` files (the rev-2 append-file convention). `rebuild_indexes.py` only *verifies* the markdown indexes (too prose-heavy to rebuild blindly); the drift is systemic and pre-existing (135 / 305 / 93 detail-without-index across the three). A markdown-index reconciliation tool is the proper fix — tracked, not this batch.
+- **3 `likely` Gate-9 warnings** in createTermTagsRelations + 2 sibling sidecars — the file-analysers documented each as honest-uncertainty paired with a probe (probe-needed resolution), not lazy hedging. `validate-sidecar`: 7 ok, 0 failed.
+- **Pre-existing broken YAML** — `feature-reflections/detail/F-021.yaml`, `test-map/detail/TEST-GAP-363.yaml`, `TEST-GAP-687.yaml` + 5 concept files remain `yaml_safe_fix`-unfixable (backed up). Not a regression from this batch.
+- **Probe-id collision** — 7 parallel analysers raced on `P-NNN` allocation; the openapi-tag analyser's placeholder was renumbered to P-031, and P-027's broken YAML was auto-fixed. The known fix (analysers reserve ids up-front) is already logged from the VAL-LSN-019 batch.
+

@@ -470,7 +470,7 @@ This is an unfunded open-source mode of operation. The constraint is session-tok
 
 What's NOT a discipline (deliberate non-optimisation):
 
-- **No vector store / RAG layer.** Per `retrospectives/LSN-016`: the failure modes the approach defeats are structural blind-spots, not "couldn't find a similar text" problems. Embeddings add operational complexity and an external dependency without solving the actual failure shape. Sourcegraph's 2024 deprecation of Cody embeddings is the industry signal.
+- **No *external or persisted* vector store.** Per `retrospectives/LSN-016`, the failure modes the approach defeats are structural blind-spots, not "couldn't find a similar text" problems — so embeddings never *replace* the agentic substrate, there is no external-API embedding service, and no hosted/persisted vector DB. Through rev 6 this was a blanket "no vector store / RAG layer"; **rev 7 scopes it precisely** (see §17). A *local, ephemeral, rebuilt-from-files, query-time* index — embedding distilled sidecar prose (never raw code) to find entry points for deterministic graph traversal — is **permitted**, and is what the derived graph query layer is. Sourcegraph's 2024 deprecation of Cody embeddings deprecated embeddings of *raw code chunks* against a *persistent* index; its one substantive reason (index staleness) is exactly what rebuilding from the canonical files each run eliminates. The substrate stays agentic; the index is a disposable accelerator, never a source of truth.
 - **No external LLM calls.** Claude Code is the runtime; subagents are filesystem prompts; skills are slash commands. No Anthropic API driver, no Batch API queue, no Agent SDK wrapper. Cost shape: session-tokens × maintainer-sessions, capped by subscription tier.
 - ***(rev 2)* No remote infrastructure for verification.** Every probe — Type-1 through Type-7 — runs on the maintainer's workstation. The dynamic-verification layer (when added) provisions an ephemeral local docker-compose stack (the same `trylocally`-shaped stack ODD's docs already ship). Probes execute against `localhost`; the writable mirror's volume gets destroyed between probe rounds. **No remote VMs, no managed databases, no cloud-CI runners as part of the probe loop, no hosted observability backends.** The constraint is operationally load-bearing: it keeps the methodology in the OSS-maintainer envelope (workstation + Claude Code subscription) instead of introducing a recurring-bill dependency that an unfunded OSS project cannot sustain. Open-source local tooling only — docker-compose / podman-compose for the runtime mirror, Testcontainers for ephemeral DB, Playwright / Puppeteer for headless-browser probes, k6 / wrk for load, WireMock / MockServer for external mocks. The maintainer's machine is the entire infrastructure.
 
@@ -854,3 +854,46 @@ The panel ports like the rest of the framework. The seven subagent prompts (`.cl
 - `.claude/skills/panel/SKILL.md` — the `/panel` orchestrator (full / lite / validate / --show).
 - `lineage/{repo}/meta-reviews/` — the output: `README.md`, `trend.md`, `spot-check-ledger.md`, `validation/`, and the dated run dirs.
 - `retrospectives/LSN-021` — the case-law that triggered the subsystem.
+
+---
+
+## 17. The derived graph query layer *(rev 7)*
+
+### 17.1 Why it exists — the index-bloat ceiling
+
+The ontology's machine-readable indices grow unboundedly. A **flat-file index forces whole-index loading**, so per-query context cost grows with total knowledge size. `test-map/index.yaml` reached **1.26 MB ≈ 315k tokens — 157% of an agent's context-load limit**; the Adversarial Review Panel (§16) rated it the run's #1 CRITICAL: the next reducer batch could not load its own prior state. Querying was brittle — hardcoded-anchor Python scripts and a `registry-search` subagent doing grep-then-Read over monoliths on purely textual overlap. This was the pre-registered second-stage trigger of `feature-anchored-ontology.md` principle 7; the literal "5 MB" proxy in that principle is corrected there (the real constraint is the agent context window).
+
+### 17.2 The design — a disposable accelerator, files stay canonical
+
+For each local run, deterministically build — **from the canonical files** — an **ephemeral, git-ignored property graph + vector index**, queried by **hybrid retrieval**: vector similarity finds entry points, deterministic graph traversal does the structural work, Reciprocal Rank Fusion ranks the union. `nodes.jsonl`, `edges.jsonl`, the sidecars, the reducer `detail/` files are **unchanged and remain the sole source of truth**; the graph is never hand-edited, never committed (`lineage/{repo}/graph/` is git-ignored). Per-query context cost becomes **bounded** — a query returns a small subgraph / top-k, never a whole-index load — decoupling per-query cost from total knowledge size.
+
+Stack: an in-process graph library (`rustworkx`), exact brute-force NumPy kNN over the ~few-thousand vectors (no ANN → fully deterministic), a local ONNX embedding model via `fastembed`. **No daemon, no server, no external API** — §9 rule 12 holds; embedding generation is local and offline. Every node and edge carries `source_file:source_line`, so a query result never breaks the Gate-9 provenance chain. The embedding half is optional: if the model is unavailable the layer degrades to a pure deterministic graph-traversal index (still useful — only the semantic-entry shape is lost).
+
+### 17.3 The reconciliation with LSN-016
+
+`LSN-016` / §9 forbid an *external-API embedding runtime* and *RAG-as-construction-method* — they never adjudicated a *local, ephemeral, query-time* index. This layer is an **extension** of that decision, not a reversal: the substrate stays agentic (sidecars remain agent-written semantic understanding), structural findings still come from the agentic pipeline, and embeddings only *find entry points* for deterministic traversal. It embeds *distilled natural-language sidecar prose*, never raw code. §9's "no vector store" bullet is scoped accordingly in this revision.
+
+### 17.4 Validation — shadow mode until the maiden gate passes
+
+The layer runs **in shadow** beside the grep/Python query path; it replaces that path only when a five-family maiden gate passes (retrieval quality vs the baseline over a ~60-query maintainer-authored gold set; bounded per-query context; rebuild cost; determinism; adversarial-query rejection). The gold set is **maintainer-authored before scoring** so it cannot be reverse-fitted. Until then the Python path stays authoritative. A **graph-only fallback** is the residual-risk mitigation if the embedding half underperforms the gate.
+
+### 17.5 Bootstrapping a new project
+
+Copy the `lineage_extractor.graph_query` package verbatim — the loaders/projector/embedder/query facade are project-agnostic (they project whatever `nodes.jsonl` / `edges.jsonl` / sidecars / reducer `detail/` files the substrate produced). Author one project-specific artefact: `lineage/{repo}/query-gold-set.yaml`, the ~60-query maiden gate. The graph schema (node labels, relationship types) is the universal set; new emergent reducer axes get a new label + a join rule in the projector.
+
+### 17.6 The agentic retriever *(rev 7.1)*
+
+The query layer's first surface, the static `query()`, has a measured recall ceiling — it commits to one query formulation and one traversal shape before seeing a result, and the maiden gold-set gate failed it on all six classes. The fix is not constant-tuning; it is an **agentic retriever**. The `graph-retriever` subagent constructs a strong search query, runs a bounded retrieve→read-full-content→judge-gap→refine loop (≤10 iterations) — each refinement *discriminates away* from returned-but-wrong nodes (LLM relevance feedback) — traverses neighbours at a depth it chooses per-situation, and converges on a cited answer set. As a side-channel it emits structured *refinement suggestions* for stale / thin / mis-described nodes to `lineage/{repo}/retrieval-feedback/` — a substrate-improvement queue future enrichment batches consume — while staying strictly read-only on the graph. The `graph_query` library stays the deterministic tool layer (CLI primitives `graph-search` / `graph-node` / `graph-neighbours` / `graph-traverse`); the subagent supplies the intelligence; no external LLM (it is a Claude Code subagent). Design: `adrs/drafts/agentic-graph-retriever.md`; invoked via `/retrieve`.
+
+**The reducer-dedup cutover.** `registry-search` — the grep-over-the-sharded-index dedup subagent — is **superseded**. The five reducers now dedup a fresh finding by a *semantic* `graph-search --label` over the graph query layer: it matches a duplicate by *meaning*, where grep matched only shared *vocabulary* (the synonym-blindness gap). The live protocol is `playbooks/registry-search-spawn.md` (rev-7.1 content); `registry-search.md` is retained only as the graph-unavailable fallback. This is the first non-shadow consumer cut over to the graph query layer — it executes `graph-query-layer.md`'s build-step-4.
+
+### Cross-references
+
+- `adrs/drafts/graph-query-layer.md` *(rev 7, accepted)* — the decision, the LSN-016 reconciliation, the stack, the residual risks, the implementation status.
+- `adrs/drafts/agentic-graph-retriever.md` *(rev 7.1)* — the agentic retriever: the iterative loop, adaptive traversal, the suggest-don't-mutate feedback loop.
+- `adrs/drafts/research/graph-query-layer/` — STACK, PRIOR-ART, SCHEMA, PITFALLS, PROBES, SUMMARY.
+- `.claude/agents/graph-retriever.md` + `.claude/skills/retrieve/SKILL.md` — the retriever subagent + the `/retrieve` skill.
+- `lineage/_extractor/src/lineage_extractor/graph_query/` — the package: `loaders`, `projector`, `embedder`, `graph_query`, `probe`, `config`.
+- `lineage/_extractor/src/lineage_extractor/graph_query/README.md` — build / query / the ephemeral-vs-canonical contract.
+- `feature-anchored-ontology.md` principle 7 — the pre-registered two-stage deferral this layer executes; its "5 MB" threshold is corrected there.
+- `lineage/{repo}/query-gold-set.yaml` — the maintainer-authored maiden-gate gold set.

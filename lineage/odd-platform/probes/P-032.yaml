@@ -1,0 +1,101 @@
+---
+probe_id: P-032
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__TagController__controller-method__deleteTag.md
+emitted_at: 2026-05-21T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-018
+test_class: integration
+verified_against_commit: 9ac6436e9bd36ba132d765076c6bbd5916fde729
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category B / E): TagServiceImpl.delete(tagId) issues
+  Flux.zip(deleteTermRelations(tagId), deleteDataEntityRelations(tagId)) at
+  TagServiceImpl.java:64-65, then the inherited soft-delete at :66. The SQL is
+  statically clear that the third relation table — tag_to_dataset_field — has a
+  matching repository method deleteDatasetFieldRelations(long tagId)
+  (ReactiveTagRepositoryImpl.java:299-306) that is NEVER invoked by the delete
+  chain. Hypothesis: deleting a tag that is attached to a dataset field via
+  tag_to_dataset_field leaves the tag_to_dataset_field row in place, referencing
+  a now-soft-deleted tag.id, with no reaper job to clean it. This probe pins
+  three operator-observable facts: (a) tag_to_term rows ARE deleted, (b)
+  tag_to_data_entity rows ARE deleted, (c) tag_to_dataset_field rows are NOT
+  deleted and persist as orphans pointing at the soft-deleted tag.
+---
+arrange:
+  - kind: docker-compose-up
+    compose_profile: odd-minimal
+  - kind: sql
+    query: |
+      -- one tag, internal (external = false so the !external guard passes)
+      INSERT INTO tag (id, name, important, deleted_at)
+      VALUES (8801, 'p032-orphan-tag', false, NULL);
+  - kind: sql
+    query: |
+      -- a data entity to attach the tag to
+      INSERT INTO data_entity (id, oddrn, external_name, hollow, type_id)
+      VALUES (8802, '//probe-source/p032/de', 'p032_de', false, 1);
+  - kind: sql
+    query: |
+      -- a dataset field to attach the tag to (dataset_field references a
+      -- dataset data-entity version; minimal shape — adjust FKs to the
+      -- odd-minimal seed if the schema requires a dataset_version row)
+      INSERT INTO dataset_field (id, oddrn, name, type, dataset_version_id)
+      VALUES (8803, '//probe-source/p032/df', 'p032_df', '{"logical_type":"STRING"}'::jsonb, 8804);
+  - kind: sql
+    query: |
+      INSERT INTO tag_to_data_entity (tag_id, data_entity_id, external)
+      VALUES (8801, 8802, false);
+  - kind: sql
+    query: |
+      INSERT INTO tag_to_term (tag_id, term_id)
+      SELECT 8801, t.id FROM term t LIMIT 1;
+  - kind: sql
+    query: |
+      INSERT INTO tag_to_dataset_field (tag_id, dataset_field_id, origin)
+      VALUES (8801, 8803, 'INTERNAL');
+act:
+  - kind: rest
+    method: DELETE
+    path: /api/tags/8801
+    capture_as: delete_response
+observe:
+  - kind: sql
+    query: "SELECT deleted_at FROM tag WHERE id = 8801"
+    capture_as: tag_row
+  - kind: sql
+    query: "SELECT count(*) AS c FROM tag_to_term WHERE tag_id = 8801"
+    capture_as: term_relations_remaining
+  - kind: sql
+    query: "SELECT count(*) AS c FROM tag_to_data_entity WHERE tag_id = 8801"
+    capture_as: data_entity_relations_remaining
+  - kind: sql
+    query: "SELECT count(*) AS c FROM tag_to_dataset_field WHERE tag_id = 8801"
+    capture_as: dataset_field_relations_remaining
+assert:
+  - "delete_response.status == 204"
+  - "tag_row[0].deleted_at != null            # tag row SOFT-deleted, not hard-deleted"
+  - "term_relations_remaining[0].c == 0       # tag_to_term HARD-deleted by deleteTermRelations(tagId)"
+  - "data_entity_relations_remaining[0].c == 0  # tag_to_data_entity HARD-deleted by deleteDataEntityRelations(tagId)"
+  - "dataset_field_relations_remaining[0].c == 1  # ORPHAN HYPOTHESIS — tag_to_dataset_field NOT touched, row persists pointing at the soft-deleted tag"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__TagController__controller-method__deleteTag
+    - odd-platform__java__service__TagServiceImpl
+    - odd-platform__java__repository__reactive__repository__ReactiveTagRepositoryImpl
+  retrospectives: [LSN-019]
+realism_caveats: |
+  The probe pins the asymmetric-cascade hypothesis. If the
+  dataset_field_relations_remaining assertion FAILS (count == 0), the delete
+  chain DOES clean up tag_to_dataset_field somewhere the static read missed —
+  re-walk TagServiceImpl.delete and any TagMapper / repository decorator. The
+  dataset_field arrange step assumes the odd-minimal seed exposes a
+  dataset_version row id 8804; if the schema rejects the insert, substitute a
+  real dataset_version id from the seed or create one in an earlier arrange
+  step. The probe does NOT verify the FTS search-vector staleness after delete
+  (the separate concern that delete refreshes only the term-side vector) — that
+  is a distinct probe; this one is scoped to the relation-table cascade only.

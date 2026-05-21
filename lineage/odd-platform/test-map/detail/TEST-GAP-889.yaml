@@ -1,0 +1,58 @@
+gap_id: TEST-GAP-889
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java TagController controller-method:deleteTag"
+pillars_affected: [P-01, P-08]
+surfaced_by:
+  - "odd-platform__java__TagController__controller-method__deleteTag.md:tests_coverage_semantic.uncovered_behaviours.[deleteTag returns 204 and the tag row is soft-deleted (deleted_at stamped, row not physically removed)]"
+  - "odd-platform__java__TagController__controller-method__deleteTag.md:tests_coverage_semantic.uncovered_behaviours.[delete of a non-existent or already-deleted tagId yields NotFoundException / HTTP 404]"
+  - "odd-platform__java__TagController__controller-method__deleteTag.md:tests_coverage_semantic.uncovered_behaviours.[the whole chain rolls back atomically if any step fails]"
+behaviour: |-
+  **HIGH — the `DELETE /api/tags/{tag_id}` (deleteTag) delete path is unverified end-to-end at the controller AND service layers. The tag-deletion semantic is SOFT (the `tag` row's `deleted_at` is stamped, the row is not physically removed) — a load-bearing invariant: a regression to a physical `DELETE FROM tag` would change FK cascade behaviour on every relation table. The not-found path (`NotFoundException` -> 404 on a non-existent OR already-soft-deleted id) and the transactional all-or-nothing wrapping of the six-step chain are also unpinned.** Method-level primary source from the batch-X-TAGGING `deleteTag` controller-method sidecar:
+
+  - `TagController.deleteTag` (`:30-34`): `tagService.delete(tagId).then(Mono.just(ResponseEntity.noContent().build()))` — 5-line delegation; HTTP 204.
+  - `TagServiceImpl.delete` (`:57-70`, `@ReactiveTransactional`): six-step chain — (1) `getDto(tagId)`, (2) `switchIfEmpty -> NotFoundException("Tag", tagId)`, (3) `.filter(!external)` else `BadUserRequestException`, (4) `Flux.zip(deleteTermRelations, deleteDataEntityRelations)` — two concurrent hard deletes, (5) `reactiveTagRepository.delete(tagId)` SOFT-delete, (6) FTS refresh.
+  - `ReactiveAbstractSoftDeleteCRUDRepository.delete` (`:50-59`): `UPDATE tag SET deleted_at = now() WHERE id = ? AND deleted_at IS NULL RETURNING *`. The `idCondition` override (`:77-79`) adds `addSoftDeleteFilter` so an already-deleted id matches nothing.
+  - `getDto` filters `tag.deleted_at IS NULL` (`ReactiveTagRepositoryImpl.java:54-66`) — so a non-existent OR already-deleted `tagId` triggers `switchIfEmpty` -> `NotFoundException`.
+
+  **Three distinct sub-behaviours, all unpinned:**
+  - **Soft-delete semantics** — `DELETE` returns 204; the `tag` row's `deleted_at` is stamped, the row is NOT physically removed. The soft-vs-hard distinction is load-bearing — a regression to physical delete changes FK cascade behaviour on `tag_to_term` / `tag_to_data_entity` / `tag_to_dataset_field`.
+  - **Not-found / already-deleted -> 404** — `DELETE` of a non-existent id, OR a replay of `DELETE` after a successful delete, yields `NotFoundException` -> 404 (the replay is idempotent in EFFECT but NOT in status code: first call 204, replay 404).
+  - **Atomic rollback** — the `@ReactiveTransactional` wraps the two hard deletes, the soft delete, and the FTS refresh; if any step fails, all roll back. A failure injected into the FTS-refresh step must leave the relation rows intact.
+
+  **Why HIGH**: the entire delete-tag path is unverified; the only adjacent coverage is `TagRepositoryImplTest`, which covers the `deleteDataEntityRelations(Collection)` overload (the diff-list variant used by `updateRelationsWithDataEntity`) — NOT the `deleteDataEntityRelations(long tagId)` overload that `deleteTag` uses, NOT `deleteTermRelations`, NOT the inherited soft-delete, NOT the service-layer chain. The soft-delete semantic is the most consequential to pin.
+
+  **Test gap shape**: a `WebTestClient` / `@SpringBootTest` test asserting (a) `DELETE /api/tags/{id}` returns 204 AND a raw DB `SELECT deleted_at FROM tag WHERE id = ?` returns a non-null timestamp (the row PHYSICALLY EXISTS); (b) `DELETE` of a non-existent id returns 404; (c) a replay of `DELETE` after a successful delete returns 404 (not 204); (d) a failure in any chain step leaves the relation rows intact. The current state is PINNED — a regression to physical delete fails (a).
+test_class: missing-integration
+criticality_rationale: |-
+  HIGH per Rule 3: the deleteTag sidecar rates the soft-delete-semantics and hard-delete-relations behaviours HIGH (the soft-vs-hard semantics are load-bearing — a regression to physical delete changes FK cascade behaviour). F-018's drift_class_summary carries `delete_tag_cascade_asymmetric_tag_to_dataset_field_rows_orphaned_after_soft_delete`. Not CRITICAL — no security boundary or unrecoverable loss (a soft-deleted tag is DB-recoverable); the gap is the absence of a CI catcher for the soft-delete invariant. pillars_affected len 2; cross-pillar bump bounded by the sidecar's HIGH — HIGH stands.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/TagRepositoryImplTest.java:162-215 (testDeleteRelations / testDeleteRelationsIsEmpty — repository-layer; VERIFIED: cover the deleteDataEntityRelations(Collection<TagToDataEntityPojo>) overload only — NOT the deleteDataEntityRelations(long tagId) overload deleteTag uses, NOT deleteTermRelations, NOT the inherited soft-delete, NOT the service-layer chain)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/TagDeleteSoftDeleteSemanticsTest.java"
+  name: "deleteTag_returns204_softDeletesTagRow_404OnMissingOrAlreadyDeleted_pinsSoftDeleteInvariant"
+evidence:
+  - "deleteTag sidecar says (tests_coverage_semantic.uncovered_behaviours.[0]): 'deleteTag returns 204 and the tag row is soft-deleted (deleted_at stamped, row not physically removed).' criticality HIGH; note: 'the soft-vs-hard semantics are load-bearing — a regression to physical delete would change FK cascade behaviour on the relation tables.'"
+  - "deleteTag sidecar says (tests_coverage_semantic.uncovered_behaviours): 'delete of a non-existent or already-deleted tagId yields NotFoundException / HTTP 404.' criticality MEDIUM"
+  - "deleteTag sidecar says (tests_coverage_semantic.uncovered_behaviours): 'the whole chain rolls back atomically if any step fails (e.g. the FTS refresh errors).' criticality MEDIUM"
+  - "deleteTag sidecar says (tests_coverage_semantic.covered_behaviours): '[] — No test exercises the deleteTag delete path. There is no TagControllerTest and no TagServiceImplTest. TagRepositoryImplTest covers the deleteDataEntityRelations(Collection) overload (the diff-list variant used by updateRelationsWithDataEntity), NOT the deleteDataEntityRelations(long tagId) overload that deleteTag uses.'"
+  - "Verified at primary source: read TagRepositoryImplTest.java:162-215 — testDeleteRelations builds List<TagToDataEntityPojo> and calls deleteDataEntityRelations(savedTagsPojos) — the Collection overload, confirming the sidecar's claim. The deleteXxxRelations(long) overloads and the service chain are uncovered."
+cross_references:
+  - "TEST-GAP-762 (existing batch-W — STRENGTHENED this batch with deleteTag method-level evidence — the deleteTag cascade asymmetry: tag_to_dataset_field rows orphaned. DISTINCT from THIS gap: TEST-GAP-762 = the cascade asymmetry; TEST-GAP-889 = the soft-delete semantic + 404 + atomic-rollback of the delete path proper)"
+  - "TEST-GAP-890 (sister batch-X-TAGGING — the !external Collector-ownership guard on the SAME delete path; together they cover the full delete chain)"
+  - "feature-flows:F-018 drift_class_summary.[delete_tag_cascade_asymmetric_tag_to_dataset_field_rows_orphaned_after_soft_delete]"
+related_features: [F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `TagDeleteSoftDeleteSemanticsTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Four test methods:
+  1. `deleteTag_returns204_andSoftDeletesTagRow_pinsSoftDeleteInvariant` — seed a tag; `DELETE /api/tags/{id}`; assert HTTP 204; then raw DB `SELECT deleted_at FROM tag WHERE id = ?` returns a non-null timestamp (the row PHYSICALLY EXISTS — soft delete, not hard delete).
+  2. `deleteTag_nonExistentId_returns404` — `DELETE /api/tags/{nonexistent}`; assert 404.
+  3. `deleteTag_replayAfterSuccessfulDelete_returns404NotIdempotent` — `DELETE` a tag twice; assert first call 204, second call 404 (idempotent in effect, not in status code).
+  4. `deleteTag_hardDeletesTagToTermAndTagToDataEntityRows` — seed a tag with term + data-entity relations; `DELETE`; raw DB SELECT confirms `tag_to_term` and `tag_to_data_entity` rows are GONE (hard-deleted), while the `tag` row is soft-deleted.
+
+  Pair with TEST-GAP-762 (cascade asymmetry — tag_to_dataset_field orphans) for the complete delete-path picture.
+batch: 2026-05-21-X-TAGGING
+feature_id: F-018

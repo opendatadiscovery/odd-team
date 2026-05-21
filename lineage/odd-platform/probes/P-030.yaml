@@ -1,0 +1,188 @@
+---
+probe_id: P-030
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DatasetFieldController__controller-method__updateDatasetFieldTags
+emitted_at: 2026-05-21T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-018
+test_class: integration
+verified_against_commit: b56c8c1
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category E / resource boundary + the unset-origin INSERT
+  finding): DatasetFieldServiceImpl.getUpdatedRelations
+  (DatasetFieldServiceImpl.java:264-271) builds TagToDatasetFieldPojo instances
+  with tagId and datasetFieldId set but NEVER calls .setOrigin(...).
+  ReactiveTagRepositoryImpl.createDatasetFieldRelations
+  (ReactiveTagRepositoryImpl.java:350-371) maps each pojo via
+  jooqReactiveOperations.newRecord(TAG_TO_DATASET_FIELD, p) and INSERTs with
+  .onDuplicateKeyIgnore(). The tag_to_dataset_field.origin column is
+  `varchar NOT NULL DEFAULT 'INTERNAL'` (V0_0_82__add_tag_to_dataset_field.sql:12).
+
+  Hypothesis A (endpoint correct): jOOQ's newRecord-from-pojo omits the unset
+  origin field from the generated INSERT column list; Postgres applies the
+  DEFAULT 'INTERNAL'; the relation row persists with origin='INTERNAL' and the
+  next call's deleteDatasetFieldInternalRelations (which filters
+  origin='INTERNAL') can correctly remove it.
+
+  Hypothesis B (endpoint dead for non-empty payloads): jOOQ marks the origin
+  field changed-with-value-NULL and emits an explicit NULL; the INSERT violates
+  the NOT NULL constraint; PUT /api/datasetfields/{id}/tags with any non-empty
+  `tags` array returns a 4xx/5xx error and no relations are ever written.
+
+  Hypothesis C (silent orphan accumulation): the row persists but with an
+  origin value other than 'INTERNAL', so the next call's INTERNAL-scoped delete
+  misses it and the dataset field accumulates undeletable internal relations
+  across calls.
+
+  The probe distinguishes A / B / C by (1) asserting the first HTTP call
+  succeeds with 200, (2) reading the persisted origin column directly, and
+  (3) asserting a second call with a smaller tag set actually removes the
+  dropped relation. The data-entity sibling endpoint side-steps this entire
+  question by explicitly calling .setExternal(false) on TagToDataEntityPojo
+  (TagServiceImpl.java:109); the dataset-field path's reliance on the column
+  default is the untested risk.
+---
+arrange:
+  - kind: docker-compose-up
+    note: "odd-minimal stack — odd-platform-api + Postgres (Testcontainers-backed)"
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name)
+      VALUES (3001, '//probe-source-P-030/db', 'probe-source-P-030')
+      ON CONFLICT (id) DO NOTHING
+  - kind: sql
+    query: |
+      INSERT INTO data_entity
+        (id, oddrn, external_name, data_source_id, type_id, hollow, exclude_from_search)
+      VALUES (3001, '//probe-source-P-030/db/datasets/p030_dataset', 'p030_dataset',
+              3001, 2, false, false)
+      ON CONFLICT (id) DO NOTHING
+  - kind: sql
+    query: |
+      -- dataset_version + dataset_structure so getDataEntityIdByDatasetFieldId
+      -- (JOIN dataset_field -> dataset_structure -> dataset_version -> data_entity)
+      -- resolves the field to its parent data entity for the authorization layer.
+      INSERT INTO dataset_version (id, dataset_oddrn, version, version_hash)
+      VALUES (3001, '//probe-source-P-030/db/datasets/p030_dataset', 1, 'p030hash')
+      ON CONFLICT (id) DO NOTHING
+  - kind: sql
+    query: |
+      INSERT INTO dataset_field (id, oddrn, name, type, is_primary_key, is_sort_key)
+      VALUES (3001, '//probe-source-P-030/db/datasets/p030_dataset/fields/p030_field',
+              'p030_field', '{"type":"TYPE_STRING"}'::jsonb, false, false)
+      ON CONFLICT (id) DO NOTHING
+  - kind: sql
+    query: |
+      INSERT INTO dataset_structure (dataset_version_id, dataset_field_id)
+      VALUES (3001, 3001)
+      ON CONFLICT DO NOTHING
+  - kind: env
+    note: "auth.type=DISABLED so the probe issues the PUT without a session; the
+           parent-scoped DATASET_FIELD_TAGS_UPDATE resolution is exercised separately
+           by a security-class probe (see realism_caveats)."
+arrange_notes: |
+  Column lists above are best-effort from the migration evidence available to
+  the file-analyser. probe-runner should reconcile each INSERT against the live
+  schema of the substrate commit (b56c8c1) before executing — exact nullable
+  columns, the data_entity type_id value for a DATASET, and the dataset_field
+  `type` JSONB shape may differ. The structural intent is fixed: one dataset
+  field (id 3001) reachable from one data entity (id 3001) via one
+  dataset_version + dataset_structure row, so the authorization resolver and
+  the data-write path both have a valid target.
+act:
+  - kind: rest
+    method: PUT
+    path: /api/datasetfields/3001/tags
+    body: '{"tags": ["p030-tag-alpha", "p030-tag-beta"]}'
+    capture_as: first_response
+  - kind: rest
+    method: PUT
+    path: /api/datasetfields/3001/tags
+    body: '{"tags": ["p030-tag-alpha"]}'
+    capture_as: second_response
+observe:
+  - kind: http-status
+    of: first_response
+    capture_as: first_status
+  - kind: http-status
+    of: second_response
+    capture_as: second_status
+  - kind: sql
+    query: |
+      SELECT tag_id, dataset_field_id, origin
+      FROM tag_to_dataset_field
+      WHERE dataset_field_id = 3001
+      ORDER BY tag_id
+    capture_as: relations_after_second_call
+  - kind: sql
+    query: |
+      SELECT name, important FROM tag
+      WHERE name IN ('p030-tag-alpha', 'p030-tag-beta')
+      ORDER BY name
+    capture_as: directory_rows
+assert:
+  - "first_status == 200  # Hypothesis B falsified if this holds"
+  - "second_status == 200"
+  - "relations_after_second_call.length == 1  # delete-then-recreate left exactly the one re-submitted tag"
+  - "relations_after_second_call[0].origin == 'INTERNAL'  # Hypothesis C falsified if this holds — the origin default applied"
+  - "directory_rows.length == 2  # both novel names auto-created in the global tag directory"
+  - "directory_rows[0].important == false  # auto-created tags are not 'important'"
+  - "directory_rows[1].important == false"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM tag_to_dataset_field WHERE dataset_field_id = 3001
+  - kind: sql
+    query: |
+      DELETE FROM tag WHERE name IN ('p030-tag-alpha', 'p030-tag-beta')
+  - kind: sql
+    query: |
+      DELETE FROM dataset_structure WHERE dataset_field_id = 3001
+  - kind: sql
+    query: |
+      DELETE FROM dataset_field WHERE id = 3001
+  - kind: sql
+    query: |
+      DELETE FROM dataset_version WHERE id = 3001
+  - kind: sql
+    query: |
+      DELETE FROM data_entity WHERE id = 3001
+  - kind: sql
+    query: |
+      DELETE FROM data_source WHERE id = 3001
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DatasetFieldController__controller-method__updateDatasetFieldTags
+    - odd-platform__java__DataEntityController__controller-method__createDataEntityTagsRelations
+    - odd-platform__java__service__TagServiceImpl
+  retrospectives: [LSN-019, LSN-020]
+realism_caveats: |
+  The probe pins three hypotheses about the unset-origin INSERT and the
+  delete-then-recreate cycle. What it does NOT verify:
+
+  (1) The concurrent-race case — two simultaneous PUTs submitting the same
+  novel tag name, where one bulkCreate loses the partial-unique-index race on
+  tag(name) and the resulting UniqueConstraintException may abort the whole
+  updateDatasetFieldTags transaction (leaving the field with no internal tags
+  after the delete-all step). That needs a separate concurrency-class probe.
+
+  (2) The activity-feed before/after state JSON correctness — a separate probe
+  should assert the DATASET_FIELD_TAGS_UPDATED event payload carries the full
+  before/after tag list per DatasetFieldInformationUpdatedActivityHandler.
+
+  (3) The parent-scoped authorization path — auth.type=DISABLED is used here to
+  isolate the data-write behaviour. A security-class probe must exercise the
+  DATASET_FIELD_TAGS_UPDATE resolution: confirm the dataset-field id resolves to
+  its parent data entity via DatasetFieldResourceExtractor and that a caller
+  without the permission on the PARENT data entity is rejected 403 under
+  LOGIN_FORM/OAUTH2/LDAP.
+
+  (4) If first_status is NOT 200, the probe has confirmed Hypothesis B — the
+  endpoint is dead for non-empty payloads — and the remaining assertions are
+  moot; probe-runner should report the failure mode and the HTTP error body
+  verbatim so the maintainer can confirm whether it is the origin NOT NULL
+  constraint violation specifically.

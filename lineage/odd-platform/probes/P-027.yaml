@@ -1,0 +1,153 @@
+---
+probe_id: P-027
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__TermController__controller-method__createTermTagsRelations
+emitted_at: 2026-05-21T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-018
+test_class: integration
+verified_against_commit: ede5d277be6251b0826026035707c1fb6dbb24b6
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress questions for TermController#createTermTagsRelations
+  (PUT /api/terms/{term_id}/tags), Category B + Category F.
+
+  (B) The operationId `createTermTagsRelations` and the OpenAPI summary
+  "Creates tags relations for term" use create-language. The
+  implementation chain (TermController.java:129-136 -> TermServiceImpl
+  .upsertTags:254-264 -> TagServiceImpl.deleteRelationsWithTerm:124-134
+  + createRelationsWithTerm:138-142) is replace-all: phase 1 deletes
+  every tag_to_term row whose tag NAME is absent from the submitted
+  tag_name_list, phase 2 (re)creates relations for the submitted set.
+  Hypothesis B: PUT with tag_name_list:['only-new-tag'] on a term that
+  currently has tags A and B leaves the term with exactly {only-new-tag}
+  — A and B relations are deleted, NOT preserved.
+
+  (F) The request body field is named `tag_name_list`. The
+  TagServiceImpl.deleteRelationsWithTerm parameter that receives it is
+  named `tagsToKeep` (TagService.java:31-32). The field-name promises
+  "the tags to set"; the implementation treats the SAME list as
+  "tags to keep" for the delete phase and "tags to (re)create" for the
+  insert phase. Hypothesis F: an EMPTY tag_name_list ([]) is a valid
+  request body (schema requires the field present, not non-empty —
+  components.yaml:2219-2220) and clears ALL tag relations on the term.
+
+  (Auto-create) TagServiceImpl.getOrCreateTagsByName:80-86 ->
+  divideTagsByExistence:144-159 unconditionally bulkCreates any
+  submitted name absent from the global `tag` directory, with
+  important=false hardcoded (TagServiceImpl.java:155). Hypothesis:
+  PUT /api/terms/{id}/tags with a never-before-seen tag name mints a
+  new global `tag` row visible to GET /api/tags/popular, even though
+  the caller holds only TERM_TAGS_UPDATE (a TERM-scoped permission),
+  not TAG_CREATE (MANAGEMENT-scoped).
+---
+arrange:
+  - kind: docker-compose-up
+    note: |
+      Local odd-platform build from commit ede5d277 against
+      docker-compose Postgres. auth.type=DISABLED — the replace-all /
+      auto-create behaviour is auth-mode-agnostic; DISABLED removes
+      login setup cost. Auth-matrix questions are covered by a
+      separate security probe, not this one.
+  - kind: sql
+    query: |
+      INSERT INTO namespace (id, name, is_deleted)
+      VALUES (7001, 'p027-namespace', false);
+  - kind: sql
+    query: |
+      INSERT INTO term (id, name, definition, namespace_id, is_deleted)
+      VALUES (7001, 'p027-term', 'probe term for P-027', 7001, false);
+  - kind: sql
+    query: |
+      -- two pre-existing tags A and B already in the directory
+      INSERT INTO tag (id, name, important, deleted_at) VALUES
+        (7001, 'p027-tag-A', false, NULL),
+        (7002, 'p027-tag-B', false, NULL);
+  - kind: sql
+    query: |
+      -- term 7001 starts with relations to BOTH A and B
+      INSERT INTO tag_to_term (tag_id, term_id) VALUES
+        (7001, 7001),
+        (7002, 7001);
+act:
+  - kind: rest
+    name: replace_with_one_new_tag
+    method: PUT
+    path: /api/terms/7001/tags
+    body: '{"tag_name_list": ["p027-tag-A", "p027-brand-new-tag"]}'
+    capture_as: replace_response
+    note: |
+      Submits A (kept) + a brand-new name. Expectation: B is dropped,
+      brand-new-tag is auto-created in the global directory.
+  - kind: rest
+    name: clear_all_tags
+    method: PUT
+    path: /api/terms/7001/tags
+    body: '{"tag_name_list": []}'
+    capture_as: clear_response
+    note: |-
+      Empty list — Category F hypothesis: clears every tag relation.
+observe:
+  - kind: rest_response
+    target: replace_with_one_new_tag
+    capture:
+      - status_code           # expected 200
+      - body[*].name          # expected exactly {p027-tag-A, p027-brand-new-tag}
+  - kind: sql
+    query: |
+      SELECT t.name
+      FROM tag_to_term tt JOIN tag t ON t.id = tt.tag_id
+      WHERE tt.term_id = 7001
+      ORDER BY t.name
+    capture_as: relations_after_replace
+  - kind: sql
+    query: |
+      SELECT id, name, important
+      FROM tag WHERE name = 'p027-brand-new-tag'
+    capture_as: new_directory_row
+  - kind: rest_response
+    target: clear_all_tags
+    capture:
+      - status_code           # expected 200
+      - body                  # expected empty array
+  - kind: sql
+    query: |
+      SELECT count(*) AS remaining
+      FROM tag_to_term WHERE term_id = 7001
+    capture_as: relations_after_clear
+assert:
+  - "replace_response.status_code == 200"
+  - "set(relations_after_replace.name) == {'p027-tag-A', 'p027-brand-new-tag'}  # B dropped — replace-all confirmed (Hypothesis B)"
+  - "new_directory_row.rows.length == 1                                         # brand-new tag auto-created in global directory"
+  - "new_directory_row.rows[0].important == false                               # important=false hardcoded for side-channel-created tags"
+  - "clear_response.status_code == 200"
+  - "relations_after_clear.remaining == 0                                       # empty tag_name_list clears all relations (Hypothesis F)"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM tag_to_term WHERE term_id = 7001;
+      DELETE FROM term WHERE id = 7001;
+      DELETE FROM namespace WHERE id = 7001;
+      DELETE FROM tag WHERE id IN (7001, 7002) OR name = 'p027-brand-new-tag';
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__TermController__controller-method__createTermTagsRelations
+    - odd-platform__java__DataEntityController__controller-method__createDataEntityTagsRelations
+  retrospectives: [LSN-019, LSN-020]
+realism_caveats: |
+  The probe pins the replace-all + auto-create + empty-list hypotheses
+  for the TERM tag path. It does NOT verify: (a) the unique-index race
+  on two concurrent novel-name submissions (a concurrency probe is
+  needed for that — see the sidecar's resource_boundaries stress
+  finding); (b) the soft-deleted-tag recreation path (the tag table's
+  partial unique index allows a name with deleted_at != NULL to be
+  re-minted as a NEW id — needs a dedicated arrange step seeding a
+  soft-deleted tag); (c) the auth-mode matrix (TERM_TAGS_UPDATE
+  resolution under LOGIN_FORM/OAUTH2/LDAP). If assertion 2 FAILS
+  (B survives), the trace mis-read deleteRelationsWithTerm — re-read
+  TagServiceImpl.java:124-134. If assertion 6 FAILS (relations remain
+  after empty list), confirm whether deleteRelationsWithTerm handles
+  the empty tagsToKeep set as "keep nothing" vs "keep everything".

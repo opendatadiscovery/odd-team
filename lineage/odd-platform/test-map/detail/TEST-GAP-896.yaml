@@ -1,0 +1,52 @@
+gap_id: TEST-GAP-896
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java TermController controller-method:createTermTagsRelations"
+pillars_affected: [P-01, P-04, P-07]
+surfaced_by:
+  - "odd-platform__java__TermController__controller-method__createTermTagsRelations.md:bugs_limitations_corner_cases.[No activity-feed audit for term-tag changes]"
+  - "odd-platform__java__TermController__controller-method__createTermTagsRelations.md:invariants.[NO activity-feed event — there is no @ActivityLog on createTermTagsRelations, upsertTags, or the TagServiceImpl methods]"
+behaviour: |-
+  **MEDIUM — `PUT /api/terms/{term_id}/tags` (createTermTagsRelations) produces ZERO Activity Feed entries — a term's tag changes are invisible to the audit trail. This is an ASYMMETRY within `TermServiceImpl` itself: the SAME service's sibling mutations `linkTermWithDataEntity` (`:169`) and `removeTermFromDataEntity` (`:183`) DO carry `@ActivityLog(event = TERM_ASSIGNMENT_UPDATED)`, and the data-entity tag-assignment sibling emits `TAG_ASSIGNMENT_UPDATED`. Only the term-tag path is unaudited. An operator auditing "who changed the tags on term X?" through the Activity Feed finds NO record.** Method-level primary source from the batch-X-TAGGING `createTermTagsRelations` controller-method sidecar:
+
+  - NO `@ActivityLog` on `TermController.createTermTagsRelations` (`:129-136`), on `TermServiceImpl.upsertTags` (`:252-264`), or on any `TagServiceImpl` method it calls.
+  - Sibling term mutations on the SAME controller/service DO carry `@ActivityLog` — `linkTermWithDataEntity` (`TermServiceImpl.java:169`) and `removeTermFromDataEntity` (`:183`) emit `TERM_ASSIGNMENT_UPDATED`.
+  - The data-entity tag-assignment sibling (`DataEntityServiceImpl.java:358`) carries `@ActivityLog(event = TAG_ASSIGNMENT_UPDATED)`.
+  - The asymmetry — term-tag change UNAUDITED, term-data-entity link AUDITED, data-entity-tag change AUDITED — is, per the sidecar, most likely an oversight: no comment, exception, or convention defends the absence.
+  - Note the dataset-field tag path (`updateDatasetFieldTags`) DOES carry `@ActivityLog(event = DATASET_FIELD_TAGS_UPDATED)` with full before/after tag state — making the term-tag path the lone unaudited tag-ASSIGNMENT surface among the three.
+
+  **Operator-visible consequence**: a stewardship investigation ("who changed term X's tags, and when?") has no answer from the Activity Feed. Compliance reports demonstrating catalog-vocabulary change history cannot be reconstructed for the term-tag surface. Compound with TEST-GAP-895: under `auth.type=DISABLED`, the term-tag path is DOUBLY invisible — no auth AND no audit.
+
+  **Why this is a real gap, not cosmetic**: the Activity Feed is a user-facing accountability surface; an asymmetric audit story (two of three tag-assignment surfaces audited, one not) is a forensic blind spot that is invisible until an operator goes looking. The fix is well-scoped (add an `@ActivityLog` with an appropriate event type) but no test pins the current absence OR a future presence.
+
+  **Test gap shape**: a `WebTestClient` / `@SpringBootTest` test asserting (a) `PUT /api/terms/{id}/tags` produces ZERO activity-feed rows (the current absence); (b) the sibling `linkTermWithDataEntity` DOES produce a `TERM_ASSIGNMENT_UPDATED` row (asserting the asymmetry exists); (c) the dataset-field tag path DOES produce a `DATASET_FIELD_TAGS_UPDATED` row (asserting the term-tag path is the lone unaudited tag-assignment surface). The current state is PINNED — a future maintainer adding term-tag audit instrumentation makes a coordinated, test-visible change.
+test_class: missing-security
+criticality_rationale: |-
+  MEDIUM per Rule 3: the createTermTagsRelations sidecar rates the no-audit gap MEDIUM. It is an audit-trail asymmetry — a forensic blind spot — with no direct security boundary crossed and no data loss. F-018's drift_class_summary carries `tag_controller_write_paths_no_activity_log_asymmetric_with_per_entity_tag_assignment_path` (the directory-vocabulary variant; this is the term-ASSIGNMENT variant of the same audit-asymmetry class). Consistent with TEST-GAP-766 (the Tag-directory audit absence — also MEDIUM). Not HIGH — the gap is observability degradation, not an exploitable surface. pillars_affected len 3 (P-01, P-04, P-07); no cross-pillar bump (the gap is an absence, not a cross-boundary action). MEDIUM stands.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/TermTagAuditAbsenceTest.java"
+  name: "createTermTagsRelations_producesNoActivityEntry_whileSiblingTermMutationsDo_pinsAuditAsymmetry"
+evidence:
+  - "createTermTagsRelations sidecar says (bugs_limitations_corner_cases): 'No activity-feed audit for term-tag changes. There is no @ActivityLog on TermController.createTermTagsRelations, on TermServiceImpl.upsertTags, or on the TagServiceImpl methods. Other term mutations on the SAME service DO carry @ActivityLog — linkTermWithDataEntity (TermServiceImpl.java:169), removeTermFromDataEntity (:183) emit TERM_ASSIGNMENT_UPDATED. The data-entity tag sibling emits TAG_ASSIGNMENT_UPDATED. An operator auditing who changed the tags on term X through the activity feed finds NO record. The asymmetry is most likely an oversight rather than intent — no comment, exception, or convention defends the absence.' severity MEDIUM"
+  - "createTermTagsRelations sidecar says (invariants): 'NO activity-feed event — there is no @ActivityLog annotation on TermController.createTermTagsRelations (TermController.java:129-136), on TermServiceImpl.upsertTags (TermServiceImpl.java:252-264), or on the TagServiceImpl methods it calls. This is a divergence from DataEntityServiceImpl.upsertTags, which carries @ActivityLog(event = TAG_ASSIGNMENT_UPDATED).'"
+  - "Verified at primary source via the sidecar: TermController.java:129-136 (no @ActivityLog) + TermServiceImpl.java:252-264 (upsertTags — no @ActivityLog) + TermServiceImpl.java:169, 183 (sibling methods DO carry @ActivityLog) + DataEntityServiceImpl.java:358 (data-entity tag path @ActivityLog) — cross-confirmed against the updateDatasetFieldTags sidecar which establishes the dataset-field tag path DOES carry @ActivityLog(DATASET_FIELD_TAGS_UPDATED)"
+cross_references:
+  - "TEST-GAP-766 (existing batch-W — STRENGTHENED this batch — the TagController DIRECTORY-vocabulary audit absence. DISTINCT from THIS gap: TEST-GAP-766 = the directory lifecycle (createTag/updateTag/deleteTag) unaudited; TEST-GAP-896 = the term-tag ASSIGNMENT path unaudited. Both are facets of the audit-presence-asymmetry pattern, on different surfaces)"
+  - "TEST-GAP-895 (sister batch-X-TAGGING — under DISABLED the term-tag path is doubly invisible: no auth AND no audit; TEST-GAP-896 is the audit half of that compound)"
+  - "feature-flows:F-018 drift_class_summary.[tag_controller_write_paths_no_activity_log_asymmetric_with_per_entity_tag_assignment_path]"
+  - "REFACTOR-NNN candidate: add @ActivityLog to TermServiceImpl.upsertTags (a TERM_ASSIGNMENT_UPDATED or a new term-tag event type), matching the dataset-field tag path's audit instrumentation"
+related_features: [F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging", "P-07:F-003"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `TermTagAuditAbsenceTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Three test methods:
+  1. `createTermTagsRelations_producesNoActivityEntry_pinsCurrentAbsence` — `PUT /api/terms/{id}/tags`; query the activity table for the term; assert ZERO rows. PINS the current absence.
+  2. `linkTermWithDataEntity_producesTermAssignmentUpdatedEntry_documentsTheAsymmetry` — call the sibling term-data-entity link; assert a `TERM_ASSIGNMENT_UPDATED` activity row IS produced. Co-locating this documents that the SAME service audits some term mutations but not the tag one.
+  3. `updateDatasetFieldTags_producesDatasetFieldTagsUpdatedEntry_documentsTermTagIsLoneUnauditedSurface` — call the dataset-field tag path; assert a `DATASET_FIELD_TAGS_UPDATED` row IS produced. Establishes that of the three tag-assignment surfaces (data-entity, dataset-field, term), only the term path is unaudited.
+
+  The test PINS the current asymmetry. Pair with REFACTOR-NNN: add `@ActivityLog` to `TermServiceImpl.upsertTags`. When the fix lands, test #1 inverts to assert an activity row IS produced.
+batch: 2026-05-21-X-TAGGING
+feature_id: F-018

@@ -111,6 +111,7 @@ The case-law for these rules lives in `retrospectives/` (`LSN-NNN-{slug}.md`). `
 | `/log-issue <repo> ["title"]` | Draft an upstream-repo GitHub issue on disk (paste-ready, never auto-filed) |
 | `/status` | Show detailed progress dashboard |
 | `/navigate <feature>` | Find where a feature lives in code |
+| `/panel [lite]` | Run the Adversarial Review Panel — periodic independent self-audit of the methodology (APPROACH.md §16) |
 
 ## Workspace Layout
 

@@ -16,24 +16,41 @@ description: |-
   `fetchCount(nameQuery)` at line 80 + the soft-delete base override
   at ReactiveAbstractSoftDeleteCRUDRepository.java:87-89.
 
-  **The pagination math breaks** for any non-null nameQuery. For a
-  catalog with datasources named `['snowflake-prod', 'my-snowflake-dev',
-  'redshift-prod']` and `nameQuery='snow'`:
-    - Page query returns 1 row (only 'snowflake-prod' STARTS WITH
-      'snow')
-    - Count query reports 2 (both 'snowflake-prod' AND
-      'my-snowflake-dev' CONTAIN 'snow')
-    - UI renders page.data.size == 1 with page.total == 2 — operator
-      sees "1 of 2 results" but cannot reach page 2 (the next-page
-      cursor produces empty results because the page query has
-      already exhausted the startsWith matches)
+  **REFINED batch 2026-05-21ZB — the getDataSourceList method-level
+  sidecar PINS THE EXACT MANIFESTATION**: the divergence is gated by
+  the EMPTY-PAGE branch only. The re-trace through
+  JooqQueryHelper.pageifyResult (lines 92-127) shows: when `records`
+  is NON-empty, `total` comes from the window-function `count().over()`
+  (line 73, 114) computed over the SAME `startsWith` `homogeneousQuery`
+  — so a POPULATED page has a CONSISTENT count. The `containsIgnoreCase`
+  count (fetchCount → ReactiveAbstractCRUDRepository.java:243) is
+  consulted ONLY by the empty-records branch (JooqQueryHelper.java:95-101).
+
+  **THE ACTUAL OPERATOR-VISIBLE DEFECT — corrected from the batch-R
+  framing**: NOT "page returns 1 item but total reports 2" on a
+  populated page. The real defect is an EMPTY list labelled with a
+  NON-ZERO total — "0 of 1" — when `nameQuery` matches a data source
+  by SUBSTRING but NOT by PREFIX. Example: `nameQuery='snow'` against
+  a catalog containing `'my-snowflake-dev'`:
+    - the page query (`startsWith`) returns ZERO items;
+    - pageifyResult takes the empty-records branch;
+    - `total` comes from the `contains`-count = 1;
+    - the operator sees an empty list labelled "0 of 1" — a phantom
+      total with no rows to show.
+  On a populated page the window-function count uses the same
+  `startsWith` predicate and the numbers agree — the defect is
+  INVISIBLE on populated pages. The batch-R sidecar's framing ("page
+  returns ONE item but a total count of TWO") described the wrong
+  manifestation; the bug is real but surfaces only in the empty-page
+  branch. Probe P-036 pins this refined shape.
 
   **Operator surface manifestation**: the Management → Datasources tab
-  filter input populates `nameQuery`. Operators searching by substring
-  see misleading "X of Y" counts; pagination jumps appear broken. The
-  bug is invisible on small catalogs (where startsWith and contains
-  return similar results) but compounds with catalog size — at 50+
-  datasources the discrepancy becomes operationally significant.
+  filter input populates `nameQuery`. An operator filtering by a
+  substring that no datasource NAME starts with — but some name
+  CONTAINS — sees an empty result list with a misleading non-zero
+  "X of Y" total. The bug is invisible on small catalogs and on any
+  query that prefix-matches; it surfaces specifically at the
+  contains-but-not-prefix boundary.
 
   **The fix is a one-line change** at either site — choose one
   predicate and align the other. The natural choice is
@@ -54,6 +71,7 @@ description: |-
   containing the query as substring but NOT starting with it.
 nodes:
 - odd-platform java repository reactive repository:ReactiveDataSourceRepositoryImpl
+- odd-platform java DataSourceController controller-method:getDataSourceList
 contributors:
 - |-
   ReactiveDataSourceRepositoryImpl batch R (PRIMARY SOURCE):
@@ -71,6 +89,21 @@ contributors:
   three datasources [snowflake-prod, my-snowflake-dev, redshift-prod]
   with nameQuery='snow'; assert page.data.size == 1 AND page.total == 2
   — pins the bug; the test should FAIL with REFACTOR-425 fixed)
+- |-
+  REFINES — getDataSourceList.md (batch ZB, controller-method
+  primary source): the method-level re-trace through
+  JooqQueryHelper.pageifyResult (lines 92-127) CORRECTS the
+  manifestation. The divergence is gated by the EMPTY-PAGE branch
+  ONLY (JooqQueryHelper.java:95-101) — a POPULATED page uses the
+  window-function count().over() over the same startsWith query and
+  is CONSISTENT. The operator-visible defect is an EMPTY list with a
+  non-zero total ("0 of 1") when nameQuery matches by substring but
+  not by prefix — NOT a wrong count on a populated page.
+  coherence_notes[refines DataSourceController class — REFACTOR-425
+  is an empty-page-branch defect] + bugs_limitations_corner_cases
+  (query parameter name-prefix-only on the page but name-substring on
+  the empty-page count — MEDIUM) + stress_findings.request_inputs[query —
+  DRIFT_INPUT_NAME_VS_IMPLEMENTATION] + probe P-036.
 evidence:
 - |-
   ReactiveDataSourceRepositoryImpl.md:coherence_check.conflicts_surfaced.[0]
@@ -92,12 +125,30 @@ evidence:
   `DataSourceRepositoryImplTest` covers happy-path round-trips but
   does NOT exercise listDto with nameQuery != null against a catalog
   whose names contain-but-not-start-with the query)
+- |-
+  REFINES — getDataSourceList.md (batch ZB):
+  coherence_notes (REFACTOR-425 is gated by the empty-page branch of
+  JooqQueryHelper.pageifyResult lines 92-127; populated pages have a
+  consistent window-function count) + bugs_limitations_corner_cases
+  (query is name-prefix on the page, name-substring on the empty-page
+  count → "0 of 1" phantom total) + stress_findings.request_inputs[query]
+  (DRIFT_INPUT_NAME_VS_IMPLEMENTATION) + docs_link_semantic.doc_drift_findings
+  (the search behaviour is undocumented) — evidence:
+  ReactiveDataSourceRepositoryImpl.java:151-160,80 +
+  ReactiveAbstractCRUDRepository.java:240-249 + JooqQueryHelper.java:95-101 —
+  probe P-036
 axes_present:
 - repositories_reactive
-triangulation_count: 1
-cross_batch: false
+- controllers
+triangulation_count: 2
+cross_batch: true
+cross_batch_refs:
+- batch-R (ReactiveDataSourceRepositoryImpl — repository primary source, original finding)
+- batch-ZB (getDataSourceList — controller-method primary source, REFINES the manifestation)
 severity: MEDIUM
 severity_dim: correctness-and-UX
+probes:
+- P-036
 mitigations_unimplemented:
 - |-
   Choose ONE predicate (recommended: `containsIgnoreCase` to match the
@@ -108,12 +159,13 @@ mitigations_unimplemented:
     `DATA_SOURCE.NAME.containsIgnoreCase(nameQuery)`
   Single-line change; no schema impact; no migration needed.
 - |-
-  Add the regression test from the test-coverage proposal:
-    Create three datasources `['snowflake-prod', 'my-snowflake-dev',
-    'redshift-prod']`; call listDto with `nameQuery='snow'`; assert
-    `page.data.size == 2` (both snowflake entries) AND `page.total
-    == 2` (parity); under the proposed fix the test passes;
-    under the current bug the test fails with page.data.size == 1.
+  Add the regression test from the test-coverage proposal — REFINED
+  for the empty-page manifestation:
+    Create a datasource named 'my-snowflake-dev'; call listDto with
+    `nameQuery='snow'`; under the CURRENT bug the page returns 0 items
+    with page.total == 1 ("0 of 1" phantom); under the proposed
+    `containsIgnoreCase` fix the page returns 1 item with page.total
+    == 1. The test pins the empty-page-branch defect specifically.
 - |-
   Audit the other custom-listDto methods in the repository layer for
   similar private queryCondition vs inherited listCondition drift.
@@ -125,11 +177,21 @@ mitigations_unimplemented:
 notes: |-
   This is a NARROW MEDIUM-severity bug — it affects the Management →
   Datasources tab filter and only manifests when name substring search
-  reaches across the startsWith vs contains boundary. The bug class is
-  PREDICATE-DIVERGENCE-IN-PAGINATION-WRAPPERS: any repository that
-  shadows the inherited listCondition with a private queryCondition
+  reaches the contains-but-not-prefix boundary on an EMPTY page. The bug
+  class is PREDICATE-DIVERGENCE-IN-PAGINATION-WRAPPERS: any repository
+  that shadows the inherited listCondition with a private queryCondition
   for the page query but reaches the count via the inherited base
   risks this defect.
+
+  REFINED batch 2026-05-21ZB — the getDataSourceList method-level
+  sidecar corrects the operator-visible manifestation. The batch-R
+  repository sidecar framed it as a wrong count on a populated page
+  ("1 of 2"); the method-level re-trace through JooqQueryHelper.pageifyResult
+  shows the divergence is gated by the EMPTY-page branch — a populated
+  page uses the consistent window-function count. The defect surfaces
+  as an empty list with a phantom non-zero total ("0 of 1"). Same
+  root cause, more precise manifestation; probe P-036 pins the refined
+  shape.
 
   Cross-cutting connections:
     - Pairs with the inherited `ReactiveAbstractCRUDRepository`
@@ -139,6 +201,9 @@ notes: |-
     - Companion to the search-facets-bearer-token-shaped-no-user-binding
       invariant — both reflect pagination-correctness concerns in
       list endpoints, though the two have DIFFERENT root causes
+    - Pairs with operation list-datasources (the GET /api/datasources
+      endpoint — getDataSourceList method sidecar) — the divergence
+      is the search-parameter behaviour on that endpoint
     - Does NOT pair with the read-collaborative posture (this is a
       correctness bug, not an authorization bug; the catalog is read
       cross-owner regardless of nameQuery)

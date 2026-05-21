@@ -1,0 +1,105 @@
+---
+probe_id: P-039
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DataSourceController__controller-method__registerDataSource.md
+emitted_at: 2026-05-21T00:00:00Z
+status: pending-stress-protocol
+feature_id: null   # P-08:F-NN-Datasources-tab + P-09 Security pillar
+test_class: security
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category F — input-name vs implementation alignment): the
+  DataSourceFormData field `namespace_name` (components.yaml:1308) is read at
+  DataSourceServiceImpl.java:56 and passed to namespaceService.getOrCreate,
+  whose implementation (NamespaceServiceImpl.java:37-40) is
+  `getByName(name).switchIfEmpty(createByName(name))` — it CREATES a new
+  namespace row if none matches. The explicit POST /api/namespaces endpoint is
+  gated by NAMESPACE_CREATE (SecurityConstants.java). registerDataSource is
+  gated only by DATA_SOURCE_CREATE. Hypothesis: a user holding a Policy that
+  grants DATA_SOURCE_CREATE but NOT NAMESPACE_CREATE can create a brand-new
+  namespace as a side effect of POST /api/datasources — a least-privilege
+  escalation by side effect.
+---
+arrange:
+  - kind: docker-compose-up
+    profile: odd-minimal
+  - kind: env
+    note: auth.type=LOGIN_FORM so RBAC policies are enforced.
+  - kind: sql
+    query: |
+      -- A Policy granting ONLY DATA_SOURCE_CREATE (no NAMESPACE_CREATE).
+      -- Exact policy JSON shape per src/test/resources/policy/valid/management.json;
+      -- probe-runner adapts to the live policy schema.
+      INSERT INTO policy (id, name, policy)
+      VALUES (9039, 'p039-datasource-create-only',
+              '{"statements":[{"resource":{"type":"MANAGEMENT"},
+                "permissions":["DATA_SOURCE_CREATE"]}]}');
+  - kind: sql
+    query: |
+      INSERT INTO role (id, name) VALUES (9039, 'p039-role');
+      INSERT INTO role_to_policy (role_id, policy_id) VALUES (9039, 9039);
+  - kind: sql
+    query: |
+      -- bind a probe user to the role via owner + user_owner_mapping
+      INSERT INTO owner (id, name) VALUES (9039, 'p039-owner');
+      INSERT INTO owner_to_role (owner_id, role_id) VALUES (9039, 9039);
+      INSERT INTO user_owner_mapping (oidc_username, owner_id, provider)
+      VALUES ('p039-user', 9039, 'LOGIN_FORM');
+  - kind: sql
+    query: |
+      -- assert the target namespace does NOT exist before the act
+      SELECT count(*) AS pre_count FROM namespace
+      WHERE name = 'p039-brand-new-namespace' AND deleted_at IS NULL
+act:
+  - kind: rest
+    method: POST
+    path: /api/datasources
+    auth_as: p039-user
+    body: |
+      {
+        "name": "p039-escalation-probe",
+        "oddrn": "//probe/p039/datasource",
+        "namespace_name": "p039-brand-new-namespace",
+        "description": "P-039 namespace-bypass probe"
+      }
+    capture_as: register_response
+observe:
+  - kind: http-status
+    of: register_response
+    capture_as: status_code
+  - kind: sql
+    query: |
+      SELECT count(*) AS post_count FROM namespace
+      WHERE name = 'p039-brand-new-namespace' AND deleted_at IS NULL
+    capture_as: namespace_post
+  - kind: rest
+    method: POST
+    path: /api/namespaces
+    auth_as: p039-user
+    body: '{ "name": "p039-direct-namespace" }'
+    capture_as: direct_namespace_response
+  - kind: http-status
+    of: direct_namespace_response
+    capture_as: direct_status
+assert:
+  - "status_code in (200, 201)  # the datasource POST succeeds with DATA_SOURCE_CREATE only"
+  - "namespace_post.post_count == 1  # ESCALATION: a new namespace was created as a side effect"
+  - "direct_status == 403  # the DIRECT namespace-create path IS gated by NAMESPACE_CREATE"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DataSourceController__controller-method__registerDataSource
+    - odd-platform__java__DataSourceController__controller-class__DataSourceController
+  retrospectives: [LSN-020]
+realism_caveats: |
+  The probe confirms the escalation by contrasting two paths under the SAME
+  principal: registerDataSource (DATA_SOURCE_CREATE) creates a namespace; direct
+  POST /api/namespaces (NAMESPACE_CREATE) is refused. If direct_status is NOT
+  403, the platform's RBAC binding for the probe user is broader than intended —
+  re-check the policy JSON shape against the live policy_schema.json. The probe
+  does not measure blast radius (how many namespaces an attacker could
+  proliferate) — that is rate/quota-shaped and out of scope here.

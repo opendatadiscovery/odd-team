@@ -1,0 +1,78 @@
+---
+probe_id: P-040
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DataSourceController__controller-method__registerDataSource.md
+emitted_at: 2026-05-21T00:00:00Z
+status: pending-stress-protocol
+feature_id: null   # P-09 Security pillar — token-disclosure surface
+test_class: security
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category F + data-exposure): registerDataSource returns the
+  full `DataSource` model (openapi.yaml:459), which has a required `token`
+  object (components.yaml:1257-1267) carrying a `value: string`
+  (components.yaml:1333). The token is minted as a 40-char alphanumeric secret
+  (TokenGeneratorImpl.java:39) and persisted via ReactiveTokenRepositoryImpl.create
+  which constructs `new TokenDto(pojo, true)` (line 26) — the trailing `true` is
+  the TokenDto.showToken flag. TokenMapper.mapValue (lines 15-18) returns the
+  plaintext value WHEN showToken is true, else `"******" + last6`. Hypothesis:
+  the POST /api/datasources response body contains the collector token in FULL
+  PLAINTEXT (not redacted), whereas GET /api/datasources redacts it.
+---
+arrange:
+  - kind: docker-compose-up
+    profile: odd-minimal
+  - kind: env
+    note: auth.type=DISABLED to isolate the response-shape question from RBAC.
+act:
+  - kind: rest
+    method: POST
+    path: /api/datasources
+    body: |
+      {
+        "name": "p040-token-probe",
+        "oddrn": "//probe/p040/datasource",
+        "description": "P-040 plaintext-token-in-response probe"
+      }
+    capture_as: register_response
+observe:
+  - kind: http-body
+    of: register_response
+    capture_as: create_body
+  - kind: rest
+    method: GET
+    path: /api/datasources?page=1&size=10&query=p040-token-probe
+    capture_as: list_response
+  - kind: http-body
+    of: list_response
+    capture_as: list_body
+  - kind: sql
+    query: |
+      SELECT t.value FROM token t
+      JOIN data_source d ON d.token_id = t.id
+      WHERE d.oddrn = '//probe/p040/datasource'
+    capture_as: db_token
+assert:
+  - "create_body.token.value == db_token.value  # registration response leaks the FULL plaintext token"
+  - "len(create_body.token.value) == 40         # the 40-char RandomStringUtils value, unredacted"
+  - "list_body.items[0].token.value.startsWith('******')  # the LIST path redacts the same token"
+  - "list_body.items[0].token.value != db_token.value     # confirms list redaction is API-side"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DataSourceController__controller-method__registerDataSource
+    - odd-platform__java__DataSourceController__controller-class__DataSourceController
+  retrospectives: []
+realism_caveats: |
+  The probe pins WHERE the redaction boundary is (create=plaintext,
+  list=redacted, both API-side via TokenDto.showToken). It does NOT assess
+  whether plaintext-on-create is a defect: showing the token once at creation
+  time is a deliberate "you only see it once" pattern in many systems. The
+  finding the probe supports is the DOCUMENTATION gap — operators are not told
+  the create response carries a live secret that downstream loggers / proxies /
+  browser history may capture. If create_body.token.value is itself redacted,
+  TokenMapper or ReactiveTokenRepositoryImpl.create changed since 80637ed.

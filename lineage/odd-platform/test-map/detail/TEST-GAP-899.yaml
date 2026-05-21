@@ -1,0 +1,92 @@
+gap_id: TEST-GAP-899
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java DataSourceController controller-method:regenerateDataSourceToken"
+pillars_affected: [P-08, P-09, P-10]
+surfaced_by:
+  - "odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken.md:tests_coverage_semantic.uncovered_behaviours.[RBAC matrix: a LOGIN_FORM user WITHOUT DATA_SOURCE_TOKEN_REGENERATE gets 403; WITH it gets 200; unauthenticated gets 401; under auth.type=DISABLED any caller gets 200 (permission bypass)]"
+  - "odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken.md:security.known_security_gaps.[In auth.type=DISABLED deployments DATA_SOURCE_TOKEN_REGENERATE is bypassed entirely — credential-rotation-hijack surface]"
+behaviour: |-
+  **CRITICAL — the `PUT /api/datasources/{data_source_id}/token` RBAC matrix is entirely
+  untested, and the `auth.type=DISABLED` cell is a credential-rotation-hijack surface: on a
+  network-reachable DISABLED deployment, ANY caller can rotate ANY data source's ingestion
+  credential and receive the new plaintext token in the response body.** Method-level
+  primary source from the batch-ZB `regenerateDataSourceToken` controller-method sidecar:
+
+  - The endpoint is gated by Permission `DATA_SOURCE_TOKEN_REGENERATE` (MANAGEMENT tier)
+    via `SecurityConstants.SECURITY_RULES` (SecurityConstants.java:124-126 — the tuple
+    `(/api/datasources/{data_source_id}/token, PUT, DATA_SOURCE_TOKEN_REGENERATE)`). There
+    is NO `@PreAuthorize` on the controller and NO programmatic permission check in
+    `DataSourceServiceImpl.regenerateDataSourceToken`.
+  - **Under `auth.type=DISABLED`** the `SecurityConstants` rule chain is bypassed entirely
+    (the rule is enforced only by the LOGIN_FORM / OAUTH2 / LDAP security configs;
+    `DisabledSecurityConfiguration` sets all paths permitAll). `TokenGeneratorImpl.java:31`
+    has a no-current-user fallback `regenerate(tokenPojo, null)` — rotation succeeds with
+    `updated_by` NULL. An attacker on a DISABLED deployment can break ingestion
+    platform-wide AND harvest the new tokens (each rotation response carries the new
+    40-char plaintext).
+  - The 4-cell auth matrix (`permission absent → 403`, `permission present → 200`,
+    `unauthenticated → 401` under LOGIN_FORM, `any caller → 200` under DISABLED) is
+    PROBE-NEEDED per the sidecar — the path-rule-to-403 mapping is inferred from the
+    `SecurityConstants` pattern but not statically provable end-to-end.
+
+  **Why CRITICAL**: credential rotation is a security-critical operation. The DISABLED
+  cell is the LSN-001 / LSN-002 operator-cliff shape — an operator who leaves a deployment
+  on the default `auth.type` exposes a credential-rotation-hijack on the network. The
+  endpoint has ZERO direct test coverage (Glob-verified — no `DataSourceControllerTest`).
+  A `SecurityConstants` typo or a rule deletion would silently fall the endpoint back to
+  authenticated-only (the FAIL-OPEN coupling the class sidecar documents) with no test to
+  catch it. This is a member of the platform-wide DISABLED-bypass cluster (DOC-GAP-082) and
+  the parallel of the COLLECTOR token-regenerate DISABLED-bypass already pinned at
+  TEST-GAP-099 — but on a DISTINCT endpoint with a DISTINCT credential (the data-source
+  token, not the collector token).
+
+  **Test gap shape**: a parametrized `@SpringBootTest` security test asserting the 4 cells:
+  (a) a LOGIN_FORM user whose Policy lacks `DATA_SOURCE_TOKEN_REGENERATE` → 403; (b) a user
+  whose Policy grants it → 200; (c) an unauthenticated caller → 401; (d) under
+  `auth.type=DISABLED` (a separate Spring context), any caller → 200 and the response
+  carries the new plaintext token. Cell (d) PINS the bypass; when a fix lands (e.g. a
+  DISABLED-mode hard block on token-issuing endpoints), cell (d) inverts.
+test_class: missing-security
+criticality_rationale: |-
+  CRITICAL per Rule 3: the regenerateDataSourceToken node's security_aggregate carries a
+  HIGH-severity DISABLED-bypass weakness (sidecar security.known_security_gaps[0] — "HIGH
+  (DISABLED deployments)"). The credential-rotation-hijack consequence — break ingestion
+  platform-wide AND harvest new plaintext tokens — is a severe security exposure, and the
+  sidecar itself rates the uncovered behaviour CRITICAL. The DISABLED cell is the LSN-001 /
+  LSN-002 operator-cliff family (a default config silently exposes a destructive operation
+  on the network). pillars_affected len 3 (P-08 Datasources, P-09 Authorization, P-10
+  ingestion-S2S) — cross-pillar; base rating already CRITICAL, capped.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DataSourceTokenRegenerateRbacMatrixTest.java"
+  name: "regenerateDataSourceToken_403WithoutPermission_200WithPermission_401Unauthenticated_200AnyCallerUnderDisabled_pinsDisabledBypass"
+evidence:
+  - "regenerateDataSourceToken sidecar says (tests_coverage_semantic.uncovered_behaviours): 'RBAC matrix: a LOGIN_FORM user WITHOUT DATA_SOURCE_TOKEN_REGENERATE gets 403; WITH it gets 200; unauthenticated gets 401; under auth.type=DISABLED any caller gets 200 (permission bypass). test_class: security; criticality: CRITICAL; note: Pinned by probe P-052 — credential-rotation-hijack surface under DISABLED.'"
+  - "regenerateDataSourceToken sidecar says (security.known_security_gaps): 'In auth.type=DISABLED deployments DATA_SOURCE_TOKEN_REGENERATE is bypassed entirely — any caller reaching the platform can rotate any data source ingestion credential and receive the plaintext. Credential-rotation-hijack surface: an attacker can break ingestion platform-wide and harvest the new tokens. The docs do not warn against using DISABLED on a network-reachable deployment.' severity HIGH (DISABLED deployments)"
+  - "regenerateDataSourceToken sidecar says (bugs_limitations_corner_cases): 'Under auth.type=DISABLED the SecurityConstants permission rule chain is bypassed entirely — any caller able to reach the platform can rotate ANY data source token and receive the new plaintext credential in the response. Mirrors the CollectorController.regenerateCollectorToken sibling sidecar DISABLED-bypass HIGH finding.' severity HIGH"
+  - "Verified at primary source via the sidecar: SecurityConstants.java:124-126 (the rule, enforced only by LOGIN_FORM/OAUTH2/LDAP configs) + TokenGeneratorImpl.java:31 (no-user fallback rotates with updated_by NULL) + DataSourceController.java:53-59 (no @PreAuthorize) + DataSourceServiceImpl.java:99-106 (no programmatic check)"
+cross_references:
+  - "TEST-GAP-099 (batch 2026-05-11 — the COLLECTOR-token DISABLED-bypass; TEST-GAP-899 is the structural parallel for the DATA-SOURCE token — DISTINCT endpoint, DISTINCT credential, DISTINCT SecurityRule at SecurityConstants.java:124-126 vs 135-137. A fix to one — a DISABLED-mode hard block on token-issuing endpoints — should be applied to both)"
+  - "TEST-GAP-096 (batch 2026-05-11 — the COLLECTOR-token authorization-gate regression test; sibling on the collector path)"
+  - "doc-gaps:DOC-GAP-082 (META — auth.type=DISABLED BYPASSES the entire Authorization framework; this gap is the regenerateDataSourceToken-specific manifestation of the cluster)"
+  - "doc-gaps:DOC-GAP-034 (Token Rotation operational mechanics absent from enable-security pages — DOUBLE-JEOPARDY: the DISABLED-bypass-on-rotation is BOTH undocumented AND untested)"
+  - "probe P-052 (lineage/odd-platform/probes/P-052.yaml — the RBAC-matrix probe)"
+related_features: [F-008, F-020]
+related_pillar_features: ["P-08:F-NN-Datasources-tab", "P-09:F-001", "P-10:F-001"]
+related_refactor_ids: []
+related_doc_gap_ids: [DOC-GAP-082, DOC-GAP-034]
+proposed_action: |-
+  Add `DataSourceTokenRegenerateRbacMatrixTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Four test methods (one per matrix cell):
+  1. `regenerateDataSourceToken_userWithoutPermission_returns403` — authenticate as a LOGIN_FORM user whose Policy does NOT grant DATA_SOURCE_TOKEN_REGENERATE; PUT /api/datasources/{id}/token; assert 403.
+  2. `regenerateDataSourceToken_userWithPermission_returns200` — authenticate as a user whose Policy grants DATA_SOURCE_TOKEN_REGENERATE; PUT; assert 200 with a new plaintext token.
+  3. `regenerateDataSourceToken_unauthenticated_returns401` — no session cookie; PUT; assert 401.
+  4. `regenerateDataSourceToken_underDisabledAuthType_anyCallerSucceeds_pinsCredentialRotationHijack` — a separate @SpringBootTest context with `auth.type=DISABLED`; PUT with NO authentication; assert 200 and the response body carries the new 40-char plaintext token. PIN the bypass.
+
+  Cell #4 PINS the credential-rotation-hijack surface. Pair with DOC-GAP-082 / DOC-GAP-034:
+  the docs must warn that a DISABLED deployment exposes token rotation (and all
+  token-issuing endpoints) anonymously on the network. When a fix lands (a DISABLED-mode
+  hard block on token-issuing endpoints), cell #4 inverts to assert a non-200.
+batch: 2026-05-21-ZB
+feature_id: F-008

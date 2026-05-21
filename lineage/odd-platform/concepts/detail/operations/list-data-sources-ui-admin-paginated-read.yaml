@@ -1,0 +1,233 @@
+name: List Data Sources (UI admin path — paginated catalog read, no permission gate)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-08
+description: |-
+  NEW OPERATION, batch 2026-05-21ZB — surfaced at primary source by
+  the getDataSourceList method-level sidecar. GET
+  /api/datasources?page=&size=&query= is the single read/list endpoint
+  of the Management → Datasources tab — the fifth UI-admin DataSource
+  endpoint (register / update / delete / regenerate-token were the
+  prior four write operations; this is the READ).
+
+  THE OPERATION — what GET /api/datasources does:
+
+    The controller handler (DataSourceController.java:21-28) is a
+    3-line proxy: forward the three OpenAPI-generated parameters
+    (page, size, optional query) to dataSourceService.list(page, size,
+    query), wrap the reactive result in ResponseEntity.ok (HTTP 200).
+    The chain is DataSourceServiceImpl.list → ReactiveDataSourceRepositoryImpl.listDto
+    → DataSourceMapper.mapDtoPage. The SQL is a CTE
+    (`data_source_cte`: a paginated `SELECT FROM data_source WHERE
+    deleted_at IS NULL [+ startsWithIgnoreCase]`) + 2 LEFT JOINs
+    against NAMESPACE and TOKEN. The list is ordered `data_source.id
+    ASC` (creation order) via the default 3-arg paginate overload.
+    The path is NOT inside an explicit transaction (DataSourceServiceImpl.list
+    is NOT @ReactiveTransactional — read-only).
+
+  AUTHORIZATION — THE LOAD-BEARING FACT: GET /api/datasources has NO
+  entry in SecurityConstants.SECURITY_RULES (Grep-confirmed — only
+  POST/PUT/DELETE on /api/datasources* are at SecurityConstants.java:116-126).
+  Under LOGIN_FORM/OAUTH2/LDAP the request falls through to the
+  catch-all `pathMatchers('/**').authenticated()` — ANY authenticated
+  user lists the entire catalogue, no permission, no owner scope. This
+  is the read-collaborative posture (mutations gated, reads open). Under
+  auth.type=DISABLED the endpoint is fully open with no principal.
+
+  KEY FACTS:
+    - The list DOES carry a token object per item, but the LIST path
+      builds the 1-arg `new TokenDto(tokenPojo)` (showToken=false) so
+      TokenMapper.mapValue returns the MASKED form `"******" + the
+      real last 6 plaintext chars` — API-side masking, NOT UI-side.
+      register/regenerate return PLAINTEXT (showToken=true). See the
+      collector-token entity for the resolved redaction-layer finding.
+    - Soft-deleted data sources are universally excluded (queryCondition
+      always adds `DATA_SOURCE.DELETED_AT.isNull()`).
+    - The `query` parameter is name-PREFIX-only on the page query but
+      name-SUBSTRING on the empty-page count — the REFACTOR-425
+      divergence; see the dedicated invariant.
+    - `size` has NO upper bound (the OpenAPI SizeParam declares no
+      `maximum`) — a caller can request the whole catalogue (incl. 2
+      LEFT JOINs) in one query; an unbounded-response surface.
+    - The list emits NO Activity Event (normal for a read endpoint,
+      noted for completeness vs the data_source audit gap).
+
+  DISTINCT FROM the S2S ingestion path — there is no S2S
+  data-source-LIST endpoint; collectors register/update via
+  IngestionController.createDataSourceEntity and never list.
+nodes:
+  - odd-platform java DataSourceController controller-method:getDataSourceList
+contributors:
+  - |-
+    getDataSourceList batch ZB (PRIMARY SOURCE):
+    concepts.operations[list datasources — GET /api/datasources —
+    paginated catalog read, optionally name-filtered by query] +
+    concepts.invariants[the controller adds NO logic; page+size
+    required, query optional; soft-deleted universally excluded; list
+    ordered data_source.id ASC; the only gate is .authenticated()] +
+    implicit_adrs.[0] (list returns the MASKED token form while
+    register/regenerate return plaintext — the showToken boolean is
+    the explicit toggle) + implicit_adrs.[1] (the list is intentionally
+    NOT permission-gated — read-collaborative posture) +
+    downstream_side_effects[page-render + db-read; no db-write, no
+    activity-emit] +
+    bugs_limitations_corner_cases (GET not in SECURITY_RULES; masked
+    token leaks the real last 6 chars; id-ASC ordering; query
+    prefix-vs-substring divergence; unbounded size)
+evidence:
+  - getDataSourceList.md:concepts.operations[list datasources]
+  - getDataSourceList.md:concepts.invariants (no controller logic; soft-delete excluded; id-ASC ordering; .authenticated() gate)
+  - getDataSourceList.md:implicit_adrs.[0,1] (masked-token-list / plaintext-register toggle; list not permission-gated)
+  - |-
+    getDataSourceList.md:security.authorization_assertions — GET
+    /api/datasources has NO SecurityRule — Grep-confirmed
+    SecurityConstants.java:116-126 lists only the 4 mutating rules;
+    no @PreAuthorize on getDataSourceList, no programmatic check in
+    DataSourceServiceImpl.list
+  - getDataSourceList.md:downstream_side_effects (page-render + db-read; read-only path, no Activity Event)
+  - |-
+    Cross-references invariant datasource-listdto-page-vs-count-predicate-divergence-refactor-425
+    (the query prefix-vs-substring divergence on this endpoint)
+  - |-
+    Cross-references invariant read-collaborative-cross-owner-enumeration-batch-w-extension
+    (GET /api/datasources is surface 25 of the 29-surface
+    read-collaborative pattern)
+  - |-
+    Cross-references entity collector-token (the list endpoint emits
+    the MASKED token form — the API-side redaction RESOLVED by this
+    sidecar)
+axes_present:
+  - controllers
+nodes_count: 1
+contributors_count: 1
+security_aggregate:
+  overall: MEDIUM
+  auth_modes_relevant:
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
+    - DISABLED
+    - S2S
+  ingestion_filter_relevance: NO
+  authorization_consistency:
+    verdict: UNGATED
+    detail: |-
+      GET /api/datasources has NO SecurityRule — it falls through to
+      the `pathMatchers('/**').authenticated()` catch-all. ANY
+      authenticated user lists every data source regardless of role
+      or policy. No @PreAuthorize, no programmatic permissionService
+      check. This is the deliberate read-collaborative posture
+      (mutations gated, reads open) — consistent with 28 sibling read
+      surfaces — but it is undocumented at the doc-site.
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      getDataSourceList returns ALL live data sources — no owner-scope
+      predicate at the controller, service, or repository. A read-only
+      user can enumerate the full topology of registered systems
+      (id, name, oddrn, namespace, masked token).
+  strengths:
+    - |-
+      The list path is fully idempotent and read-only — no @ReactiveTransactional
+      needed; concurrent calls are independent reads with no shared
+      mutable state
+    - |-
+      The token field is MASKED API-side on the list path
+      (`"******" + last6`) — the full 40-char plaintext is NOT exposed
+      on the list endpoint (only on register/regenerate)
+  weaknesses:
+    - |-
+      GET endpoint not in SECURITY_RULES — every authenticated user
+      lists the full catalogue incl. masked tokens, ODDRNs, namespaces
+      with no MANAGEMENT permission and no owner scope (MEDIUM —
+      intentional read-collaborative posture but undocumented)
+    - |-
+      The masked token form leaks the REAL last 6 characters of every
+      collector token to read-only users — the doc page calls it
+      'partially-redacted' but does not say the visible part is real
+      token material (LOW)
+    - |-
+      A single-line change at ReactiveDataSourceRepositoryImpl.java:167
+      (1-arg TokenDto → TokenDto.visibleToken) would flip the list
+      endpoint to expose full 40-char plaintext tokens to every
+      authenticated user, with no test to catch it (MEDIUM
+      regression-surface; probe P-035 is the guard)
+  cross_file_inconsistencies: []
+  contributing_files:
+    - getDataSourceList.md
+  evidence:
+    - getDataSourceList.md:security.authorization_assertions + security.owner_scoping
+    - getDataSourceList.md:security.known_security_gaps (GET not in SECURITY_RULES; masked-token leaks last 6 chars; the 1-line plaintext-exposure regression surface)
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+    - |-
+      getDataSourceList runs synchronously per request — the SQL is a
+      CTE-paginated data_source scan + 2 LEFT JOINs against NAMESPACE
+      and TOKEN; the window-function count runs in the same query. For
+      typical catalogs (<500 data sources) sub-100ms (getDataSourceList.md
+      performance.hot_paths)
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: |-
+      One paginated read per request; clients iterate pages to
+      enumerate the catalogue. There is no streaming and no bulk
+      variant.
+  scaling_shape:
+    verdict: UNPAGINATED
+    detail: |-
+      Stateless and read-only — instances scale horizontally with no
+      lock. BUT `size` has NO upper bound (the OpenAPI SizeParam
+      declares no `maximum`); a caller requesting size=Integer.MAX_VALUE
+      makes the server materialise the entire data_source table + 2
+      LEFT JOINs into one in-memory list — an unbounded-response
+      surface. The list is effectively un-clamped, not truly paginated.
+  strengths:
+    - Stateless, read-only — horizontally scalable; no FOR UPDATE lock on the list path
+    - The name filter uses startsWithIgnoreCase (a sargable LIKE-prefix — can use a B-tree index on name)
+  weaknesses:
+    - |-
+      `size` has no upper bound — at a very large catalogue a single
+      oversized request degrades response time and memory; no clamp,
+      no default ceiling (getDataSourceList.md performance.known_performance_gaps
+      LOW; pinned by probe P-037)
+  cross_file_inconsistencies: []
+  contributing_files:
+    - getDataSourceList.md
+  evidence:
+    - getDataSourceList.md:performance.hot_paths + resource_allocation
+    - getDataSourceList.md:performance.scaling_characteristics + known_performance_gaps (unbounded size; probe P-037)
+notes: |-
+  This operation completes the 5-endpoint UI-admin DataSource surface
+  in the registry — the four write operations (register-data-source,
+  update-data-source-ui-admin-replace, delete-data-source-ui-admin-guarded-soft-delete,
+  regenerate-data-source-token) plus this READ operation.
+
+  The load-bearing fact: the list endpoint has NO permission gate —
+  any authenticated user enumerates the full data-source catalogue
+  including masked collector tokens. This is the deliberate
+  read-collaborative posture, but an operator wiring an RBAC policy
+  to "restrict user X to view-only on the Datasources tab" achieves
+  nothing — the user can already view all data sources without any
+  DATA_SOURCE_* permission.
+
+  Cross-cutting connections:
+    - Pairs with datasource-listdto-page-vs-count-predicate-divergence-refactor-425
+      (the query prefix-vs-substring divergence on this endpoint)
+    - Pairs with read-collaborative-cross-owner-enumeration-batch-w-extension
+      (GET /api/datasources is surface 25 of the 29-surface pattern)
+    - Pairs with entity collector-token (the list endpoint emits the
+      MASKED token form — API-side redaction RESOLVED by this sidecar)
+    - Pairs with register-data-source + update-data-source-ui-admin-replace
+      + delete-data-source-ui-admin-guarded-soft-delete + regenerate-data-source-token
+      (the 5 UI-admin DataSource operations)
+    - Four probes minted on this endpoint — P-034 (id-ASC ordering),
+      P-035 (masked token form), P-036 (query prefix-vs-substring
+      divergence), P-037 (unbounded size + size/page boundary)
+
+  Two DOC-NNN candidates: (a) document on /features/management that
+  the Datasources list is visible to every authenticated user
+  regardless of role; (b) document the list ordering (creation-order
+  id-ASC — newly-registered sources appear LAST, not first) and the
+  absence of a `size` ceiling.

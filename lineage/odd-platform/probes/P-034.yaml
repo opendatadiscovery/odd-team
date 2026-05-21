@@ -1,0 +1,79 @@
+---
+probe_id: P-034
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DataSourceController__controller-method__getDataSourceList
+emitted_at: 2026-05-21T00:00:00Z
+status: pending-stress-protocol
+feature_id: null   # P-08:F-NN-Datasources-tab not yet carved into an F-NNN id
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category B + C): getDataSourceList / GET /api/datasources is
+  named and documented as a plain "list of data sources" with no stated ordering
+  (live docs.opendatadiscovery.org/features/management WebFetched 2026-05-21
+  status 200 — "does not describe any ordering mechanism"). The SQL path
+  ReactiveDataSourceRepositoryImpl.listDto (lines 58-82) calls the 3-arg
+  jooqQueryHelper.paginate(homogeneousQuery, offset, size) which delegates to
+  paginate(baseSelect, baseSelect.field("id"), SortOrder.ASC, ...)
+  (JooqQueryHelper.java:45). Hypothesis: the list is ordered strictly by
+  data_source.id ASC (primary-key / creation order), NOT by name, NOT by recency,
+  NOT by last-ingestion-timestamp. An operator who registers a new data source
+  expects it near the top ("recently registered") but it lands LAST (highest id).
+  This probe pins the actual ordering so the doc-gap-finder can decide whether
+  the management page must state "ordered by registration order" or whether the
+  list should be re-sorted.
+---
+arrange:
+  - kind: docker-compose-up
+    compose_file: odd-minimal
+  - kind: sql
+    query: |
+      INSERT INTO namespace (id, name, created_at, updated_at)
+      VALUES (8801, 'p034-ns', NOW(), NOW())
+  - kind: sql
+    query: |
+      -- token rows for the 3 data sources (token_id FK is set on data_source)
+      INSERT INTO token (id, value, created_at, updated_at)
+      VALUES (8801, 'p034tokenAAAAAAAAAAAAAAAAAAAAAAAAAAAA01', NOW(), NOW()),
+             (8802, 'p034tokenBBBBBBBBBBBBBBBBBBBBBBBBBBBB02', NOW(), NOW()),
+             (8803, 'p034tokenCCCCCCCCCCCCCCCCCCCCCCCCCCCC03', NOW(), NOW())
+  - kind: sql
+    query: |
+      -- insert OUT of name-alphabetical order vs id order:
+      -- id 8801 -> name 'zebra', id 8802 -> name 'alpha', id 8803 -> name 'mike'
+      -- so id ASC = [zebra, alpha, mike]; name ASC = [alpha, mike, zebra]
+      INSERT INTO data_source (id, name, oddrn, description, namespace_id, token_id, created_at, updated_at)
+      VALUES (8801, 'p034-zebra', '//p034/zebra', 'd', 8801, 8801, NOW() - INTERVAL '3 hours', NOW()),
+             (8802, 'p034-alpha', '//p034/alpha', 'd', 8801, 8802, NOW() - INTERVAL '2 hours', NOW()),
+             (8803, 'p034-mike',  '//p034/mike',  'd', 8801, 8803, NOW() - INTERVAL '1 hour',  NOW())
+act:
+  - kind: rest
+    method: GET
+    path: /api/datasources?page=1&size=100
+    auth: login-form-authenticated-read-only-user
+    capture_as: response_body
+observe:
+  - kind: extract
+    expr: "[ds.name for ds in response_body.items if ds.oddrn.startsWith('//p034/')]"
+    capture_as: p034_names_in_order
+assert:
+  - "p034_names_in_order == ['p034-zebra', 'p034-alpha', 'p034-mike']  # id ASC order — hypothesis"
+  - "p034_names_in_order != ['p034-alpha', 'p034-mike', 'p034-zebra']  # would indicate name ASC"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DataSourceController__controller-method__getDataSourceList
+    - odd-platform__java__repository__reactive__repository__ReactiveDataSourceRepositoryImpl
+  retrospectives: [LSN-019]
+realism_caveats: |
+  The probe pins the ordering with 3 rows whose id-order and name-order disagree.
+  If the assertion PASSES, the list is creation-order and the management doc page
+  must say so (or the UI should re-sort). If it FAILS with name-ASC order, a
+  non-default paginate overload is in play that the static trace missed —
+  re-read ReactiveDataSourceRepositoryImpl.listDto. The probe does NOT cover the
+  >1-page case; ordering stability across page boundaries is implied by the
+  deterministic id-ASC key but a 2-page variant would confirm it.

@@ -1,0 +1,94 @@
+gap_id: TEST-GAP-906
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DataSourceController controller-method:getDataSourceList"
+pillars_affected: [P-08]
+surfaced_by:
+  - "odd-platform__java__DataSourceController__controller-method__getDataSourceList.md:tests_coverage_semantic.uncovered_behaviours.[query parameter divergence: query matching by contains but not startsWith yields empty items[] with non-zero page_info.total]"
+  - "odd-platform__java__DataSourceController__controller-method__getDataSourceList.md:tests_coverage_semantic.uncovered_behaviours.[size has no upper bound]"
+behaviour: |-
+  **MEDIUM — `GET /api/datasources?query=` applies a name-PREFIX match to select page rows
+  but a name-SUBSTRING match to compute the total on an empty page — a `query` that matches
+  a data source by substring-but-not-prefix returns an EMPTY `items[]` labelled with a
+  non-zero `page_info.total` ("0 of 1"). And `size` has no upper bound. Neither is tested.**
+  Method-level primary source from the batch-ZB `getDataSourceList` controller-method
+  sidecar (this sidecar REFINES the class-level REFACTOR-425 framing):
+
+  - **The query divergence (REFACTOR-425, refined)**: the PAGE branch uses
+    `ReactiveDataSourceRepositoryImpl.queryCondition` (line 151-160) →
+    `DATA_SOURCE.NAME.startsWithIgnoreCase(query)` — a name-PREFIX match. The empty-page
+    COUNT fallback uses `fetchCount(query)` →
+    `ReactiveAbstractCRUDRepository.listCondition` (line 240-249) →
+    `nameField.containsIgnoreCase(query)` — a name-SUBSTRING match. The
+    `JooqQueryHelper.pageifyResult` empty-records branch (lines 95-101) is the ONLY place
+    the contains-count is consulted. **The refinement vs the class sidecar**: when the page
+    is NON-empty the window-function `count().over()` uses the SAME `startsWith` predicate,
+    so populated pages have a CONSISTENT count — the defect surfaces ONLY on the empty-page
+    branch as a phantom `total` with no rows ("0 of 1"). Probe P-036 pins this refined
+    shape.
+  - **Unbounded size**: the OpenAPI `SizeParam` declares NO `maximum` (components.yaml:4222-4229);
+    `size` flows unclamped into SQL `LIMIT`. `size=Integer.MAX_VALUE` emits `LIMIT
+    2147483647` — the whole catalog plus 2 LEFT JOINs materialised into one in-memory list.
+    `size=0` / negative `size` / `page=0` reach SQL as `LIMIT 0` / negative `LIMIT` /
+    negative `OFFSET` — the failure mode is not statically determinable.
+
+  **Why MEDIUM**: the query divergence is an operator-confusing wrong-UX (a search bar that
+  says "1 result" then shows none) and the unbounded size is a low-probability
+  unbounded-response surface (typical catalogs are small). Neither is a security or
+  data-loss defect. But both are operator-visible, both are undocumented (the management
+  doc page mentions no search behaviour and no size limit), and the endpoint has ZERO
+  HTTP-tier coverage (Glob-verified — no `DataSourceControllerTest`). The only related
+  repository-tier test, `DataSourceRepositoryImplTest.listDtoNameQueryTest`, exercises a
+  `query` that DOES match by prefix — it does NOT exercise the substring-not-prefix
+  empty-page divergence.
+
+  **Test gap shape**: a `@SpringBootTest` / `WebTestClient` test that: (1) registers a data
+  source named `my-snowflake-dev`; (2) `GET /api/datasources?query=snow` (substring, not
+  prefix) → asserts `items` is EMPTY but `page_info.total` is non-zero (the "0 of 1"
+  phantom — PIN the divergence per P-036); (3) `GET /api/datasources?query=my-snow`
+  (prefix) → asserts `items` has 1 row and `page_info.total` is 1 (the consistent case);
+  (4) boundary cases — `size=Integer.MAX_VALUE` accepted (LIMIT 2147483647), `size=0`,
+  `size=-1`, `page=0` — assert the observed response shape (PIN the current behaviour per
+  P-037). When REFACTOR-425 is fixed (one predicate for page AND count), test #2 inverts.
+test_class: missing-edge-case
+criticality_rationale: |-
+  MEDIUM per Rule 3: the getDataSourceList sidecar rates the query-divergence and the
+  size-boundary uncovered behaviours MEDIUM, and bugs_limitations_corner_cases rates the
+  query divergence MEDIUM (REFACTOR-425) and the unbounded-size LOW. The aggregate is
+  MEDIUM — operator-confusing wrong-UX + a low-probability unbounded-response surface, no
+  security weakness and no data loss. The node carries no CRITICAL/HIGH security_aggregate
+  weakness driving it higher. pillars_affected len 1 (P-08) — no cross-pillar bump.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/DataSourceRepositoryImplTest.java (VERIFIED present this batch — listDtoNameQueryTest at line 151 exercises listDto with a `query` argument at the REPOSITORY tier, but uses a query='first' that matches by PREFIX — it does NOT exercise the substring-not-prefix empty-page count divergence, and does NOT exercise the size boundary)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DataSourceListQueryDivergenceTest.java"
+  name: "getDataSourceList_substringNotPrefixQuery_emptyItemsWithNonZeroTotal_pinsRefactor425Divergence"
+evidence:
+  - "getDataSourceList sidecar says (tests_coverage_semantic.uncovered_behaviours): 'query parameter divergence: query matching by contains but not startsWith yields empty items[] with non-zero page_info.total. test_class: integration; criticality: MEDIUM; note: Pinned by probe P-036 — REFACTOR-425 refinement.'"
+  - "getDataSourceList sidecar says (tests_coverage_semantic.uncovered_behaviours): 'size has no upper bound: size=Integer.MAX_VALUE is accepted and emits LIMIT 2147483647; size=0/negative and page=0 boundary behaviour. test_class: integration; criticality: MEDIUM; note: Pinned by probe P-037.'"
+  - "getDataSourceList sidecar says (bugs_limitations_corner_cases): 'query parameter is name-prefix-only on the page but name-substring on the empty-page count — a query that matches by substring-not-prefix returns an empty items[] with a non-zero page_info.total (0 of 1). REFACTOR-425; this method-level sidecar REFINES the class/repo framing — the divergence surfaces only in the empty-page branch, not as a wrong count on a populated page.' severity MEDIUM"
+  - "getDataSourceList sidecar says (coherence_notes.refines): 'The re-trace through JooqQueryHelper.pageifyResult shows the divergence is gated by the EMPTY-PAGE branch only: when records is non-empty, total comes from the window-function count().over() computed over the SAME startsWith homogeneousQuery. The actual operator-visible defect is an EMPTY list with a non-zero total (0 of 1) when query matches by substring but not by prefix.'"
+  - "Verified at primary source via the sidecar: ReactiveDataSourceRepositoryImpl.java:151-160 (page uses startsWithIgnoreCase) + ReactiveAbstractCRUDRepository.java:240-249 (count uses containsIgnoreCase) + JooqQueryHelper.java:95-101 (empty-page branch) + components.yaml:4222-4229 (SizeParam — no maximum)"
+  - "Verified this batch via Glob: DataSourceRepositoryImplTest.java EXISTS (repository-tier listDtoNameQueryTest); no DataSourceControllerTest.java exists"
+cross_references:
+  - "TEST-GAP-904 (this batch — getDataSourceList HTTP-floor + ordering + read-posture; sibling on the same endpoint — TEST-GAP-906 is the query-divergence + size-boundary edge cases)"
+  - "TEST-GAP-909 (this batch — the DataSourceController HTTP-floor META anchor; this gap is one of its children)"
+  - "REFACTOR-425 (listDto count-vs-query predicate divergence — the canonical reference; this test pins the refined empty-page shape)"
+  - "probe P-036 (lineage/odd-platform/probes/P-036.yaml — query-divergence probe); probe P-037 (lineage/odd-platform/probes/P-037.yaml — size-boundary probe)"
+  - "DOC-NNN candidate: the management doc page mentions no search behaviour at all — document the prefix-match semantics and the no-size-limit posture"
+related_features: [F-008]
+related_pillar_features: ["P-08:F-NN-Datasources-tab"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `DataSourceListQueryDivergenceTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Four test methods:
+  1. `getDataSourceList_substringNotPrefixQuery_emptyItemsWithNonZeroTotal_pinsRefactor425Divergence` — register a data source named "my-snowflake-dev"; GET /api/datasources?query=snow (substring, not prefix); assert `items` is empty AND `page_info.total` is non-zero (the "0 of 1" phantom). PIN the divergence (P-036).
+  2. `getDataSourceList_prefixQuery_consistentItemsAndTotal` — GET /api/datasources?query=my-snow (prefix); assert `items` has 1 row and `page_info.total` is 1. PIN the consistent (populated-page) case.
+  3. `getDataSourceList_unboundedSize_maxIntAccepted` — GET /api/datasources?page=1&size=2147483647; assert HTTP 200 (no clamp, the whole catalog is materialised). PIN the no-upper-bound posture (P-037).
+  4. `getDataSourceList_sizeZeroNegativeAndPageZero_observedBoundaryShape` — GET with size=0, size=-1, page=0 each; assert the observed response shape (pin whatever the runtime does — empty list / SQL error / 500).
+
+  When REFACTOR-425 is fixed (one predicate for page AND count), test #1 inverts. Pair
+  with a DOC-NNN: document the search prefix-match semantics and the no-size-limit posture.
+batch: 2026-05-21-ZB
+feature_id: F-008

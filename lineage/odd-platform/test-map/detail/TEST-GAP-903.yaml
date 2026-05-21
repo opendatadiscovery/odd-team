@@ -1,0 +1,89 @@
+gap_id: TEST-GAP-903
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java DataSourceController controller-method:updateDataSource"
+pillars_affected: [P-08]
+surfaced_by:
+  - "odd-platform__java__DataSourceController__controller-method__updateDataSource.md:tests_coverage_semantic.uncovered_behaviours.[PUT to a never-existed id returns a clean 404 (NotFoundException), NOT a silent 200]"
+  - "odd-platform__java__DataSourceController__controller-method__updateDataSource.md:tests_coverage_semantic.uncovered_behaviours.[PUT to a soft-deleted id returns 404 (getDto filters deleted_at IS NULL)]"
+behaviour: |-
+  **HIGH — `PUT /api/datasources/{data_source_id}` for a never-existed OR soft-deleted id
+  MUST return a clean HTTP 404, NEVER a silent HTTP 200. This anti-silent-write guard is
+  entirely untested — and the codebase contains a documented counter-example
+  (`DataEntityServiceImpl.upsertDescription`) that deliberately silent-200s on a missing
+  id, so a routine refactor copying that pattern would silently flip this endpoint.**
+  Method-level primary source from the batch-ZB `updateDataSource` controller-method
+  sidecar:
+
+  - `DataSourceServiceImpl.update` (DataSourceServiceImpl.java:68-83) loads the existing
+    row via `dataSourceRepository.getDto(id)` and applies an explicit
+    `.switchIfEmpty(Mono.error(new NotFoundException("Data source", id)))`
+    (DataSourceServiceImpl.java:71-72) — the deliberate anti-silent-write guard. `getDto`
+    filters `deleted_at IS NULL` (per the `ReactiveDataSourceRepositoryImpl` sidecar), so
+    a soft-deleted id resolves to empty → the same 404.
+  - `ControllerAdvice` maps `NotFoundException` → HTTP 404. The endpoint NEVER creates a
+    row — it is strictly an UPDATE-of-existing operation (sidecar `concepts.invariants`).
+  - **The regression surface** (sidecar `gaps`): the same `getDto(...).switchIfEmpty(...)`
+    shape is the guard `DataEntityServiceImpl.createMetadata` uses — and it is the guard
+    `DataEntityServiceImpl.upsertDescription` deliberately OMITS (the F-004 silent-200
+    finding). A regression that added a `switchIfEmpty(Mono.just(...))` fail-soft to
+    `update` — mirroring `DataEntityServiceImpl.incrementViewCount` — would convert the
+    clean 404 into a silent no-op with HTTP 200. Nothing tests the guard.
+
+  **Why HIGH**: a silent-200-on-missing is the operator-cliff shape — an operator (or a
+  script) PUTting against a stale data-source id believes the edit landed (200 OK) when in
+  fact no row was touched. The endpoint has ZERO direct test coverage (Glob-verified — no
+  `DataSourceControllerTest`, no `DataSourceServiceImplTest`). The guard is one
+  `switchIfEmpty(Mono.error(...))` line; the catalog-wide silent-UPDATE-on-missing pattern
+  the `DataEntityServiceImpl` sidecar tracks proves the codebase has BOTH the guarded and
+  the unguarded shape — exactly the condition under which an unguarded refactor lands
+  unnoticed.
+
+  **Test gap shape**: a `@SpringBootTest` / `WebTestClient` integration test that: (1)
+  PUTs `/api/datasources/999999999` (a never-existed id) with a valid body → asserts HTTP
+  404 (NotFoundException), NOT 200; (2) registers a data source, soft-deletes it via
+  `DELETE /api/datasources/{id}`, then PUTs the same id → asserts HTTP 404 (the `getDto`
+  `deleted_at IS NULL` filter excludes the soft-deleted row); (3) asserts NO `data_source`
+  row was mutated in either case (the WHERE-clause matched nothing). Pinned by probe P-042.
+test_class: missing-integration
+criticality_rationale: |-
+  HIGH per Rule 3: the updateDataSource sidecar rates both the never-existed-id and the
+  soft-deleted-id uncovered behaviours HIGH and flags the 404-on-missing contract (P-042)
+  as a highest-leverage gap. The silent-200-on-missing is the operator-cliff shape
+  (LSN-001 / LSN-002 family — a routine action reports success while doing nothing). The
+  codebase demonstrably contains the unguarded counter-pattern (DataEntityServiceImpl.
+  upsertDescription, F-004), so the regression is realistic, not hypothetical. Not CRITICAL
+  — no security boundary is crossed and the guard IS present today; the gap is the absence
+  of a regression net. pillars_affected len 1 (P-08) — no cross-pillar bump.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DataSourceUpdateNotFoundTest.java"
+  name: "updateDataSource_neverExistedIdAndSoftDeletedId_return404NotSilent200_pinsAntiSilentWriteGuard"
+evidence:
+  - "updateDataSource sidecar says (tests_coverage_semantic.uncovered_behaviours): 'PUT to a never-existed id returns a clean 404 (NotFoundException), NOT a silent 200. test_class: integration; criticality: HIGH; note: load-bearing — pinned by probe P-042; the contract diverges from DataEntityServiceImpl.upsertDescription silent-200.'"
+  - "updateDataSource sidecar says (tests_coverage_semantic.uncovered_behaviours): 'PUT to a soft-deleted id returns 404 (getDto filters deleted_at IS NULL). test_class: integration; criticality: HIGH; note: pinned by probe P-042.'"
+  - "updateDataSource sidecar says (gaps): 'A regression that added a switchIfEmpty(Mono.just(...)) fail-soft to update (mirroring DataEntityServiceImpl.incrementViewCount) would convert the clean 404 into a silent no-op.'"
+  - "updateDataSource sidecar says (implicit_adrs[1]): 'Update of a non-existent or soft-deleted data source fails fast with 404 — the endpoint never silently no-ops. intent_anchor: .switchIfEmpty(Mono.error(new NotFoundException(Data source, id))) — the explicit error on an empty getDto is the deliberate anti-silent-write guard; it is the SAME guard DataEntityServiceImpl.createMetadata uses and the one DataEntityServiceImpl.upsertDescription deliberately omits.' confidence HIGH"
+  - "Verified at primary source via the sidecar: DataSourceServiceImpl.java:71-72 (the switchIfEmpty NotFoundException guard) + ControllerAdvice (NotFoundException -> 404)"
+  - "Verified this batch via Glob: no DataSourceControllerTest.java / DataSourceServiceImplTest.java exists under odd-platform-api/src/test"
+cross_references:
+  - "TEST-GAP-296 (batch 2026-05-13-G — DataEntity 404-on-missing-entity path; the parallel guard-coverage gap on the DataEntity description endpoint)"
+  - "TEST-GAP-752 (batch W — DataSource cross-path silent overwrite; sibling updateDataSource gap. STRENGTHENED this batch — see test-map index)"
+  - "feature-flows:F-004 — Description editing — the upsertDescription silent-200-on-missing is the documented counter-pattern this guard must not regress toward"
+  - "probe P-042 (lineage/odd-platform/probes/P-042.yaml — the 404-on-missing probe)"
+related_features: [F-004, F-008]
+related_pillar_features: ["P-08:F-NN-Datasources-tab"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `DataSourceUpdateNotFoundTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Three test methods:
+  1. `updateDataSource_neverExistedId_returns404NotSilent200` — PUT /api/datasources/999999999 with a valid DataSourceUpdateFormData body; assert HTTP 404 (NotFoundException), explicitly assert it is NOT 200.
+  2. `updateDataSource_softDeletedId_returns404` — register a data source, DELETE it (soft-delete), then PUT the same id with a valid body; assert HTTP 404 (the getDto `deleted_at IS NULL` filter excludes the soft-deleted row).
+  3. `updateDataSource_missingId_mutatesNoRow` — after the 404 in #1, assert (via raw DB query) that no `data_source` row was inserted or modified.
+
+  These tests PIN the anti-silent-write guard. A regression adding a
+  `switchIfEmpty(Mono.just(...))` fail-soft to `DataSourceServiceImpl.update` — copying the
+  `DataEntityServiceImpl.upsertDescription` silent-200 pattern — inverts tests #1-#2.
+batch: 2026-05-21-ZB
+feature_id: F-008

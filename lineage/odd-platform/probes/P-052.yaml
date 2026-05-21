@@ -1,0 +1,100 @@
+---
+probe_id: P-052
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken
+emitted_at: 2026-05-21T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-020
+test_class: security
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category D): who may rotate a data source's ingestion credential?
+  SecurityConstants.java:124-126 declares
+  `new SecurityRule(NO_CONTEXT, PathPatternParser("/api/datasources/{data_source_id}/token", PUT),
+   DATA_SOURCE_TOKEN_REGENERATE)`; PolicyPermissionDto.java:54 declares
+  `DATA_SOURCE_TOKEN_REGENERATE(MANAGEMENT)`. Hypothesis: in LOGIN_FORM/OAUTH2/LDAP modes
+  an authenticated user WITHOUT a Policy granting the MANAGEMENT-tier
+  DATA_SOURCE_TOKEN_REGENERATE permission gets 403 (the path-based ReactiveAuthorization
+  Manager rejects before the controller is reached); a user WITH the permission gets 200.
+  In auth.type=DISABLED the SecurityConstants rule chain is bypassed entirely (per the
+  CollectorController sibling sidecar's DISABLED-bypass finding) — ANY caller reaching the
+  platform can rotate ANY data source's token and receive the plaintext. The probe pins
+  the auth matrix: {no-permission, with-permission} x {LOGIN_FORM, DISABLED}.
+---
+arrange:
+  - kind: docker-compose-up
+    profile: odd-minimal
+  - kind: sql
+    query: |
+      INSERT INTO token (id, value, created_at, updated_at, created_by, updated_by)
+      VALUES (8052, 'p052-token-000000000000000000000000000000', NOW(), NOW(), 'probe', 'probe')
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name, token_id, active)
+      VALUES (8052, '//probe-source/p052/ds', 'p052_ds', 8052, true)
+  - kind: seed-users
+    description: create two users via the policy fixtures under src/test/resources/policy/
+    users:
+      - username: p052_noperm
+        policies: []
+      - username: p052_mgmt
+        policies: [DATA_SOURCE_TOKEN_REGENERATE]
+act:
+  - kind: rest
+    description: LOGIN_FORM mode — user with NO permission rotates the token
+    auth_mode: LOGIN_FORM
+    as_user: p052_noperm
+    method: PUT
+    path: /api/datasources/8052/token
+    capture_as: loginform_noperm
+  - kind: rest
+    description: LOGIN_FORM mode — user WITH the MANAGEMENT permission rotates the token
+    auth_mode: LOGIN_FORM
+    as_user: p052_mgmt
+    method: PUT
+    path: /api/datasources/8052/token
+    capture_as: loginform_withperm
+  - kind: rest
+    description: LOGIN_FORM mode — unauthenticated caller (no session cookie)
+    auth_mode: LOGIN_FORM
+    as_user: null
+    method: PUT
+    path: /api/datasources/8052/token
+    capture_as: loginform_anon
+  - kind: rest
+    description: DISABLED mode — any caller, no principal
+    auth_mode: DISABLED
+    as_user: null
+    method: PUT
+    path: /api/datasources/8052/token
+    capture_as: disabled_anon
+observe:
+  - kind: capture
+    note: status codes captured inline above
+assert:
+  - "loginform_noperm.status == 403       # MANAGEMENT permission required; absent => forbidden"
+  - "loginform_withperm.status == 200     # permission present => rotation allowed"
+  - "loginform_anon.status == 401         # unauthenticated => rejected before the controller"
+  - "disabled_anon.status == 200          # DISABLED bypasses the permission gate entirely (credential-rotation-hijack surface)"
+  - "disabled_anon.body.token.value.length == 40  # plaintext token handed to an unauthenticated caller under DISABLED"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken
+    - odd-platform__java__CollectorController__controller-method__regenerateCollectorToken
+  retrospectives: [LSN-019]
+realism_caveats: |
+  The probe depends on a `seed-users` capability that can attach a Policy granting a
+  named Permission to a test user; the existing test layout has policy fixtures under
+  odd-platform-api/src/test/resources/policy/ but no established harness for parametrized
+  auth-mode controller security tests (noted in the class sidecar's tests gaps). If the
+  harness cannot seed a user-with-only-DATA_SOURCE_TOKEN_REGENERATE, the probe degrades to
+  asserting the DISABLED-bypass row and the unauthenticated-401 row only, and the
+  with/without-permission rows become PROBE-NEEDED until the harness exists. The probe
+  does not cover OAUTH2/LDAP — those route through the identical SecurityConstants rule
+  chain, so the LOGIN_FORM result generalises; an explicit OAUTH2/LDAP row would only
+  re-confirm the same ReactiveAuthorizationManager behaviour.

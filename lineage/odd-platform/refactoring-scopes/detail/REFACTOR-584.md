@@ -1,0 +1,35 @@
+## REFACTOR-584 — `POST /api/datasources` and `PUT /api/datasources/{id}` implicitly create a namespace via the `namespace_name` field — bypassing the `NAMESPACE_CREATE` permission gate; a caller holding only `DATA_SOURCE_CREATE` / `DATA_SOURCE_UPDATE` mints new namespace directory rows
+
+**Severity**: MEDIUM
+**Category**: permission-bypass (escalation-by-side-effect)
+**Pillars affected**: [P-08 (Data-Source Lifecycle Management), P-09 (RBAC / Governance)]
+**related_features**: [F-008]
+**Batch**: ZB (2026-05-21)
+
+**Surfaced by**:
+- `odd-platform__java__DataSourceController__controller-method__registerDataSource.md:bugs_limitations_corner_cases.[0]` (MEDIUM) — "**Implicit namespace creation bypasses `NAMESPACE_CREATE`**: a principal with `DATA_SOURCE_CREATE` but NOT `NAMESPACE_CREATE` creates a brand-new namespace as a side effect of `POST /api/datasources`" — evidence: `DataSourceServiceImpl.java:56-57` (reads `form.getNamespaceName()`, calls `namespaceService.getOrCreate`) + `NamespaceServiceImpl.java:37-40` (`getByName(name).switchIfEmpty(createByName(name))` — creates if absent) + `SecurityConstants.java:116-117` (POST `/api/datasources` gated only by `DATA_SOURCE_CREATE`).
+- `odd-platform__java__DataSourceController__controller-method__registerDataSource.md:security.known_security_gaps.[0]` (MEDIUM) + `:stress_findings.request_inputs` (the `namespace_name` field's `DRIFT_INPUT_NAME_VS_IMPLEMENTATION` — "the field name `namespace_name` reads as 'pick a namespace', but supplying an unknown name CREATES a namespace ... under the register endpoint's `DATA_SOURCE_CREATE` gate — NOT the `NAMESPACE_CREATE` gate").
+- `odd-platform__java__DataSourceController__controller-method__updateDataSource.md:security.known_security_gaps.[1]` (LOW-MEDIUM) — "`namespace_name` get-or-create side-effect: an operator with `DATA_SOURCE_UPDATE` but NOT `NAMESPACE_CREATE` can create a namespace by editing a data source with a previously-unknown `namespace_name` — same permission-escalation-by-side-effect."
+- Probe `P-039` (`lineage/odd-platform/probes/P-039.yaml`) — pins the bypass.
+
+**Description**: `DataSourceServiceImpl.create` (line 56-57) and `DataSourceServiceImpl.update` (line 74-76) both, when `StringUtils.isNotEmpty(form.getNamespaceName())`, call `namespaceService.getOrCreate(namespace_name)` → `NamespaceServiceImpl.getOrCreate` (`NamespaceServiceImpl.java:37-40`) which is `getByName(name).switchIfEmpty(namespaceRepository.createByName(name))` — it INSERTS a new `namespace` directory row if no namespace of that name exists. The register endpoint is gated only by `DATA_SOURCE_CREATE` (`SecurityConstants.java:116-117`); the update endpoint only by `DATA_SOURCE_UPDATE` (`SecurityConstants.java:118-120`). The explicit `POST /api/namespaces` directory endpoint is gated by `NAMESPACE_CREATE`. So a principal scoped to data-source management — but deliberately NOT granted namespace-directory-creation — can mint arbitrary `namespace` rows as a side effect of registering or editing a data source. There is no `namespace_id` (id-based selection) field on `DataSourceFormData` / `DataSourceUpdateFormData` — the contract offers ONLY name-based namespace selection, structurally forcing the create-on-miss path.
+
+This is the SAME structural shape as the Owner auto-create (REFACTOR-199 — `createOwnership` bypasses `OWNER_CREATE` via `ownerService.getOrCreate`) and the Title auto-create (REFACTOR-206). It is also DISTINGUISHED from the Tag auto-create (ADR-CANDIDATE-065), which is the SAME mechanism but is INTENTIONAL and spec-acknowledged (`openapi.yaml:1174` documents it). The namespace auto-create is the Owner/Title category — undocumented, no spec acknowledgment, incidental.
+
+**Cross-registry coherence (Rule 6)**: the `concepts/index.yaml` registry already carries the invariant "NAMESPACE_CREATE side-door confirmed at 4 sister services (Term + DataSource ...)" — the concepts-merger reducer has already recorded `DataSourceServiceImpl` as one of the FOUR sister services exhibiting the `namespaceService.getOrCreate` side-door. REFACTOR-584 is SAME-polarity with that invariant — it is the `refactoring-scopes` registry's actionable entry for the **DataSourceController register + update endpoint surface** specifically (the concepts invariant is the cross-service generalisation; this REFACTOR is the endpoint-anchored, remediation-shaped instance). No contradiction. The feature-flows registry independently records "NAMESPACE_CREATE bypass via getOrCreate" as a cross-cutting drift facet.
+
+**Primary source citations**:
+- `DataSourceServiceImpl.java:56-57` (register — `namespaceService.getOrCreate`) + `:74-76` (update — same)
+- `NamespaceServiceImpl.java:37-40` (`getByName(name).switchIfEmpty(createByName(name))` — the create-on-miss)
+- `SecurityConstants.java:116-117` (`POST /api/datasources` → `DATA_SOURCE_CREATE`) + `:118-120` (`PUT /api/datasources/{id}` → `DATA_SOURCE_UPDATE`)
+- `components.yaml:1303-1315` (`DataSourceFormData` — `namespace_name` field, NO `namespace_id` field) + `:1317-1325` (`DataSourceUpdateFormData` — same)
+
+**Existing-ADR-or-implied-prescription**: ADR-CANDIDATE-065 (Tag auto-create-on-miss is INTENTIONAL and spec-acknowledged) explicitly frames the Owner / Title / namespace auto-creates as the GAP-shaped counterparts — same mechanism, NO spec acknowledgment. The namespace auto-create has no `openapi.yaml` description documenting the side effect; the absence of the `NAMESPACE_CREATE` gate on this path has no stated rationale. GAP, not ADR.
+
+**Proposed remedy**: Three options, escalating: (a) DOC-side — document on `features/management` that registering/editing a data source with a previously-unknown `namespace_name` creates a namespace, and that this happens under `DATA_SOURCE_*` permissions; (b) CONTRACT-side — add a `namespace_id` field to `DataSourceFormData` / `DataSourceUpdateFormData` so callers can SELECT an existing namespace without the create-on-miss risk (the absence of id-based selection is structural); (c) AUTHORIZATION-side — when `namespaceService.getOrCreate` would CREATE (not just fetch) a namespace, require the caller to additionally hold `NAMESPACE_CREATE` (a programmatic check, since the side-effect path cannot be path-gated). Option (c) closes the escalation but is the most invasive; it should be designed consistently with the sibling Owner/Title bypasses (REFACTOR-199/206) — ideally one policy decision covers all the `getOrCreate` side-doors.
+
+**Severity rationale**: MEDIUM — a least-privilege deviation: a data-source-management principal can proliferate namespace directory rows it was not granted permission to create. Not a privilege escalation to ADMIN; a directory-pollution + scope-creep surface. Consistent with the MEDIUM rating of the sibling REFACTOR-199 (Owner) and REFACTOR-206 (Title).
+
+**Suggested backlog grouping**: `SEC-NNN auto-create side-door audit` — pair with REFACTOR-199 (Owner) + REFACTOR-206 (Title); a single policy decision on the `*Service.getOrCreate` create-on-miss pattern covers all three. Cross-reference the concepts.yaml `NAMESPACE_CREATE side-door` invariant.
+
+---

@@ -1,0 +1,73 @@
+---
+probe_id: P-035
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DataSourceController__controller-method__getDataSourceList
+emitted_at: 2026-05-21T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: security
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (token-exposure focus + Category F): does GET /api/datasources
+  expose collector token material, and in what form? Static trace says: the LIST
+  path builds the DataSourceDto token via
+  ReactiveDataSourceRepositoryImpl.mapRecordIntoDto line 167 = `new TokenDto(tokenPojo)`
+  -> the 1-arg constructor -> showToken=false (TokenDto.java:6-8); TokenMapper.mapValue
+  (TokenMapper.java:15-18) then returns `"******" + value.substring(len-6)` — the
+  LAST 6 CHARACTERS of the plaintext token, masked prefix. Contrast: the
+  register (ReactiveTokenRepositoryImpl.create line 26) and regenerate
+  (updateToken line 38) paths build `new TokenDto(pojo, true)` -> showToken=true ->
+  full 40-char plaintext. Hypothesis to pin: (a) GET /api/datasources items[].token.value
+  is the masked form "******XXXXXX" (6 trailing chars), NOT the full token;
+  (b) the masked 6-char suffix is identical to the last 6 chars of the plaintext
+  token returned by POST /api/datasources — i.e. the mask is a deterministic
+  partial leak of real token material, not a random placeholder.
+---
+arrange:
+  - kind: docker-compose-up
+    compose_file: odd-minimal
+act:
+  - kind: rest
+    method: POST
+    path: /api/datasources
+    auth: login-form-authenticated-data-source-create-user
+    body: |
+      {"name": "p035-src", "oddrn": "//p035/src", "description": "probe", "namespace_name": "p035-ns"}
+    capture_as: register_response
+  - kind: rest
+    method: GET
+    path: /api/datasources?page=1&size=100
+    auth: login-form-authenticated-read-only-user
+    capture_as: list_response
+observe:
+  - kind: extract
+    expr: "register_response.token.value"
+    capture_as: plaintext_token
+  - kind: extract
+    expr: "[ds.token.value for ds in list_response.items if ds.oddrn == '//p035/src'][0]"
+    capture_as: listed_token_value
+assert:
+  - "len(plaintext_token) == 40  # register path returns full plaintext (showToken=true)"
+  - "listed_token_value.startsWith('******')  # list path masks (showToken=false)"
+  - "len(listed_token_value) == 12  # '******' + 6 trailing chars"
+  - "listed_token_value[6:] == plaintext_token[-6:]  # mask leaks the real last 6 chars"
+  - "listed_token_value != plaintext_token  # full token NOT in the list projection"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DataSourceController__controller-method__getDataSourceList
+    - odd-platform__java__DataSourceController__controller-class__DataSourceController
+  retrospectives: [LSN-019, LSN-020]
+realism_caveats: |
+  Confirms the API-side masking that the class sidecar left ambiguous ("redaction
+  may be UI-side"). If listed_token_value turns out to equal plaintext_token, the
+  showToken flag is being set true on the list path somewhere the trace missed
+  (e.g. a future change to mapRecordIntoDto) — a real plaintext-token-exposure
+  regression. The probe does NOT test whether the 6-char suffix is enough to
+  brute-force the remaining 34 chars (it is not, for a 40-char random token) —
+  it only pins that the suffix is REAL token material, which is the documentable
+  fact for a security-conscious operator.

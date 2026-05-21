@@ -1847,3 +1847,27 @@ Total = 111 + 115 + 18 = 244.
 - `/features/active-platform-features/notifications` (NotificationConfiguration sidecar) → 2026-05-20 status 200
 
 YAML-safe emit.
+
+## DOC-GAP-261 — Deleting a data source is documented only as the workflow phrase "remove a source no longer ingested" — the live `/features/management` page documents NONE of the four operationally load-bearing facts of `DELETE /api/datasources/{data_source_id}`: (a) the delete is BLOCKED with HTTP 400 (`CascadeDeleteException`) while a live `data_entity` child still references the source — an operator clicking Delete on an actively-ingested source gets an error, not a deletion, and the actively-ingested-source-is-undeletable state has NO documented workaround; (b) the delete is a SOFT-delete (`deleted_at = NOW()`), not a hard delete; (c) the Collector `token` row the data source pointed to is left ORPHANED and cannot even be soft-deleted (the `token` table has no `deleted_at` column); (d) the FTS `search_entrypoint` vector is NOT cleared on delete (unlike the `update` path) **(NEW batch ZB — DataSourceController.deleteDataSource controller-method PRIMARY SOURCE; live WebFetch `/features/management` 2026-05-21 status 200; STRENGTHENS-cross-link DOC-GAP-194 orphan-token + DOC-GAP-082 META + DOC-GAP-009; related_features F-008 + F-010; related_test_gaps TEST-GAP-675 + TEST-GAP-701)**
+
+**Severity**: HIGH
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-261.md`
+
+---
+
+## DOC-GAP-262 — Registering a data source via `POST /api/datasources` can IMPLICITLY CREATE a namespace as a side effect of the `namespace_name` form field — bypassing the `NAMESPACE_CREATE` permission; a principal holding only `DATA_SOURCE_CREATE` can proliferate namespaces through this side-effect path, even though the explicit `POST /api/namespaces` endpoint is gated by `NAMESPACE_CREATE`; the live `/configuration-and-deployment/enable-security/authorization/permissions` page describes `DATA_SOURCE_CREATE` and `NAMESPACE_CREATE` as INDEPENDENT permissions and never flags that data-source registration is a second, ungated path to namespace creation; the same side-door applies on the update path under `DATA_SOURCE_UPDATE`; the namespace is created with NO Activity Event (no audit trail), and a typo in `namespace_name` silently creates a junk namespace **(NEW batch ZB — DataSourceController.registerDataSource + updateDataSource controller-method PRIMARY SOURCE; live WebFetch `/permissions` + `/features/management` 2026-05-21 status 200; the DataSource vertex of the 4-vertex namespace-create side-door cluster; related_features F-028 + F-008; related_test_gaps TEST-GAP-751; cross-links REFACTOR-223 + DOC-GAP-146 + DOC-GAP-168 + DOC-GAP-082 META)**
+
+**Severity**: MEDIUM
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-262.md`
+
+---
+
+<!--
+STRENGTHENED ENTRIES (batch ZB) — no headline rewrite; severity + category unchanged.
+The orchestrator should NOT add new index headlines for these; the STRENGTHENS blocks
+are appended to the existing detail/ shards.
+

@@ -1,0 +1,65 @@
+---
+probe_id: P-038
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DataSourceController__controller-method__registerDataSource.md
+emitted_at: 2026-05-21T00:00:00Z
+status: pending-stress-protocol
+feature_id: null   # P-08:F-NN-Datasources-tab — no numeric F-id assigned yet
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category B — name-behaviour pair): the OpenAPI spec for
+  operationId registerDataSource declares response '201 The resource has been
+  successfully created' (openapi.yaml:453-455), but DataSourceController.java:35
+  hard-codes `.map(ResponseEntity::ok)` which is HTTP 200. A client generated
+  from the spec asserts `status == 201`; the running platform returns 200.
+  Hypothesis: POST /api/datasources with a valid body returns HTTP 200, NOT 201
+  — a contract-vs-implementation drift that breaks spec-generated clients.
+---
+arrange:
+  - kind: docker-compose-up
+    profile: odd-minimal
+  - kind: env
+    note: auth.type=DISABLED so the POST is not blocked by RBAC; the probe
+          tests the status code, not authorization.
+act:
+  - kind: rest
+    method: POST
+    path: /api/datasources
+    body: |
+      {
+        "name": "p038-status-probe",
+        "oddrn": "//probe/p038/datasource",
+        "namespace_name": "p038-namespace",
+        "description": "P-038 status-code drift probe"
+      }
+    capture_as: register_response
+observe:
+  - kind: http-status
+    of: register_response
+    capture_as: status_code
+  - kind: http-body
+    of: register_response
+    capture_as: body
+assert:
+  - "status_code == 200  # drift hypothesis — spec declares 201"
+  - "body.id != null      # resource was actually created"
+  - "body.oddrn == '//probe/p038/datasource'"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DataSourceController__controller-method__registerDataSource
+    - odd-platform__java__DataSourceController__controller-class__DataSourceController
+  retrospectives: [LSN-019]
+realism_caveats: |
+  The probe pins the status-code drift only. If status_code == 200 the drift is
+  confirmed and the fix is either (a) change the controller to
+  ResponseEntity.status(CREATED) or (b) change openapi.yaml:454 to '200'. The
+  probe does not decide WHICH side is wrong — REST convention favours 201 for
+  resource creation, so the controller is the more likely defect. If
+  status_code == 201 the controller was changed since commit 80637ed; re-read
+  DataSourceController.java:30-36.

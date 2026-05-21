@@ -7,7 +7,7 @@ description: |-
   SecurityConstants.java:124-126. The controller's
   regenerateDataSourceToken handler (DataSourceController.java:53-59)
   is a one-line delegation to DataSourceServiceImpl.regenerateDataSourceToken
-  (DataSourceServiceImpl.java:98-106 — NOTABLY NOT @ReactiveTransactional;
+  (DataSourceServiceImpl.java:99-106 — NOTABLY NOT @ReactiveTransactional;
   cf. the surrounding @ReactiveTransactional create/update/delete
   methods at lines 52, 69, 86). The service: (1) loads the existing
   DTO via dataSourceRepository.getDto(id) — throws NotFoundException
@@ -29,10 +29,27 @@ description: |-
   Same SAME architectural surface as regenerateCollectorToken
   (both rotate tokens in the same TOKEN table; same plaintext-everywhere
   chain).
+
+  STRENGTHENED — regenerateDataSourceToken (batch 2026-05-21ZB): the
+  method-level sidecar REFINES the missing-@ReactiveTransactional
+  finding to its conclusion — the missing annotation does NOT produce
+  a partial-write bug TODAY because the only DB write
+  (tokenRepository.updateToken) is a SINGLE atomic jOOQ UPDATE and
+  tokenGenerator.regenerateToken is purely in-memory; there is NO
+  state where the old token is invalidated but the new one is not
+  persisted. Severity is therefore a LOW code-shape inconsistency /
+  latent-risk (a FUTURE second write to the method would not be
+  atomic), NOT an active atomicity bug. The method-level sidecar
+  additionally surfaces: the credential downstream-consumer is
+  IngestionDataEntitiesFilter (POST /ingestion/entities), which does
+  a literal plaintext `.equals(token)` (IngestionDataEntitiesFilter.java:56-57)
+  — the data-source token and the collector token are DISTINCT
+  credentials and this endpoint rotates ONLY the data-source token.
 axes_present:
   - controllers
 nodes:
   - odd-platform java DataSourceController controller-class:DataSourceController
+  - odd-platform java DataSourceController controller-method:regenerateDataSourceToken
 contributors:
   - |-
     DataSourceController batch W (PRIMARY SOURCE):
@@ -45,11 +62,41 @@ contributors:
     partial-rotation failure mode) +
     coherence_check.conflicts_surfaced.[1] LOW (NEW finding:
     file-local code-shape inconsistency)
+  - |-
+    STRENGTHENS — regenerateDataSourceToken.md (batch ZB, HIGH
+    confidence): the method-level deepening of the class-node
+    operation entry, primary-source confirmed this batch.
+    concepts.invariants.[0-4] (DATA_SOURCE_TOKEN_REGENERATE gate;
+    in-place UPDATE no old/new overlap; new token returned plaintext +
+    stored plaintext, no hashing; 404 on missing id; RuntimeException
+    'Token is null' → HTTP 500 when the data source has no token row) +
+    implicit_adrs.[0,1,2] (in-place UPDATE rotation; declarative RBAC;
+    plaintext-on-regenerate-masked-on-read) +
+    bugs_limitations_corner_cases.[0-7] (missing @ReactiveTransactional
+    — refined to LOW latent-risk; no grace period — HIGH; DISABLED
+    bypass — HIGH; no audit log — HIGH; plaintext in response — MEDIUM;
+    RandomStringUtils not SecureRandom — HIGH; no rate-limit / If-Match —
+    MEDIUM; opaque 500 on null token — LOW) +
+    stress_findings.resource_boundaries (the partial-write-window
+    analysis: NO partial-write window with the current single-statement
+    implementation). Three probes minted — P-050 (concurrent
+    double-rotation last-write-wins), P-051 (binary cutover — old token
+    401s + new token 200s the instant rotation commits), P-052 (RBAC
+    matrix incl. the DISABLED bypass).
 evidence:
   - DataSourceController.md:concepts.operations[regenerateDataSourceToken]
   - DataSourceController.md:bugs_limitations_corner_cases.[3] MEDIUM (destructive rotation)
   - DataSourceController.md:bugs_limitations_corner_cases.[4] LOW (missing @ReactiveTransactional)
   - DataSourceController.md:coherence_check.conflicts_surfaced.[1] (NEW partial-rotation race)
+  - |-
+    STRENGTHENS — regenerateDataSourceToken.md (batch ZB):
+    concepts.invariants.[0-4] + implicit_adrs.[0,1,2] +
+    bugs_limitations_corner_cases.[0-7] + security.known_security_gaps
+    (6 itemised gaps: DISABLED bypass HIGH; plaintext-in-response
+    MEDIUM; RandomStringUtils-not-SecureRandom HIGH; no-audit-log HIGH;
+    plaintext-at-rest HIGH; no-rate-limit MEDIUM) +
+    stress_findings.resource_boundaries (no-partial-write-window
+    analysis) + stress_findings.probes_emitted (P-050, P-051, P-052)
 notes: |-
   Pairs with regenerate-collector-token (the symmetric Collector
   variant; same rotation contract; same plaintext-everywhere chain).
@@ -57,11 +104,28 @@ notes: |-
   IS A COLLECTOR TOKEN per the schema — data_source.token_id REFERENCES
   the same TOKEN table).
   Pairs with collector-plaintext-token-chain-controller-tier-closure
-  (THIS BATCH — the plaintext-everywhere chain at the controller
-  tier, now framed for BOTH Collector and DataSource).
+  (the plaintext-everywhere chain at the controller tier, framed for
+  BOTH Collector and DataSource).
   Pairs with datasource-ui-admin-disjoint-from-s2s-five-vertex-triangulation
-  (THIS BATCH — the rotation IS the LAST UI-admin endpoint that
-  surfaces the disjunction with the S2S ingestion path).
+  (the rotation IS the LAST UI-admin endpoint that surfaces the
+  disjunction with the S2S ingestion path).
   Pairs with audit-log-presence-asymmetry-2-tier-audit-story
   (no Activity Event on regenerateDataSourceToken — same audit
   gap as the surrounding DataSource operations).
+  Pairs with collector-token-token-rotation + plaintext-equality-shared-secret-token-model
+  (the rotation-contract + storage-model canonicalisation candidates,
+  strengthened by this method sidecar).
+
+  STRENGTHENED batch 2026-05-21ZB — regenerateDataSourceToken
+  method-level sidecar (HIGH confidence_overall). The class node's
+  CRITICAL open test-gap is refined into three concrete probes
+  (P-050/051/052). The missing-@ReactiveTransactional finding is
+  CLOSED OUT: it is a LOW-severity latent-risk code-smell, NOT an
+  active atomicity bug, because the single jOOQ UPDATE is atomic at
+  the statement level and the regenerate step is purely in-memory.
+  The data-source token-rotation path is confirmed STRUCTURALLY
+  IDENTICAL to the collector token-rotation path — both use the
+  shared TokenGeneratorImpl + ReactiveTokenRepositoryImpl, both miss
+  @ReactiveTransactional, both have the DISABLED-bypass + the
+  RandomStringUtils-not-SecureRandom + the no-audit-log gaps; a fix
+  to one should be applied to both.

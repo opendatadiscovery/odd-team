@@ -1,0 +1,194 @@
+name: |-
+  DataSource Form DTOs — DataSourceFormData (create) + DataSourceUpdateFormData (update); the narrow mutable surface
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-08
+description: |-
+  NEW ENTITY, batch 2026-05-21ZB — the two OpenAPI request-body DTOs
+  for the UI-admin DataSource write surface, surfaced at primary source
+  by the registerDataSource + updateDataSource method-level sidecars.
+  Both are codebase-anchored (generated from the spec); main-concepts.md
+  names "Data source" but not the operator-facing mutable field-set.
+
+  THE TWO DTOs — exact contracts read from the spec this batch:
+
+    DataSourceFormData (the CREATE body — components.yaml:1303-1315):
+      EXACTLY 4 fields — `name` (the ONLY `required` field), `oddrn`,
+      `namespace_name`, `description`. There is NO token field — the
+      caller cannot supply a token; the platform mints one
+      unconditionally server-side (registerDataSource.md
+      implicit_adrs.[0]). There is NO `namespace_id` field — namespace
+      selection is name-based only, which is what makes the
+      getOrCreate side-door structurally unavoidable
+      (registerDataSource.md request_inputs[namespace_name]).
+
+    DataSourceUpdateFormData (the UPDATE body — components.yaml:1317-1325):
+      EXACTLY 3 fields — `description`, `name`, `namespace_name`. NO
+      `required` block at all (every field is optional). NO `oddrn`
+      (the ODDRN is immutable post-registration). NO token field
+      (rotation is the separate regenerateDataSourceToken endpoint).
+
+  WHY THIS ENTITY IS MINTED (corrects the class-node's stale framing):
+
+    The DataSourceController class sidecar (batch W) described the
+    create + update field-sets inferentially as "oddrn, name,
+    description, namespaceName, connectionUrl etc." — naming a
+    `connectionUrl` and a `pullingInterval` field. The two method
+    sidecars READ THE SPEC and correct this: neither DTO carries a
+    `connection_url` field, and the `connection_url` COLUMN was
+    dropped from `data_source` by V0_0_71 (per the
+    ReactiveDataSourceRepositoryImpl batch-R sidecar). The mutable
+    surface of a data source in odd-platform is NARROWER than the
+    class node implied — 4 fields on create, 3 on update.
+
+  THE CONTRACT-UNDERSTATEMENT ON `oddrn`:
+
+    DataSourceFormData marks only `name` as `required`, so a
+    spec-driven client treats `oddrn` as optional. The runtime code
+    rejects an empty `oddrn` with HTTP 400 BadUserRequestException
+    ('ODDRN must be filled for data source', DataSourceServiceImpl.java:119-120).
+    `oddrn` is de-facto required; the OpenAPI contract understates
+    the requirement. The contract should mark `oddrn` required.
+
+  THE UPDATE DTO'S OPTIONAL-FIELD HAZARD:
+
+    Because DataSourceUpdateFormData has NO `required` block and the
+    update path is REPLACE-not-MERGE (see the dedicated invariant
+    `datasource-update-replace-not-merge-mapstruct-set-to-null`), an
+    omitted optional field deserialises to null and is written as
+    null onto the existing row. The DTO's optionality is the
+    structural enabler of the silent-partial-edit-data-loss bug.
+nodes:
+  - odd-platform java DataSourceController controller-method:registerDataSource
+  - odd-platform java DataSourceController controller-method:updateDataSource
+contributors:
+  - |-
+    registerDataSource batch ZB (PRIMARY SOURCE — CREATE DTO):
+    concepts.entities[DataSourceFormData — exactly 4 fields per
+    components.yaml:1303-1315: name [required], namespace_name,
+    oddrn, description] +
+    bugs_limitations_corner_cases.[3] LOW (oddrn required at runtime
+    but optional in the OpenAPI contract) +
+    bugs_limitations_corner_cases.[6] LOW (empty namespace_name
+    produces a data source with namespace_id = NULL silently) +
+    coherence_notes[refines DataSourceController class — the FormData
+    has EXACTLY 4 fields, no connectionUrl, no pullingInterval]
+  - |-
+    updateDataSource batch ZB (PRIMARY SOURCE — UPDATE DTO):
+    concepts.entities[DataSourceUpdateFormData — exactly 3 optional
+    fields: description, name, namespace_name; NO oddrn, NO
+    connection_url, NO token field; NO required block —
+    components.yaml:1317-1325] +
+    coherence_notes[refines DataSourceController class — corrects
+    the class sidecar's stale "connectionUrl" example; the
+    connection_url column was dropped by V0_0_71]
+evidence:
+  - registerDataSource.md:concepts.entities.[DataSourceFormData]
+  - registerDataSource.md:bugs_limitations_corner_cases.[3] LOW (oddrn contract understatement)
+  - registerDataSource.md:bugs_limitations_corner_cases.[6] LOW (silent null namespace_id)
+  - updateDataSource.md:concepts.entities.[DataSourceUpdateFormData]
+  - updateDataSource.md:coherence_notes (refines DataSourceController class — narrow field-set; V0_0_71 connection_url drop)
+  - |-
+    Cross-references invariant datasource-update-replace-not-merge-mapstruct-set-to-null
+    (the UPDATE DTO's optional fields are the structural enabler of
+    the REPLACE-not-MERGE silent-data-loss bug)
+  - |-
+    Cross-references operation register-data-source and operation
+    update-data-source-ui-admin-replace (the two operations that
+    consume these DTOs)
+axes_present:
+  - controllers
+security_aggregate:
+  overall: MEDIUM
+  auth_modes_relevant:
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
+    - DISABLED
+    - S2S
+  ingestion_filter_relevance: NO
+  authorization_consistency:
+    verdict: UNGATED
+    detail: |-
+      The DTOs themselves carry no authorization; the consuming
+      endpoints (POST/PUT /api/datasources) are path-gated by
+      DATA_SOURCE_CREATE / DATA_SOURCE_UPDATE. The DTO's
+      namespace_name field is the security-relevant surface — it
+      drives the NAMESPACE_CREATE side-door because the contract
+      offers only name-based (never id-based) namespace selection.
+  owner_scoping:
+    verdict: N/A
+    detail: DataSource form bodies are not owner-scoped.
+  strengths:
+    - |-
+      No token field on either DTO — the caller can never supply a
+      token; token issuance is platform-owned (registerDataSource.md
+      implicit_adrs.[0])
+  weaknesses:
+    - |-
+      DataSourceFormData omits oddrn from the `required` block while
+      the runtime rejects an empty oddrn — a spec-driven client
+      omitting oddrn receives a surprising HTTP 400
+      (registerDataSource.md bugs_limitations_corner_cases.[3] LOW)
+    - |-
+      Neither DTO offers a `namespace_id` field — name-only namespace
+      selection forces every consumer through namespaceService.getOrCreate,
+      which is the NAMESPACE_CREATE side-door
+      (registerDataSource.md request_inputs[namespace_name])
+  cross_file_inconsistencies: []
+  contributing_files:
+    - registerDataSource.md
+    - updateDataSource.md
+  evidence:
+    - registerDataSource.md:concepts.entities + bugs_limitations_corner_cases.[3,6]
+    - updateDataSource.md:concepts.entities.[DataSourceUpdateFormData]
+performance_aggregate:
+  overall: HIGH
+  hot_paths: []
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: |-
+      Both DTOs carry a single data source; there is no bulk-register
+      or bulk-update DTO on the UI side. Per-call payload is KB-sized
+      (4 / 3 short string fields).
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: |-
+      Stateless request bodies; spring.codec.max-in-memory-size (20MB)
+      caps deserialization — not a realistic limit for a 3-4-string-field
+      DTO.
+  strengths:
+    - Tiny fixed-shape payloads — no pagination, no nesting, no collections
+  weaknesses: []
+  cross_file_inconsistencies: []
+  contributing_files:
+    - registerDataSource.md
+    - updateDataSource.md
+  evidence:
+    - registerDataSource.md:stress_findings.tunables[spring.codec.max-in-memory-size]
+    - updateDataSource.md:stress_findings.tunables[spring.codec.max-in-memory-size]
+notes: |-
+  Surfaced as a canonicalisation candidate. The two Form DTOs are
+  codebase-anchored; main-concepts.md names "Data source" as a concept
+  but does not enumerate the operator-mutable field-set. The entity
+  is minted (rather than folded into the existing Register/Update
+  operations) because BOTH the create and update operations consume
+  it, AND because the method-level reading of the spec CORRECTS a
+  stale class-node claim — the class node named a non-existent
+  `connectionUrl` field; the spec has 4 create fields / 3 update
+  fields and the connection_url column is gone (V0_0_71).
+
+  Cross-cutting connections:
+    - Pairs with operation register-data-source (consumes the CREATE DTO)
+    - Pairs with operation update-data-source-ui-admin-replace
+      (consumes the UPDATE DTO — NEW THIS BATCH)
+    - Pairs with invariant datasource-update-replace-not-merge-mapstruct-set-to-null
+      (the UPDATE DTO's all-optional shape is the structural enabler)
+    - Pairs with invariant namespace-create-side-doors-cross-pillar-4-sister-services-batch-w-closure
+      (the name-only namespace_name field forces the getOrCreate side-door)
+
+  One DOC-NNN candidate: the OpenAPI spec should mark
+  DataSourceFormData.oddrn as `required` (it is de-facto required at
+  runtime); currently the contract understates the requirement and a
+  spec-driven client omitting oddrn receives an unexplained HTTP 400.

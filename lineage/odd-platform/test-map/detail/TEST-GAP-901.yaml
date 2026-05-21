@@ -1,0 +1,92 @@
+gap_id: TEST-GAP-901
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java DataSourceController controller-method:getDataSourceList"
+pillars_affected: [P-08]
+surfaced_by:
+  - "odd-platform__java__DataSourceController__controller-method__getDataSourceList.md:tests_coverage_semantic.uncovered_behaviours.[List token field is the masked form '******'+last6, NOT the 40-char plaintext]"
+  - "odd-platform__java__DataSourceController__controller-method__getDataSourceList.md:security.known_security_gaps.[A single-line change at ReactiveDataSourceRepositoryImpl.java:167 would flip the list endpoint to expose full 40-char plaintext tokens]"
+behaviour: |-
+  **HIGH — `GET /api/datasources` returns the collector token MASKED (`"******" + last6`),
+  but NOTHING tests that. The masked-vs-plaintext outcome hinges on a SINGLE constructor
+  choice at `ReactiveDataSourceRepositoryImpl.java:167`; a one-line refactor swapping it
+  would silently leak full 40-char plaintext collector tokens to EVERY authenticated user
+  — and the list endpoint needs no permission at all (no SecurityRule).** Method-level
+  primary source from the batch-ZB `getDataSourceList` controller-method sidecar:
+
+  - `listDto` selects `TOKEN.asterisk()` (ReactiveDataSourceRepositoryImpl.java:70), but the
+    LIST path constructs the token DTO via the 1-arg `new TokenDto(tokenPojo)`
+    (ReactiveDataSourceRepositoryImpl.java:167) → `showToken = false` (TokenDto.java:6-8) →
+    `TokenMapper.mapValue` (TokenMapper.java:15-18) returns the masked `"******" +
+    value.substring(len-6)` form.
+  - register / regenerate use the 2-arg `new TokenDto(pojo, true)` form
+    (ReactiveTokenRepositoryImpl.java:26,38, `showToken=true`) → full 40-char plaintext.
+  - **The single-line regression surface**: a future edit to `mapRecordIntoDto`
+    (ReactiveDataSourceRepositoryImpl.java:167) swapping the 1-arg `new TokenDto(tokenPojo)`
+    to `TokenDto.visibleToken(tokenPojo)` would flip the list endpoint to emit full
+    plaintext — with NO other code change. Combined with the fact that `GET
+    /api/datasources` has NO entry in `SecurityConstants.SECURITY_RULES` (Grep-confirmed —
+    SecurityConstants.java:116-126 has only POST/PUT/DELETE rules), this would expose every
+    collector token to every authenticated user, no permission, no owner scope.
+
+  **Why HIGH**: this is a security regression-guard for collector credentials — a class of
+  secret whose leak (TEST-GAP-750 / DOC-GAP-034 territory) is treated as serious across the
+  platform. The endpoint has ZERO direct test coverage (Glob-verified — no
+  `DataSourceControllerTest`); the only protection for the masking today is the
+  repository-tier `DataSourceRepositoryImplTest.listDtoTest` (which exercises the SQL but
+  does NOT assert the token rendering). Probe P-035 is the regression guard for exactly
+  this. The doc page calls the token "partially-redacted" but does not say the visible part
+  is REAL trailing token material — a security-conscious operator may assume a placeholder.
+
+  **Test gap shape**: a `@SpringBootTest` / `WebTestClient` security test that registers a
+  data source (capturing the 40-char plaintext T from the POST response), then `GET
+  /api/datasources` and asserts the matching item's `token.value` (a) starts with exactly
+  six `*` characters; (b) is NOT equal to the plaintext T; (c) the trailing 6 characters
+  equal `T.substring(T.length()-6)` (pinning that the mask leaks real token material — a
+  fact the masking design accepts but the docs understate). PINS the masked rendering — a
+  regression flipping the `TokenDto` constructor inverts the test.
+test_class: missing-security
+criticality_rationale: |-
+  HIGH per Rule 3: the getDataSourceList sidecar's security.known_security_gaps rates the
+  one-line-flip regression surface MEDIUM in isolation, and the token-leak-to-read-only-users
+  MEDIUM. The aggregate is HIGH: the list endpoint has NO permission gate (a flipped
+  constructor leaks EVERY collector token to EVERY authenticated user — full-catalog
+  credential disclosure), and collector tokens are a credential class the platform treats
+  as security-critical (DOC-GAP-034 / TEST-GAP-750 family). The masking is the ONLY thing
+  standing between the no-permission list endpoint and a credential dump, and it is one
+  line of code with zero test coverage. pillars_affected len 1 (P-08) — no cross-pillar
+  bump; HIGH is the honest aggregate.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/DataSourceRepositoryImplTest.java (VERIFIED present this batch — listDtoTest at line 86 and listDtoNameQueryTest at line 151 exercise listDto at the REPOSITORY tier; NEITHER asserts the token rendering / masked form. The HTTP endpoint and the TokenDto-constructor choice are uncovered)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DataSourceListTokenMaskingTest.java"
+  name: "getDataSourceList_tokenValueIsMaskedSixStarsPlusRealLast6_notPlaintext_pinsTokenDtoConstructorChoice"
+evidence:
+  - "getDataSourceList sidecar says (tests_coverage_semantic.uncovered_behaviours): 'List token field is the masked form ******+last6, NOT the 40-char plaintext. test_class: security; criticality: HIGH; note: Pinned by probe P-035 — a regression swapping the TokenDto constructor would leak plaintext tokens to every authenticated user.'"
+  - "getDataSourceList sidecar says (security.known_security_gaps): 'A single-line change at ReactiveDataSourceRepositoryImpl.java:167 (1-arg TokenDto -> TokenDto.visibleToken) would flip the list endpoint to expose full 40-char plaintext tokens to every authenticated user, with no other code change and no test to catch it.' severity MEDIUM"
+  - "getDataSourceList sidecar says (coupling): 'Token-form coupling: the masked-vs-plaintext outcome is decided ENTIRELY by which TokenDto constructor the repository uses. listDto mapRecordIntoDto (line 167) uses the 1-arg (masked) form; register/regenerate use the 2-arg true (plaintext) form.'"
+  - "getDataSourceList sidecar says (bugs_limitations_corner_cases): 'The list token field exposes the REAL last 6 characters of every collector token to every authenticated user — the mask ******+last6 is partial real-token material, not a placeholder.' severity LOW"
+  - "Verified at primary source via the sidecar: ReactiveDataSourceRepositoryImpl.java:167 (1-arg TokenDto) + TokenDto.java:5-12 (showToken field + visibleToken factory) + TokenMapper.java:15-18 (the mask) + SecurityConstants.java:116-126 (Grep-confirmed only 4 mutating rules — GET absent)"
+  - "Verified this batch via Glob: DataSourceRepositoryImplTest.java EXISTS (repository-tier); no DataSourceControllerTest.java exists"
+cross_references:
+  - "TEST-GAP-750 (batch W — end-to-end plaintext token chain; the register/regenerate side of the asymmetry — TEST-GAP-901 pins the LIST side, which MUST be masked)"
+  - "TEST-GAP-094 (batch 2026-05-11 — the COLLECTOR-list / COLLECTOR-regenerate plaintext-vs-masked asymmetry; structural parallel on the collector token. The data-source list endpoint is the analogous masked-render surface)"
+  - "TEST-GAP-654 (batch W — the UI substring-prefix masking-sniff edge cases; TEST-GAP-901 is the BACKEND half — the API-side mask format the UI sniff depends on)"
+  - "doc-gaps:DOC-GAP-034 (Token Rotation operational mechanics — the partially-redacted-token doc-vs-code framing)"
+  - "probe P-035 (lineage/odd-platform/probes/P-035.yaml — the masked-token probe)"
+related_features: [F-008]
+related_pillar_features: ["P-08:F-NN-Datasources-tab"]
+related_refactor_ids: []
+related_doc_gap_ids: [DOC-GAP-034]
+proposed_action: |-
+  Add `DataSourceListTokenMaskingTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Two test methods:
+  1. `getDataSourceList_tokenValueIsMaskedSixStarsPlusRealLast6_notPlaintext_pinsTokenDtoConstructorChoice` — register a data source via POST /api/datasources, capture the 40-char plaintext token T from the POST response; GET /api/datasources; locate the matching item; assert `item.token.value` starts with exactly "******" (six stars); assert `item.token.value` is NOT equal to T; assert `item.token.value.substring(6)` equals `T.substring(T.length() - 6)`. PINS the masked rendering and documents that the mask leaks the real trailing 6 chars.
+  2. `getDataSourceList_maskedTokenIsNotAValidIngestionCredential` — take the masked token from the list response; POST /ingestion/entities with it; assert 401 (the masked value fails the plaintext .equals in IngestionDataEntitiesFilter). Confirms the masked form is inert.
+
+  A regression that swaps `new TokenDto(tokenPojo)` to `TokenDto.visibleToken(tokenPojo)`
+  at ReactiveDataSourceRepositoryImpl.java:167 inverts test #1. Pair with DOC-GAP-034: the
+  docs should state the masked form contains the REAL last 6 token characters, not a
+  placeholder.
+batch: 2026-05-21-ZB
+feature_id: F-008

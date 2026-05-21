@@ -1,0 +1,84 @@
+gap_id: TEST-GAP-900
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java DataSourceController controller-method:regenerateDataSourceToken"
+pillars_affected: [P-08]
+surfaced_by:
+  - "odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken.md:tests_coverage_semantic.uncovered_behaviours.[Concurrent double-rotation: two simultaneous PUTs against the same data source — last-write-wins, both responses carry distinct plaintext tokens, only the later-committed value authenticates ingestion, no duplicate token row]"
+behaviour: |-
+  **HIGH — Concurrent double-rotation of the same data-source token is unverified: two
+  simultaneous `PUT /api/datasources/{id}/token` calls each receive a DIFFERENT plaintext
+  token in their 200 response, but only the later-committed value actually authenticates
+  ingestion — the caller who lost the race walks away believing an already-invalid token,
+  with no error and no signal.** Method-level primary source from the batch-ZB
+  `regenerateDataSourceToken` controller-method sidecar:
+
+  - There is exactly one `token` row per data source (1:1 via `token_id`) and
+    `ReactiveTokenRepositoryImpl.updateToken` issues `UPDATE ... WHERE TOKEN.ID.eq(id)`
+    (ReactiveTokenRepositoryImpl.java:33-36). Two simultaneous rotations both UPDATE the
+    same row — last-write-wins.
+  - There is NO `@Version` column and NO optimistic-lock predicate (no `WHERE updated_at =
+    :prev`). No lost-update is DETECTED — but the row is never corrupted; it always holds
+    exactly one valid token value.
+  - **The observable defect**: caller A and caller B each generate a fresh random token
+    (`tokenGenerator.regenerateToken` mints a new value per call) and each receives a
+    DIFFERENT plaintext token in their 200 response. Only the later-committed value
+    authenticates against `IngestionDataEntitiesFilter`. The race-loser copied a token
+    that is already dead.
+  - This compounds with the related replay-safety gap (the PUT is NOT idempotent — sidecar
+    `stress_findings.resource_boundaries`): a UI double-submit / network retry rotates the
+    token twice, invalidating the value from the first response before the operator can
+    use it. No `If-Match` ETag, no idempotency key (DataSourceController.java:53-59 consults
+    no header).
+
+  **Why HIGH**: an operator rotating a token, then finding the token they copied "does not
+  work," has no way to diagnose the cause (no error, no audit log — see TEST-GAP-906). For
+  a security-critical credential operation this is a real operational hazard, not a
+  hypothetical. The endpoint has ZERO direct test coverage (Glob-verified — no
+  `DataSourceControllerTest`, no `DataSourceServiceImplTest`). A regression that introduced
+  a duplicate-token-row bug, or that broke the last-write-wins resolution, would go
+  unnoticed.
+
+  **Test gap shape**: a `@SpringBootTest` concurrency test that: (1) registers a data
+  source; (2) fires two concurrent `PUT /api/datasources/{id}/token` calls; (3) asserts
+  both return 200 with DISTINCT plaintext tokens; (4) asserts exactly one `token` row
+  exists for the data source (no duplicate); (5) asserts the DB-persisted value equals
+  exactly one of the two response tokens, and that the OTHER response token does NOT
+  authenticate `POST /ingestion/entities`. Pinned by probe P-050.
+test_class: missing-integration
+criticality_rationale: |-
+  HIGH per Rule 3: the regenerateDataSourceToken node carries a HIGH-severity
+  security_aggregate (destructive rotation, no audit log). The concurrent-double-rotation
+  gap is itself a correctness-under-concurrency hazard on a security-critical credential
+  operation — the race-loser holds a dead token with no signal. The sidecar rates the
+  uncovered behaviour HIGH. Not CRITICAL — no corruption occurs and the row always holds a
+  valid token; the consequence is operator confusion + a wasted credential, not a
+  cross-boundary security breach. pillars_affected len 1 (P-08) — no cross-pillar bump.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DataSourceTokenConcurrentRotationTest.java"
+  name: "regenerateDataSourceToken_twoConcurrentPuts_distinctResponseTokens_noDuplicateRow_onlyLaterCommittedAuthenticates"
+evidence:
+  - "regenerateDataSourceToken sidecar says (tests_coverage_semantic.uncovered_behaviours): 'Concurrent double-rotation: two simultaneous PUTs against the same data source — last-write-wins, both responses carry distinct plaintext tokens, only the later-committed value authenticates ingestion, no duplicate token row. test_class: integration; criticality: HIGH; note: Pinned by probe P-050.'"
+  - "regenerateDataSourceToken sidecar says (stress_findings.resource_boundaries): 'No corrupted state and no duplicate row: there is exactly one token row per data source (1:1 via token_id) and updateToken issues UPDATE ... WHERE TOKEN.ID.eq(id) — two simultaneous rotations both UPDATE the same row, last-write-wins. There is NO @Version column and NO optimistic-lock predicate, so no lost-update is DETECTED. The observable defect of the race is that caller A and caller B each receive a DIFFERENT plaintext token in their 200 response, and only the later-committed value actually authenticates ingestion.'"
+  - "regenerateDataSourceToken sidecar says (bugs_limitations_corner_cases): 'No rate-limit and no If-Match ETag on the PUT. A UI double-submit (slow click, network retry) rotates the token twice — the value the operator copied from the first response is invalidated by the second before they can use it.' severity MEDIUM"
+  - "Verified at primary source via the sidecar: ReactiveTokenRepositoryImpl.java:33-36 (raw UPDATE ... WHERE TOKEN.ID.eq(id), no version predicate) + TokenGeneratorImpl.java:44-52 (fresh random per call) + DataSourceController.java:53-59 (no header consulted)"
+cross_references:
+  - "TEST-GAP-898 (this batch — the binary-cutover contract; TEST-GAP-900 is the concurrency variant — two cutovers racing)"
+  - "TEST-GAP-749 (batch W — regenerateDataSourceToken split-state on DB-write failure; DISTINCT — that gap is single-caller failure, this one is two-caller race)"
+  - "probe P-050 (lineage/odd-platform/probes/P-050.yaml — the concurrency probe)"
+  - "REFACTOR-NNN candidate: add an If-Match ETag or an idempotency key to the rotation PUT so a UI double-submit does not silently invalidate the operator-captured token"
+related_features: [F-008]
+related_pillar_features: ["P-08:F-NN-Datasources-tab"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `DataSourceTokenConcurrentRotationTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Two test methods:
+  1. `regenerateDataSourceToken_twoConcurrentPuts_distinctResponseTokens_noDuplicateRow_onlyLaterCommittedAuthenticates` — register a data source; fire two concurrent PUT /api/datasources/{id}/token calls (CompletableFuture / parallel WebTestClient); assert both return 200 with DISTINCT 40-char plaintext tokens; assert `SELECT COUNT(*) FROM token WHERE id = <data_source.token_id>` returns 1; assert the DB-persisted token.value equals exactly one of the two response tokens; assert `POST /ingestion/entities` with the OTHER response token returns 401.
+  2. `regenerateDataSourceToken_replayedPut_isNotIdempotent_secondCallInvalidatesFirstResponseToken` — PUT once, capture T1; PUT again with the same request, capture T2; assert T1 != T2; assert `POST /ingestion/entities` with T1 returns 401 (the replay invalidated it).
+
+  Pair with a REFACTOR follow-up: add an If-Match ETag (or idempotency key) so a UI
+  double-submit does not silently strand the operator on a dead token.
+batch: 2026-05-21-ZB
+feature_id: F-008

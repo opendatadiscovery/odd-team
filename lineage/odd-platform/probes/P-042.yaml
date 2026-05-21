@@ -1,0 +1,85 @@
+---
+probe_id: P-042
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DataSourceController__controller-method__updateDataSource
+emitted_at: 2026-05-21T00:00:00Z
+status: pending-stress-protocol
+feature_id: null  # P-08:F-NN-Datasources-tab not yet carved into an F-NNN
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category B + load-bearing): when PUT /api/datasources/{id}
+  targets (a) a never-existed id and (b) a soft-deleted id, does the endpoint
+  return a clean HTTP 404, or does it silently return HTTP 200 with no row
+  touched (the silent-UPDATE-on-missing pattern primary-sourced in batch I's
+  DataEntityServiceImpl.upsertDescription)?
+
+  Static trace hypothesis: DataSourceServiceImpl.update (DataSourceServiceImpl.java:71-72)
+  opens with `dataSourceRepository.getDto(id).switchIfEmpty(Mono.error(new
+  NotFoundException("Data source", id)))`. getDto filters `deleted_at IS NULL`
+  (ReactiveDataSourceRepositoryImpl sidecar — getDto SELECT ... WHERE
+  data_source.id = ? AND data_source.deleted_at IS NULL). Therefore BOTH the
+  never-existed id and the soft-deleted id miss getDto, fire switchIfEmpty,
+  and surface as HTTP 404 via ControllerAdvice (@ExceptionHandler(NotFoundException)
+  → 404). This probe PINS that DataSourceController.updateDataSource does NOT
+  share the DataEntityServiceImpl.upsertDescription silent-200 contract — the
+  two endpoints diverge, and a regression that removed the switchIfEmpty would
+  silently convert update into a silent-no-op-on-missing. Expect 404 in both
+  cases; if a 200 is observed, the trace is wrong and update is silent-write.
+---
+arrange:
+  - kind: docker-compose-up
+    compose_profile: odd-minimal
+  - kind: env
+    description: auth.type=DISABLED so the request reaches the controller without
+      an authenticated principal; DATA_SOURCE_UPDATE gating is exercised separately
+      by P-044.
+  - kind: sql
+    query: |
+      -- a live data source to soft-delete in step 2
+      INSERT INTO data_source (id, name, oddrn, description, created_at, updated_at)
+      VALUES (7100, 'p042-live-then-deleted', '//p042/src/deleted', 'orig-desc', NOW(), NOW())
+  - kind: sql
+    query: |
+      -- soft-delete it: mirror the application soft-delete UPDATE
+      UPDATE data_source SET deleted_at = NOW() WHERE id = 7100
+act:
+  - kind: rest
+    method: PUT
+    path: /api/datasources/99990001
+    body: '{"name":"never-existed-rename","description":"x"}'
+    capture_as: resp_never_existed
+  - kind: rest
+    method: PUT
+    path: /api/datasources/7100
+    body: '{"name":"soft-deleted-rename","description":"y"}'
+    capture_as: resp_soft_deleted
+observe:
+  - kind: sql
+    query: |
+      SELECT name, description, deleted_at FROM data_source WHERE id = 7100
+    capture_as: row_7100_after
+assert:
+  - "resp_never_existed.status == 404  # clean 404, NOT silent 200"
+  - "resp_soft_deleted.status == 404   # soft-deleted id is invisible to getDto"
+  - "row_7100_after.name == 'p042-live-then-deleted'      # NOT overwritten"
+  - "row_7100_after.description == 'orig-desc'            # NOT overwritten"
+  - "row_7100_after.deleted_at is not None                # still soft-deleted"
+cleanup:
+  - kind: sql
+    query: "DELETE FROM data_source WHERE id IN (7100)"
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DataSourceController__controller-method__updateDataSource
+    - odd-platform__java__service__service__DataEntityServiceImpl  # the silent-200 counter-case
+  retrospectives: [LSN-019]
+realism_caveats: |
+  The probe pins the 404-vs-200 contract at the HTTP boundary. It does NOT
+  verify the ControllerAdvice mapping text/body shape of the 404 response.
+  It does NOT cover the auth-mode matrix (P-044 owns that). If resp_*.status
+  is 200, the static trace missed a code path — re-read DataSourceServiceImpl.update
+  lines 70-83 and ControllerAdvice's NotFoundException handler.

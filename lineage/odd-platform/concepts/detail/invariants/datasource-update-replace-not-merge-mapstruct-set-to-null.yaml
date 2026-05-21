@@ -1,0 +1,197 @@
+name: |-
+  DataSource UI update is REPLACE-not-MERGE — MapStruct SET_TO_NULL nulls every omitted form field (silent partial-edit data loss)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-08
+description: |-
+  NEW MEDIUM-SEVERITY INVARIANT, batch 2026-05-21ZB — surfaced at
+  primary source by the updateDataSource method-level sidecar. The
+  UI-admin update endpoint PUT /api/datasources/{data_source_id} is a
+  full-form REPLACE of the three mutable fields (name, description,
+  namespace_name), NOT a field-wise MERGE. An API consumer (or a UI
+  bug) sending a PARTIAL body to change one field SILENTLY NULLS the
+  other two.
+
+  THE MECHANISM — why a partial body wipes data:
+
+    DataSourceServiceImpl.update (DataSourceServiceImpl.java:68-83)
+    applies the form to the loaded pojo through the MapStruct
+    @MappingTarget mapper DataSourceMapper.applyToPojo
+    (DataSourceMapper.java:49-56). The platform's MapperConfig
+    (MapperConfig.java:7-11) sets componentModel / unmappedTargetPolicy /
+    injectionStrategy but DOES NOT set
+    `nullValuePropertyMappingStrategy`. MapStruct's default for an
+    UNSPECIFIED strategy is SET_TO_NULL. DataSourceUpdateFormData has
+    3 optional fields with NO `required` block (components.yaml:1317-1325);
+    an omitted JSON field deserialises to a null Java field and is
+    written as null onto the existing pojo. The namespace overload
+    (DataSourceMapper.java:51-56) explicitly sets namespace_id to null
+    when namespace == null (i.e. when namespace_name was empty/omitted).
+
+  THE OPERATOR-VISIBLE CONSEQUENCE — the data-loss-on-partial-edit class:
+
+    An operator (or programmatic client) calling PUT to "rename a
+    data source" with a body carrying only `name`:
+      - the `description` column is overwritten with NULL — the
+        existing description is silently wiped;
+      - the `namespace_id` column is overwritten with NULL — the
+        data source is silently detached from its namespace.
+    There is NO MERGE option on this endpoint. The endpoint name
+    "update" does not signal that callers MUST resend every field
+    they want to keep. Probe P-043 pins the REPLACE-vs-MERGE behaviour.
+
+  THE FRAGILITY — one config line flips the contract:
+
+    The REPLACE-not-MERGE behaviour is a CONSEQUENCE of MapperConfig
+    not setting a strategy. A future global edit setting
+    `nullValuePropertyMappingStrategy = IGNORE` on MapperConfig would
+    SILENTLY convert this endpoint (and every other @MappingTarget
+    mapper in the platform) from REPLACE to MERGE — an operator-visible
+    behaviour change with no code change at the DataSource endpoint
+    and no test to catch it. Conversely a contract change adding a
+    `connection`-style field to DataSourceUpdateFormData would
+    silently fold the new field into the REPLACE set.
+
+  WHY THIS IS A DISTINCT INVARIANT (not folded into the 5-vertex
+  ADR-142/143 triangulation):
+
+    The existing datasource-ui-admin-disjoint-from-s2s-five-vertex-triangulation
+    invariant frames "full-form REPLACE via MapStruct @MappingTarget"
+    as ONE ASYMMETRY-vertex contrasting the UI path with the S2S
+    path's 2-field partial-merge. That invariant's concern is the
+    cross-path architectural disjunction. THIS invariant's concern is
+    the FILE-LOCAL OPERATOR HAZARD inside the UI path itself: a
+    partial PUT body silently destroys data, the mechanism is a
+    missing MapperConfig line, and the bug is one config edit away
+    from inverting. The two are kept separate: one is an architectural
+    map, the other is a maintainer-facing fragility + a data-loss bug.
+
+  THE CONTRAST WITH the S2S ingestion REPLACE-not-MERGE:
+
+    The platform already carries a `silent-data-loss-replace-not-merge-ingestion-semantics`
+    invariant for the ingestion pipeline (lineage edges + metadata
+    fields). THIS is the UI-admin DataSource analogue — same
+    REPLACE-not-MERGE class, different mechanism (MapStruct
+    SET_TO_NULL vs the ingestion processors' delete-on-absence). The
+    platform exhibits the silent-replace hazard on BOTH the S2S
+    ingestion surface and the UI-admin DataSource surface.
+
+  SEVERITY MEDIUM — operator-observable silent data loss on a routine
+  partial-edit; the mechanism is a framework default that looks
+  unintentional, and the absence of any test means a refactor cannot
+  surface the contract.
+nodes:
+  - odd-platform java DataSourceController controller-method:updateDataSource
+contributors:
+  - |-
+    updateDataSource batch ZB (PRIMARY SOURCE):
+    bugs_limitations_corner_cases.[0] MEDIUM (Partial-edit data loss —
+    a PUT body omitting description nulls the existing description;
+    omitting namespace_name nulls namespace_id and detaches the
+    namespace; there is no MERGE option on this endpoint) +
+    implicit_adrs.[0] (Update is a full-form REPLACE — an omitted
+    field is nulled; the @MappingTarget over the WHOLE form with no
+    per-field null guard is the deliberate signal) +
+    stress_findings.name_behavior_pairs[update / updateDataSource —
+    DRIFT_NAME_VS_BEHAVIOR — REPLACE not MERGE] +
+    stress_findings.name_behavior_pairs[applyToPojo — the name reads
+    additive, the behaviour is total-overwrite of the 3 mapped fields]
+evidence:
+  - |-
+    updateDataSource.md:bugs_limitations_corner_cases.[0] MEDIUM —
+    evidence: DataSourceMapper.java:49-56 (applyToPojo @MappingTarget) +
+    MapperConfig.java:7-11 (NO nullValuePropertyMappingStrategy →
+    MapStruct default SET_TO_NULL)
+  - |-
+    updateDataSource.md:implicit_adrs.[0] — evidence:
+    DataSourceMapper.java:49 (`DataSourcePojo applyToPojo(@MappingTarget
+    final DataSourcePojo dataSource, final DataSourceUpdateFormData
+    form)`) + MapperConfig.java:7-11 + DataSourceMapper.java:51-56
+    (the namespace overload sets namespace_id null when namespace==null)
+  - |-
+    updateDataSource.md:stress_findings.name_behavior_pairs — the
+    `update` and `applyToPojo` name/behaviour pairs both flagged
+    DRIFT_NAME_VS_BEHAVIOR / MINOR; pinned by probe P-043
+  - |-
+    updateDataSource.md:tests_coverage_semantic.uncovered_behaviours —
+    'PUT with description omitted nulls the existing description
+    (REPLACE-not-MERGE)' criticality HIGH; no test exists (no
+    DataSourceControllerTest)
+  - |-
+    Cross-references invariant datasource-ui-admin-disjoint-from-s2s-five-vertex-triangulation-batch-w
+    (that invariant frames the full-form REPLACE as a cross-path
+    asymmetry vertex; THIS invariant is the file-local data-loss
+    hazard inside the UI path)
+  - |-
+    Cross-references invariant silent-data-loss-replace-not-merge-ingestion-semantics
+    (the S2S ingestion analogue — same REPLACE-not-MERGE class,
+    different mechanism)
+  - |-
+    Cross-references entity datasource-form-dto-create-update-narrow-mutable-surface
+    (the DataSourceUpdateFormData all-optional shape is the structural
+    enabler)
+axes_present:
+  - controllers
+triangulation_count: 1
+cross_batch: false
+severity: MEDIUM
+severity_dim: correctness+data-loss
+probes:
+  - P-043
+mitigations_unimplemented:
+  - |-
+    DECISION REQUIRED — choose the update contract and make it explicit:
+    Option A (keep REPLACE): document on the /features/management
+    Datasources tab that editing a data source via the API requires
+    sending the COMPLETE field-set; a partial body nulls the omitted
+    fields. The UI form already resends all fields, so this is an
+    API-consumer-facing caveat.
+    Option B (switch to MERGE): set
+    `nullValuePropertyMappingStrategy = NullValuePropertyMappingStrategy.IGNORE`
+    on the DataSourceMapper (NOT globally on MapperConfig — a global
+    change affects every @MappingTarget mapper in the platform). This
+    converts the endpoint to field-wise PATCH; an omitted field
+    leaves the column untouched.
+  - |-
+    Add the regression test (criticality HIGH, currently absent):
+    PUT /api/datasources/{id} with a body carrying only `name`;
+    assert the existing `description` and `namespace_id` are
+    PRESERVED (under Option B) or NULLED (under Option A — pins the
+    current behaviour). Either way the test makes the contract
+    refactor-visible.
+  - |-
+    Build-time guard: a MapStruct-config lint that flags any
+    @MappingTarget mapper whose enclosing MapperConfig leaves
+    nullValuePropertyMappingStrategy unspecified — surfaces every
+    silent-REPLACE @MappingTarget across the platform so the
+    maintainer can audit each for intent.
+notes: |-
+  This invariant is the file-local operator-hazard companion to the
+  architectural datasource-ui-admin-disjoint-from-s2s-five-vertex-triangulation
+  invariant. The 5-vertex invariant says WHAT the disjunction is; this
+  invariant says WHY a routine partial edit on the UI path destroys
+  data and HOW FRAGILE the mechanism is (one MapperConfig line).
+
+  The load-bearing observation: the REPLACE semantic is not declared
+  anywhere — not in the endpoint name, not in the OpenAPI description,
+  not in the live doc page. It is an EMERGENT consequence of (a)
+  DataSourceUpdateFormData having no `required` block, (b) MapStruct's
+  default SET_TO_NULL, and (c) MapperConfig not overriding it. A
+  maintainer reading any one of those three in isolation would not
+  predict the data-loss behaviour.
+
+  Cross-cutting connections:
+    - Pairs with datasource-ui-admin-disjoint-from-s2s-five-vertex-triangulation-batch-w
+      (the architectural-disjunction framing of the same REPLACE fact)
+    - Pairs with silent-data-loss-replace-not-merge-ingestion-semantics
+      (the ingestion-pipeline analogue of the silent-replace hazard)
+    - Pairs with entity datasource-form-dto-create-update-narrow-mutable-surface
+      (the all-optional UpdateFormData is the enabler)
+    - Pairs with operation update-data-source-ui-admin-replace
+      (the operation that carries this invariant)
+
+  One DOC-NNN candidate: the /features/management Datasources tab
+  should document the partial-edit-nulls-omitted-fields behaviour for
+  API consumers — OR the maintainer switches the mapper to MERGE and
+  the caveat disappears.

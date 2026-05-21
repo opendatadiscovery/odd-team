@@ -1,0 +1,100 @@
+---
+probe_id: P-051
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken
+emitted_at: 2026-05-21T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-020
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category E, Q2 + Category B): regenerateDataSourceToken is named
+  "regenerate" — does it revoke-then-issue, issue-then-revoke, or only issue? And is the
+  rotation observably atomic from the collector's point of view, i.e. is there a window
+  where the OLD token is invalidated but the NEW one is not yet persisted (collector
+  locked out mid-operation)? The code shows token rotation is an in-place
+  `UPDATE token SET value=<new>` (ReactiveTokenRepositoryImpl.java:33-36) — a single SQL
+  statement. Hypothesis: there is NO two-valid-tokens window (the old value is overwritten
+  in the same statement that writes the new one) AND NO old-invalidated-but-new-not-yet-
+  persisted window (a single UPDATE is atomic at the DB even without @ReactiveTransactional).
+  The transition is therefore instantaneous: the moment the UPDATE commits, the old token
+  401s and the new token 200s against IngestionDataEntitiesFilter (IngestionDataEntities
+  Filter.java:56-57 plaintext `.equals`). The probe verifies the binary cutover: old token
+  invalid AND new token valid the instant rotation completes, with no observable middle state.
+---
+arrange:
+  - kind: docker-compose-up
+    profile: odd-minimal
+  - kind: env
+    set:
+      auth.type: DISABLED
+      auth.ingestion.filter.enabled: "true"
+  - kind: sql
+    query: |
+      INSERT INTO token (id, value, created_at, updated_at, created_by, updated_by)
+      VALUES (8051, 'p051-OLD-token-00000000000000000000000000', NOW(), NOW(), 'probe', 'probe')
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name, token_id, active)
+      VALUES (8051, '//probe-source/p051/ds', 'p051_ds', 8051, true)
+act:
+  - kind: rest
+    description: confirm the OLD token authenticates ingestion BEFORE rotation
+    method: POST
+    path: /ingestion/entities
+    headers:
+      Authorization: "Bearer p051-OLD-token-00000000000000000000000000"
+    body: '{"data_source_oddrn": "//probe-source/p051/ds", "items": []}'
+    capture_as: ingest_old_before
+  - kind: rest
+    description: rotate the data source token
+    method: PUT
+    path: /api/datasources/8051/token
+    capture_as: rotate_response
+  - kind: rest
+    description: the OLD token after rotation
+    method: POST
+    path: /ingestion/entities
+    headers:
+      Authorization: "Bearer p051-OLD-token-00000000000000000000000000"
+    body: '{"data_source_oddrn": "//probe-source/p051/ds", "items": []}'
+    capture_as: ingest_old_after
+  - kind: rest
+    description: the NEW token (from the rotation response body) after rotation
+    method: POST
+    path: /ingestion/entities
+    headers:
+      Authorization: "Bearer {rotate_response.body.token.value}"
+    body: '{"data_source_oddrn": "//probe-source/p051/ds", "items": []}'
+    capture_as: ingest_new_after
+observe:
+  - kind: sql
+    query: "SELECT value, updated_at FROM token WHERE id = 8051"
+    capture_as: persisted
+assert:
+  - "ingest_old_before.status != 401             # old token authenticated before rotation"
+  - "rotate_response.status == 200                # rotation succeeded"
+  - "rotate_response.body.token.value != 'p051-OLD-token-00000000000000000000000000'  # new value differs"
+  - "rotate_response.body.token.value.length == 40  # new token is full 40-char plaintext in the response body"
+  - "ingest_old_after.status == 401               # OLD token is invalid the instant rotation commits"
+  - "ingest_new_after.status != 401               # NEW token authenticates immediately"
+  - "persisted.value == rotate_response.body.token.value  # response plaintext == persisted DB value"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken
+    - odd-platform__java__CollectorController__controller-method__regenerateCollectorToken
+  retrospectives: [LSN-019, LSN-002]
+realism_caveats: |
+  The probe verifies the binary cutover with serialised requests; it does NOT inject a
+  real concurrent collector ingestion request mid-rotation (a true race between an
+  in-flight POST /ingestion/entities and the UPDATE). The single-statement UPDATE makes a
+  torn read impossible, but a collector whose request was admitted-and-buffered just
+  before the UPDATE committed may still complete against the old snapshot depending on
+  R2DBC isolation — that finer-grained timing is out of scope here and is the operational
+  "lockout window" the sidecar flags as a HIGH-severity caveat. This probe pins the
+  steady-state cutover, not the sub-request-latency race.

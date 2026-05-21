@@ -7,17 +7,17 @@ source_monolith_frontmatter:
   sidecar_count: 65
   test_files_indexed: 70
   prompt_version: test-coverage-mapper/0.1.0
-  total_test_gaps: 894
+  total_test_gaps: 906
   gaps_by_criticality:
-    CRITICAL: 149
-    HIGH: 289
-    MEDIUM: 333
+    CRITICAL: 151
+    HIGH: 294
+    MEDIUM: 338
     LOW: 123
   gaps_by_category:
-    missing-integration: 172
-    missing-security: 261
-    missing-edge-case: 301
-    missing-unit: 85
+    missing-integration: 178
+    missing-security: 263
+    missing-edge-case: 304
+    missing-unit: 86
     sidecar-stale: 3
     missing-performance: 34
     missing-binding: 10
@@ -214,7 +214,7 @@ source_monolith_frontmatter:
   - odd-platform java notification.sender class:SlackNotificationSender
   - odd-platform java notification.sender class:WebhookNotificationSender
   - odd-platform java notification.processor class:PostgresWALMessageProcessor
-total_entries: 894
+total_entries: 906
 notice: Rebuilt from detail/ by lineage/_extractor/registry-shard/rebuild_indexes.py.
   The detail files are the source of truth; this index is derived headlines for the
   registry-search subagent.
@@ -25725,3 +25725,557 @@ test_gaps_index:
   related_refactor_ids: []
   related_doc_gap_ids: []
   detail_path: detail/TEST-GAP-897.yaml
+- gap_id: TEST-GAP-898
+  behaviour: "**CRITICAL — `PUT /api/datasources/{data_source_id}/token` is a DESTRUCTIVE\
+    \ in-place\ncredential rotation whose BINARY-CUTOVER contract is entirely untested\
+    \ at every\nlayer. The single most operationally important uncovered behaviour\
+    \ on the\nDataSourceController surface: the instant `tokenRepository.updateToken`\
+    \ commits,\nthe OLD data-source token must start failing `POST /ingestion/entities`\
+    \ with 401\n`Token is not correct` and the NEW token must start authenticating\
+    \ — with NO\ntwo-valid window and NO zero-valid window.** Method-level primary\
+    \ source from the\nbatch-ZB `regenerateDataSourceToken` controller-method sidecar:\n\
+    \n- `DataSourceServiceImpl.regenerateDataSourceToken` (DataSourceServiceImpl.java:99-106):\n\
+    \  loads the `DataSourceDto`, hands its `TokenPojo` to `tokenGenerator.regenerateToken`\n\
+    \  (an in-memory `setValue(RandomStringUtils.randomAlphanumeric(40))` mutation),\
+    \ persists\n  via `tokenRepository.updateToken` — a single jOOQ `UPDATE token\
+    \ SET value=<new> WHERE id=:id`.\n- There is exactly ONE `token` row per data\
+    \ source (1:1 via `DataSourcePojo.token_id`);\n  the UPDATE overwrites the old\
+    \ value. There is NO `previous_token` column and NO\n  `valid_until` column anywhere\
+    \ in the schema — revocation of the old token is a\n  side effect of overwriting\
+    \ it (sidecar `implicit_adrs[0]`, `stress_findings.name_behavior_pairs`).\n- **The\
+    \ downstream consumer** is `IngestionDataEntitiesFilter` (IngestionDataEntitiesFilter.java:43-58):\n\
+    \  it resolves `dataSourceRepository.getDtoByOddrn(...)`, takes `dto.token()`,\
+    \ and does a\n  literal plaintext `.equals(token)` (line 56-57) — throwing `AccessDeniedException(\"\
+    Token is\n  not correct\")` on mismatch. The moment `updateToken` commits, an\
+    \ in-flight ingestion\n  request carrying the old token starts 401-ing.\n\n**Why\
+    \ CRITICAL**: this is the load-bearing operator contract of the entire token-rotation\n\
+    feature — \"rotation invalidates the old credential, the new one works.\" It is\
+    \ also a\nsecurity contract (a leaked token MUST stop working after rotation).\
+    \ The endpoint, its\nservice, its repository, and the cross-path integration with\
+    \ `IngestionDataEntitiesFilter`\nALL have ZERO direct test coverage (Glob-verified\
+    \ at the class sidecar — no\n`DataSourceControllerTest`, no `DataSourceServiceImplTest`).\
+    \ A regression — e.g. a\n`getDtoByOddrn` cache, a `.contains` instead of `.equals`,\
+    \ an FTS-stale token snapshot —\nwould silently break the binary cutover with\
+    \ NO test to catch it. The sidecar rates this\nthe highest-leverage single test\
+    \ on the node and the maintainer's class sidecar already\nrecorded an open CRITICAL\
+    \ test-gap for it; this entry pins it with the specific probe.\n\n**Test gap shape**:\
+    \ a `WebTestClient` / `@SpringBootTest` integration test (or a\nTestcontainers\
+    \ ingestion-flow test) that: (1) registers a data source, captures its\ntoken\
+    \ T_old; (2) `POST /ingestion/entities` with T_old → assert non-401 (the baseline);\n\
+    (3) `PUT /api/datasources/{id}/token` → capture the response body's NEW plaintext\n\
+    T_new (T_new != T_old); (4) `POST /ingestion/entities` with T_old → assert 401\n\
+    `Token is not correct`; (5) `POST /ingestion/entities` with T_new → assert non-401.\n\
+    Pinned by probe P-051."
+  test_class: missing-integration
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids:
+  - DOC-GAP-034
+  detail_path: detail/TEST-GAP-898.yaml
+- gap_id: TEST-GAP-899
+  behaviour: "**CRITICAL — the `PUT /api/datasources/{data_source_id}/token` RBAC\
+    \ matrix is entirely\nuntested, and the `auth.type=DISABLED` cell is a credential-rotation-hijack\
+    \ surface: on a\nnetwork-reachable DISABLED deployment, ANY caller can rotate\
+    \ ANY data source's ingestion\ncredential and receive the new plaintext token\
+    \ in the response body.** Method-level\nprimary source from the batch-ZB `regenerateDataSourceToken`\
+    \ controller-method sidecar:\n\n- The endpoint is gated by Permission `DATA_SOURCE_TOKEN_REGENERATE`\
+    \ (MANAGEMENT tier)\n  via `SecurityConstants.SECURITY_RULES` (SecurityConstants.java:124-126\
+    \ — the tuple\n  `(/api/datasources/{data_source_id}/token, PUT, DATA_SOURCE_TOKEN_REGENERATE)`).\
+    \ There\n  is NO `@PreAuthorize` on the controller and NO programmatic permission\
+    \ check in\n  `DataSourceServiceImpl.regenerateDataSourceToken`.\n- **Under `auth.type=DISABLED`**\
+    \ the `SecurityConstants` rule chain is bypassed entirely\n  (the rule is enforced\
+    \ only by the LOGIN_FORM / OAUTH2 / LDAP security configs;\n  `DisabledSecurityConfiguration`\
+    \ sets all paths permitAll). `TokenGeneratorImpl.java:31`\n  has a no-current-user\
+    \ fallback `regenerate(tokenPojo, null)` — rotation succeeds with\n  `updated_by`\
+    \ NULL. An attacker on a DISABLED deployment can break ingestion\n  platform-wide\
+    \ AND harvest the new tokens (each rotation response carries the new\n  40-char\
+    \ plaintext).\n- The 4-cell auth matrix (`permission absent → 403`, `permission\
+    \ present → 200`,\n  `unauthenticated → 401` under LOGIN_FORM, `any caller → 200`\
+    \ under DISABLED) is\n  PROBE-NEEDED per the sidecar — the path-rule-to-403 mapping\
+    \ is inferred from the\n  `SecurityConstants` pattern but not statically provable\
+    \ end-to-end.\n\n**Why CRITICAL**: credential rotation is a security-critical\
+    \ operation. The DISABLED\ncell is the LSN-001 / LSN-002 operator-cliff shape\
+    \ — an operator who leaves a deployment\non the default `auth.type` exposes a\
+    \ credential-rotation-hijack on the network. The\nendpoint has ZERO direct test\
+    \ coverage (Glob-verified — no `DataSourceControllerTest`).\nA `SecurityConstants`\
+    \ typo or a rule deletion would silently fall the endpoint back to\nauthenticated-only\
+    \ (the FAIL-OPEN coupling the class sidecar documents) with no test to\ncatch\
+    \ it. This is a member of the platform-wide DISABLED-bypass cluster (DOC-GAP-082)\
+    \ and\nthe parallel of the COLLECTOR token-regenerate DISABLED-bypass already\
+    \ pinned at\nTEST-GAP-099 — but on a DISTINCT endpoint with a DISTINCT credential\
+    \ (the data-source\ntoken, not the collector token).\n\n**Test gap shape**: a\
+    \ parametrized `@SpringBootTest` security test asserting the 4 cells:\n(a) a LOGIN_FORM\
+    \ user whose Policy lacks `DATA_SOURCE_TOKEN_REGENERATE` → 403; (b) a user\nwhose\
+    \ Policy grants it → 200; (c) an unauthenticated caller → 401; (d) under\n`auth.type=DISABLED`\
+    \ (a separate Spring context), any caller → 200 and the response\ncarries the\
+    \ new plaintext token. Cell (d) PINS the bypass; when a fix lands (e.g. a\nDISABLED-mode\
+    \ hard block on token-issuing endpoints), cell (d) inverts."
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids:
+  - DOC-GAP-082
+  - DOC-GAP-034
+  detail_path: detail/TEST-GAP-899.yaml
+- gap_id: TEST-GAP-900
+  behaviour: "**HIGH — Concurrent double-rotation of the same data-source token is\
+    \ unverified: two\nsimultaneous `PUT /api/datasources/{id}/token` calls each receive\
+    \ a DIFFERENT plaintext\ntoken in their 200 response, but only the later-committed\
+    \ value actually authenticates\ningestion — the caller who lost the race walks\
+    \ away believing an already-invalid token,\nwith no error and no signal.** Method-level\
+    \ primary source from the batch-ZB\n`regenerateDataSourceToken` controller-method\
+    \ sidecar:\n\n- There is exactly one `token` row per data source (1:1 via `token_id`)\
+    \ and\n  `ReactiveTokenRepositoryImpl.updateToken` issues `UPDATE ... WHERE TOKEN.ID.eq(id)`\n\
+    \  (ReactiveTokenRepositoryImpl.java:33-36). Two simultaneous rotations both UPDATE\
+    \ the\n  same row — last-write-wins.\n- There is NO `@Version` column and NO optimistic-lock\
+    \ predicate (no `WHERE updated_at =\n  :prev`). No lost-update is DETECTED — but\
+    \ the row is never corrupted; it always holds\n  exactly one valid token value.\n\
+    - **The observable defect**: caller A and caller B each generate a fresh random\
+    \ token\n  (`tokenGenerator.regenerateToken` mints a new value per call) and each\
+    \ receives a\n  DIFFERENT plaintext token in their 200 response. Only the later-committed\
+    \ value\n  authenticates against `IngestionDataEntitiesFilter`. The race-loser\
+    \ copied a token\n  that is already dead.\n- This compounds with the related replay-safety\
+    \ gap (the PUT is NOT idempotent — sidecar\n  `stress_findings.resource_boundaries`):\
+    \ a UI double-submit / network retry rotates the\n  token twice, invalidating\
+    \ the value from the first response before the operator can\n  use it. No `If-Match`\
+    \ ETag, no idempotency key (DataSourceController.java:53-59 consults\n  no header).\n\
+    \n**Why HIGH**: an operator rotating a token, then finding the token they copied\
+    \ \"does not\nwork,\" has no way to diagnose the cause (no error, no audit log\
+    \ — see TEST-GAP-906). For\na security-critical credential operation this is a\
+    \ real operational hazard, not a\nhypothetical. The endpoint has ZERO direct test\
+    \ coverage (Glob-verified — no\n`DataSourceControllerTest`, no `DataSourceServiceImplTest`).\
+    \ A regression that introduced\na duplicate-token-row bug, or that broke the last-write-wins\
+    \ resolution, would go\nunnoticed.\n\n**Test gap shape**: a `@SpringBootTest`\
+    \ concurrency test that: (1) registers a data\nsource; (2) fires two concurrent\
+    \ `PUT /api/datasources/{id}/token` calls; (3) asserts\nboth return 200 with DISTINCT\
+    \ plaintext tokens; (4) asserts exactly one `token` row\nexists for the data source\
+    \ (no duplicate); (5) asserts the DB-persisted value equals\nexactly one of the\
+    \ two response tokens, and that the OTHER response token does NOT\nauthenticate\
+    \ `POST /ingestion/entities`. Pinned by probe P-050."
+  test_class: missing-integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-900.yaml
+- gap_id: TEST-GAP-901
+  behaviour: "**HIGH — `GET /api/datasources` returns the collector token MASKED (`\"\
+    ******\" + last6`),\nbut NOTHING tests that. The masked-vs-plaintext outcome hinges\
+    \ on a SINGLE constructor\nchoice at `ReactiveDataSourceRepositoryImpl.java:167`;\
+    \ a one-line refactor swapping it\nwould silently leak full 40-char plaintext\
+    \ collector tokens to EVERY authenticated user\n— and the list endpoint needs\
+    \ no permission at all (no SecurityRule).** Method-level\nprimary source from\
+    \ the batch-ZB `getDataSourceList` controller-method sidecar:\n\n- `listDto` selects\
+    \ `TOKEN.asterisk()` (ReactiveDataSourceRepositoryImpl.java:70), but the\n  LIST\
+    \ path constructs the token DTO via the 1-arg `new TokenDto(tokenPojo)`\n  (ReactiveDataSourceRepositoryImpl.java:167)\
+    \ → `showToken = false` (TokenDto.java:6-8) →\n  `TokenMapper.mapValue` (TokenMapper.java:15-18)\
+    \ returns the masked `\"******\" +\n  value.substring(len-6)` form.\n- register\
+    \ / regenerate use the 2-arg `new TokenDto(pojo, true)` form\n  (ReactiveTokenRepositoryImpl.java:26,38,\
+    \ `showToken=true`) → full 40-char plaintext.\n- **The single-line regression\
+    \ surface**: a future edit to `mapRecordIntoDto`\n  (ReactiveDataSourceRepositoryImpl.java:167)\
+    \ swapping the 1-arg `new TokenDto(tokenPojo)`\n  to `TokenDto.visibleToken(tokenPojo)`\
+    \ would flip the list endpoint to emit full\n  plaintext — with NO other code\
+    \ change. Combined with the fact that `GET\n  /api/datasources` has NO entry in\
+    \ `SecurityConstants.SECURITY_RULES` (Grep-confirmed —\n  SecurityConstants.java:116-126\
+    \ has only POST/PUT/DELETE rules), this would expose every\n  collector token\
+    \ to every authenticated user, no permission, no owner scope.\n\n**Why HIGH**:\
+    \ this is a security regression-guard for collector credentials — a class of\n\
+    secret whose leak (TEST-GAP-750 / DOC-GAP-034 territory) is treated as serious\
+    \ across the\nplatform. The endpoint has ZERO direct test coverage (Glob-verified\
+    \ — no\n`DataSourceControllerTest`); the only protection for the masking today\
+    \ is the\nrepository-tier `DataSourceRepositoryImplTest.listDtoTest` (which exercises\
+    \ the SQL but\ndoes NOT assert the token rendering). Probe P-035 is the regression\
+    \ guard for exactly\nthis. The doc page calls the token \"partially-redacted\"\
+    \ but does not say the visible part\nis REAL trailing token material — a security-conscious\
+    \ operator may assume a placeholder.\n\n**Test gap shape**: a `@SpringBootTest`\
+    \ / `WebTestClient` security test that registers a\ndata source (capturing the\
+    \ 40-char plaintext T from the POST response), then `GET\n/api/datasources` and\
+    \ asserts the matching item's `token.value` (a) starts with exactly\nsix `*` characters;\
+    \ (b) is NOT equal to the plaintext T; (c) the trailing 6 characters\nequal `T.substring(T.length()-6)`\
+    \ (pinning that the mask leaks real token material — a\nfact the masking design\
+    \ accepts but the docs understate). PINS the masked rendering — a\nregression\
+    \ flipping the `TokenDto` constructor inverts the test."
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids:
+  - DOC-GAP-034
+  detail_path: detail/TEST-GAP-901.yaml
+- gap_id: TEST-GAP-902
+  behaviour: "**HIGH — `POST /api/datasources` mints a token row + (conditionally)\
+    \ a namespace row +\nthe data_source row inside ONE `@ReactiveTransactional` boundary.\
+    \ The atomicity invariant\n— a failed register leaks NO orphan token row and NO\
+    \ orphan namespace row — is entirely\nuntested.** Method-level primary source\
+    \ from the batch-ZB `registerDataSource`\ncontroller-method sidecar:\n\n- `DataSourceServiceImpl.create`\
+    \ (DataSourceServiceImpl.java:51-66, annotated\n  `@ReactiveTransactional` at\
+    \ line 52) runs THREE sequential DB writes inside one R2DBC\n  transaction: `INSERT\
+    \ INTO token` (line 54, unconditional — a fresh 40-char token is\n  minted on\
+    \ EVERY register), conditional `INSERT INTO namespace` (line 56-57, when\n  `namespace_name`\
+    \ is non-empty and unknown), `INSERT INTO data_source` (line 122-123).\n- The\
+    \ `data_source` ODDRN partial-unique index raises `UniqueConstraintException`\n\
+    \  (SQLSTATE 23505) on a live-ODDRN collision; the empty-ODDRN check throws\n\
+    \  `BadUserRequestException` (DataSourceServiceImpl.java:119-120) — both INSIDE\
+    \ the\n  transaction boundary.\n- **The invariant to pin**: when the `data_source`\
+    \ INSERT fails (ODDRN collision) AFTER\n  the token INSERT and the namespace INSERT\
+    \ have already executed in the same\n  transaction, the `@ReactiveTransactional`\
+    \ rollback MUST discard the token row and the\n  namespace row — leaving no orphans.\n\
+    \n**Why this matters**: orphan tokens are a confirmed accumulation hazard on the\
+    \ DELETE\npath (TEST-GAP-905 — the `token` table has no `deleted_at` and no GC).\
+    \ If the rollback\non a FAILED register did NOT discard the token row, every failed-register\
+    \ attempt would\nALSO leak a token — compounding the unbounded `token`-table growth\
+    \ AND scattering stale\nplaintext secrets at rest. The `@ReactiveTransactional`\
+    \ annotation is the only thing\nprotecting this invariant, and there is no test\
+    \ (Glob-verified — no\n`DataSourceControllerTest`, no `DataSourceServiceImplTest`).\
+    \ A regression removing the\nannotation, or splitting `create` into separately-committed\
+    \ writes, would silently start\nleaking token + namespace rows on every failed\
+    \ register.\n\n**Test gap shape**: a `@SpringBootTest` integration test that:\
+    \ (1) registers a data\nsource with ODDRN X (succeeds); (2) attempts a SECOND\
+    \ register with the SAME ODDRN X\nAND a never-seen `namespace_name` AND records\
+    \ the `token` / `namespace` table row counts\nbefore; (3) asserts the second register\
+    \ returns HTTP 400 (UniqueConstraintException);\n(4) asserts `SELECT COUNT(*)\
+    \ FROM token` is UNCHANGED from the pre-call count (no orphan\ntoken); (5) asserts\
+    \ `SELECT COUNT(*) FROM namespace WHERE name = <the never-seen name>`\nreturns\
+    \ 0 (the namespace INSERT rolled back). Pinned by probe P-041."
+  test_class: missing-integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-902.yaml
+- gap_id: TEST-GAP-903
+  behaviour: "**HIGH — `PUT /api/datasources/{data_source_id}` for a never-existed\
+    \ OR soft-deleted id\nMUST return a clean HTTP 404, NEVER a silent HTTP 200. This\
+    \ anti-silent-write guard is\nentirely untested — and the codebase contains a\
+    \ documented counter-example\n(`DataEntityServiceImpl.upsertDescription`) that\
+    \ deliberately silent-200s on a missing\nid, so a routine refactor copying that\
+    \ pattern would silently flip this endpoint.**\nMethod-level primary source from\
+    \ the batch-ZB `updateDataSource` controller-method\nsidecar:\n\n- `DataSourceServiceImpl.update`\
+    \ (DataSourceServiceImpl.java:68-83) loads the existing\n  row via `dataSourceRepository.getDto(id)`\
+    \ and applies an explicit\n  `.switchIfEmpty(Mono.error(new NotFoundException(\"\
+    Data source\", id)))`\n  (DataSourceServiceImpl.java:71-72) — the deliberate anti-silent-write\
+    \ guard. `getDto`\n  filters `deleted_at IS NULL` (per the `ReactiveDataSourceRepositoryImpl`\
+    \ sidecar), so\n  a soft-deleted id resolves to empty → the same 404.\n- `ControllerAdvice`\
+    \ maps `NotFoundException` → HTTP 404. The endpoint NEVER creates a\n  row — it\
+    \ is strictly an UPDATE-of-existing operation (sidecar `concepts.invariants`).\n\
+    - **The regression surface** (sidecar `gaps`): the same `getDto(...).switchIfEmpty(...)`\n\
+    \  shape is the guard `DataEntityServiceImpl.createMetadata` uses — and it is\
+    \ the guard\n  `DataEntityServiceImpl.upsertDescription` deliberately OMITS (the\
+    \ F-004 silent-200\n  finding). A regression that added a `switchIfEmpty(Mono.just(...))`\
+    \ fail-soft to\n  `update` — mirroring `DataEntityServiceImpl.incrementViewCount`\
+    \ — would convert the\n  clean 404 into a silent no-op with HTTP 200. Nothing\
+    \ tests the guard.\n\n**Why HIGH**: a silent-200-on-missing is the operator-cliff\
+    \ shape — an operator (or a\nscript) PUTting against a stale data-source id believes\
+    \ the edit landed (200 OK) when in\nfact no row was touched. The endpoint has\
+    \ ZERO direct test coverage (Glob-verified — no\n`DataSourceControllerTest`, no\
+    \ `DataSourceServiceImplTest`). The guard is one\n`switchIfEmpty(Mono.error(...))`\
+    \ line; the catalog-wide silent-UPDATE-on-missing pattern\nthe `DataEntityServiceImpl`\
+    \ sidecar tracks proves the codebase has BOTH the guarded and\nthe unguarded shape\
+    \ — exactly the condition under which an unguarded refactor lands\nunnoticed.\n\
+    \n**Test gap shape**: a `@SpringBootTest` / `WebTestClient` integration test that:\
+    \ (1)\nPUTs `/api/datasources/999999999` (a never-existed id) with a valid body\
+    \ → asserts HTTP\n404 (NotFoundException), NOT 200; (2) registers a data source,\
+    \ soft-deletes it via\n`DELETE /api/datasources/{id}`, then PUTs the same id →\
+    \ asserts HTTP 404 (the `getDto`\n`deleted_at IS NULL` filter excludes the soft-deleted\
+    \ row); (3) asserts NO `data_source`\nrow was mutated in either case (the WHERE-clause\
+    \ matched nothing). Pinned by probe P-042."
+  test_class: missing-integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-903.yaml
+- gap_id: TEST-GAP-904
+  behaviour: "**MEDIUM — `GET /api/datasources` has ZERO HTTP-tier coverage: the happy-path\
+    \ list\nresponse, the read-collaborative no-permission posture, and the `data_source.id\
+    \ ASC`\nordering contract are all unverified at the endpoint.** Method-level primary\
+    \ source from\nthe batch-ZB `getDataSourceList` controller-method sidecar:\n\n\
+    - **Happy-path** — `GET /api/datasources?page=1&size=10` returns HTTP 200 with\
+    \ a\n  `DataSourceList` (`items: List<DataSource>` + `page_info{total, has_next}`);\
+    \ each item\n  carries `id / name / oddrn / namespace / token`. The OpenAPI contract\
+    \ declares only the\n  `200` response (openapi.yaml:434-440). No test exercises\
+    \ this.\n- **Read-collaborative posture** — `GET /api/datasources` has NO entry\
+    \ in\n  `SecurityConstants.SECURITY_RULES` (Grep-confirmed — SecurityConstants.java:116-126\
+    \ has\n  only POST/PUT/DELETE rules for `/api/datasources*`). ANY authenticated\
+    \ user lists the\n  entire catalog (ids, ODDRNs, namespaces, masked tokens) with\
+    \ NO MANAGEMENT permission\n  and NO owner scope. This is an intentional posture\
+    \ (sidecar `implicit_adrs[1]`) but it\n  is untested — there is no parametrized\
+    \ auth-mode controller security test in the repo.\n- **Ordering** — `listDto`\
+    \ calls the 3-arg `jooqQueryHelper.paginate` which delegates to\n  the default\
+    \ overload `ORDER BY data_source.id ASC` (ReactiveDataSourceRepositoryImpl.java:62\n\
+    \  + JooqQueryHelper.java:42-45). The list is creation-order (ascending PK); the\
+    \ OpenAPI\n  spec states NO ordering. A maintainer switching to a name-ordered\
+    \ or recency-ordered\n  `paginate` overload changes operator-visible behaviour\
+    \ with no contract change and no\n  test to catch it.\n\n**Why MEDIUM**: this\
+    \ is the HTTP-floor regression net for the read endpoint of the\nDatasources management\
+    \ surface — no security or correctness defect, but the endpoint is\nentirely unguarded\
+    \ against a contract-altering refactor. The only protection underneath\nis the\
+    \ repository-tier `DataSourceRepositoryImplTest.listDtoTest`, which exercises\
+    \ the\nSQL but NOT the HTTP endpoint, NOT the auth posture, and NOT the operator-visible\n\
+    ordering. The id-ASC ordering is also a documented-feature gap (the management\
+    \ doc page\nis silent on it — see `docs_link_semantic.doc_drift_findings`).\n\n\
+    **Test gap shape**: a `@SpringBootTest` / `WebTestClient` integration test that:\
+    \ (1)\nregisters ≥3 data sources, `GET /api/datasources?page=1&size=10` → asserts\
+    \ 200, a\n`DataSourceList` with the expected `items` and `page_info`; (2) asserts\
+    \ the `items` are\nordered by ascending `id` (creation order) — NOT name-alphabetical,\
+    \ NOT recency; (3)\nauthenticates as a user holding NO `DATA_SOURCE_*` / MANAGEMENT\
+    \ permission and `GET\n/api/datasources` → asserts HTTP 200 with the FULL list\
+    \ (pinning the read-collaborative\nposture — the GET is intentionally not permission-gated).\
+    \ Pinned by probes P-034\n(ordering) and the happy-path floor."
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-904.yaml
+- gap_id: TEST-GAP-905
+  behaviour: "**MEDIUM — `DELETE /api/datasources/{id}` is an INCOMPLETE cleanup:\
+    \ a successful\nsoft-delete leaves the `token` row ORPHANED (the `token` table\
+    \ has no `deleted_at` and no\nGC path — every register/delete cycle leaks one\
+    \ plaintext-secret row) AND leaves the FTS\n`search_entrypoint` vector UNCLEARED\
+    \ (unlike the `update` path). Neither leak is tested.**\nMethod-level primary\
+    \ source from the batch-ZB `deleteDataSource` controller-method\nsidecar:\n\n\
+    - **Orphan token**: `data_source.token_id` is an FK to the `token` table\n  (V0_0_28__add_token.sql:13).\
+    \ The soft-delete sets only `data_source.deleted_at`\n  (ReactiveAbstractSoftDeleteCRUDRepository.java:106-110);\
+    \ it never deletes the `token`\n  row. The `token` table has NO `deleted_at` column\
+    \ (V0_0_28__add_token.sql:1-9) so the\n  token cannot even be soft-deleted, and\
+    \ NO code path GCs orphan tokens (no scheduled\n  job, no Flyway migration — Grep-confirmed).\
+    \ Each register-then-delete cycle leaks one\n  `token` row. The orphaned row is\
+    \ a stale 40-char plaintext secret at rest (`token.value\n  varchar(40)`) — a\
+    \ DB-level reader sees a credential that no longer maps to any live\n  data source.\n\
+    - **FTS uncleared**: `DataSourceServiceImpl.delete` (lines 85-96) calls NO\n \
+    \ `searchEntrypointRepository` method — unlike `update` (which calls\n  `updateSearchVectors`\
+    \ at lines 127-136). Whether a soft-deleted data source still\n  appears in catalog\
+    \ search depends entirely on whether the search query JOINs\n  `data_source` with\
+    \ a `deleted_at IS NULL` predicate; if it does not, the soft-deleted\n  source\
+    \ remains searchable.\n\n**Why MEDIUM**: neither leak is an active security breach\
+    \ or a correctness failure on the\nrequest path — they are slow accumulation hazards\
+    \ (unbounded `token`-table growth; stale\nsearch rows; stale plaintext secrets\
+    \ at rest). But `deleteDataSource` is a priority-1\ndata-mutation node and the\
+    \ `delete` endpoint + `DataSourceServiceImpl.delete` are entirely\nuncovered (Glob-verified\
+    \ — no `DataSourceControllerTest`, no `DataSourceServiceImplTest`).\nThis is the\
+    \ SAME orphan-token pattern batch W confirmed for Collector delete\n(TEST-GAP-675).\
+    \ A test would pin the current (leaking) state and surface the cleanup gap\nfor\
+    \ triage.\n\n**Test gap shape**: a `@SpringBootTest` integration test that: (1)\
+    \ registers a data\nsource (with no children), records its `token_id`; (2) `DELETE\
+    \ /api/datasources/{id}` →\n204; (3) asserts `SELECT COUNT(*) FROM token WHERE\
+    \ id = <token_id>` returns 1 — the\ntoken row PERSISTS, now unreferenced by any\
+    \ live data source (PIN the orphan-token leak);\n(4) asserts the `search_entrypoint`\
+    \ row for the data source still exists (PIN the\nuncleared-FTS leak). Pinned by\
+    \ probes P-046 (orphan token) and P-048 (FTS uncleared).\nWhen a cleanup fix lands\
+    \ (a token-delete on data-source delete, an FTS-clear), tests #3\nand #4 invert."
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-905.yaml
+- gap_id: TEST-GAP-906
+  behaviour: "**MEDIUM — `GET /api/datasources?query=` applies a name-PREFIX match\
+    \ to select page rows\nbut a name-SUBSTRING match to compute the total on an empty\
+    \ page — a `query` that matches\na data source by substring-but-not-prefix returns\
+    \ an EMPTY `items[]` labelled with a\nnon-zero `page_info.total` (\"0 of 1\").\
+    \ And `size` has no upper bound. Neither is tested.**\nMethod-level primary source\
+    \ from the batch-ZB `getDataSourceList` controller-method\nsidecar (this sidecar\
+    \ REFINES the class-level REFACTOR-425 framing):\n\n- **The query divergence (REFACTOR-425,\
+    \ refined)**: the PAGE branch uses\n  `ReactiveDataSourceRepositoryImpl.queryCondition`\
+    \ (line 151-160) →\n  `DATA_SOURCE.NAME.startsWithIgnoreCase(query)` — a name-PREFIX\
+    \ match. The empty-page\n  COUNT fallback uses `fetchCount(query)` →\n  `ReactiveAbstractCRUDRepository.listCondition`\
+    \ (line 240-249) →\n  `nameField.containsIgnoreCase(query)` — a name-SUBSTRING\
+    \ match. The\n  `JooqQueryHelper.pageifyResult` empty-records branch (lines 95-101)\
+    \ is the ONLY place\n  the contains-count is consulted. **The refinement vs the\
+    \ class sidecar**: when the page\n  is NON-empty the window-function `count().over()`\
+    \ uses the SAME `startsWith` predicate,\n  so populated pages have a CONSISTENT\
+    \ count — the defect surfaces ONLY on the empty-page\n  branch as a phantom `total`\
+    \ with no rows (\"0 of 1\"). Probe P-036 pins this refined\n  shape.\n- **Unbounded\
+    \ size**: the OpenAPI `SizeParam` declares NO `maximum` (components.yaml:4222-4229);\n\
+    \  `size` flows unclamped into SQL `LIMIT`. `size=Integer.MAX_VALUE` emits `LIMIT\n\
+    \  2147483647` — the whole catalog plus 2 LEFT JOINs materialised into one in-memory\
+    \ list.\n  `size=0` / negative `size` / `page=0` reach SQL as `LIMIT 0` / negative\
+    \ `LIMIT` /\n  negative `OFFSET` — the failure mode is not statically determinable.\n\
+    \n**Why MEDIUM**: the query divergence is an operator-confusing wrong-UX (a search\
+    \ bar that\nsays \"1 result\" then shows none) and the unbounded size is a low-probability\n\
+    unbounded-response surface (typical catalogs are small). Neither is a security\
+    \ or\ndata-loss defect. But both are operator-visible, both are undocumented (the\
+    \ management\ndoc page mentions no search behaviour and no size limit), and the\
+    \ endpoint has ZERO\nHTTP-tier coverage (Glob-verified — no `DataSourceControllerTest`).\
+    \ The only related\nrepository-tier test, `DataSourceRepositoryImplTest.listDtoNameQueryTest`,\
+    \ exercises a\n`query` that DOES match by prefix — it does NOT exercise the substring-not-prefix\n\
+    empty-page divergence.\n\n**Test gap shape**: a `@SpringBootTest` / `WebTestClient`\
+    \ test that: (1) registers a data\nsource named `my-snowflake-dev`; (2) `GET /api/datasources?query=snow`\
+    \ (substring, not\nprefix) → asserts `items` is EMPTY but `page_info.total` is\
+    \ non-zero (the \"0 of 1\"\nphantom — PIN the divergence per P-036); (3) `GET\
+    \ /api/datasources?query=my-snow`\n(prefix) → asserts `items` has 1 row and `page_info.total`\
+    \ is 1 (the consistent case);\n(4) boundary cases — `size=Integer.MAX_VALUE` accepted\
+    \ (LIMIT 2147483647), `size=0`,\n`size=-1`, `page=0` — assert the observed response\
+    \ shape (PIN the current behaviour per\nP-037). When REFACTOR-425 is fixed (one\
+    \ predicate for page AND count), test #2 inverts."
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-906.yaml
+- gap_id: TEST-GAP-907
+  behaviour: "**MEDIUM — `PUT /api/datasources/{data_source_id}/token` has two unverified\
+    \ error edges:\n(a) a non-existent `data_source_id` → 404 NotFoundException; (b)\
+    \ a data source whose\n`token_id` resolves to a missing/deleted `token` row →\
+    \ an OPAQUE HTTP 500 with no\nactionable message. The data-integrity edge (b)\
+    \ is the more interesting gap — the data\nsource cannot have its token rotated\
+    \ and the error does not say why.** Method-level\nprimary source from the batch-ZB\
+    \ `regenerateDataSourceToken` controller-method sidecar:\n\n- **404 path**: `DataSourceServiceImpl.regenerateDataSourceToken`\
+    \ (line 101) applies\n  `.switchIfEmpty(Mono.error(new NotFoundException(\"Data\
+    \ source\", id)))` — a non-existent\n  `data_source_id` returns a clean 404 via\
+    \ `ControllerAdvice` (ControllerAdvice.java:30-34).\n- **500 path (the data-integrity\
+    \ edge)**: if the resolved data source's `token` is null\n  (a `data_source` row\
+    \ whose `token_id` points at a missing or deleted token), then\n  `tokenGenerator.regenerateToken(dto.token().tokenPojo())`\
+    \ first NPEs on `dto.token()`\n  being null OR `TokenGeneratorImpl.regenerate`\
+    \ throws `RuntimeException(\"Token is null\")`\n  (TokenGeneratorImpl.java:45-47).\
+    \ Either way the operator gets an OPAQUE HTTP 500\n  \"Internal Server Error\"\
+    \ (the catch-all `ControllerAdvice` handler at lines 61-66) with\n  NO actionable\
+    \ message. `DataSourceServiceImpl.java:102` does `dto.token().tokenPojo()`\n \
+    \ with NO null guard on `dto.token()`.\n\n**Why MEDIUM**: the 404 path is a standard\
+    \ contract worth a regression pin. The 500 path\nis a genuine unguarded data-integrity\
+    \ edge — a data source can be left structurally\nun-rotatable and the operator\
+    \ gets no diagnostic. It is reachable: the platform's own\ndelete path leaves\
+    \ orphan tokens (TEST-GAP-905), and a data_source with a dangling\n`token_id`\
+    \ is exactly the shape that triggers this 500. Neither edge is tested\n(Glob-verified\
+    \ — no `DataSourceControllerTest`, no `DataSourceServiceImplTest`, no\n`TokenGeneratorImplTest`).\
+    \ Not HIGH — the 500 is a degenerate-data edge, not a normal\noperational path,\
+    \ and produces no data loss or security breach; but the opaque error is\nan operator-experience\
+    \ defect worth pinning so a future maintainer adds a clear message.\n\n**Test\
+    \ gap shape**: (a) a unit/integration test asserting `PUT /api/datasources/999999/token`\n\
+    returns HTTP 404 (NotFoundException); (b) a UNIT test on `TokenGeneratorImpl.regenerateToken(null)`\n\
+    asserting it throws `RuntimeException(\"Token is null\")`, plus a service/integration\
+    \ test\nseeding a `data_source` row whose `token_id` references no live token,\
+    \ then `PUT\n/api/datasources/{id}/token` and asserting HTTP 500 with the (currently\
+    \ opaque) body —\nPIN the current behaviour so a future maintainer who adds a\
+    \ clear 4xx + actionable\nmessage sees the test invert."
+  test_class: missing-unit
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-907.yaml
+- gap_id: TEST-GAP-908
+  behaviour: "**MEDIUM — `POST /api/datasources` AND `PUT /api/datasources/{id}` both\
+    \ return HTTP 200,\nwhile the OpenAPI spec declares HTTP 201 for both operations.\
+    \ A client generated from the\npublished spec asserts `status == 201` and treats\
+    \ a correct registration / update as a\nfailure. Two endpoints, the same spec-vs-implementation\
+    \ contract drift, no test.**\nMethod-level primary source from the batch-ZB `registerDataSource`\
+    \ and `updateDataSource`\ncontroller-method sidecars:\n\n- **register**: `DataSourceController.java:35`\
+    \ is `.map(ResponseEntity::ok)` — HTTP 200.\n  `openapi.yaml:453-455` declares\
+    \ `'201': The resource has been successfully created` for\n  operationId `registerDataSource`.\
+    \ The resource IS created (the `data_source` row is\n  inserted) but the status\
+    \ is 200, not the spec-declared 201.\n- **update**: `DataSourceController.java:44`\
+    \ is `ResponseEntity.ok()` — HTTP 200.\n  `openapi.yaml:481-487` declares `'201':\
+    \ The resource has been successfully updated` for\n  the PUT (a 201 for an update\
+    \ is itself unusual). The controller hard-codes 200.\n\n**Why MEDIUM**: this is\
+    \ a real, observable spec-vs-code drift — a generated client\n(TypeScript / Java\
+    \ / Python from the published OpenAPI) compiled to assert the declared\n201 will\
+    \ mis-detect every successful register and update as an error. It is not a\nsecurity\
+    \ or data-loss defect. The drift is SISTER to a class-wide pattern: Owner / Role\
+    \ /\nPolicy CRUD all share the same 200-vs-201 drift (TEST-GAP-227 / TEST-GAP-234\
+    \ /\nTEST-GAP-235 territory), and `IngestionController.postDataEntityList` shares\
+    \ it too —\nthis entry pins the DataSource-controller instance, which batch-W\
+    \ did NOT separately\ncapture. The endpoints have ZERO direct test coverage (Glob-verified\
+    \ — no\n`DataSourceControllerTest`).\n\n**Test gap shape**: a `@SpringBootTest`\
+    \ / `WebTestClient` contract-conformance test that:\n(1) `POST /api/datasources`\
+    \ with a valid body → asserts the ACTUAL status is 200 (PIN\nthe current behaviour)\
+    \ and asserts the OpenAPI spec at `openapi.yaml:453-455` declares\n201 (the asymmetry);\
+    \ (2) `PUT /api/datasources/{id}` with a valid body → asserts the\nACTUAL status\
+    \ is 200 and the spec at `openapi.yaml:481-487` declares 201. When the drift\n\
+    is resolved (either the controller is changed to return 201, or the spec is corrected\
+    \ to\n200), the test inverts — forcing an explicit decision."
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-908.yaml
+- gap_id: TEST-GAP-909
+  behaviour: "**HIGH (META — DataSourceController test-package anchor) — the ENTIRE\
+    \ DataSourceController\nendpoint surface (all 5 endpoints) AND its service `DataSourceServiceImpl`\
+    \ have ZERO\ndirect controller-tier OR service-tier tests. Five batch-ZB method-level\
+    \ sidecars\n(`getDataSourceList`, `registerDataSource`, `updateDataSource`, `deleteDataSource`,\n\
+    `regenerateDataSourceToken`) each report `covered_behaviours: []`. There is NO\n\
+    `DataSourceControllerTest.java`, NO `DataSourceServiceImplTest.java`, NO\n`TokenGeneratorImplTest.java`.\
+    \ The only DataSource-related test in the repo is\n`DataSourceRepositoryImplTest.java`\
+    \ — repository-tier only.** This META anchor records the\nAGGREGATE coverage hole;\
+    \ the individual behaviours are pinned by TEST-GAP-898 through\nTEST-GAP-908 (this\
+    \ batch) plus the existing TEST-GAP-749..753 (batch W).\n\n**The verified absence**\
+    \ (Glob this batch, under `odd-platform-api/src/test`):\n- `DataSourceControllerTest.java`\
+    \ — `Glob **/DataSourceControllerTest.java` returns NO\n  files. The HTTP perimeter\
+    \ of all 5 endpoints (RBAC gating, HTTP status, request/response\n  shape, the\
+    \ masked-vs-plaintext token rendering, the cascade-block, the REPLACE-not-MERGE\n\
+    \  semantics, the token-rotation cutover) is entirely unverified end-to-end.\n\
+    - `DataSourceServiceImplTest.java` — `Glob **/DataSourceServiceImplTest.java`\
+    \ returns NO\n  files. The service tier — `@ReactiveTransactional` atomicity on\
+    \ create / update /\n  delete, the missing `@ReactiveTransactional` on `regenerateDataSourceToken`,\
+    \ the\n  `switchIfEmpty(NotFoundException)` guards — has zero coverage.\n- `TokenGeneratorImplTest.java`\
+    \ — `Glob **/TokenGeneratorImplTest.java` returns NO files.\n  The `regenerateToken`\
+    \ / `regenerate(null)` / `generate` paths shared by BOTH the\n  data-source and\
+    \ the collector token surfaces are uncovered.\n- The only DataSource test, `DataSourceRepositoryImplTest.java`\
+    \ (under\n  `odd-platform-api/src/test/.../repository/`), is repository-tier —\
+    \ VERIFIED present this\n  batch: 7 test methods (`getDtoWithNamespaceTest`, `getDtoWithoutNamespaceTest`,\n\
+    \  `listDtoTest`, `listDtoNameQueryTest`, `getDtoByOddrnTest`, `getDtoByOddrnsTest`,\n\
+    \  `existsByNamespaceTest`). It exercises the SQL `listDto` / `getDto` exercises\
+    \ the\n  repository tier — NOT the HTTP endpoints, NOT the service-tier transaction\
+    \ posture,\n  NOT the auth gating.\n\n**Why a META anchor and not a duplicate\
+    \ of the 11 individual gaps**: this entry is the\nsingle backlog item the maintainer\
+    \ triages into the tests-pillar effort to STAND UP the\nDataSource API + service\
+    \ test classes. The individual TEST-GAP entries (898-908 this\nbatch + 749-753\
+    \ batch W) are the behaviour-level test methods; this META anchor is the\n\"create\
+    \ the test classes, wire the Testcontainers fixture, establish the RBAC + S2S\n\
+    ingestion test harness\" parent task. It parallels TEST-GAP-897 (the F-018 tag-management\n\
+    META anchor) and TEST-GAP-814 (the F-009 notification-subsystem META anchor) in\
+    \ role.\n\n**Operator-visible consequence**: every drift the batch-ZB sidecars\
+    \ surfaced — the\ndestructive token-rotation cutover, the DISABLED-bypass credential-rotation-hijack,\
+    \ the\nmasked-token one-line-flip leak surface, the REPLACE-not-MERGE silent field-wipe,\
+    \ the\ncascade-block, the orphan-token leak, the 201-vs-200 spec drift, the no-permission\
+    \ list\nposture — is SILENT in CI. A refactor touching ANY of them compiles and\
+    \ passes every\nexisting test. The Datasources management surface (P-08) is a\
+    \ fully-shipped operator +\nS2S-credential capability with NO controller-tier\
+    \ or service-tier regression net.\n\n**Test gap shape**: stand up the DataSource\
+    \ test classes — a `DataSource*Test` family in\n`odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`\
+    \ (HTTP-tier) and\n`.../service/` (service-tier) — with a Testcontainers `@SpringBootTest`\
+    \ base (reuse\n`BaseIntegrationTest` / `BaseIngestionTest`) and an RBAC-permission\
+    \ test fixture able to\ninject a caller holding a specified `DATA_SOURCE_CREATE`\
+    \ / `DATA_SOURCE_UPDATE` /\n`DATA_SOURCE_DELETE` / `DATA_SOURCE_TOKEN_REGENERATE`\
+    \ permission set, plus an\n`auth.type=DISABLED` context for the bypass cells.\
+    \ The package houses the test classes\nproposed by TEST-GAP-898..908 and TEST-GAP-749..753.\
+    \ This META gap is \"done\" when the\nclasses exist, the fixtures work, and at\
+    \ least the HTTP-floor smoke tests pass (200 on\nGET, register, update, regenerate;\
+    \ 204 on delete)."
+  test_class: missing-integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-909.yaml

@@ -9,3 +9,17 @@
   - **Proposed remedy**: Replace `RandomStringUtils.randomAlphanumeric(40)` with `RandomStringUtils.secure().nextAlphanumeric(40)` (commons-lang 3.16+) OR explicit `new SecureRandom()` injected into TokenGeneratorImpl. Add a unit test asserting the chosen RNG is `SecureRandom`-backed.
   - **Severity rationale**: HIGH — defeats the implicit precondition of the platform's S2S authentication model. The fix is one line; the absence of the fix has no defending rationale.
   - **Suggested backlog grouping**: `Token rotation hardening`
+
+---
+
+## STRENGTHENS — Batch ZB (2026-05-21) — the DataSource token-rotation path shares the SAME `TokenGeneratorImpl`; the weak-RNG gap is platform-wide across both credential families
+
+**New surfaced_by**:
+- `odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken.md:bugs_limitations_corner_cases.[5]` (HIGH) — "Token entropy uses `RandomStringUtils.randomAlphanumeric(40)` (`TokenGeneratorImpl.java:49`) which is NOT a cryptographically-secure RNG by default. A regenerated ingestion credential should be drawn from `SecureRandom`. (Same finding as the CollectorController sibling sidecar — the two share `TokenGeneratorImpl`.)"
+- `odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken.md:security.known_security_gaps` (HIGH) — confirms the same `TokenGeneratorImpl.java:49` weak-RNG site for the data-source token rotation.
+
+**Why a STRENGTHEN, not a new entry**: `DataSourceController.regenerateDataSourceToken` → `DataSourceServiceImpl.regenerateDataSourceToken` → `tokenGenerator.regenerateToken` reaches the EXACT same `TokenGeneratorImpl.java:49` line that `CollectorController.regenerateCollectorToken` reaches. There is one `TokenGeneratorImpl` bean; the weak-RNG gap is one code site serving both the Collector and the DataSource token families (and the registration paths via `generateToken`). The scope's title should be re-scoped on triage to "ODD token entropy (every `token` row — Collector + DataSource)". `regenerateDataSourceToken` also confirms `registerDataSource`'s `generateToken()` path hits the same generator. Support is now 2 endpoints across both credential families confirming one shared gap site.
+
+**Severity unchanged: HIGH** — one-line fix at `TokenGeneratorImpl.java:39,49`; fixing it remediates BOTH the Collector and the DataSource token surfaces simultaneously. Composes with ADR-CANDIDATE-017's batch-ZB strengthen (the shared-secret model is now confirmed platform-wide).
+
+---

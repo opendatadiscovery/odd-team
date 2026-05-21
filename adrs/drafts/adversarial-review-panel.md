@@ -8,6 +8,7 @@ related_drafts: ADR-DRAFT-agentic-code-ontology, ADR-DRAFT-feature-anchored-onto
 trigger_incident: "2026-05-21 maintainer review — after many ontology iterations, hand-picked spot-checks keep surfacing gaps the methodology's own probes (Type 4/6/7) did not. The methodology has no independent oracle: it is graded by the minds that built it, and it improves only by accreting layers (rev 2/3/4/5)."
 case_law: retrospectives/LSN-021-methodology-has-no-independent-oracle.md
 research: "adrs/drafts/research/adversarial-review-panel/ — PRIOR-ART, PITFALLS, COMPARISON, PROBES, SUMMARY (all 2026-05-21, HIGH confidence except PROBES thresholds MEDIUM)"
+revision_1: "2026-05-21 — explicit-target anchoring added after the maiden-run review (LSN-022). The panel measures the methodology against a written, improvable target.md (lineage/{repo}/meta-reviews/target.md); every expert + the chair anchor on it and reflect it through their axis (Rule 0 / target_lens / ## target). Generalized in APPROACH.md §16.2."
 ---
 
 # ADR-DRAFT: The Adversarial Review Panel

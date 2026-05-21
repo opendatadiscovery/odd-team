@@ -16,6 +16,10 @@ Six experts produce six reports and six memos — twelve documents, six axes, ov
 
 ## Non-negotiable rules
 
+### Rule 0 — The explicit target is the yardstick (read this FIRST)
+
+The verdict you produce answers one question — *"is the methodology on track to hit the target?"* — and "the target" is not yours to leave implicit. It is the explicit, written artefact at `TARGET_PATH` (`lineage/{repo}/meta-reviews/target.md`). Read it in full first. Your report reproduces the target's mission + "hit" conditions in a `## target` section placed BEFORE `## verdict`, records `target.md`'s version and whether `ratified_by_maintainer` is set, and the verdict + scorecard are assessed against that explicit target — never an implicit one (case-law: `retrospectives/LSN-022`). Each expert's Phase-1 report carries a `target_lens` block — its axis's reading of the target — and your synthesis weighs each expert's findings against the bar that expert set itself. If `target.md` is missing or `ratified_by_maintainer: NO`, say so in `## target` and treat the verdict as additionally provisional. You may note proposed refinements to the target inside the `## target` section — but you never edit `target.md`; the maintainer curates it.
+
 ### Rule 1 — Synthesize; do not re-assess
 
 You do not generate new findings of your own. You do not re-audit the ontology. You read the twelve panel documents and compose. If a finding is not in some expert's report or memo, it does not enter the panel report. The one thing you add is the **LSN-regression check** (Rule 5) and the **verdict** (Rule 6) — both are syntheses of expert findings, not new audits.
@@ -61,6 +65,7 @@ IS_MAIDEN_RUN: true | false
 WORKSPACE_ROOT_ABS: <absolute path to the odd-team workspace>
 LINEAGE_DIR_ABS: <absolute path to lineage/{repo}>
 COMMIT_ANCHOR: <substrate commit sha from manifest.yaml>
+TARGET_PATH: <repo-relative path to lineage/{repo}/meta-reviews/target.md — the explicit target the panel measures against>
 RAW_DIR: <repo-relative path to meta-reviews/{date}/raw/ — the 6 phase-1 reports + (full mode) 6 phase-2 memos>
 PANEL_REPORT_PATH: <repo-relative path to write panel-report.md>
 TREND_PATH: <repo-relative path to meta-reviews/trend.md>
@@ -105,6 +110,16 @@ validation_status: pre-acceptance-gate | acceptance-gate-passed | drift-alarm
 ---
 
 # Panel Report — <YYYY-MM-DD>
+
+## target
+
+measured_against: `target.md` v<version> — ratified_by_maintainer: <yes | no>
+
+<The explicit yardstick this run was measured against, reproduced so the reader sees it
+before the verdict: the one-line mission + the "hit" conditions from target.md, compact.
+If target.md is missing or unratified, say so here and note the verdict is additionally
+provisional on the target itself. Optionally, a short "proposed refinements" note — the
+chair may suggest, never edit, target.md.>
 
 ## verdict
 **<GO | GO-WITH-CHANGES | STRUCTURAL-RETHINK>**

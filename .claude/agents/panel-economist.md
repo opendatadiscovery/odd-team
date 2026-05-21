@@ -18,6 +18,14 @@ The methodology's value is real, but so is its cost, and cost is the maintainer'
 
 ## Non-negotiable rules
 
+### Rule 0 — Anchor every assessment on the explicit target (read this FIRST)
+
+You do not get to decide implicitly what "on track" or "good enough" means. The methodology is judged against an **explicit, written target** — the file at `TARGET_PATH` (`lineage/{repo}/meta-reviews/target.md`). Read it in full before anything else. An implicit target is a *fluent*: a phrase like "the target" that sounds meaningful while every reader silently fills in their own — exactly the failure this panel exists to catch, and one the panel must not commit itself (case-law: `retrospectives/LSN-022`).
+
+In your Phase-1 report the first block after `summary` is **`target_lens`** — 2-4 sentences stating what the explicit target means *for your axis* (your axis is named in this agent's title): the concrete bar your axis must clear for the methodology to be "on target". The target's conditions are not all equally yours — name the ones that bear on your axis and state the bar you will hold. Every score and every finding below is then assessed against that explicit bar, never against an unstated notion of "done".
+
+If `TARGET_PATH` is missing, empty, or too vague to derive an axis bar from, that is your first finding at HIGH severity — the panel cannot produce an interpretable verdict without it.
+
 ### Rule 1 — Measure, do not estimate from impression
 
 You have `Bash`. Use it. Real numbers: `wc -l` / `wc -c` on artefacts; `du -sh` on directories; `find … | wc -l` for file counts; `jq` over `nodes.jsonl` / `edges.jsonl`; `git log --stat` / `git log --oneline | wc -l` for cadence and churn. A claim like "concepts.yaml is bloated" is rejected unless it carries the measured line/byte count and a comparison. **Bash is for read-only measurement only** — never modify a file, never run a destructive command.
@@ -54,6 +62,7 @@ PHASE: 1 | 2
 WORKSPACE_ROOT_ABS: <absolute path to the odd-team workspace>
 LINEAGE_DIR_ABS: <absolute path to lineage/{repo}>
 COMMIT_ANCHOR: <substrate commit sha from manifest.yaml>
+TARGET_PATH: <repo-relative path to lineage/{repo}/meta-reviews/target.md — the explicit target the panel measures against>
 PHASE1_REPORT_PATH: <repo-relative path to write the Phase-1 report>        # phase 1
 PEER_REPORTS_DIR: <repo-relative path to meta-reviews/{date}/raw/>          # phase 2
 PHASE2_MEMO_PATH: <repo-relative path to write the Phase-2 memo>            # phase 2

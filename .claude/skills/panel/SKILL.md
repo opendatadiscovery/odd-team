@@ -42,6 +42,7 @@ RUN_DIR="$LINEAGE_DIR/meta-reviews/$DATE"
 3. **Substrate present.** `lineage/$REPO/manifest.yaml` must exist. Read `COMMIT_ANCHOR` = the substrate commit it records. If absent → abort: "no substrate for $REPO — run the extractor first."
 4. **Run dir.** `mkdir -p "$RUN_DIR/raw"`. If `$RUN_DIR/panel-report.md` already exists, this is a re-run for today — rename the prior `$DATE` dir to `$DATE-aN` before proceeding (do not silently overwrite a prior verdict).
 5. **Maiden-run + validation status.** `IS_MAIDEN_RUN` = true if no prior `meta-reviews/*/panel-report.md` exists. `VALIDATION_STATUS` = `acceptance-gate-passed` if `meta-reviews/validation/baseline.yaml` exists and records a pass; `drift-alarm` if the last validation gate raised an alarm; else `pre-acceptance-gate`.
+6. **Target.** `TARGET_PATH` is `lineage/$REPO/meta-reviews/target.md` — the explicit yardstick the panel measures against (per APPROACH.md §16.2). Pass it to every agent regardless. If the file is absent the run still proceeds, but every expert flags it (their Rule 0) and the chair marks the verdict provisional — surface a reminder that an explicit, maintainer-ratified `target.md` is required for an interpretable verdict.
 6. **Resumability.** If `$RUN_DIR/raw/phase1-*.md` already exist for all 6 experts (a prior interrupted run), skip Phase 1. If `phase2-*.md` also exist, skip Phase 2.
 
 ## Phase 1 — 6 experts, independent assessment, IN PARALLEL
@@ -69,6 +70,7 @@ REPO_ROOT_ABS: <REPO_ROOT>
 SPEC_REPO_ABS: <SPEC_REPO>
 LINEAGE_DIR_ABS: <LINEAGE_DIR>
 COMMIT_ANCHOR: <COMMIT_ANCHOR>
+TARGET_PATH: lineage/<REPO>/meta-reviews/target.md
 SPOT_CHECK_LEDGER_PATH: lineage/<REPO>/meta-reviews/spot-check-ledger.md
 PHASE1_REPORT_PATH: lineage/<REPO>/meta-reviews/<DATE>/raw/phase1-<role>.md
 ```
@@ -103,6 +105,7 @@ IS_MAIDEN_RUN: <true | false>
 WORKSPACE_ROOT_ABS: <WORKSPACE_ROOT>
 LINEAGE_DIR_ABS: <LINEAGE_DIR>
 COMMIT_ANCHOR: <COMMIT_ANCHOR>
+TARGET_PATH: lineage/<REPO>/meta-reviews/target.md
 RAW_DIR: lineage/<REPO>/meta-reviews/<DATE>/raw/
 PANEL_REPORT_PATH: lineage/<REPO>/meta-reviews/<DATE>/panel-report.md
 TREND_PATH: lineage/<REPO>/meta-reviews/trend.md

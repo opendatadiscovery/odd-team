@@ -98,6 +98,7 @@ Do *not* add an LSN for:
 | `LSN-019-file-analyser-describes-not-interrogates.md` | populated | added 2026-05-20 (rev 4 — the Stress Protocol) |
 | `LSN-020-activity-userids-filter-binds-to-owner-id-no-top-down-reflection.md` | populated | added 2026-05-21 (rev 5 — Category F + Layer-4b reflection) |
 | `LSN-021-methodology-has-no-independent-oracle.md` | populated | added 2026-05-21 (rev 6 — the Adversarial Review Panel) |
+| `LSN-022-panel-judged-against-implicit-target.md` | populated | added 2026-05-21 (rev 6 — explicit-target anchoring) |
 
 ## Index by gate / playbook informed
 

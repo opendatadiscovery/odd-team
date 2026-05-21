@@ -9,6 +9,7 @@ The panel is six expert subagents (on six orthogonal axes) + a chair, run in thr
 ```
 meta-reviews/
   README.md                  # this file
+  target.md                  # the explicit target the panel measures against — maintainer-owned, improvable
   trend.md                   # one scorecard row per run — the trajectory over time
   spot-check-ledger.md       # the Adversary's tested targets — TARGETS ONLY, no verdicts
   validation/                # the maiden-acceptance / periodic-drift gate (see validation/README.md)

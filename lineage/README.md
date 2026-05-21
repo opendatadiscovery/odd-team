@@ -127,7 +127,14 @@ jq -c 'select(.axis == "ui_shell" and .documents == null)' lineage/odd-platform/
 jq -c 'select(.kind == "config-key-consumer" and .metadata.prefix == "auth.s2s")' lineage/odd-platform/nodes.jsonl
 ```
 
-A SQLite read-mirror is on the roadmap (Phase 2/3) if jq stops being ergonomic for cross-axis joins. Today, two-tier diffability is the priority: JSONL for tools, rollups for human PR review.
+For semantic and cross-axis queries — "where does feature X live", "what depends on Y", "what is affected if I change Z" — the **derived graph query layer** (`adrs/drafts/graph-query-layer.md`, accepted; `APPROACH.md` §17) builds an ephemeral graph + vector index from these files and answers hybrid queries with bounded, fully-cited results:
+
+```bash
+uv run lineage-extractor query odd-platform "per-alert authorization gap"
+uv run lineage-extractor provenance odd-platform AlertServiceImpl.java
+```
+
+It runs in **shadow mode** — the grep/jq path above stays authoritative until the layer's maiden PROBES gate passes. See `lineage/_extractor/src/lineage_extractor/graph_query/README.md`. Two-tier diffability remains the priority for the canonical files: JSONL for tools, rollups for human PR review.
 
 ## Doc linkage (`@docs`)
 
@@ -152,5 +159,6 @@ See `lineage/PROBES.md`. The substrate's MVP is accepted only when (a) the seed 
 
 - `adrs/drafts/code-lineage-substrate.md` — the design (revision 2, research-backed)
 - `adrs/drafts/research/code-lineage-substrate/` — the research artefacts (STACK / SCHEMA / DOC-LINKAGE / PITFALLS / PROBES / SUMMARY)
+- `adrs/drafts/graph-query-layer.md` + `lineage/_extractor/src/lineage_extractor/graph_query/` — the derived graph query layer (accepted, shadow mode)
 - `retrospectives/LSN-013-research-punted-on-substrate-draft.md` — the case-law for this work
 - `backlog/docs/DOC-164.md` — MVP-scaffold tracking item

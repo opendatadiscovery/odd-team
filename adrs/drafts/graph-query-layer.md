@@ -1,9 +1,10 @@
 ---
 id: ADR-DRAFT-graph-query-layer
 title: "The derived graph query layer — an ephemeral, rebuilt-from-files graph + vector index for hybrid query"
-status: draft
+status: accepted
 date: 2026-05-21
-scope: workspace-meta (EXECUTES the second stage of feature-anchored-ontology.md principle 7's pre-registered two-stage deferral; updates APPROACH.md §9)
+accepted: 2026-05-21
+scope: workspace-meta (EXECUTES the second stage of feature-anchored-ontology.md principle 7's pre-registered two-stage deferral; updates APPROACH.md §9 + adds §17; corrects principle 7's threshold)
 related_drafts: ADR-DRAFT-agentic-code-ontology, ADR-DRAFT-feature-anchored-ontology, ADR-DRAFT-code-lineage-substrate, ADR-DRAFT-adversarial-review-panel
 trigger: "2026-05-21 — the Adversarial Review Panel's #1 CRITICAL finding: test-map/index.yaml at 1.26 MB ≈ 315k tokens = 157% of an agent's context-load limit; the flat-file index forces whole-index loading, so per-query context cost grows with total knowledge size. Querying is brittle Python scripts + hardcoded anchors."
 case_law: "lineage/odd-platform/meta-reviews/2026-05-21/panel-report.md (CRITICAL finding rank 1); feature-anchored-ontology.md principle 7 (the pre-registered trigger)."
@@ -91,6 +92,59 @@ The PROBES research defines a **five-family gate**: retrieval quality (recall@k 
 ## Migration
 
 Incremental, not big-bang: build the pipeline + query lib (build-steps 2-3), then **migrate one consumer end-to-end** (`registry-search`, or `/navigate`) and prove it beats the grep baseline (build-step-4) — the bridgehead. The Python `registry-shard` scripts and `index.yaml` files stay until the gate passes; then the machine-query path moves to the graph and the indices shrink to human aids.
+
+## Implementation status
+
+**Accepted and implemented 2026-05-21.** Build-steps 1-3 + 5 shipped; build-step 4
+(consumer cutover) is gated on the maiden PROBES run and stays deferred.
+
+**Shipped.** A `lineage_extractor.graph_query` package — `loaders` (canonical files
+→ typed records), `projector` (→ a `rustworkx` labeled property graph: 11 node
+labels, 11 of 13 relationship types, universal `source_file:source_line`
+provenance), `embedder` (section-granularity vectors via `fastembed`, embedding
+cache keyed `(text-hash, model-id)`, graph-only fallback), `graph_query` (the
+hybrid `query` / graph-only `traverse` / `provenance` facade), and `probe` (the
+PROBES family-1 gold-set harness). CLI: `lineage-extractor {graph-build, query,
+provenance, query-probe}`. The graph + vectors are git-ignored under
+`lineage/{repo}/graph/`. `fastembed` is an optional `embeddings` extra — the
+graph half ships without it.
+
+**Stack deviation — embedding model.** The Decision names EmbeddingGemma-300m; it
+is **not** in `fastembed`'s supported-model registry (verified 2026-05-21 — 30
+text models, EmbeddingGemma not among them). STACK and SCHEMA both flagged the
+model as a probe-time decision ("resolve it with a retrieval probe … rather than
+leaderboard averages"; SCHEMA open-question #3). The implementation therefore
+defaults to `BAAI/bge-small-en-v1.5` (MIT, 384-dim, retrieval-tuned,
+fastembed-native, deterministic on CPU) as a one-line `config` constant the
+embedding cache keys on — the maiden gold-set run settles the final choice, and
+`fastembed.add_custom_model` keeps EmbeddingGemma reachable without a code change.
+
+**Deferred to v0.2 (documented, not silent).** Two of the 13 SCHEMA relationship
+types — `CANONICALISES` (concept→concept) and `CONTRADICTS` (reflection→target) —
+need fuzzy prose parsing for marginal value; the other 11 wire in v0.1. A
+persistent graph-pickle cache (sub-second repeat queries within a session) is a
+clean follow-up; v0.1 rebuilds per invocation. A disk parse-cache was considered
+and not built — parsing the ~2,700 canonical files is a few seconds, and the
+embedding cache is the load-bearing one.
+
+**Measured (odd-platform substrate, 2026-05-21).** Graph: 3,547 nodes / 4,670
+edges / 265 unresolved-stub nodes / 4,377 section-granularity vectors; 10
+malformed-substrate files skipped and reported (conform-or-skip per SCHEMA §1).
+**Warm build 8.3 s, embedding-cache hit-rate 1.0** — the PROBES family-3
+no-op-reembed determinism check passes and warm is well inside the ≤30 s bar.
+**Cold build ~18 min**, which **exceeds** the PROBES family-3 ≤10 min cold-build
+threshold. PROBES marks that threshold an explicitly re-fittable reasoned
+starting point; the cold build is a one-time per-environment cost, and its
+embedding pass is CPU-bound and embarrassingly parallel — so the maiden run
+either re-fits the threshold or applies `fastembed`'s `parallel` workers (the
+clean speedup lever) / a tighter embed-text cap. 15/15 unit tests pass; all
+three query shapes return relevant, cited results on the live substrate.
+
+**Shadow mode.** The layer runs alongside the existing grep/Python query path. It
+replaces that path only when the five-family maiden gate passes — which needs the
+maintainer-authored `lineage/{repo}/query-gold-set.yaml` (a template ships;
+authoring the ~60 queries is a maintainer task, per PROBES "authored before … so
+it cannot be reverse-fitted").
 
 ## References
 

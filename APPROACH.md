@@ -881,10 +881,16 @@ The layer runs **in shadow** beside the grep/Python query path; it replaces that
 
 Copy the `lineage_extractor.graph_query` package verbatim — the loaders/projector/embedder/query facade are project-agnostic (they project whatever `nodes.jsonl` / `edges.jsonl` / sidecars / reducer `detail/` files the substrate produced). Author one project-specific artefact: `lineage/{repo}/query-gold-set.yaml`, the ~60-query maiden gate. The graph schema (node labels, relationship types) is the universal set; new emergent reducer axes get a new label + a join rule in the projector.
 
+### 17.6 The agentic retriever *(rev 7.1)*
+
+The query layer's first surface, the static `query()`, has a measured recall ceiling — it commits to one query formulation and one traversal shape before seeing a result, and the maiden gold-set gate failed it on all six classes. The fix is not constant-tuning; it is an **agentic retriever**. The `graph-retriever` subagent constructs a strong search query, runs a bounded retrieve→read-full-content→judge-gap→refine loop (≤10 iterations) — each refinement *discriminates away* from returned-but-wrong nodes (LLM relevance feedback) — traverses neighbours at a depth it chooses per-situation, and converges on a cited answer set. As a side-channel it emits structured *refinement suggestions* for stale / thin / mis-described nodes to `lineage/{repo}/retrieval-feedback/` — a substrate-improvement queue future enrichment batches consume — while staying strictly read-only on the graph. The `graph_query` library stays the deterministic tool layer (CLI primitives `graph-search` / `graph-node` / `graph-neighbours` / `graph-traverse`); the subagent supplies the intelligence; no external LLM (it is a Claude Code subagent). It supersedes the grep-based `registry-search`. Design: `adrs/drafts/agentic-graph-retriever.md`; invoked via `/retrieve`.
+
 ### Cross-references
 
 - `adrs/drafts/graph-query-layer.md` *(rev 7, accepted)* — the decision, the LSN-016 reconciliation, the stack, the residual risks, the implementation status.
+- `adrs/drafts/agentic-graph-retriever.md` *(rev 7.1)* — the agentic retriever: the iterative loop, adaptive traversal, the suggest-don't-mutate feedback loop.
 - `adrs/drafts/research/graph-query-layer/` — STACK, PRIOR-ART, SCHEMA, PITFALLS, PROBES, SUMMARY.
+- `.claude/agents/graph-retriever.md` + `.claude/skills/retrieve/SKILL.md` — the retriever subagent + the `/retrieve` skill.
 - `lineage/_extractor/src/lineage_extractor/graph_query/` — the package: `loaders`, `projector`, `embedder`, `graph_query`, `probe`, `config`.
 - `lineage/_extractor/src/lineage_extractor/graph_query/README.md` — build / query / the ephemeral-vs-canonical contract.
 - `feature-anchored-ontology.md` principle 7 — the pre-registered two-stage deferral this layer executes; its "5 MB" threshold is corrected there.

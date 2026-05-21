@@ -15,3 +15,11 @@ Every target the `panel-adversary` expert has spot-checked, across all runs. The
 | 2026-05-21 | tsquery-operator-injection invariant — ftsCondition facet call-site enumeration | negative-space |
 | 2026-05-21 | PostgreSQLLeaderElectionManagerImpl#acquire — advisory-lock leader election | random-walk |
 | 2026-05-21 | spring.session.timeout = -1 + session.provider IN_MEMORY (application.yml) | negative-space |
+| 2026-05-21 | V0_0_85 — internal_description varchar(255)→unbounded column-width migration | negative-space |
+| 2026-05-21 | ReactiveLineageRepositoryImpl.lineageCte — recursive-CTE depth/cycle bound | boundary |
+| 2026-05-21 | FileServiceImpl.uploadFileChunk — chunk-index handling + non-FilePart rejection | capability |
+| 2026-05-21 | WebhookNotificationSender.send — outbound webhook request shape (headers/signing/status) | random-walk |
+| 2026-05-21 | TokenGeneratorImpl.generate/regenerate — collector ingestion-token RNG source | negative-space |
+| 2026-05-21 | SearchServiceImpl.getFacets/getFilterOptions — faceted-search filter enumeration | capability |
+| 2026-05-21 | helpers.ts bytesToKb/bytesToMb — file-size unit conversion (SI vs binary) | random-walk |
+| 2026-05-21 | TokenGeneratorImpl.regenerateToken — token rotation in-place row mutation / no audit | boundary |

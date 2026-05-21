@@ -72,7 +72,7 @@ Do *not* add an LSN for:
 - A typo or local oversight that didn't reflect a structural gap
 - A duplicate of an existing LSN — extend the existing one with new references instead.
 
-## Files in this directory (status as of 2026-05-01)
+## Files in this directory (status as of 2026-05-21)
 
 | File | Status | Phase |
 |---|---|---|
@@ -94,6 +94,11 @@ Do *not* add an LSN for:
 | `LSN-015-intuition-authored-playbook.md` | populated | Phase 7 — playbook authoring discipline |
 | `LSN-016-heuristic-substrate-no-semantic-content.md` | populated | added 2026-05-08 (paradigm pivot — heuristic substrate vs agentic ontology) |
 | `LSN-017-per-node-scan-cannot-see-cross-layer-user-effects.md` | populated | added 2026-05-19 (methodology pivot — entry-point + feature-flow + 4-class test matrix) |
+| `LSN-018-reducer-contradiction-no-coherence-check.md` | populated | added 2026-05-19 (coherence-sweep pre-commit anomaly detector) |
+| `LSN-019-file-analyser-describes-not-interrogates.md` | populated | added 2026-05-20 (rev 4 — the Stress Protocol) |
+| `LSN-020-activity-userids-filter-binds-to-owner-id-no-top-down-reflection.md` | populated | added 2026-05-21 (rev 5 — Category F + Layer-4b reflection) |
+| `LSN-021-methodology-has-no-independent-oracle.md` | populated | added 2026-05-21 (rev 6 — the Adversarial Review Panel) |
+| `LSN-022-panel-judged-against-implicit-target.md` | populated | added 2026-05-21 (rev 6 — explicit-target anchoring) |
 
 ## Index by gate / playbook informed
 

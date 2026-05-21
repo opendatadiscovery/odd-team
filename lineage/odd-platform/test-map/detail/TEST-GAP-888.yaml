@@ -1,0 +1,54 @@
+gap_id: TEST-GAP-888
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java DatasetFieldController controller-method:updateDatasetFieldTags"
+pillars_affected: [P-01, P-08, P-09]
+surfaced_by:
+  - "odd-platform__java__DatasetFieldController__controller-method__updateDatasetFieldTags.md:tests_coverage_semantic.uncovered_behaviours.[Parent-scoped authorization — no test asserts that a caller WITHOUT DATASET_FIELD_TAGS_UPDATE on the dataset field's PARENT data entity receives 403]"
+  - "odd-platform__java__DatasetFieldController__controller-method__updateDatasetFieldTags.md:tests_coverage_semantic.uncovered_behaviours.[The delete-then-recreate INTERNAL replace-all semantic — no test verifies that calling with tags:[] removes all internal dataset-field tag relations, nor that EXTERNAL_STATISTICS relations survive a call]"
+behaviour: |-
+  **HIGH — `PUT /api/datasetfields/{dataset_field_id}/tags` (updateDatasetFieldTags) carries two non-trivial, zero-coverage contracts: (1) PARENT-SCOPED authorization — the `DATASET_FIELD_TAGS_UPDATE` permission (a `DATA_ENTITY`-typed enum member) is evaluated against the dataset field's OWNING data entity, NOT the field itself, after a 4-table join resolves `dataset_field -> dataset_structure -> dataset_version -> data_entity`; (2) the delete-then-recreate replace-all is scoped to `origin = 'INTERNAL'` ONLY — EXTERNAL and EXTERNAL_STATISTICS (ingestion-sourced, dataset-statistics-derived) relations MUST survive a UI/API call. Neither contract is asserted anywhere.** Method-level primary source from the batch-X-TAGGING `updateDatasetFieldTags` controller-method sidecar:
+
+  - **Parent-scoped auth resolution**: `SecurityConstants.java:288-290` registers `new SecurityRule(DATASET_FIELD, PathPatternParserServerWebExchangeMatcher("/api/datasetfields/{dataset_field_id}/tags", PUT), DATASET_FIELD_TAGS_UPDATE)`. `DatasetFieldResourceExtractor.extractResourceId` (`:20-27`) chains `.flatMap(datasetFieldRepository::getDataEntityIdByDatasetFieldId)` — the SQL joins `dataset_field -> dataset_structure -> dataset_version -> data_entity` (`ReactiveDatasetFieldRepositoryImpl.java:116-125`). `DATASET_FIELD_TAGS_UPDATE` is `DATA_ENTITY`-typed (`PolicyPermissionDto.java:32`). The caller's Policies are evaluated against the PARENT data entity.
+  - **The INTERNAL-only replace-all**: `DatasetFieldServiceImpl.updateDatasetFieldTags` calls `deleteDatasetFieldInternalRelations(datasetFieldId)` first (`:124`) — an unconditional `DELETE FROM tag_to_dataset_field WHERE dataset_field_id = ? AND origin = 'INTERNAL'` (`ReactiveTagRepositoryImpl.java:289-295`). The `TagOrigin` enum has three members — `INTERNAL`, `EXTERNAL`, `EXTERNAL_STATISTICS` (`TagOrigin.java:3-7`). EXTERNAL_STATISTICS relations are written by the ingestion path `DatasetFieldServiceImpl.updateFieldsTags` from `DataSetFieldStat.getTags()` (`:191-231`) and MUST survive this UI call.
+
+  **Two distinct sub-behaviours, both unpinned:**
+  - **Parent-scoped 403** — a caller WITHOUT `DATASET_FIELD_TAGS_UPDATE` on the dataset field's PARENT data entity must get 403; a caller WITH it (admin or `dataEntity:owner`-conditional grant scoped to the parent) gets 200. The `getDataEntityIdByDatasetFieldId` resolution returning the WRONG parent would be an authorization bypass — and nothing asserts the resolution returns the right parent. This is a non-trivial multi-join resolution path with zero coverage.
+  - **EXTERNAL_STATISTICS preservation** — `PUT` with `tags: ['ui-tag']` on a field that ALSO has an ingested EXTERNAL_STATISTICS tag relation must end with `{ui-tag (INTERNAL), <ingested> (EXTERNAL_STATISTICS)}`. A regression broadening the `deleteDatasetFieldInternalRelations` filter (dropping the `origin = 'INTERNAL'` predicate) would silently destroy ingested-statistics tag relations on every UI save — a cross-pillar (ingestion vs UI) ownership-contract break.
+
+  **Why HIGH**: parent-scoped authorization is a non-trivial resolution path — an operator authoring a `dataEntity:owner` Policy cannot tell from the docs that granting it for a data entity also grants tag-edit on all of that entity's dataset fields; a resolution bug is an authorization bypass. The EXTERNAL_STATISTICS carve-out is the line that defines what 'replace-all' means here; without a test, a filter-broadening regression destroys ingested data silently.
+
+  **Test gap shape**: a `WebTestClient` security + integration test asserting (a) a caller WITHOUT `DATASET_FIELD_TAGS_UPDATE` on the parent data entity gets 403; (b) a caller WITH a `dataEntity:owner` grant on the parent gets 200; (c) `PUT` `tags: []` removes all INTERNAL relations but EXTERNAL_STATISTICS relations survive; (d) the `getDataEntityIdByDatasetFieldId` join resolves to the correct parent (a field of data entity A is NOT editable by a caller scoped only to data entity B). The current state is PINNED — a filter-broadening or resolution regression fails the test.
+test_class: missing-security
+criticality_rationale: |-
+  HIGH per Rule 3: the updateDatasetFieldTags sidecar rates the parent-scoped authorization AND the INTERNAL-replace-all behaviours HIGH. The parent-scoped resolution is an authorization-bypass surface if the join resolves wrong; the EXTERNAL_STATISTICS carve-out protects ingested data from silent destruction. F-018's drift_class_summary carries the dataset-field-relation facets. Not CRITICAL — no confirmed bypass exists today (the SecurityRule + resolver ARE wired); the gap is the absence of a regression catcher for a non-trivial multi-join resolution. pillars_affected len 3 (P-01, P-08, P-09); cross-pillar bump bounded by the sidecar's HIGH — HIGH stands.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DatasetFieldTagParentScopedAuthTest.java"
+  name: "updateDatasetFieldTags_authScopesToParentDataEntity_replaceAllPreservesExternalStatistics"
+evidence:
+  - "updateDatasetFieldTags sidecar says (tests_coverage_semantic.uncovered_behaviours.[parent-scoped authorization]): 'no test asserts that a caller WITHOUT DATASET_FIELD_TAGS_UPDATE on the dataset field's PARENT data entity receives 403; no test asserts the dataEntity:owner-conditional grant resolves against the parent entity correctly; no test asserts the dataset-field-to-data-entity resolution (getDataEntityIdByDatasetFieldId) returns the right parent.' criticality HIGH"
+  - "updateDatasetFieldTags sidecar says (tests_coverage_semantic.uncovered_behaviours.[INTERNAL replace-all]): 'The delete-then-recreate INTERNAL replace-all semantic — no test verifies that calling with tags:[] removes all internal dataset-field tag relations, nor that EXTERNAL_STATISTICS relations survive a call.' criticality HIGH; note: 'The origin = INTERNAL delete filter is the line that defines what replace-all means here; it is not asserted in code.'"
+  - "updateDatasetFieldTags sidecar says (implicit_adrs): 'Parent-scoped authorization for dataset-field writes — the DATASET_FIELD authorization-manager type resolves a dataset-field id to its owning data-entity id before evaluating any permission. ... dataset fields are not independently authorizable resources — they inherit their parent data entity's Policy scope.' confidence HIGH"
+  - "Verified at primary source via the sidecar: SecurityConstants.java:288-290 (the DATASET_FIELD SecurityRule) + DatasetFieldResourceExtractor.java:20-27 (the resolve-to-parent chain) + ReactiveTagRepositoryImpl.java:289-295 (deleteDatasetFieldInternalRelations with the origin = INTERNAL filter) + TagOrigin.java:3-7 (the three-member enum)"
+cross_references:
+  - "lineage/odd-platform/probes/P-030.yaml (the dataset-field relation probe — sister to TEST-GAP-887; the EXTERNAL_STATISTICS-survival assertion can ride the same probe fixture)"
+  - "feature-flows:F-018 — the dataset-field tag write path is one of three side-channels into the global tag directory"
+  - "TEST-GAP-887 (sister batch-X-TAGGING CRITICAL — the unset-origin relation-INSERT on the SAME endpoint; together they cover the write path's data-shape AND the auth + carve-out contracts)"
+  - "TEST-GAP-728 (existing batch-V — DatasetFieldController SecurityConstants wiring-bug family; this endpoint's parent-scoped rule is a sibling SecurityRule worth co-reviewing)"
+related_features: [F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging", "P-09:F-001"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `DatasetFieldTagParentScopedAuthTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Five test methods:
+  1. `updateDatasetFieldTags_callerWithoutParentDataEntityPermission_returns403` — caller with NO `DATASET_FIELD_TAGS_UPDATE` on the parent data entity; `PUT`; assert 403.
+  2. `updateDatasetFieldTags_callerWithParentScopedGrant_returns200` — caller with a `dataEntity:owner`-conditional `DATASET_FIELD_TAGS_UPDATE` on the parent; `PUT`; assert 200.
+  3. `updateDatasetFieldTags_callerScopedToDifferentDataEntity_returns403` — caller authorized for data entity B's fields; `PUT` on a field of data entity A; assert 403. PINS that `getDataEntityIdByDatasetFieldId` resolves to the correct parent.
+  4. `updateDatasetFieldTags_emptyList_removesInternalButPreservesExternalStatistics` — seed a field with one INTERNAL relation AND one EXTERNAL_STATISTICS relation; `PUT` `{"tags":[]}`; assert the INTERNAL relation is gone AND the EXTERNAL_STATISTICS relation survives.
+  5. `updateDatasetFieldTags_replaceAll_doesNotTouchExternalStatistics` — seed an EXTERNAL_STATISTICS relation; `PUT` `{"tags":["ui-tag"]}`; assert the field ends with `{ui-tag (INTERNAL), <ingested> (EXTERNAL_STATISTICS)}`.
+
+  Pair with a DOC-NNN: document that `DATASET_FIELD_TAGS_UPDATE` resolves against the dataset field's PARENT data entity (so granting it for a data entity grants tag-edit on all its fields).
+batch: 2026-05-21-X-TAGGING
+feature_id: F-018

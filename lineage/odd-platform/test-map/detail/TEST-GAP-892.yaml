@@ -1,0 +1,49 @@
+gap_id: TEST-GAP-892
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java TagController controller-method:updateTag"
+pillars_affected: [P-01, P-08]
+surfaced_by:
+  - "odd-platform__java__TagController__controller-method__updateTag.md:tests_coverage_semantic.uncovered_behaviours.[updateTag response-shape — assert the returned Tag body's external / usedCount fields]"
+  - "odd-platform__java__TagController__controller-method__updateTag.md:bugs_limitations_corner_cases.[updateTag's response Tag omits external and usedCount]"
+behaviour: |-
+  **MEDIUM — the `PUT /api/tags/{tag_id}` (updateTag) response body is a `Tag` with `external` and `usedCount` UNPOPULATED (null/absent). `TagServiceImpl.update` ends with `.map(tagMapper::mapToTag)` applied to a bare `TagPojo` (`:54`); the `mapToTag(TagPojo)` overload (`TagMapper.java:26`) can only map `id, name, important` because `TagPojo` has no `usedCount` or `external` field. The OpenAPI `Tag` schema declares `external` and `usedCount` — so a consumer of `PUT /api/tags/{tag_id}` receives those two fields as null, inconsistent with `getPopularTagList`'s `Tag` items (mapped from `TagDto` via the `mapToTag(TagDto)` overload, which DOES populate them). The `mapToTag(TagDto)` overload is AVAILABLE but unused on this path.** Method-level primary source from the batch-X-TAGGING `updateTag` controller-method sidecar:
+
+  - `TagServiceImpl.update` (`:54`): terminal `.map(tagMapper::mapToTag)` on a bare `TagPojo`.
+  - `TagMapper.java:26`: the `mapToTag(TagPojo)` overload — maps `id, name, important` ONLY (`TagPojo` lacks `usedCount` / `external`).
+  - `TagMapper.java:23-24`: the `mapToTag(TagDto)` overload — DOES populate `external` and `usedCount` (used by `listMostPopular`).
+  - The OpenAPI `Tag` schema (`components.yaml:302-320`) declares `id, name, important, external, usedCount` — so the `updateTag` response under-fills the declared schema (LESS than declared, not over-exposed).
+
+  **Operator-visible consequence**: a UI that re-renders a tag chip from the `updateTag` response loses the usage count and the `external` flag (the chip would show no usage badge and lose its Collector-owned indicator until a `getPopularTagList` refresh). A generated client typed against the OpenAPI `Tag` schema gets two null fields it expects to be populated. Cross-endpoint inconsistency: the SAME `Tag` JSON shape is fully populated by `GET /api/tags` and partially populated by `PUT /api/tags/{id}`.
+
+  **Why this is a real contract gap, not cosmetic**: the OpenAPI schema is the published contract; a partial-fill is a silent spec-vs-code divergence. The fix is trivial (use the available `mapToTag(TagDto)` overload) but no test pins the current behaviour OR the corrected behaviour.
+
+  **Test gap shape**: a `WebTestClient` / `@SpringBootTest` test asserting the `updateTag` response body's `external` and `usedCount` fields — pinning the CURRENT behaviour (both null/absent) so a future maintainer switching to the `mapToTag(TagDto)` overload makes a coordinated, test-visible change.
+test_class: missing-edge-case
+criticality_rationale: |-
+  MEDIUM per Rule 3: the updateTag sidecar rates this MEDIUM (bugs_limitations_corner_cases severity MEDIUM). The functional impact is bounded — the write succeeds, only the response body under-fills two fields; no security or data-loss dimension. F-018 carries no aggregate severity that would lift this. It is a spec-vs-code shape drift on a write response. pillars_affected len 2; no cross-pillar bump (the gap is wholly within the tagging feature's API surface). MEDIUM stands.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/TagUpdateResponseShapeTest.java"
+  name: "updateTag_responseBodyOmitsExternalAndUsedCount_pinsPartialFillVsOpenApiSchema"
+evidence:
+  - "updateTag sidecar says (tests_coverage_semantic.uncovered_behaviours): 'updateTag response-shape — assert the returned Tag body's external / usedCount fields (the mapToTag(TagPojo) overload leaves them null; a consumer relying on them gets null).' criticality MEDIUM"
+  - "updateTag sidecar says (bugs_limitations_corner_cases): 'updateTag's response Tag omits external and usedCount — TagServiceImpl.update ends with .map(tagMapper::mapToTag) applied to a bare TagPojo (TagServiceImpl.java:54); the mapToTag(TagPojo) overload (TagMapper.java:26) maps only id, name, important because TagPojo has no usedCount or external field. The OpenAPI Tag schema declares external and usedCount, so a consumer of PUT /api/tags/{tag_id} receives those two fields as null/absent — inconsistent with getPopularTagList's Tag items (mapped from TagDto via the mapToTag(TagDto) overload at TagMapper.java:23-24, which DOES populate them).' severity MEDIUM"
+  - "Verified at primary source via the sidecar: TagServiceImpl.java:54 (.map(tagMapper::mapToTag) on a bare pojo) + TagMapper.java:23-26 (the two overloads — TagDto populates external/usedCount, TagPojo does not)"
+cross_references:
+  - "feature-flows:F-018 — the Tag response-shape contract is part of the tagging feature's API surface"
+  - "TEST-GAP-893 (sister batch-X-TAGGING — the createTag/updateTag status-code drift is the OTHER spec-vs-code divergence on the same write endpoints; this gap is the response-BODY divergence, that one the status-CODE divergence)"
+  - "REFACTOR-NNN candidate: switch TagServiceImpl.update's terminal map to the mapToTag(TagDto) overload (re-read the tag via getDto after persist) so the response matches the OpenAPI Tag schema"
+related_features: [F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `TagUpdateResponseShapeTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Two test methods:
+  1. `updateTag_responseBody_omitsExternalAndUsedCount_pinsCurrentPartialFill` — `PUT /api/tags/{id}` on a tag that HAS usage relations; assert the response body's `usedCount` is null/absent and `external` is null/absent (the current `mapToTag(TagPojo)` behaviour). PIN the current state.
+  2. `getPopularTagList_responseBody_populatesExternalAndUsedCount_documentsTheInconsistency` — `GET /api/tags`; assert the same `Tag` JSON shape DOES carry `usedCount` and `external` populated. Co-locating these two tests documents the cross-endpoint inconsistency.
+
+  Pair with REFACTOR-NNN: switch `TagServiceImpl.update`'s terminal map to the `mapToTag(TagDto)` overload (re-read via `getDto` after persist). When the fix lands, test #1 inverts to assert the fields ARE populated, matching the OpenAPI `Tag` schema and `getPopularTagList`.
+batch: 2026-05-21-X-TAGGING
+feature_id: F-018

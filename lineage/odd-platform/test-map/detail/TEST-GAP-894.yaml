@@ -1,0 +1,59 @@
+gap_id: TEST-GAP-894
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java TagController controller-method:createTag"
+  - "odd-platform java TagController controller-method:updateTag"
+  - "odd-platform java TermController controller-method:createTermTagsRelations"
+  - "odd-platform java DatasetFieldController controller-method:updateDatasetFieldTags"
+pillars_affected: [P-01, P-08]
+surfaced_by:
+  - "odd-platform__java__TagController__controller-method__createTag.md:bugs_limitations_corner_cases.[No tag-name validation on createTag beyond OpenAPI type: string]"
+  - "odd-platform__java__TagController__controller-method__updateTag.md:bugs_limitations_corner_cases.[No request-body validation on the tag name beyond OpenAPI type: string]"
+  - "odd-platform__java__TermController__controller-method__createTermTagsRelations.md:bugs_limitations_corner_cases.[No length / character-set / whitespace validation on tag_name_list items]"
+  - "odd-platform__java__DatasetFieldController__controller-method__updateDatasetFieldTags.md:bugs_limitations_corner_cases.[No length / character-set / whitespace validation on tags items]"
+behaviour: |-
+  **MEDIUM — NONE of the four tag-write surfaces (`createTag` direct create, `updateTag` rename, `createTermTagsRelations` term-tag side-channel, `updateDatasetFieldTags` dataset-field side-channel) validates the tag name beyond OpenAPI `type: string`. `TagFormData.name` / `TagsFormData.tag_name_list[]` / `DatasetFieldTagsUpdateFormData.tags[]` are all declared `type: string` with NO `pattern`, `minLength`, or `maxLength`; there is no DB-level `CHECK` constraint on `tag.name`. Empty-string, whitespace-only, control-character, leading/trailing-whitespace, homoglyph-variant, and unbounded-length tag names are accepted into the global `tag` directory — which `getPopularTagList` (`GET /api/tags`) renders to EVERY authenticated user.** Method-level primary source from the four batch-X-TAGGING controller-method sidecars:
+
+  - `createTag` sidecar: `TagFormData.name` declared `type: string` with no `pattern`/`minLength`/`maxLength` (`components.yaml:340-345`); no DB `CHECK` on `tag.name`. `bulkCreate` passes names verbatim into `TagPojo`.
+  - `updateTag` sidecar: same — a rename to an empty/whitespace/control-char/unbounded name is accepted; the renamed tag renders to every user on the popular-tags surface AND propagates into FTS vectors.
+  - `createTermTagsRelations` sidecar: `TagsFormData.tag_name_list` items declared `array of type: string` (`components.yaml:2215-2218`) with no per-item constraint; `TermServiceImpl.upsertTags` does not trim/normalise; `divideTagsByExistence` passes names verbatim into `new TagPojo().setName(n)` (`TagServiceImpl.java:155`). `[' tag ', 'tag']` creates two distinct directory rows.
+  - `updateDatasetFieldTags` sidecar: `DatasetFieldTagsUpdateFormData.tags` declared `array of type: string` (`components.yaml:1830-1833`) with no `maxLength`/`minLength`/`pattern` and no `maxItems`; the service does not trim/normalise. `tags: [' x ', 'x']` resolves to two distinct directory tags.
+
+  **The shared root**: all four paths converge on the same un-validating directory write — `createTag` -> `bulkCreate` directly; the three side-channels via `getOrCreateTagsByName` -> `divideTagsByExistence` -> `bulkCreate`. None trims, normalises, or length-bounds. The global `tag` directory accumulates typos, whitespace-padded duplicates, homoglyph variants, and free-text junk over the deployment lifetime.
+
+  **Operator-visible consequence**: the controlled-vocabulary surface (Management -> Tags) is not actually controlled — any of four write paths can pollute it with garbage names. A homoglyph or whitespace-variant duplicate (`PII` vs `PII ` vs `РΙΙ`) fragments the vocabulary; an empty-string tag renders as an invisible chip; an unbounded name is a mild DoS / UI-layout hazard.
+
+  **Test gap shape**: a `WebTestClient` / `@SpringBootTest` test asserting, for EACH of the four write paths, the CURRENT behaviour for pathological inputs — empty string, whitespace-only, leading/trailing whitespace, control characters, a very long string. The test pins whatever the current behaviour is (per the sidecars: accepted, no validation) so a future maintainer adding validation makes a coordinated, test-visible change across all four surfaces consistently.
+test_class: missing-edge-case
+criticality_rationale: |-
+  MEDIUM per Rule 3: the createTag and updateTag sidecars rate this LOW; the createTermTagsRelations and updateDatasetFieldTags sidecars rate it MEDIUM. The aggregate is MEDIUM — four independent un-validating write paths into a SHARED global vocabulary surface, rendered to every authenticated user. F-018's drift_class_summary carries `tag_name_no_validation_no_length_cap_no_charset_filter`. Not HIGH — no security boundary or data loss; vocabulary pollution is a quality/UX degradation, recoverable by an operator cleanup. pillars_affected len 2; no cross-pillar bump. MEDIUM is the honest aggregate of the four sidecars' LOW/MEDIUM ratings.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/TagRepositoryImplTest.java (repository-layer; createTestTagList uses UUID.randomUUID names — well-formed; no pathological-input coverage on any tag-write path)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/TagNameValidationAbsenceTest.java"
+  name: "fourTagWritePaths_acceptEmptyWhitespaceControlCharAndUnboundedNames_pinsValidationAbsence"
+evidence:
+  - "createTag sidecar says (bugs_limitations_corner_cases): 'No tag-name validation on createTag beyond OpenAPI type: string — TagFormData.name is declared type: string with NO pattern, minLength, or maxLength (components.yaml:340-345); there is no DB-level CHECK constraint on tag.name. Empty-string, whitespace-only, control-character, and unbounded-length tag names are accepted and become permanently visible in the global directory.' severity LOW"
+  - "updateTag sidecar says (bugs_limitations_corner_cases): 'No request-body validation on the tag name beyond OpenAPI type: string — a rename to an empty string, whitespace-only, control-char, or unbounded-length name is accepted; the renamed tag then renders to every user on the popular-tags surface and propagates into FTS vectors.' severity LOW"
+  - "createTermTagsRelations sidecar says (bugs_limitations_corner_cases): 'No length / character-set / whitespace validation on tag_name_list items — a caller submitting [ tag , tag] creates two directory rows (whitespace-padded vs unpadded); a 10K-char string reaches the DB column constraint; homoglyph variants produce distinct rows.' severity MEDIUM"
+  - "updateDatasetFieldTags sidecar says (bugs_limitations_corner_cases): 'No length / character-set / whitespace validation on tags items — tags: [ x , x] resolves to two distinct directory tags (whitespace-padded variants); a 10K-character name reaches the DB column constraint; homoglyph variants produce distinct rows. The global tag directory accumulates typos and free-text junk over the deployment lifetime.' severity MEDIUM"
+  - "Verified at primary source via the sidecars: components.yaml:340-345 (TagFormData.name — no constraint), components.yaml:2215-2218 (TagsFormData.tag_name_list — no per-item constraint), components.yaml:1830-1833 (DatasetFieldTagsUpdateFormData.tags — no constraint) + TagServiceImpl.java:155 (divideTagsByExistence — verbatim setName, no trim)"
+cross_references:
+  - "TEST-GAP-305 (existing batch-G — the data-entity-path tag-name validation absence — empty/whitespace/length/homoglyph names accepted via /api/dataentities/{id}/tags. DISTINCT NODES: TEST-GAP-305 covers the createDataEntityTagsRelations path; TEST-GAP-894 covers the OTHER FOUR write paths — createTag direct, updateTag rename, term side-channel, dataset-field side-channel. Together the five gaps cover ALL tag-name write surfaces)"
+  - "feature-flows:F-018 drift_class_summary.[tag_name_no_validation_no_length_cap_no_charset_filter]"
+  - "REFACTOR-NNN candidate: add a shared tag-name validator (trim + non-empty + maxLength) at getOrCreateTagsByName / bulkCreate — one fix covers all five write paths; OR add OpenAPI pattern/minLength/maxLength to the three form schemas + a DB CHECK on tag.name"
+related_features: [F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `TagNameValidationAbsenceTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Parameterised across the four write paths. For EACH of `POST /api/tags`, `PUT /api/tags/{id}`, `PUT /api/terms/{id}/tags`, `PUT /api/datasetfields/{id}/tags`:
+  1. `*_emptyStringName_pinsCurrentBehaviour` — submit `""`; assert the CURRENT behaviour (per sidecars: accepted).
+  2. `*_whitespaceOnlyAndPaddedName_createsDistinctDirectoryRows` — submit `[" x ", "x"]` (where the path is array-shaped); assert two distinct `tag` rows result (the whitespace-fragmentation bug).
+  3. `*_unboundedLengthName_pinsCurrentBehaviour` — submit a 10K-character name; assert the current behaviour (accepted up to the DB column limit).
+  4. `*_controlCharacterName_pinsCurrentBehaviour` — submit a name with embedded control characters.
+
+  The test pins the CURRENT no-validation behaviour. Pair with REFACTOR-NNN: add a shared tag-name validator (trim + non-empty + maxLength) at `getOrCreateTagsByName` / `bulkCreate` — one fix covers all five tag-name write surfaces (this gap's four + TEST-GAP-305's data-entity path). When the fix lands, the tests invert to assert rejection.
+batch: 2026-05-21-X-TAGGING
+feature_id: F-018

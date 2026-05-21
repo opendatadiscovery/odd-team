@@ -1,0 +1,56 @@
+gap_id: TEST-GAP-883
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java TagController controller-method:getPopularTagList"
+  - "odd-platform openapi tags openapi-tag:tag"
+pillars_affected: [P-01, P-08]
+surfaced_by:
+  - "odd-platform__java__TagController__controller-method__getPopularTagList.md:tests_coverage_semantic.uncovered_behaviours.[getPopularTagList LSN-019 drift — directory with > size tags returns the OLDEST size by TAG.ID ASC, not the most-popular size]"
+  - "odd-platform__openapi__tags__openapi-tag__tag.md:tests_coverage_semantic.uncovered_behaviours.[getPopularTagList popularity-ordering contract — assert the operation's description 'sorted by popularity' is honoured]"
+behaviour: |-
+  **HIGH — `GET /api/tags` (getPopularTagList) does NOT return the most-popular tags for any directory holding more than `size` tags — it returns the OLDEST `size` tags by `TAG.ID ASC` (creation order). The method name, the service method (`listMostPopular`), and the OpenAPI `description` ('Gets the list of existing tags sorted by popularity', `openapi.yaml:345`) all assert popularity ordering the implementation does not deliver. This is the LSN-019 name-vs-behaviour drift, empirically reproduced by the maintainer 2026-05-20 (35 equally-popular tags + size=30 -> the oldest 30 returned, the 5 newest absent).** Method-level primary source from the batch-X-TAGGING `getPopularTagList` controller-method sidecar:
+
+  - `ReactiveTagRepositoryImpl.listMostPopular` (`:137-167`) is the SQL surface. The drift is two-level ordering:
+    - INNER row-SELECTION: `paginate(selectFrom(TAG).where(conditions), [new OrderByField(TAG.ID, SortOrder.ASC)], (page-1)*size, size)` (`:148`) — `JooqQueryHelper.paginate` emits `ORDER BY tag.id ASC LIMIT size OFFSET (page-1)*size`. Only the so-selected `size` rows enter `tag_cte` (`:150`).
+    - OUTER re-rank: `cteSelect.orderBy(field(COUNT_FIELD).desc())` (`:158`) re-orders ONLY the already-selected rows by summed usage-count desc — it CANNOT reach tags excluded by the inner LIMIT.
+  - The UNION-ALL usage-count CTE (`getDataEntityWithDatasetFields`, `:373-392`) computes counts over the CTE rows ONLY — so for `size` < total, the count is computed for the wrong (oldest) candidate pool.
+  - `TagServiceImpl.listMostPopular` (`:72-77`) and `TagController.getPopularTagList` (`:36-44`) are straight-through delegations — NO re-sort at the service or controller layer; no upstream layer corrects the drift.
+
+  **The existing test is structurally blind.** `TagRepositoryImplTest.testListMostPopular` (`TagRepositoryImplTest.java:237-267`) cannot detect the drift for two reasons, both verified by reading the test:
+  - **The LIMIT never fires below total** — line 257 calls `listMostPopular(testName, List.of(), 1, numberOfTestTags)` where `numberOfTestTags == 8` (the full test directory). With `size == total`, the inner `LIMIT 8` selects all rows; the drift only manifests when `size < total`.
+  - **Order is never asserted** — line 264 uses `containsExactlyInAnyOrder(...)`, which ignores ordering entirely. Even with `size < total`, an order-insensitive assertion cannot catch a "wrong rows in wrong order" defect.
+
+  **Operator-visible consequence**: a deployment with more than `size` tags renders OLD-and-unused tags as the Catalog Overview 'Top Tags' chip strip. The UI label is operator-misleading — it is effectively 'Oldest Tags' beyond `size` tags. The drift is in the OpenAPI `description` text itself (`openapi.yaml:345`) — a spec consumer reading the contract is told the result is popularity-sorted.
+
+  **Test gap shape**: a Testcontainers-backed `@SpringBootTest` / `WebTestClient` test promoting probe P-010's arrange/act/assert to CI: seed N tags where N > size, give the YOUNGEST tags HIGHER usage counts than the oldest size, `GET /api/tags?size={size}`, assert (a) the returned tag ids are the size LOWEST ids (the oldest), (b) the actual-most-popular (youngest) tags are ABSENT, (c) `pageInfo.total` correctly reports N (the total IS correct — only WHICH rows are returned drifts). The current state is PINNED — failures land if a future maintainer moves the count-ordering inside the paginate window (the fix), at which point the test inverts to assert the most-popular size are returned.
+test_class: missing-integration
+criticality_rationale: |-
+  HIGH per Rule 3: F-018 (Manual Object Tagging) carries the LSN-019 listMostPopular drift as its HEADLINE drift facet (F-018-DRIFT-LSN019-listMostPopular-ranking). The drift is operator-facing (the Catalog Overview 'Top Tags' strip is the wrong list) and empirically confirmed. Not CRITICAL — no security / data-loss dimension; it is a correctness drift on a discovery surface. pillars_affected has len 2 (P-01, P-08); the +1-step cross-pillar bump is bounded by the sidecar's own HIGH rating — HIGH stands.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/TagRepositoryImplTest.java:237-267 (testListMostPopular — repository-layer; structurally blind to the LSN-019 drift: size == numberOfTestTags so the LIMIT never fires, containsExactlyInAnyOrder so order is never checked)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/TagControllerPopularityDriftTest.java"
+  name: "getPopularTagList_directoryLargerThanSize_returnsOldestByIdNotMostPopularByCount_pinsLSN019"
+evidence:
+  - "getPopularTagList sidecar says (tests_coverage_semantic.uncovered_behaviours.[0]): 'getPopularTagList LSN-019 drift — directory with > size tags returns the OLDEST size by TAG.ID ASC, not the most-popular size. With 35 equally-popular tags + size=30, response IDs must be the 30 lowest, the 5 newest absent.' criticality HIGH; note: 'Pinned by probe P-010. The repository-layer TagRepositoryImplTest.testListMostPopular is structurally blind — it uses size = numberOfTestTags so the LIMIT never fires, and containsExactlyInAnyOrder so order is never checked.'"
+  - "openapi-tag tag sidecar says (tests_coverage_semantic.uncovered_behaviours): 'getPopularTagList popularity-ordering contract — assert the description sorted by popularity is honoured. It is not (LSN-019); pinned by P-010 at the implementation layer; no spec-conformance test exists.' criticality HIGH"
+  - "Verified at primary source: read TagRepositoryImplTest.java:237-267 — testListMostPopular calls listMostPopular(testName, List.of(), 1, numberOfTestTags) at line 257 with numberOfTestTags == 8 (line 240) and asserts via containsExactlyInAnyOrder at line 264. Both the size==total blindness AND the order-insensitive assertion are confirmed by reading the test."
+cross_references:
+  - "feature-flows:F-018-DRIFT-LSN019-listMostPopular-ranking (the HEADLINE drift facet — this TEST-GAP is the CI regression-pin for it)"
+  - "lineage/odd-platform/probes/P-010.yaml (the LSN-019 smoking-gun probe — this gap promotes P-010's arrange/act/assert to a CI test)"
+  - "retrospectives/LSN-019-file-analyser-describes-not-interrogates.md (the case-law origin of the drift)"
+  - "DOC-NNN candidate: reconcile openapi.yaml:345 description OR fix the implementation; the spec text itself asserts a false popularity-sort claim"
+related_features: [F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `TagControllerPopularityDriftTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Promote probe P-010 to CI:
+  1. `getPopularTagList_directoryLargerThanSize_returnsOldestByIdNotMostPopularByCount_pinsLSN019` — seed 35 tags; attach data-entity / dataset-field relations so the 5 YOUNGEST tags each have a higher usage count than any of the oldest 30; `GET /api/tags?page=1&size=30`; assert the 30 returned tag ids are the 30 LOWEST ids and the 5 youngest (most-popular) ids are absent.
+  2. `getPopularTagList_directorySmallerThanSize_ordersByCountDescCorrectly_pinsNonDriftedCase` — seed 10 tags with distinct usage counts; `GET /api/tags?size=30`; assert all 10 returned AND ordered by count desc (the non-truncated case where popularity ordering DOES hold).
+  3. `getPopularTagList_pageInfoTotalReflectsFullDirectory_notPageSize` — assert `pageInfo.total` equals the full filtered directory size even when the page is truncated (the total IS correct; only WHICH rows drift).
+
+  When the implementation is fixed (count-ordering moved inside the paginate window), test #1 inverts to assert the 5 most-popular ARE returned. Pair with a DOC-NNN to reconcile the `openapi.yaml:345` description.
+batch: 2026-05-21-X-TAGGING
+feature_id: F-018

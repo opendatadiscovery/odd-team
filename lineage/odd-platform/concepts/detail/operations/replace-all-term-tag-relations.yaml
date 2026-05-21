@@ -1,0 +1,221 @@
+name: Replace-All Term Tag Relations (term-side, no external carve-out)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-06
+  - P-01
+  - P-09
+description: |-
+  NEW OPERATION, batch X-TAGGING (2026-05-21) — captures
+  `PUT /api/terms/{term_id}/tags` (operationId `createTermTagsRelations`)
+  at the operation-concept level. This is the TERM-side member of the
+  tag-relation write trio; it is a DISTINCT operation from the existing
+  `upsert-internal-tag-relations-replace-all` concept (which is the
+  DATA-ENTITY-side path) and from `replace-internal-dataset-field-tag-relations`
+  (the dataset-field-side path). The three share the auto-create-on-miss
+  side-door but differ materially in cascade scope, audit emission, and
+  external-tag handling — they are kept as separate concepts.
+
+  THE ENDPOINT:
+    PUT /api/terms/{term_id}/tags -> HTTP 200, Flux<Tag>.
+    Gated by the DEDICATED TERM_TAGS_UPDATE permission (NOT TERM_UPDATE),
+    resolved per-term through the TERM AuthorizationManagerType, via
+    SecurityConstants.SECURITY_RULES at SecurityConstants.java:185-186.
+
+  THE CHAIN — replace-all, despite the create*-shaped operationId:
+    TermController.createTermTagsRelations (TermController.java:129-136)
+    — 5-line reactive handler reading Mono<TagsFormData>.
+    -> TermServiceImpl.upsertTags (TermServiceImpl.java:254-264,
+       @ReactiveTransactional) — two-phase delete-then-recreate:
+       Phase 1: tagService.deleteRelationsWithTerm(termId, names)
+                (TagServiceImpl.java:124-134) — reads CURRENT term tags
+                via listByTerm, computes idsToDelete = currentTags whose
+                NAME is absent from the submitted tag_name_list, and
+                HARD-deletes those tag_to_term rows.
+       Phase 2: getOrCreateTagsByName auto-creates any submitted name
+                not in the global tag directory, then createRelationsWithTerm
+                (re)inserts tag_to_term rows for the full submitted set
+                with onDuplicateKeyIgnore.
+       Phase 3: termSearchEntrypointRepository.updateTagVectorsForTerm
+                refreshes the term search vector.
+
+  TWO MATERIAL DIVERGENCES FROM THE DATA-ENTITY SIBLING:
+    Divergence 1 — NO activity-feed event: there is no @ActivityLog
+    anywhere on the upsertTags chain. The data-entity tag path emits
+    TAG_ASSIGNMENT_UPDATED; sibling term mutations (linkTermWithDataEntity,
+    removeTermFromDataEntity) emit TERM_ASSIGNMENT_UPDATED. The absence
+    on the term-tag path is asymmetric WITHIN TermServiceImpl itself —
+    most likely an oversight. See the new `term-tag-relation-has-no-external-carve-out`
+    invariant + the F-006 audit-silence invariant.
+    Divergence 2 — NO external/internal tag distinction: tag_to_term
+    has no `external` column and no `origin` column
+    (V0_0_35__add_terms.sql:18-28). Unlike tag_to_data_entity (which
+    carries `external`) and tag_to_dataset_field (which carries
+    `ORIGIN`), the replace-all diff has NO ingested-tag carve-out and
+    removes EVERY tag relation not in the submitted list — there is no
+    Collector-set set to preserve, because terms are a UI/API-authored
+    concept with no ingestion-side tagging path.
+
+  THE NAME-VS-BEHAVIOUR DRIFT (DRIFT_INPUT_NAME_VS_IMPLEMENTATION):
+    The operationId (`createTermTagsRelations`), the OpenAPI summary
+    (`Creates tags relations for term`, openapi.yaml:3185), and the
+    body field name (`tag_name_list`) all promise an ADDITIVE create.
+    The implementation treats the SAME list as an EXHAUSTIVE replace-all
+    set (the TagService parameter is even renamed to `tagsToKeep`). An
+    EMPTY list `[]` is a valid request body (no `minItems`) and silently
+    clears ALL term tags. Pinned by probe P-027.
+
+nodes:
+  - odd-platform java TermController controller-method:createTermTagsRelations
+
+contributors:
+  - |-
+    TermController.createTermTagsRelations batch X-TAGGING (PRIMARY
+    SOURCE — controller-method tier):
+    concepts.operations[replace-all-tag-relations-for-term via
+    termService.upsertTags] +
+    concepts.invariants[Replace-all NOT additive; No external-tag
+    carve-out; NO activity-feed event; NO data_entity_filled toggle] +
+    implicit_adrs[Term-tag management has a DEDICATED permission
+    TERM_TAGS_UPDATE; Term-tag relations are HARD-deleted] +
+    bugs_limitations_corner_cases (operation-name vs behaviour drift;
+    empty list clears all term tags P-027; permission side-door;
+    no activity-feed audit; unique-index race P-028) +
+    stress_findings.name_behavior_pairs DRIFT_NAME_VS_BEHAVIOR
+
+evidence:
+  - 'TermController.java:129-136 (the 5-line reactive handler)'
+  - 'createTermTagsRelations.md:concepts.operations[replace-all-tag-relations-for-term]'
+  - 'createTermTagsRelations.md:concepts.invariants[Replace-all NOT additive; No external-tag carve-out; NO activity-feed event]'
+  - 'createTermTagsRelations.md:bugs_limitations_corner_cases (empty list clears all P-027; permission side-door; no audit)'
+  - 'TermServiceImpl.java:254-264 (the two-phase delete-then-recreate, @ReactiveTransactional)'
+  - 'TagServiceImpl.java:124-134 (deleteRelationsWithTerm — delete-by-name-absence)'
+  - 'V0_0_35__add_terms.sql:18-28 (tag_to_term has no external/origin column)'
+  - 'SecurityConstants.java:185-186 (TERM_TAGS_UPDATE permission gate)'
+  - 'odd-platform-specification/openapi.yaml:3185-3186 (create-language summary for replace-all)'
+  - 'P-027 (probe pinning replace-all + auto-create + empty-list-clears-all)'
+  - 'P-028 (probe pinning the unique-index race on concurrent novel-tag creation)'
+
+axes_present:
+  - controllers
+
+security_aggregate:
+  overall: MEDIUM
+  auth_modes_relevant:
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
+  ingestion_filter_relevance: NO
+  authorization_consistency:
+    verdict: CONSISTENT
+    detail: |-
+      Gated at the controller perimeter via SecurityConstants.SECURITY_RULES
+      (TERM_TAGS_UPDATE, resolved per-term through the TERM
+      AuthorizationManagerType). NO @PreAuthorize on the method; NO
+      programmatic permission check in TermServiceImpl.upsertTags or the
+      TagService methods — path-pattern rule is the sole gate.
+  owner_scoping:
+    verdict: RESPECTS
+    detail: |-
+      TERM_TAGS_UPDATE is a TERM-scoped permission resolved per-term — a
+      caller can hold a Policy conditionally granting tag-edit on specific
+      terms only. This is per-resource scoping (unlike the flat global
+      tag directory itself).
+  strengths:
+    - |-
+      Dedicated TERM_TAGS_UPDATE permission — distinct from TERM_UPDATE —
+      lets an operator author a Policy that allows tagging terms without
+      allowing rename of name/namespace/definition.
+    - |-
+      @ReactiveTransactional boundary — the delete + auto-create + insert
+      + search-vector refresh run atomically.
+  weaknesses:
+    - |-
+      MEDIUM — permission side-door — TERM_TAGS_UPDATE on any single term
+      mints global tag directory rows WITHOUT TAG_CREATE; the scope
+      asymmetry (TERM-scoped, conditionally grantable, vs MANAGEMENT-scoped
+      TAG_CREATE) exacerbates it. See the
+      `namespace-create-tag-create-side-doors-via-termcontroller-unguarded-paths`
+      invariant.
+    - |-
+      MEDIUM — NO activity-feed audit for term-tag changes — an operator
+      auditing 'who changed the tags on term X?' finds NO record; the
+      asymmetry vs the audited sibling methods is most likely an oversight.
+    - |-
+      MEDIUM — empty tag_name_list `[]` silently clears ALL term tags
+      (no minItems); a buggy client that forgets to populate the array
+      wipes a term's tag set. Pinned by P-027.
+    - |-
+      MEDIUM under DISABLED — the TERM_TAGS_UPDATE SecurityRule is
+      bypassed under auth.type=DISABLED; anonymous callers can overwrite
+      term tag sets AND mint directory rows, doubly invisible (no auth +
+      no audit).
+  cross_file_inconsistencies:
+    - |-
+      Single contributing sidecar this batch — no cross-file conflict.
+      The replace-all-under-create-naming drift matches the existing
+      `operation-name-vs-behaviour-drift-create-shaped-operationid-for-replace-all-semantic-tag-relations`
+      invariant (data-entity instance) — same drift class, term instance.
+  contributing_files:
+    - createTermTagsRelations.md
+  evidence:
+    - 'createTermTagsRelations.md:concepts.invariants[NO activity-feed event]'
+    - 'createTermTagsRelations.md:bugs_limitations_corner_cases (permission side-door; DISABLED bypass)'
+
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+    - |-
+      Runs once per term-details-page tag-panel save — low frequency.
+      odd-platform java TermController controller-method:createTermTagsRelations
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: |-
+      One term per call; no bulk-term-tagging endpoint. The submitted
+      tag_name_list can be arbitrarily long (no maxItems / no per-item
+      length cap).
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: |-
+      Stateless controller. Concurrent PUTs for the SAME term race to
+      last-committed-tag-set-wins (a classic read-modify-write race on
+      the relation set); concurrent novel-tag creation races on the
+      tag-directory partial unique index.
+  weaknesses:
+    - |-
+      LOW — concurrent novel-tag creation race: getOrCreateTagsByName
+      reads listByNames then bulkCreate (no ON CONFLICT); under
+      @ReactiveTransactional the loser's WHOLE transaction rolls back
+      (term-relation writes lost too). Pinned by P-028.
+  contributing_files:
+    - createTermTagsRelations.md
+  evidence:
+    - 'createTermTagsRelations.md:stress_findings.resource_boundaries'
+    - 'createTermTagsRelations.md:bugs_limitations_corner_cases (unique-index race P-028)'
+
+notes: |-
+  CAPTURED batch X-TAGGING (2026-05-21). This is a DISTINCT concept
+  from `upsert-internal-tag-relations-replace-all` (data-entity path)
+  per the conservative-clustering rule — the term path differs in TWO
+  material ways (no activity-feed event; no external-tag carve-out).
+  Merging them would erase the cross-axis distinction a maintainer
+  needs.
+
+  Cross-cutting connections:
+    - Pairs with the Tag entity (the directory rows it auto-creates)
+    - Sibling of `upsert-internal-tag-relations-replace-all` (the
+      data-entity tag-relation write path) and
+      `replace-internal-dataset-field-tag-relations` (the dataset-field
+      path) — the three-member tag-relation write trio
+    - Pairs with `namespace-create-tag-create-side-doors-via-termcontroller-unguarded-paths`
+      (the TERM_TAGS_UPDATE side-door past TAG_CREATE)
+    - Pairs with the new `term-tag-relation-has-no-external-carve-out`
+      invariant (the schema-rooted absence of provenance)
+related_operations:
+  - upsert-internal-tag-relations-replace-all
+  - replace-internal-dataset-field-tag-relations
+  - create-tag
+related_pillar_features:
+  - P-06:F-001
+  - P-01:F-018
+maintainer_curated: false

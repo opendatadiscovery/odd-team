@@ -1,0 +1,496 @@
+---
+# concepts.delta.yaml — batch X-TAGGING (2026-05-21)
+# concept-merger reducer, incremental/sharded mode.
+# The orchestrator merges this delta into lineage/odd-platform/concepts/:
+#   - applies frontmatter_patch to index.yaml frontmatter
+#   - appends new_index_entries[] under by_kind.{kind} in index.yaml
+#   - applies strengthen[] edits to the named detail/{kind}/{slug}.yaml files
+#   - new detail/{kind}/{slug}.yaml files were written directly by the reducer
+#     (see new_detail_files[] for the manifest)
+# Detail files are the source of truth; rebuild_indexes.py reconciles index.yaml.
+artefact: concepts-delta
+shape_version: rev-2-sharded
+batch_id: X-TAGGING
+generated_at: '2026-05-21T00:00:00Z'
+generated_at_commit: b56c8c1
+prompt_version: concept-merger/0.1.0
+mode: incremental
+sidecars_consumed_this_batch: 7
+canonical_vocabulary_source: 'documentation/docs/main-concepts.md (live at https://docs.opendatadiscovery.org/introduction/main-concepts) + documentation/docs/configuration-and-deployment/enable-security'
+layer0_consulted: lineage/odd-platform/system-mission.md
+layer0_pillar_anchors: [P-01 Data Discovery (F-018 Manual Object Tagging), P-06 Data Glossary, P-08 Management & Administration (Tags tab), P-09 Security & Access Control, P-11 Platform API & Developer Surface]
+---
+
+# ---------------------------------------------------------------------------
+# 1. Frontmatter patch — append the 7 new node_ids to processed_node_ids.
+# ---------------------------------------------------------------------------
+frontmatter_patch:
+  processed_node_ids_append:
+    - odd-platform java TagController controller-method:createTag
+    - odd-platform java TagController controller-method:deleteTag
+    - odd-platform java TagController controller-method:getPopularTagList
+    - odd-platform java TagController controller-method:updateTag
+    - odd-platform java TermController controller-method:createTermTagsRelations
+    - odd-platform java DatasetFieldController controller-method:updateDatasetFieldTags
+    - odd-platform openapi tags openapi-tag:tag
+  batch_history_append: |
+    2026-05-21 (X-TAGGING): directed tagging-coverage batch — 7 new tag-mutation-surface
+    sidecars (TagController.createTag/deleteTag/getPopularTagList/updateTag +
+    TermController.createTermTagsRelations + DatasetFieldController.updateDatasetFieldTags
+    + openapi-tag:tag). Net-new: +4 operations (Create Tag, Update Tag, Replace-All Term
+    Tag Relations, Replace Internal Dataset-Field Tag Relations) + 2 invariants
+    (term-tag relation has no external carve-out; IdsParam Entity-ids misdescription
+    LSN-020 class). Strengthened: 4 existing concepts (Tag entity, Delete Tag operation,
+    Get Popular Tag List operation, Upsert Internal Tag Relations operation) — new
+    contributing nodes + the openapi_tags axis. Mode = incremental-delta; orchestrator-
+    merged from concepts.delta.yaml. NO net-new entities (the openapi-tag:tag node folds
+    into the existing Tag entity, consistent with how alert/dataEntity openapi-tags were
+    handled). NO net-new audiences (all 7 sidecars' audiences — odd-platform-ui-end-user,
+    odd-api-consumer, platform-operator, tag-directory-consumers — already in the catalog).
+
+# ---------------------------------------------------------------------------
+# 2. New detail files written directly by the reducer this batch.
+#    (Listed for the orchestrator's manifest; the files already exist on disk.)
+# ---------------------------------------------------------------------------
+new_detail_files:
+  - kind: operations
+    slug: create-tag
+    path: detail/operations/create-tag.yaml
+  - kind: operations
+    slug: update-tag
+    path: detail/operations/update-tag.yaml
+  - kind: operations
+    slug: replace-all-term-tag-relations
+    path: detail/operations/replace-all-term-tag-relations.yaml
+  - kind: operations
+    slug: replace-internal-dataset-field-tag-relations
+    path: detail/operations/replace-internal-dataset-field-tag-relations.yaml
+  - kind: invariants
+    slug: term-tag-relation-has-no-external-carve-out
+    path: detail/invariants/term-tag-relation-has-no-external-carve-out.yaml
+  - kind: invariants
+    slug: idsparam-entity-ids-misdescription-on-getpopulartaglist-tag-id-filter
+    path: detail/invariants/idsparam-entity-ids-misdescription-on-getpopulartaglist-tag-id-filter.yaml
+
+# ---------------------------------------------------------------------------
+# 3. New index headline entries — append under by_kind.{kind} in index.yaml.
+#    Shapes match lineage/_extractor/registry-shard/shard.py:shard_concepts.
+# ---------------------------------------------------------------------------
+new_index_entries:
+  operations:
+    - slug: create-tag
+      name: Create Tag (bulk, fail-on-duplicate)
+      canonical_in_docs: false
+      canonical_candidate: true
+      axes_present:
+        - controllers
+        - openapi_tags
+      nodes_count: 2
+      contributors_count: 2
+      security_aggregate_overall: MEDIUM
+      performance_aggregate_overall: MEDIUM
+      description: |-
+        POST /api/tags — bulk tag-vocabulary create (BulkTagFormData, an array of
+        TagFormData). FAIL-ON-DUPLICATE not upsert: the inherited
+        ReactiveAbstractCRUDRepository.bulkCreate has no ON CONFLICT clause, so a
+        name colliding with a non-deleted directory row raises
+        UniqueConstraintException. The deliberate counterpart to the upsert-shaped
+        Collector-path getOrInjectTagByName. Gated by TAG_CREATE (Management scope).
+        Two drifts — returns HTTP 200 vs the OpenAPI-declared 201; returns a nested
+        reactive Flux<Tag> vs the declared static TagList. In-batch duplicate
+        atomicity is UNVERIFIED — probe P-026.
+      detail_path: detail/operations/create-tag.yaml
+    - slug: update-tag
+      name: Update Tag (rename + Important-flag toggle, search-vector-symmetric)
+      canonical_in_docs: false
+      canonical_candidate: true
+      axes_present:
+        - controllers
+        - openapi_tags
+      nodes_count: 2
+      contributors_count: 2
+      security_aggregate_overall: MEDIUM
+      performance_aggregate_overall: MEDIUM
+      description: |-
+        PUT /api/tags/{tag_id} — renames a Tag and/or toggles its important flag,
+        gated by TAG_UPDATE (Management scope). The search-index-consistent
+        counterpart to the asymmetric delete path: updateSearchVectors refreshes
+        all THREE FTS vectors (entity tag_vector + dataset-structure + term-side),
+        whereas delete refreshes only one. Limitations — returns HTTP 200 vs the
+        declared 201; the response Tag omits external/usedCount (bare-pojo mapper
+        overload); the !external guard reads only the tag_to_data_entity aggregate;
+        a TOCTOU window exists between getDto and update.
+      detail_path: detail/operations/update-tag.yaml
+    - slug: replace-all-term-tag-relations
+      name: Replace-All Term Tag Relations (term-side, no external carve-out)
+      canonical_in_docs: false
+      canonical_candidate: true
+      axes_present:
+        - controllers
+      nodes_count: 1
+      contributors_count: 1
+      security_aggregate_overall: MEDIUM
+      performance_aggregate_overall: MEDIUM
+      description: |-
+        PUT /api/terms/{term_id}/tags (operationId createTermTagsRelations) — the
+        term-side member of the tag-relation write trio. Two-phase
+        delete-then-recreate: phase 1 hard-deletes every tag_to_term row whose name
+        is absent from the submitted list, phase 2 auto-creates novel names and
+        re-inserts the full set. Gated by the DEDICATED TERM_TAGS_UPDATE permission.
+        DISTINCT from the data-entity path — NO activity-feed event and NO
+        external-tag carve-out (tag_to_term has no external/origin column). The
+        create*-shaped operationId is replace-all; an empty list silently clears
+        all term tags (probe P-027).
+      detail_path: detail/operations/replace-all-term-tag-relations.yaml
+    - slug: replace-internal-dataset-field-tag-relations
+      name: Replace Internal Dataset-Field Tag Relations (origin-scoped delete-then-recreate)
+      canonical_in_docs: false
+      canonical_candidate: true
+      axes_present:
+        - controllers
+      nodes_count: 1
+      contributors_count: 1
+      security_aggregate_overall: MEDIUM
+      performance_aggregate_overall: MEDIUM
+      description: |-
+        PUT /api/datasetfields/{dataset_field_id}/tags (operationId
+        updateDatasetFieldTags) — the dataset-field-side member of the tag-relation
+        write trio. Delete-all-then-recreate scoped to origin = INTERNAL: EXTERNAL
+        and EXTERNAL_STATISTICS (ingestion-sourced) relations survive. Authorization
+        is PARENT-SCOPED — the dataset-field id resolves to its owning data entity,
+        then DATASET_FIELD_TAGS_UPDATE (a DATA_ENTITY-scoped permission) is
+        evaluated. Carries the most-complete activity-feed audit of the trio. The
+        relation INSERT relies on the DB column default for the unset origin field
+        — a CRITICAL untested fragility, probe P-030.
+      detail_path: detail/operations/replace-internal-dataset-field-tag-relations.yaml
+  invariants:
+    - slug: term-tag-relation-has-no-external-carve-out
+      name: Term-tag relation has NO external/origin carve-out — tag_to_term replace-all removes every relation
+      canonical_in_docs: false
+      canonical_candidate: true
+      axes_present:
+        - controllers
+        - schema_migrations
+      nodes_count: 1
+      contributors_count: 1
+      security_aggregate_overall: null
+      performance_aggregate_overall: null
+      description: |-
+        NEW INVARIANT, batch X-TAGGING — schema-rooted divergence between the three
+        tag-relation tables. tag_to_data_entity carries an external boolean;
+        tag_to_dataset_field carries a three-value TagOrigin enum; tag_to_term
+        carries NEITHER (V0_0_35__add_terms.sql:18-28). Consequence: the term-tag
+        replace-all hard-deletes EVERY tag_to_term row absent from the submitted
+        list — there is no ingested-tag set to preserve. INTENTIONAL at the schema
+        level (terms are UI/API-authored, no ingestion-side tagging path) but worth
+        recording — an operator who knows the data-entity tag behaviour will
+        wrongly assume the term path behaves identically. The join key explaining
+        why the three replace-all operations cannot be merged into one concept.
+      detail_path: detail/invariants/term-tag-relation-has-no-external-carve-out.yaml
+    - slug: idsparam-entity-ids-misdescription-on-getpopulartaglist-tag-id-filter
+      name: IdsParam 'Entity ids' description misdescribes getPopularTagList's tag-id filter (LSN-020 class)
+      canonical_in_docs: false
+      canonical_candidate: true
+      axes_present:
+        - openapi_tags
+      nodes_count: 1
+      contributors_count: 1
+      security_aggregate_overall: null
+      performance_aggregate_overall: null
+      description: |-
+        NEW INVARIANT, batch X-TAGGING — spec-level input-name-vs-implementation
+        drift (LSN-020 class). getPopularTagList references the SHARED IdsParam
+        component whose description reads 'Entity ids', but the implementation
+        binds the parameter as TAG.ID.in(ids) — a tag-id-set filter. The component
+        is shared and accurate for its data-entity-scoped consumer; the defect is
+        the reuse of an entity-scoped component on a tag-scoped operation. A caller
+        supplying data-entity ids gets empty results; an id that is BOTH a valid
+        entity id AND tag id silently returns a nonsensical tag. Distinct from the
+        LSN-019 popularity-ordering drift on the same endpoint — separate probe
+        P-031. Fix: a dedicated TagIdsParam component or operation-level override.
+      detail_path: detail/invariants/idsparam-entity-ids-misdescription-on-getpopulartaglist-tag-id-filter.yaml
+
+# ---------------------------------------------------------------------------
+# 4. STRENGTHEN — existing detail files gain new contributing nodes this batch.
+#    Auto-derived fields (nodes, contributors, axes_present, evidence) update;
+#    description prose is NOT regenerated (append-only STRENGTHENED blocks).
+# ---------------------------------------------------------------------------
+strengthen:
+
+  - kind: entities
+    slug: tag
+    detail_path: detail/entities/tag.yaml
+    annotation: STRENGTHENS
+    reason: |-
+      Batch X-TAGGING adds the controller-METHOD tier and the openapi-tag
+      contract tier to the Tag entity. Previously the entity was anchored on
+      the controller-CLASS (TagController), the service (TagServiceImpl), and
+      the repository (ReactiveTagRepositoryImpl). The createTag / deleteTag /
+      getPopularTagList / updateTag method sidecars and the openapi-tag:tag
+      sidecar confirm the entity's CRUD lifecycle + the OpenAPI contract shape
+      at finer granularity — no new claims, corroboration of existing ones.
+    nodes_append:
+      - odd-platform java TagController controller-method:createTag
+      - odd-platform java TagController controller-method:deleteTag
+      - odd-platform java TagController controller-method:getPopularTagList
+      - odd-platform java TagController controller-method:updateTag
+      - odd-platform openapi tags openapi-tag:tag
+    axes_present_append:
+      - openapi_tags
+    contributors_append:
+      - |-
+        TagController per-method sidecars batch X-TAGGING (CORROBORATING —
+        controller-method tier): createTag/deleteTag/getPopularTagList/updateTag
+        each confirm one arm of the Tag CRUD lifecycle at method granularity —
+        the dual-method write design (bulkCreate fail-on-duplicate vs the
+        Collector ingestData upsert), the soft-delete-with-asymmetric-cascade,
+        the LSN-019 popularity-ordering drift, the search-vector-symmetric
+        rename — all PRIMARY-SOURCE at the method tier this batch.
+      - |-
+        openapi-tag tag batch X-TAGGING (CORROBORATING — contract tier):
+        concepts.entities[Tag / TagList / TagsResponse / TagFormData /
+        BulkTagFormData component schemas at components.yaml:302-350] +
+        invariants[the tag OpenAPI tag groups exactly the 4 /api/tags* CRUD
+        operations; per-entity tag-ASSIGNMENT operations are tagged with their
+        parent resource, not tag] + invariants[no security: block, no
+        securitySchemes — authorization is wholly out-of-band of the contract].
+    evidence_append:
+      - 'createTag.md:concepts.operations[createTag] + implicit_adrs[Bulk-create fail-on-duplicate]'
+      - 'deleteTag.md:concepts.operations[TagServiceImpl.delete six-step pipeline]'
+      - 'getPopularTagList.md:concepts.operations[getPopularTagList] + bugs_limitations_corner_cases.[0] (LSN-019)'
+      - 'updateTag.md:concepts.operations[updateTag] + invariants[search-vector-symmetric rename]'
+      - 'openapi-tag__tag.md:concepts.entities[Tag/TagList/TagsResponse/TagFormData/BulkTagFormData]'
+    coherence:
+      relationship: STRENGTHENS
+      detail: |-
+        Same polarity — all 5 new nodes assert the Tag entity exists with the
+        documented schema and CRUD surface. No contradiction with the prior
+        controller-class/service/repository anchors. The LSN-019 drift the
+        getPopularTagList method sidecar carries was already CORRECTED into the
+        Tag entity's description by batch VAL-LSN-019 — the method sidecar
+        corroborates it, does not supersede it.
+
+  - kind: operations
+    slug: delete-tag-with-asymmetric-cascade
+    detail_path: detail/operations/delete-tag-with-asymmetric-cascade.yaml
+    annotation: STRENGTHENS
+    reason: |-
+      The existing concept's nodes list cites the controller-CLASS
+      (TagController controller-class:TagController). Batch X-TAGGING adds the
+      controller-METHOD node (TagController controller-method:deleteTag), the
+      primary-source enrichment for this operation. The method sidecar confirms
+      the 6-step pipeline, the asymmetric cascade (tag_to_dataset_field
+      orphaned), the asymmetric FTS refresh, the !external guard, and the
+      FTS-runs-too-late finding — all already in the concept; the method
+      sidecar promotes the controller anchor from class to method granularity.
+    nodes_append:
+      - odd-platform java TagController controller-method:deleteTag
+    axes_present_append: []
+    contributors_append:
+      - |-
+        TagController.deleteTag batch X-TAGGING (PRIMARY SOURCE — controller-
+        method tier; promotes the controller anchor from class to method):
+        concepts.operations[deleteTag (TagController.java:30-34) +
+        TagServiceImpl.delete six-step @ReactiveTransactional pipeline] +
+        concepts.invariants[Relation deletion is HARD and asymmetric —
+        tag_to_dataset_field NOT touched; the !external guard checks only the
+        data-entity side] + bugs_limitations_corner_cases[ASYMMETRIC CASCADE
+        HIGH; ASYMMETRIC FTS REFRESH MEDIUM; FTS REFRESH RUNS TOO LATE MEDIUM] +
+        probes P-032 (orphan tag_to_dataset_field rows) + P-033 (stale main FTS
+        vector + the term-side refresh no-op).
+    evidence_append:
+      - 'deleteTag.md:concepts.operations[deleteTag + TagServiceImpl.delete]'
+      - 'deleteTag.md:bugs_limitations_corner_cases[ASYMMETRIC CASCADE — HIGH]'
+      - 'deleteTag.md:bugs_limitations_corner_cases[FTS REFRESH RUNS TOO LATE — the term-side refresh no-ops because tag_to_term rows are already deleted]'
+      - 'deleteTag.md:probes_emitted P-032 + P-033'
+    coherence:
+      relationship: STRENGTHENS
+      detail: |-
+        Same polarity — the deleteTag method sidecar confirms every claim in the
+        existing concept (asymmetric cascade, asymmetric FTS, !external guard).
+        ONE refinement worth surfacing to the maintainer (NOT a contradiction):
+        the method sidecar adds a NEW sub-finding — the single term-side FTS
+        refresh the delete path DOES perform is itself effectively a no-op,
+        because deleteTermRelations (in the Flux.zip) hard-deletes the
+        tag_to_term rows BEFORE updateChangedTagVectors runs, so its discovery
+        CTE (SELECT term_id FROM tag_to_term WHERE tag_id = ?) finds nothing.
+        The existing `tagserviceimpl-asymmetric-search-vector-refresh-update-3-delete-1`
+        invariant says delete refreshes 1 vector; this batch refines that to
+        'delete refreshes 1 vector and that 1 is a no-op due to ordering'.
+        Recommend the maintainer fold this refinement into that invariant's
+        detail file in a follow-up — it deepens, does not contradict.
+
+  - kind: operations
+    slug: get-popular-tag-list
+    detail_path: detail/operations/get-popular-tag-list.yaml
+    annotation: STRENGTHENS
+    reason: |-
+      The existing concept's nodes list cites the controller-CLASS. Batch
+      X-TAGGING adds the controller-METHOD node (TagController
+      controller-method:getPopularTagList) and the openapi-tag contract tier.
+      The method sidecar is the primary-source enrichment — it confirms the
+      LSN-019 popularity-ordering drift, the open-read posture (no GET
+      SecurityRule), the no-size-clamp, and the argument-order swap, all
+      already in the concept. The openapi-tag sidecar adds the SPEC-side
+      corroboration (openapi.yaml:345 description literally claims 'sorted by
+      popularity').
+    nodes_append:
+      - odd-platform java TagController controller-method:getPopularTagList
+      - odd-platform openapi tags openapi-tag:tag
+    axes_present_append:
+      - openapi_tags
+    contributors_append:
+      - |-
+        TagController.getPopularTagList batch X-TAGGING (PRIMARY SOURCE —
+        controller-method tier; promotes the controller anchor from class to
+        method): concepts.operations[getPopularTagList (TagController.java:36-44)
+        — 2-line delegation with the (page,size,query,ids)->(query,ids,page,size)
+        argument-order swap] + bugs_limitations_corner_cases[LSN-019 drift HIGH;
+        no RBAC gate MEDIUM; no size clamp LOW; argument-order swap LOW] +
+        invariants[getPopularTagList is the ONLY /api/tags endpoint with no
+        SecurityRule entry] + probe P-029 (page/size degenerate-input handling).
+      - |-
+        openapi-tag tag batch X-TAGGING (CORROBORATING — contract tier; the
+        spec-side anchor for the LSN-019 drift): the OpenAPI description at
+        openapi.yaml:345 literally states 'Gets the list of existing tags
+        sorted by popularity' — the drift is in the CONTRACT text itself, not
+        only the rendered docs. Also surfaces the IdsParam 'Entity ids'
+        misdescription (a SECOND drift on this endpoint — see the new
+        idsparam-entity-ids-misdescription invariant).
+    evidence_append:
+      - 'getPopularTagList.md:concepts.operations[getPopularTagList]'
+      - 'getPopularTagList.md:bugs_limitations_corner_cases.[0] (LSN-019 drift — HIGH)'
+      - 'getPopularTagList.md:stress_findings.orderings (the inner paginate TAG.ID ASC vs outer count DESC)'
+      - 'getPopularTagList.md:probes_emitted P-029'
+      - 'openapi-tag__tag.md:bugs_limitations_corner_cases[getPopularTagList description-vs-implementation drift LSN-019]'
+    coherence:
+      relationship: STRENGTHENS
+      detail: |-
+        Same polarity — the getPopularTagList method sidecar and the openapi-tag
+        sidecar both confirm the LSN-019 drift the existing concept already
+        documents (corrected into the concept by batch VAL-LSN-019). The
+        openapi-tag sidecar adds the spec-text anchor (openapi.yaml:345). No
+        contradiction. The IdsParam misdescription the openapi-tag sidecar
+        surfaces is a NEW finding minted as its own invariant
+        (idsparam-entity-ids-misdescription-on-getpopulartaglist-tag-id-filter)
+        and back-linked from this operation via related_operations — it does not
+        alter this concept's existing claims.
+
+  - kind: operations
+    slug: upsert-internal-tag-relations-replace-all
+    detail_path: detail/operations/upsert-internal-tag-relations-replace-all.yaml
+    annotation: STRENGTHENS
+    reason: |-
+      This concept is the DATA-ENTITY-side tag-relation replace-all. Batch
+      X-TAGGING does NOT add a node to it directly — the two new tag-relation
+      operations (replace-all-term-tag-relations + replace-internal-dataset-
+      field-tag-relations) are minted as SEPARATE concepts per the conservative-
+      clustering rule. This strengthen entry is purely a CROSS-LINK update: the
+      term and dataset-field sidecars explicitly contrast their behaviour
+      against this data-entity path, so this concept gains sibling back-links.
+      No nodes/contributors/evidence change — only the notes cross-reference.
+    nodes_append: []
+    axes_present_append: []
+    contributors_append: []
+    evidence_append: []
+    notes_append: |-
+      SIBLING CROSS-LINK added batch X-TAGGING (2026-05-21): this data-entity
+      tag-relation replace-all is one of THREE members of the tag-relation
+      write trio. The other two were minted as distinct concepts this batch:
+        - `replace-all-term-tag-relations` (PUT /api/terms/{term_id}/tags) —
+          differs: NO activity-feed event, NO external-tag carve-out.
+        - `replace-internal-dataset-field-tag-relations`
+          (PUT /api/datasetfields/{id}/tags) — differs: delete-all-then-recreate
+          (not a diff), three-value TagOrigin discriminator, fullest activity
+          audit of the trio.
+      The three share the auto-create-on-miss side-door but were KEPT SEPARATE
+      (conservative-clustering rule) because their cascade scope, audit
+      emission, and external-tag handling differ materially. A maintainer
+      comparing the three should read all three concept entries.
+    coherence:
+      relationship: STRENGTHENS
+      detail: |-
+        Same polarity — the term and dataset-field operations corroborate that
+        a tag-relation replace-all surface exists and behaves as a replace-all
+        despite create*-shaped naming; they do not contradict the data-entity
+        concept. The decision to keep them separate (vs merging) is the
+        conservative-clustering rule applied — false-positive merges damage the
+        catalog more than false-negative splits.
+
+# ---------------------------------------------------------------------------
+# 5. Concepts EVALUATED for dedup but deliberately NOT minted / NOT merged.
+#    (Transparency for the maintainer's /review — shows what was considered.)
+# ---------------------------------------------------------------------------
+dedup_decisions:
+  - candidate: openapi-tag:tag as a standalone entity
+    decision: NOT-MINTED — folded into the existing `tag` entity
+    rationale: |-
+      The catalog's prior `alert` and `dataEntity` openapi-tag sidecars were
+      handled the same way — openapi_tags appears as an axes_present VALUE on
+      the relevant entity/operation concepts, not as standalone concept entries.
+      The `tag` openapi-tag sidecar describes the contract grouping label for
+      the 4 /api/tags CRUD operations; its content (Tag/TagList/TagsResponse/
+      TagFormData/BulkTagFormData schemas, the 4 operations, the
+      no-security-block invariant) all attach to the existing `tag` entity and
+      the new create-tag/update-tag operations. Minting a separate
+      'openapi-tag-tag-surface' entity would duplicate the Tag entity.
+  - candidate: status-code 200-vs-201 drift on createTag/updateTag
+    decision: NOT-MINTED as a new invariant — routed to the EXISTING candidate
+    rationale: |-
+      `openapi-200-vs-201-status-code-drift-codebase-wide` already exists in
+      canonicalisation_candidates. createTag and updateTag are two more
+      instances of that codebase-wide class (the openapi-tag sidecar explicitly
+      says 'Same drift class as TermController.createTerm'). The new create-tag
+      and update-tag operation detail files cross-reference that candidate in
+      their notes + weaknesses rather than minting a duplicate. A maintainer
+      may choose to append the two new instances to that candidate's detail
+      file in a follow-up.
+  - candidate: tag-name validation absence (empty/whitespace/unbounded names)
+    decision: NOT-MINTED as a new concept — recorded as a per-operation weakness
+    rationale: |-
+      All 4 tag-mutation operations (createTag, updateTag, the two relation
+      replace-alls) carry the same 'no tag-name validation' finding. It is a
+      LOW-severity cross-cutting weakness already implicitly covered by the
+      Tag entity. Recording it as per-operation security_aggregate.weaknesses
+      on the new detail files is sufficient; minting a standalone invariant
+      would be a generic LLM-suggested concept with no single primary source.
+  - candidate: merging the three tag-relation replace-all operations
+    decision: NOT-MERGED — kept as three distinct concepts
+    rationale: |-
+      Conservative-clustering rule (system-prompt Rule 3). The data-entity,
+      term, and dataset-field tag-relation replace-all operations share the
+      auto-create side-door but DIVERGE materially: (a) term path emits NO
+      activity-feed event and has NO external carve-out; (b) dataset-field path
+      discards-and-rebuilds rather than diffs and has a three-value TagOrigin
+      discriminator; (c) data-entity path diffs and carries a boolean external
+      flag. Merging them would erase the cross-axis distinctions a maintainer
+      needs. False-positive merges damage catalog trustworthiness more than
+      false-negative splits.
+
+# ---------------------------------------------------------------------------
+# 6. Coherence check (system-prompt Rule 6) — cross-registry contradiction sweep.
+# ---------------------------------------------------------------------------
+coherence_sweep:
+  anchors_checked:
+    - TagController.createTag / deleteTag / getPopularTagList / updateTag
+    - TermController.createTermTagsRelations
+    - DatasetFieldController.updateDatasetFieldTags
+    - tag_to_term / tag_to_data_entity / tag_to_dataset_field tables
+    - ReactiveTagRepositoryImpl.listMostPopular (LSN-019)
+    - P-026 / P-027 / P-028 / P-029 / P-030 / P-031 / P-032 / P-033 probes
+    - openapi.yaml:345 (popularity-sort claim) + components.yaml IdsParam
+  result: NO-CONTRADICTIONS-FOUND
+  strengthens_count: 4
+  supersedes_count: 0
+  conflicts_surfaced: 0
+  notes: |-
+    Every claim in the 7 new sidecars STRENGTHENS existing registry content
+    (the Tag entity + Delete Tag + Get Popular Tag List operations + the
+    LSN-019 / side-door / cascade-asymmetry invariant family). No claim
+    contradicts an existing concept. One REFINEMENT was surfaced (not a
+    contradiction): the deleteTag method sidecar deepens the
+    `tagserviceimpl-asymmetric-search-vector-refresh-update-3-delete-1`
+    invariant — the single term-side FTS refresh on the delete path is itself
+    a no-op because the Flux.zip hard-deletes tag_to_term rows before the
+    refresh CTE reads them. Logged in the delete-tag strengthen entry's
+    coherence block as a maintainer follow-up; it does not block this batch.

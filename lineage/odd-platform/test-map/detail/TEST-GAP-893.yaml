@@ -1,0 +1,56 @@
+gap_id: TEST-GAP-893
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform openapi tags openapi-tag:tag"
+  - "odd-platform java TagController controller-method:getPopularTagList"
+pillars_affected: [P-01, P-08]
+surfaced_by:
+  - "odd-platform__openapi__tags__openapi-tag__tag.md:tests_coverage_semantic.uncovered_behaviours.[ids parameter semantics — assert the IdsParam-described 'Entity ids' parameter on getPopularTagList filters by what the description says]"
+  - "odd-platform__openapi__tags__openapi-tag__tag.md:bugs_limitations_corner_cases.[IdsParam describes the ids query parameter as 'Entity ids' but getPopularTagList filters by TAG id (LSN-020 class)]"
+  - "odd-platform__openapi__tags__openapi-tag__tag.md:bugs_limitations_corner_cases.[No operation under tag declares any 4xx response]"
+behaviour: |-
+  **MEDIUM — the `tag` OpenAPI tag's four operations carry two spec-conformance defects with zero CI coverage: (1) `getPopularTagList` reuses the SHARED `IdsParam` component whose `description` reads "Entity ids" — but the implementation binds `ids` as a TAG-id-set filter on the `tag` directory. A consumer reading the rendered spec for `getPopularTagList` would supply DATA-ENTITY ids and receive empty/nonsensical results (the LSN-020 input-name-vs-implementation drift class). (2) No `tag`-tagged operation declares ANY `4xx` response — `getPopularTagList` declares only `200`, `createTag`/`updateTag` only `201`, `deleteTag` only `204` — so a spec consumer cannot anticipate `401`/`403`/`404`/`400` error envelopes from the contract.** Primary source from the batch-X-TAGGING `tag` openapi-tag sidecar:
+
+  - **IdsParam misdescription**: `getPopularTagList` references the shared `IdsParam` component (`openapi.yaml:351` -> `components.yaml:4239-4248`), whose `description` reads `Entity ids` (`components.yaml:4242`). `TagController` binds it as `List<Long> ids` -> `tagService.listMostPopular(query, ids, page, size)` (`TagController.java:36-44`); the `TagController` + `TagServiceImpl` sidecars establish `ids` is a TAG-id-set filter on the tag directory (`TAG.ID.in(ids)`, `ReactiveTagRepositoryImpl.java:141-142`). The `IdsParam` component IS shared and IS accurate for its other consumer (`openapi.yaml:139`, a data-entity-scoped operation) — so the defect is operation-LOCAL: a tag-scoped operation reuses an entity-scoped parameter component without an operation-level description override.
+  - **No 4xx declared**: every `tag`-tagged operation declares ONLY its success status (`openapi.yaml:352-421`). `updateTag`/`deleteTag` raise `NotFoundException` (a 404), `createTag` raises `UniqueConstraintException` (a 4xx), and all four can return `401`/`403` — none of these is in the contract. The `ErrorResponse` component exists in `components.yaml` but no `tag` operation references it.
+
+  **Two distinct sub-behaviours, both unpinned:**
+  - **`ids` parameter semantics (LSN-020 class)** — `GET /api/tags?ids=1,2,3` filters by TAG id, NOT by entity id as the spec's `IdsParam` description claims. A consumer supplying data-entity ids gets empty/nonsensical results. The drift survives cross-data scenarios: when a value is BOTH a valid data-entity id AND a valid tag id, the operation silently returns the (wrong) tag, masking the misunderstanding. P-031 (placeholder probe) pins this.
+  - **No-4xx contract gap** — a spec-conformance check (a CI lint, or a `WebTestClient` test cross-referencing the spec) asserting that the operations the implementation CAN return a 4xx for actually declare it. Today the spec under-declares; a generated strict client has no typed model for the error envelopes.
+
+  **Why MEDIUM**: spec-vs-code conformance defects — a consumer reading the published contract builds wrong expectations (wrong `ids` semantics; no error-envelope model). Functional impact is zero (the implementation works); contract impact is non-zero (consumers driving against the spec misbehave). The drift is silent — no test reconciles spec and code at any layer.
+
+  **Test gap shape**: a `WebTestClient` / spec-conformance test asserting (a) `GET /api/tags?ids={tagId}` filters by TAG id (returns the tag with that id), and `GET /api/tags?ids={dataEntityId-that-is-not-a-tag-id}` returns empty — PINNING the LSN-020 drift as the current state; (b) `updateTag`/`deleteTag` on a non-existent id returns 404 while the OpenAPI operation declares no 404 — surfacing the contract gap; (c) `createTag` with a duplicate name returns a 4xx while the spec declares no 4xx. The current state is PINNED.
+test_class: missing-integration
+criticality_rationale: |-
+  MEDIUM per Rule 3: the openapi-tag tag sidecar rates the IdsParam misdescription MEDIUM (LSN-020 class) and the no-4xx gap MEDIUM. These are contract-conformance defects — no security or data-loss dimension; a consumer driving against the published spec misbehaves but the implementation is correct. F-018 carries no aggregate severity that lifts this. pillars_affected len 2; no cross-pillar bump. MEDIUM stands.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/TagRepositoryImplTest.java:237-267 (testListMostPopular — repository-layer; passes List.of() for ids, so the ids-filter path is exercised with an EMPTY set only — the ids-semantics drift is NOT pinned)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/TagApiSpecConformanceTest.java"
+  name: "tagOperations_idsFiltersByTagIdNotEntityId_andUndeclaredErrorEnvelopes_pinsSpecDrift"
+evidence:
+  - "openapi-tag tag sidecar says (tests_coverage_semantic.uncovered_behaviours): 'ids parameter semantics — assert the IdsParam-described Entity ids parameter on getPopularTagList filters by what the description says. It filters by tag id (LSN-020 class); the placeholder probe P-031 pins this.' criticality MEDIUM"
+  - "openapi-tag tag sidecar says (bugs_limitations_corner_cases): 'IdsParam describes the ids query parameter as Entity ids but getPopularTagList filters by TAG id (LSN-020 class). A consumer reading the rendered spec for getPopularTagList would supply DATA-ENTITY ids and receive empty/nonsensical results. The defect is operation-LOCAL: a tag-scoped operation reuses an entity-scoped parameter component.' severity MEDIUM"
+  - "openapi-tag tag sidecar says (bugs_limitations_corner_cases): 'No operation under tag declares any 4xx response — getPopularTagList declares only 200, createTag / updateTag only 201, deleteTag only 204. A spec consumer cannot anticipate 401 Unauthorized, 403 Forbidden, 404 (tag id not found), or 400 (duplicate name). The ErrorResponse component exists but no tag operation references it.' severity MEDIUM"
+  - "Verified at primary source via the sidecar: openapi.yaml:351 (IdsParam ref) + components.yaml:4239-4248 (IdsParam description 'Entity ids') + TagController.java:36-44 (binds ids as a tag-id filter) + openapi.yaml:352-421 (every tag operation declares only its success status)"
+cross_references:
+  - "lineage/odd-platform/probes/P-031.yaml (the placeholder probe for the IdsParam Entity-ids-vs-tag-id-filter — this gap promotes P-031 to a CI test)"
+  - "TEST-GAP-764 (existing batch-W — STRENGTHENED this batch — the createTag/updateTag status-code 200-vs-201 drift. DISTINCT from THIS gap: TEST-GAP-764 = the status-CODE divergence; TEST-GAP-893 = the ids-PARAMETER-semantics drift + the no-4xx-DECLARED contract gap)"
+  - "TEST-GAP-892 (sister batch-X-TAGGING — the updateTag response-BODY shape drift; TEST-GAP-893 is the spec-CONTRACT-completeness gap)"
+  - "DOC-NNN candidate: add a dedicated TagIdsParam component (description 'Tag ids') OR an operation-level parameter override on getPopularTagList; declare 4xx responses on all four tag operations"
+related_features: [F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `TagApiSpecConformanceTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Four test methods:
+  1. `getPopularTagList_idsParameter_filtersByTagIdNotEntityId_pinsLSN020Drift` — seed tags with known ids; `GET /api/tags?ids={tagId}`; assert the tag with that id IS returned. Then `GET /api/tags?ids={someDataEntityIdThatIsNotAlsoATagId}`; assert an empty result. PINS the `ids`=tag-id semantics against the spec's "Entity ids" description.
+  2. `updateTag_nonExistentId_returns404_specDeclaresNo404` — `PUT /api/tags/{nonexistent}`; assert 404; cross-reference that `openapi.yaml` declares no 404 for `updateTag`. Surfaces the contract gap.
+  3. `deleteTag_nonExistentId_returns404_specDeclaresNo404` — sister assertion for `deleteTag`.
+  4. `createTag_duplicateName_returns4xx_specDeclaresNo4xx` — seed a tag; `POST` the same name; assert a 4xx; cross-reference that `openapi.yaml` declares no 4xx for `createTag`.
+
+  Pair with a DOC-NNN: add a dedicated `TagIdsParam` component with description "Tag ids" (or an operation-level override), and declare the `4xx` error responses on all four `tag` operations referencing the existing `ErrorResponse` component.
+batch: 2026-05-21-X-TAGGING
+feature_id: F-018

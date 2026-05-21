@@ -1,0 +1,60 @@
+gap_id: TEST-GAP-885
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java TagController controller-method:createTag"
+  - "odd-platform java TagController controller-method:updateTag"
+  - "odd-platform java TagController controller-method:deleteTag"
+  - "odd-platform java TagController controller-method:getPopularTagList"
+pillars_affected: [P-01, P-08, P-09]
+surfaced_by:
+  - "odd-platform__java__TagController__controller-method__createTag.md:tests_coverage_semantic.uncovered_behaviours.[createTag authorisation enforcement — a caller WITHOUT TAG_CREATE gets 403]"
+  - "odd-platform__java__TagController__controller-method__updateTag.md:tests_coverage_semantic.uncovered_behaviours.[updateTag authorisation enforcement — a no-TAG_UPDATE user gets 403]"
+  - "odd-platform__java__TagController__controller-method__deleteTag.md:tests_coverage_semantic.uncovered_behaviours.[the DELETE /api/tags/{tag_id} -> TAG_DELETE gate rejects a caller without the permission (403) and an unauthenticated caller]"
+  - "odd-platform__java__TagController__controller-method__getPopularTagList.md:tests_coverage_semantic.uncovered_behaviours.[getPopularTagList open-read posture — assert a user holding NO TAG_* permission gets 200 + the full directory]"
+behaviour: |-
+  **HIGH — the four `/api/tags` operations carry NO method-level `@PreAuthorize`; the entire authorisation surface is `SecurityConstants.SECURITY_RULES` path-pattern matching. A path rename of `/api/tags` without a coordinated `SECURITY_RULES` update would silently un-gate all three write endpoints (the REFACTOR-217 drift class). NO `TagControllerSecurityTest` exists, so the perimeter-only auth posture has ZERO CI coverage — a wiring drift would not surface.** Method-level primary source from the batch-X-TAGGING `TagController` controller-method sidecars (4 distinct nodes):
+
+  - `SecurityConstants.java:138-142`: the `/api/tags*` `SecurityRule` entries — `POST /api/tags` -> `TAG_CREATE`, `PUT /api/tags/{tag_id}` -> `TAG_UPDATE`, `DELETE /api/tags/{tag_id}` -> `TAG_DELETE`. **There is NO GET entry** — `getPopularTagList` falls through to the catch-all `pathMatchers("/**").authenticated()` (`AuthorizationCustomizer.java:29-30`).
+  - `TagController.java:22-52`: NONE of the four methods (`createTag`, `getPopularTagList`, `updateTag`, `deleteTag`) carries `@PreAuthorize`. Verified per the createTag/updateTag/deleteTag/getPopularTagList sidecars' `authorization_assertions` blocks.
+  - `TagServiceImpl.java:1-167`: zero `@PreAuthorize`, zero programmatic permission checks (verified by the TagServiceImpl sidecar referenced in all four method sidecars). The controller perimeter is the SOLE authorisation defence.
+
+  **Four distinct sub-behaviours, all unpinned:**
+  - **Write-endpoint RBAC enforcement** — a caller holding only `DATA_ENTITY_TAGS_UPDATE` (a per-entity tag permission, NOT a directory permission) attempting `POST` / `PUT` / `DELETE` on `/api/tags` must get 403. Three permission gates, each unverified.
+  - **Open-read posture (intentional)** — `getPopularTagList` returns 200 + the full directory for ANY authenticated user, including one holding NO `TAG_*` permission. This is the deliberate open-read design (consistent with sibling read endpoints) but it is UNPINNED — a future maintainer adding a GET `SecurityRule` would silently break the documented open-read posture, or a future drift removing the catch-all would make the directory unreadable.
+  - **Unauthenticated access** — under LOGIN_FORM/OAUTH2/LDAP, an unauthenticated caller gets 401 (or 302 for LOGIN_FORM) on all four operations via the catch-all. Under `auth.type=DISABLED`, all four are reachable WITHOUT authentication.
+  - **The path-pattern coupling itself** — `SecurityConstants` keys the gate by URL string, not a code reference. A rename of `/api/tags` un-gates the writes silently. A test that asserts each verb gets the expected status for a no-permission caller IS the regression catcher for that drift class.
+
+  **Test gap shape**: a `WebTestClient` security test (one of: `@WithMockUser`-style permission injection or a Testcontainers-backed RBAC fixture) asserting (a) a caller WITHOUT `TAG_CREATE` gets 403 on `POST /api/tags`; (b) WITHOUT `TAG_UPDATE` -> 403 on `PUT`; (c) WITHOUT `TAG_DELETE` -> 403 on `DELETE`; (d) a caller with NO `TAG_*` permission gets 200 + full directory on `GET /api/tags` (the open-read posture); (e) an unauthenticated caller gets 401/302 on all four under an authenticating mode. The current state is PINNED — a REFACTOR-217-class path rename would flip (a)-(c) to 200, failing the test.
+test_class: missing-security
+criticality_rationale: |-
+  HIGH per Rule 3: the createTag / deleteTag / updateTag sidecars rate the RBAC-enforcement behaviours HIGH; the getPopularTagList open-read posture is rated MEDIUM in isolation. F-018's drift_class_summary carries `get_popular_tag_list_no_security_rule_open_read_to_any_authenticated_user` and `tag_service_tier_zero_permission_checks_controller_perimeter_sole_authorization`. The aggregate — perimeter-only auth across all four operations with zero CI coverage — is HIGH (a REFACTOR-217 drift is silent and un-gates the writes). Not CRITICAL — no confirmed bypass exists today (the SecurityRules ARE wired correctly); the gap is the absence of a regression catcher. pillars_affected len 3 (P-01, P-08, P-09); cross-pillar bump bounded — HIGH stands.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/TagControllerSecurityTest.java"
+  name: "tagWriteEndpoints_requireRespectiveTagPermission_readEndpointIsOpen_pinsPerimeterAuth"
+evidence:
+  - "createTag sidecar says (tests_coverage_semantic.uncovered_behaviours): 'createTag authorisation enforcement — a caller WITHOUT TAG_CREATE (e.g. holding only DATA_ENTITY_TAGS_UPDATE) gets 403.' criticality HIGH"
+  - "updateTag sidecar says (tests_coverage_semantic.uncovered_behaviours): 'updateTag authorisation enforcement — assert a no-TAG_UPDATE user gets 403; assert an unauthenticated caller gets 401 (or 302 under LOGIN_FORM).' criticality HIGH"
+  - "deleteTag sidecar says (tests_coverage_semantic.uncovered_behaviours): 'the DELETE /api/tags/{tag_id} -> TAG_DELETE gate rejects a caller without the permission (403) and an unauthenticated caller (401/302 per auth mode).' criticality HIGH"
+  - "getPopularTagList sidecar says (tests_coverage_semantic.uncovered_behaviours): 'getPopularTagList open-read posture — assert a user holding NO TAG_* permission gets 200 + the full directory (the absence of a GET SecurityRule).' criticality MEDIUM"
+  - "Verified at primary source via the 4 sidecars' authorization_assertions blocks: SecurityConstants.java:138-142 (3 write entries, no GET entry) + TagController.java:22-52 (no @PreAuthorize on any of the 4 methods) + TagServiceImpl.java:1-167 (zero programmatic permission checks)"
+cross_references:
+  - "TEST-GAP-763 (existing batch-W — DISTINCT: that pins the SIDE-DOOR write bypass — DATA_ENTITY_TAGS_UPDATE minting directory rows without TAG_CREATE. THIS gap pins the canonical perimeter — the TAG_CREATE/UPDATE/DELETE gates on /api/tags themselves. Together: TEST-GAP-763 = the bypass; TEST-GAP-885 = the gate it bypasses)"
+  - "feature-flows:F-018 drift_class_summary.[get_popular_tag_list_no_security_rule_open_read_to_any_authenticated_user] + [tag_service_tier_zero_permission_checks_controller_perimeter_sole_authorization]"
+  - "REFACTOR-217 (the path-pattern-drift class — a /api/tags rename silently un-gates the writes; this test is the regression catcher)"
+related_features: [F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging", "P-09:F-001"]
+related_refactor_ids: [REFACTOR-217]
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `TagControllerSecurityTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Five test methods:
+  1. `createTag_callerWithoutTagCreate_returns403` — caller holding only `DATA_ENTITY_TAGS_UPDATE`; `POST /api/tags`; assert 403.
+  2. `updateTag_callerWithoutTagUpdate_returns403` — `PUT /api/tags/{id}`; assert 403.
+  3. `deleteTag_callerWithoutTagDelete_returns403` — `DELETE /api/tags/{id}`; assert 403.
+  4. `getPopularTagList_callerWithNoTagPermission_returns200WithFullDirectory_pinsOpenRead` — caller with NO `TAG_*`; `GET /api/tags`; assert 200 + items populated. PINS the intentional open-read posture.
+  5. `tagEndpoints_unauthenticatedCaller_returns401Or302_underAuthenticatingMode` — no token; assert 401/302 on all four operations.
+
+  Pair with REFACTOR-217 awareness: this test is the regression catcher for a `/api/tags` path rename that un-gates the writes. When such a rename is proposed, this test fails until the `SECURITY_RULES` entries are updated in lockstep.
+batch: 2026-05-21-X-TAGGING
+feature_id: F-018

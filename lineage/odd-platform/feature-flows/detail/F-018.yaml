@@ -25,6 +25,18 @@ drift_class_summary:
 - update_relations_with_data_entity_empty_set_is_delete_all_intentional_diff_semantic_with_misleading_method_name
 - toctou_get_or_create_tags_by_name_listbynames_bulkcreate_without_reactive_transactional_at_service_tier
 - divide_tags_by_existence_case_sensitive_vs_list_most_popular_query_case_insensitive_ux_divergence
+- delete_tag_fts_refresh_runs_after_tag_to_term_hard_delete_so_term_vector_cleanup_no_ops
+- delete_tag_data_entity_side_search_vector_not_refreshed_deleted_tag_token_lingers
+- external_guard_data_entity_side_only_dataset_field_external_origin_unprotected_on_update_and_delete
+- ids_param_entity_ids_description_filters_by_tag_id_lsn020_class_input_name_drift
+- update_tag_response_tag_omits_external_and_usedcount_maptotag_pojo_overload
+- tag_openapi_tag_no_4xx_response_declared_failure_modes_invisible_to_contract
+- update_dataset_field_tags_relation_insert_relies_on_unset_origin_pojo_plus_db_column_default
+- update_dataset_field_tags_delete_all_then_recreate_churns_internal_relation_rows_no_diff
+- term_tags_update_third_relation_write_path_no_activity_log_no_external_carve_out
+- dataset_field_tags_update_path_full_before_after_activity_audit_three_way_audit_asymmetry
+- tag_openapi_tag_bare_name_no_description_no_externaldocs_swagger_renders_blank_heading
+- create_tag_in_batch_duplicate_atomicity_unverified_no_on_conflict_partial_commit_risk
 batch_origin: N
 created_in_batch: N
 feature_name: Manual Object Tagging — operator + ingestion-driven Tag directory with side-channel mint paths
@@ -36,10 +48,13 @@ description: |-
   fields and terms) via the UI's tag-assign surfaces; collectors push tags
   with their ingested entities via the S2S ingestion pipeline. The Tag
   directory itself is a global, namespace-free vocabulary surfaced via
-  `GET /api/tags/popular` (the Catalog Overview's popular-tags strip) and
-  the tag-dropdown on every entity-detail page.
+  `GET /api/tags` (the Catalog Overview's Top-Tags strip + the tag-search
+  facet) and the tag-dropdown on every entity-detail page. The directory
+  CRUD lives behind the `tag` OpenAPI tag — four operations (createTag /
+  getPopularTagList / updateTag / deleteTag) generating the `TagApi`
+  interface that `TagController` implements.
 
-  The doc-anchored intent (live tagging.md page, WebFetched 2026-05-19
+  The doc-anchored intent (live tagging.md page, WebFetched 2026-05-21
   status 200): three role-based permissions govern tag management —
   TAG_CREATE ("Create a new tag in the catalog vocabulary"), TAG_UPDATE
   ("Edit tag names or Important flag status"), TAG_DELETE ("Remove tags
@@ -48,30 +63,42 @@ description: |-
   as "opening an entity detail surface and selecting from existing
   vocabulary or creating new labels on the spot."
 
-  The user-observable reality, per batch-N primary-source code-walk of
-  ReactiveTagRepositoryImpl: any user with DATA_ENTITY_TAGS_UPDATE on a
-  single data entity can mint NEW rows in the global `tag` directory by
-  submitting novel tag names via `POST /api/dataentities/{id}/tags`;
-  TagServiceImpl.getOrCreateTagsByName uses bulkCreate (no TAG_CREATE
-  consultation). The same side-channel exists from TermServiceImpl.upsertTags
-  (TermServiceImpl.java:257 — `tagService.getOrCreateTagsByName(names)`
-  on TERM_UPDATE) and from the ingestion path
-  (`ExternalTagIngestionRequestProcessor` → `tagService.getOrInjectTagByName`
-  → repository.ingestData upsert). The repository is the persistence-tier
-  substrate of three independent write paths into a global vocabulary.
+  The user-observable reality, per the X-TAGGING-batch controller-method
+  primary-source code-walk (createTag + deleteTag + getPopularTagList +
+  updateTag + createTermTagsRelations + updateDatasetFieldTags + the `tag`
+  openapi rollup) on top of the batch-N repository audit: any user with an
+  entity-level tag-update permission (DATA_ENTITY_TAGS_UPDATE /
+  TERM_TAGS_UPDATE / DATASET_FIELD_TAGS_UPDATE) can mint NEW rows in the
+  global `tag` directory by submitting novel tag names; all four
+  relation-write paths reach `tagService.getOrCreateTagsByName` /
+  `getOrInjectTagByName`, none of which consults `TAG_CREATE`. The
+  directory CRUD operations are also entirely controller-perimeter-gated
+  (zero @PreAuthorize, zero programmatic checks at the service or
+  repository tier), and `GET /api/tags` carries NO SecurityRule at all —
+  any authenticated user enumerates the whole directory.
 
-  Multiple secondary drifts compound: TOCTOU between listByNames and
-  bulkCreate creates a 500-error surface on concurrent novel-name submits;
-  case-sensitive listByNames silently mints duplicate rows for case
-  variants (`PII` vs `pii`); no tag-name validation enables DoS via
-  pathological inputs; listMostPopular is globally-scoped (no per-owner /
-  per-namespace filter); resurrection of soft-deleted tags loses all
-  prior relations; the ingestion-side mutation path emits NO activity-feed
-  entry while the UI-side path DOES (cross-channel audit asymmetry).
+  Multiple secondary drifts compound and are now confirmed at primary
+  source across the controller tier: the `listMostPopular` ranking lie
+  (paginate-inside-CTE yields OLDEST-by-tag.id-ASC, not most-popular —
+  LSN-019, empirically reproduced 2026-05-20); the asymmetric `deleteTag`
+  cascade (tag_to_dataset_field orphaned); the asymmetric FTS refresh on
+  delete (only 1 of 3 vectors, AND it runs after the tag_to_term rows are
+  gone so it no-ops); the `!external` guard reading only the data-entity
+  aggregate; the `ids` parameter misdescribed as "Entity ids"; and a
+  three-way activity-audit asymmetry (data-entity path audits with the
+  dataEntityId param only, dataset-field path audits with full before/after
+  tag state, term path does NOT audit at all).
 contributing_nodes:
 - odd-platform java repository reactive repository:ReactiveTagRepositoryImpl
 - odd-platform java service service:TagServiceImpl
 - odd-platform java TagController
+- odd-platform java TagController controller-method:createTag
+- odd-platform java TagController controller-method:deleteTag
+- odd-platform java TagController controller-method:getPopularTagList
+- odd-platform java TagController controller-method:updateTag
+- odd-platform java TermController controller-method:createTermTagsRelations
+- odd-platform java DatasetFieldController controller-method:updateDatasetFieldTags
+- odd-platform openapi tags openapi-tag:tag
 - odd-platform java DataEntityController controller-method:setDataEntityTags
 - odd-platform java ExternalTagIngestionRequestProcessor
 - odd-platform java DatasetFieldServiceImpl
@@ -94,18 +121,22 @@ chain:
   unresolved: true
 - hop: 2
   node: odd-platform java service service:TagServiceImpl
-  sidecar: '(not yet enriched — referenced from batch-N ReactiveTagRepositoryImpl sidecar audiences)'
+  sidecar: '(referenced from batch-N + VAL-LSN-019 + X-TAGGING controller-method sidecars; TagServiceImpl.java:1-167 verified zero-auth)'
   multiplicity_per_trigger: 1
   evidence: |-
     TagServiceImpl.updateRelationsWithDataEntity (line 97 — @ReactiveTransactional)
-    orchestrates: listByNames(tagNames) to filter existing → bulkCreate(missing) to
-    mint novel → diff against existing tag_to_data_entity rows → createDataEntityRelations
+    orchestrates: listByNames(tagNames) to filter existing -> bulkCreate(missing) to
+    mint novel -> diff against existing tag_to_data_entity rows -> createDataEntityRelations
     (line 118) for adds + deleteDataEntityRelations (line 117) for removes.
     TagServiceImpl.getOrCreateTagsByName is the auto-create-on-miss
     primitive (lines 80-86, 144-159). Service performs NO TAG_CREATE permission
-    check on the auto-create path — REFACTOR-223. Two sibling side-channels into
+    check on the auto-create path — REFACTOR-223. FOUR sibling side-channels into
     the global Tag directory: TermServiceImpl.upsertTags (TermServiceImpl.java:257)
-    + ExternalTagIngestionRequestProcessor.
+    + ExternalTagIngestionRequestProcessor + DatasetFieldServiceImpl.updateStatistics
+    + DatasetFieldServiceImpl.updateDatasetFieldTags. TagServiceImpl.java:1-167
+    has ZERO @PreAuthorize + ZERO programmatic permission checks across 9 public
+    methods + 2 private helpers (X-TAGGING confirmation — createTag / updateTag /
+    deleteTag controller-method sidecars all cite the verified zero-auth posture).
   unresolved: true
 - hop: 3
   node: odd-platform java repository reactive repository:ReactiveTagRepositoryImpl
@@ -114,20 +145,21 @@ chain:
   evidence: |-
     ReactiveTagRepositoryImpl.java:1-401 — the persistence-tier substrate.
     Three write surfaces: (a) `bulkCreate` (inherited from
-    ReactiveAbstractCRUDRepository — no onConflict, fails on duplicate via
-    `tag_name_unique` partial unique index → UniqueConstraintException
-    "Tag with this name already exists"); (b) `ingestData` (lines 191-213 —
-    `INSERT … ON CONFLICT (name) WHERE deleted_at IS NULL DO UPDATE SET
-    name = EXCLUDED.name RETURNING` — the upsert path for the ingestion-side
-    `ExternalTagIngestionRequestProcessor`); (c) inherited `delete` (UPDATE
-    setting deleted_at — soft-delete). Read surfaces: `listByNames`
-    (case-SENSITIVE `TAG.NAME.in(names)` — line 120-125), `listMostPopular`
-    (lines 137-167, 373-392 — UNION-ALL CTE across `tag_to_data_entity` +
-    `tag_to_dataset_field` usage counts; globally-scoped). Relation
-    create/delete: six methods, all `onDuplicateKeyIgnore` for the creates
-    (idempotent), all `DSL.delete(...)` HARD-DELETE for relation removes
-    (line 217-323). Soft-delete only on `tag` directory entries; relation
-    rows are immediately removed.
+    ReactiveAbstractCRUDRepository.java:114-126 — no onConflict, fails on
+    duplicate via `tag_name_unique` partial unique index ->
+    UniqueConstraintException "Tag with this name already exists"); (b)
+    `ingestData` (lines 191-213 — INSERT ... ON CONFLICT (name) WHERE
+    deleted_at IS NULL DO UPDATE — the upsert path for the ingestion-side
+    ExternalTagIngestionRequestProcessor); (c) inherited soft-delete
+    `delete` (UPDATE setting deleted_at — ReactiveAbstractSoftDeleteCRUDRepository
+    .java:50-59). Read surfaces: `listByNames` (case-SENSITIVE TAG.NAME.in(names)
+    — lines 120-125), `listMostPopular` (lines 137-167, 373-392 — UNION-ALL CTE;
+    globally-scoped; paginate-inside-CTE at line 148 orders by TAG.ID ASC
+    BEFORE counts — the LSN-019 ranking lie). Relation create/delete: the six
+    create methods are onDuplicateKeyIgnore (idempotent); relation removes are
+    HARD DELETE (lines 217-323). `deleteDatasetFieldRelations(long tagId)`
+    exists at :299-306 but has NO caller from TagServiceImpl.delete — the
+    asymmetric-cascade fix anchor.
   unresolved: false
   resolved_in_batch: N
 - hop: 4a
@@ -144,100 +176,233 @@ chain:
     UI-side mutation.
   unresolved: true
 - hop: 4b
-  node: odd-platform java TagController
-  sidecar: '(not yet enriched — operator-explicit POST /api/tags surface)'
+  node: odd-platform java TagController controller-method:createTag
+  sidecar: odd-platform__java__TagController__controller-method__createTag.md
   multiplicity_per_trigger: 1
   evidence: |-
-    TagController.createTag (TagController.java:23-28) — POST /api/tags,
-    gated by TAG_CREATE. Bulk-creates novel tags. Emits no @ActivityLog
-    at the controller layer either; the activity event lives on the
-    @ActivityLog annotation in DataEntityServiceImpl.upsertTags (line 358
-    — TAG_ASSIGNMENT_UPDATED), NOT on the directory-mutation path.
-  unresolved: true
+    TagController.createTag (TagController.java:22-28) — POST /api/tags, a
+    3-line reactive delegation gated by TAG_CREATE (Management scope,
+    NO_CONTEXT) per SecurityConstants.java:138. `.collectList()`s the
+    Flux<TagFormData> bulk body and hands it to tagService.bulkCreate ->
+    inherited ReactiveAbstractCRUDRepository.bulkCreate (insertManyReturning,
+    NO ON CONFLICT — fail-on-duplicate, the deliberate counterpart to the
+    upsert-shaped getOrInjectTagByName Collector path). Returns HTTP 200 vs
+    OpenAPI-declared 201. Emits NO @ActivityLog. In-batch / cross-batch
+    duplicate atomicity is UNVERIFIED (P-026). The fail-on-duplicate /
+    upsert dual-method split is the X-TAGGING-confirmed implicit ADR.
+  unresolved: false
+  resolved_in_batch: X-TAGGING
+- hop: 4c
+  node: odd-platform java TagController controller-method:getPopularTagList
+  sidecar: odd-platform__java__TagController__controller-method__getPopularTagList.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    TagController.getPopularTagList (TagController.java:36-44) — GET /api/tags,
+    the SINGLE READ endpoint of the Tag API; a 2-line delegation forwarding
+    (page, size, query, ids) — with an argument-order swap — to
+    tagService.listMostPopular(query, ids, page, size). The endpoint is
+    misnamed at THREE layers (getPopularTagList / listMostPopular / OpenAPI
+    `sorted by popularity` openapi.yaml:345); the SQL truncates by TAG.ID ASC
+    before counting. It is the ONLY /api/tags operation with NO SecurityRule
+    entry — it falls through to the catch-all authenticated() — so any
+    authenticated user enumerates the whole global directory regardless of
+    any TAG_* permission. P-029 pins page/size degenerate inputs.
+  unresolved: false
+  resolved_in_batch: X-TAGGING
+- hop: 4d
+  node: odd-platform java TagController controller-method:updateTag
+  sidecar: odd-platform__java__TagController__controller-method__updateTag.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    TagController.updateTag (TagController.java:46-52) — PUT /api/tags/{tag_id},
+    renames a tag and/or toggles `important`; a 2-line delegation to
+    TagServiceImpl.update (@ReactiveTransactional): getDto -> 404 if absent ->
+    reject if external -> applyToPojo -> persist -> updateSearchVectors
+    (TagServiceImpl.java:161-167 — THREE concurrent FTS refreshes). Gated by
+    TAG_UPDATE. Returns HTTP 200 vs OpenAPI-declared 201. Emits NO @ActivityLog.
+    The response Tag omits `external` and `usedCount` (the mapToTag(TagPojo)
+    overload). P-025 pins the search-vector overwrite-vs-append behaviour.
+  unresolved: false
+  resolved_in_batch: X-TAGGING
+- hop: 4e
+  node: odd-platform java TagController controller-method:deleteTag
+  sidecar: odd-platform__java__TagController__controller-method__deleteTag.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    TagController.deleteTag (TagController.java:30-34) — DELETE /api/tags/{tag_id},
+    a 5-line delegation to TagServiceImpl.delete (@ReactiveTransactional,
+    six-step): load TagDto -> 404 if absent -> reject if external -> Flux.zip
+    HARD-delete tag_to_term + tag_to_data_entity -> SOFT-delete the tag row ->
+    ONE FTS refresh (updateChangedTagVectors). Gated by TAG_DELETE; returns 204.
+    THE CASCADE IS DOUBLY ASYMMETRIC: tag_to_dataset_field is never touched
+    (orphan rows persist — P-032), and the single term-side FTS refresh runs
+    AFTER the tag_to_term rows are already gone, so its discovery CTE finds
+    nothing and zero term rows are re-indexed (P-033 H2).
+  unresolved: false
+  resolved_in_batch: X-TAGGING
+- hop: 4f
+  node: odd-platform java TermController controller-method:createTermTagsRelations
+  sidecar: odd-platform__java__TermController__controller-method__createTermTagsRelations.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    TermController.createTermTagsRelations (TermController.java:129-136) —
+    PUT /api/terms/{term_id}/tags, the SECOND of the three relation-write
+    endpoints into the Tag directory. Delegates to TermServiceImpl.upsertTags
+    (@ReactiveTransactional) — a two-phase delete-then-recreate: phase 1
+    deletes every tag_to_term relation whose tag name is absent from the
+    submitted tag_name_list, phase 2 getOrCreateTagsByName auto-creates novel
+    names + createRelationsWithTerm (re)inserts. Gated by TERM_TAGS_UPDATE
+    (TERM-scoped — NOT TERM_UPDATE) at SecurityConstants.java:185-186.
+    Despite the create* operationId the semantic is replace-all; emits NO
+    @ActivityLog (asymmetric with linkTermWithDataEntity on the same service);
+    tag_to_term has no `external` column so the replace-all has no carve-out.
+    P-027 pins replace-all + empty-list-clears-all + auto-create; P-028 pins
+    the unique-index race.
+  unresolved: false
+  resolved_in_batch: X-TAGGING
+- hop: 4g
+  node: odd-platform java DatasetFieldController controller-method:updateDatasetFieldTags
+  sidecar: odd-platform__java__DatasetFieldController__controller-method__updateDatasetFieldTags.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    DatasetFieldController.updateDatasetFieldTags (DatasetFieldController.java:55-63)
+    — PUT /api/datasetfields/{dataset_field_id}/tags, the THIRD relation-write
+    endpoint. Delegates to DatasetFieldServiceImpl.updateDatasetFieldTags
+    (@ReactiveTransactional) — delete-all-then-recreate for INTERNAL relations:
+    deleteDatasetFieldInternalRelations (DELETE WHERE origin='INTERNAL'), then
+    getOrCreateTagsByName auto-create + createDatasetFieldRelations. EXTERNAL /
+    EXTERNAL_STATISTICS relations survive. Gated by DATASET_FIELD_TAGS_UPDATE
+    (DATA_ENTITY-scoped, parent-resolved via DatasetFieldResourceExtractor) at
+    SecurityConstants.java:288-290. UNLIKE the other two relation-write paths
+    it DOES emit @ActivityLog(DATASET_FIELD_TAGS_UPDATED) with FULL before/after
+    tag state. The relation INSERT leaves `origin` UNSET and relies on the DB
+    column default 'INTERNAL' — a CRITICAL untested path (P-030).
+  unresolved: false
+  resolved_in_batch: X-TAGGING
+- hop: 4h
+  node: odd-platform openapi tags openapi-tag:tag
+  sidecar: odd-platform__openapi__tags__openapi-tag__tag.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    The `tag` OpenAPI tag (openapi.yaml:19) — a bare `name: tag` entry, no
+    description, no externalDocs — groups the four /api/tags directory-CRUD
+    operations and generates the TagApi interface. The contract carries NO
+    `security:` block and NO components.securitySchemes (verified exhaustive
+    grep at ede5d277), so every authorization decision is invisible to the
+    spec; no operation declares any 4xx response; createTag/updateTag declare
+    201 but the controller returns 200. The `ids` parameter on getPopularTagList
+    references the SHARED IdsParam component whose description reads "Entity ids"
+    while the implementation filters by tag.id (LSN-020-class drift — P-031).
+  unresolved: false
+  resolved_in_batch: X-TAGGING
 terminal_side_effect:
   side_effect_class: db-write
   description: |-
-    INSERT/UPDATE rows into `tag` table (the global directory) via three
-    independent write paths (operator-explicit TAG_CREATE on POST /api/tags
-    via TagController, side-channel via DATA_ENTITY_TAGS_UPDATE on
-    DataEntityController.setDataEntityTags + TermServiceImpl.upsertTags,
-    ingestion-side `ingestData` upsert from ExternalTagIngestionRequestProcessor).
-    INSERT into `tag_to_data_entity`, `tag_to_dataset_field`, `tag_to_term`
-    relation tables via the respective `create*Relations` methods
-    (`onDuplicateKeyIgnore` — idempotent). DELETE/UPDATE on soft-delete +
-    hard-delete relation removes.
+    INSERT/UPDATE rows into `tag` table (the global directory) via FIVE
+    write paths: (1) operator-explicit TAG_CREATE on POST /api/tags via
+    TagController.createTag (bulkCreate, fail-on-duplicate); (2) UI side-channel
+    via DATA_ENTITY_TAGS_UPDATE on DataEntityController.setDataEntityTags; (3)
+    side-channel via TERM_TAGS_UPDATE on TermController.createTermTagsRelations
+    -> TermServiceImpl.upsertTags; (4) side-channel via DATASET_FIELD_TAGS_UPDATE
+    on DatasetFieldController.updateDatasetFieldTags; (5) ingestion-side
+    `ingestData` upsert from ExternalTagIngestionRequestProcessor + the
+    unauthenticated postDataSetStatsList stats path. UPDATE on PUT /api/tags/{id}
+    (rename / important toggle, + a triple FTS-vector refresh). SOFT-delete +
+    asymmetric HARD-delete of relations on DELETE /api/tags/{id}. INSERT into
+    `tag_to_data_entity`, `tag_to_dataset_field`, `tag_to_term` relation tables
+    via the respective create*Relations methods (onDuplicateKeyIgnore).
   evidence: |-
     ReactiveTagRepositoryImpl.java:191-213 (ingestData upsert), 217-323
-    (relation create/delete), inherited bulkCreate + delete. TagServiceImpl
-    (orchestrator). Side effects: NEW tag-row visible to every user via
-    `GET /api/tags/popular` immediately (no per-owner / per-namespace /
-    per-tenant scoping). NO repository-side audit log emission; the
-    @ActivityLog TAG_ASSIGNMENT_UPDATED event lives at the SERVICE LAYER
-    (DataEntityServiceImpl.upsertTags) and only fires on the UI-side
-    assignment path — NOT on the ingestion-side relation mutation
-    (ExternalTagIngestionRequestProcessor emits no event).
-  cardinality_per_call: 1 (per novel tag minted) + N (per relation
-    created/removed)
+    (relation create/delete), inherited bulkCreate + delete. TagController.java:22-52
+    (the four directory-CRUD operations). TermServiceImpl.java:254-264 +
+    DatasetFieldServiceImpl.java:117-132 (the two sibling relation-write
+    paths). Side effects: NEW tag-row visible to every user via GET /api/tags
+    immediately (no per-owner / per-namespace / per-tenant scoping; no GET
+    SecurityRule). NO repository-side audit log; the @ActivityLog
+    TAG_ASSIGNMENT_UPDATED event lives at DataEntityServiceImpl.upsertTags
+    (line 358) and fires only on the UI-side data-entity assignment path;
+    DatasetFieldServiceImpl.updateDatasetFieldTags emits its OWN
+    @ActivityLog(DATASET_FIELD_TAGS_UPDATED) with full before/after state;
+    TermServiceImpl.upsertTags and the directory-CRUD operations
+    (createTag / updateTag / deleteTag) emit NONE.
+  cardinality_per_call: |-
+    1 (per novel tag minted) + N (per relation created/removed); createTag
+    emits N (one row per BulkTagFormData element, or 0 on a duplicate-name
+    failure IF the batch INSERT rolls back atomically — P-026); updateTag
+    emits 1 tag UPDATE + 0..N search_entrypoint upserts; deleteTag emits 1
+    soft-delete + 0..N tag_to_term + 0..M tag_to_data_entity hard-deletes
+    (tag_to_dataset_field NOT touched).
 amplification_factor: 1
 amplification_factor_provenance: |-
-  STATIC — primary-source in batch N ReactiveTagRepositoryImpl sidecar.
-  Per-call amplification is 1 for the directory write + N for the per-relation
-  fan-out. The DEEPER amplification is the side-channel-count: a single
-  authorized operation grants effective write access to a globally-shared
-  vocabulary surfaced to every other user — but this is a CARDINALITY
-  amplification of consequences, not a per-request multiplier. The
-  REFACTOR-223 framing captures this as "side-door write surface" rather
-  than a numerical product.
+  STATIC — primary-source in batch N ReactiveTagRepositoryImpl sidecar +
+  X-TAGGING controller-method sidecars. Per-call amplification is 1 for the
+  directory write + N for the per-relation fan-out. The DEEPER amplification
+  is the side-channel-count: a single authorized operation grants effective
+  write access to a globally-shared vocabulary surfaced to every other user
+  — five write paths now confirmed (createTag + three relation-write
+  endpoints + the ingestion path). This is a CARDINALITY amplification of
+  consequences, not a per-request multiplier. The REFACTOR-223 framing
+  captures this as "side-door write surface" rather than a numerical product.
+  updateTag carries a SECONDARY amplification: a rename of a tag attached to
+  N data entities triggers an N-row search_entrypoint upsert per call
+  (cardinality scales with the tag's usage breadth — TagServiceImpl.java:161-167).
 observed_vs_expected:
   facets:
-  - facet: DATA_ENTITY_TAGS_UPDATE side-channel into global Tag directory (REFACTOR-223 headline)
+  - facet: DATA_ENTITY_TAGS_UPDATE side-channel into global Tag directory (REFACTOR-223 headline — X-TAGGING confirms all three relation-write endpoints at primary source)
     observed: |-
       The auto-create-on-miss path
-      (`TagServiceImpl.getOrCreateTagsByName` → `bulkCreate`) is invoked from
-      THREE upstream entry points: (a) `DataEntityController.setDataEntityTags`
-      (DATA_ENTITY_TAGS_UPDATE gate); (b) `TermServiceImpl.upsertTags`
-      (TermServiceImpl.java:257 — TERM_UPDATE gate); (c)
-      `ExternalTagIngestionRequestProcessor` (the S2S ingestion path —
-      `auth.ingestion.filter.enabled` gate). None of these consult
-      `TAG_CREATE`. An operator with DATA_ENTITY_TAGS_UPDATE on a single data
-      entity can mint arbitrary new tag names in the global directory
-      visible to every user via `GET /api/tags/popular`. The live tagging
-      doc page describes "creating new labels on the spot" but does NOT
-      name the consequence: each new label is a globally-visible row.
-      `TAG_CREATE` is documented as the gate; the side-channel is undocumented.
+      (`TagServiceImpl.getOrCreateTagsByName` -> `bulkCreate`) is invoked from
+      FOUR relation-write entry points, each now confirmed at controller-method
+      primary source by X-TAGGING: (a) `DataEntityController.setDataEntityTags`
+      (DATA_ENTITY_TAGS_UPDATE gate); (b)
+      `TermController.createTermTagsRelations` -> `TermServiceImpl.upsertTags`
+      (TermServiceImpl.java:257 — TERM_TAGS_UPDATE gate, SecurityConstants
+      .java:185-186); (c) `DatasetFieldController.updateDatasetFieldTags`
+      (DATASET_FIELD_TAGS_UPDATE gate, SecurityConstants.java:288-290); (d)
+      `ExternalTagIngestionRequestProcessor` + the unauthenticated
+      postDataSetStatsList stats path. None of these consult `TAG_CREATE`.
+      `createTag` (POST /api/tags) IS gated by TAG_CREATE — but it is one of
+      five write paths, and the four side-doors all bypass it. An operator
+      with TERM_TAGS_UPDATE on a single term, or DATASET_FIELD_TAGS_UPDATE on
+      a single dataset field's parent entity, can mint arbitrary new tag
+      names in the global directory visible to every user via GET /api/tags.
+      The live tagging + permissions doc pages (WebFetched 2026-05-21 status
+      200) document the TAG_CREATE / per-entity tag-update permissions
+      separately but are silent on the side-channels — the createTag sidecar
+      records this as DOC-GAP-168.
     expected: |-
       Either (a) consult `TAG_CREATE` inside `tagService.getOrCreateTagsByName`
-      (move the gate from the controller perimeter to the upsert primitive)
-      OR (b) document explicitly that `DATA_ENTITY_TAGS_UPDATE`,
-      `TERM_TAGS_UPDATE`, and the ingestion S2S filter ALL grant directory-mint
-      scope, with the operator-trust implications spelled out.
+      (move the gate from the controller perimeter to the upsert primitive —
+      the leverage fix: ONE change closes all four side-doors) OR (b) document
+      explicitly that `DATA_ENTITY_TAGS_UPDATE`, `TERM_TAGS_UPDATE`,
+      `DATASET_FIELD_TAGS_UPDATE`, and the ingestion S2S filter ALL grant
+      directory-mint scope, with the operator-trust implications spelled out.
     drift_class: data_entity_tags_update_side_channel_into_global_tag_directory
     provenance: |-
-      STATIC — primary-source in batch N ReactiveTagRepositoryImpl sidecar
-      docs_link_semantic.doc_drift_findings[0] + feature_hint.drift_class_facets +
-      ReactiveTagRepositoryImpl.java:191-213 (ingestData) + inherited
-      bulkCreate + TagServiceImpl.java:80-86, 144-159 (getOrCreateTagsByName)
-      + TermServiceImpl.java:257 (upsertTags side-channel) +
-      ExternalTagIngestionRequestProcessor.java:34 (ingestion side-channel)
-      + live tagging doc page (WebFetched 2026-05-19 status 200). REFACTOR-223
-      is the canonical backlog entry. Severity: HIGH.
+      STATIC — primary-source in batch N ReactiveTagRepositoryImpl sidecar +
+      X-TAGGING controller-method sidecars: createTag bugs_limitations[5]
+      (4-side-door enumeration) + createTermTagsRelations bugs_limitations
+      "Permission side-door TERM_TAGS_UPDATE mints global Tag directory rows"
+      + updateDatasetFieldTags bugs_limitations "Permission side-door
+      DATASET_FIELD_TAGS_UPDATE mints global Tag directory rows" +
+      TermServiceImpl.java:257 + DatasetFieldServiceImpl.java:264-271 +
+      SecurityConstants.java:138, 185-186, 288-290. REFACTOR-223 +
+      DOC-GAP-168 are the canonical backlog entries. Severity: HIGH.
   - facet: TOCTOU between listByNames and bulkCreate (HIGH availability surface)
     observed: |-
       `TagServiceImpl.getOrCreateTagsByName` (TagServiceImpl.java:80-86,
       144-159) issues `listByNames(tagNames)` first to filter existing,
       then `bulkCreate(tagsToCreate)` for the remainder. Between the two
       reactor stages, a concurrent caller can insert the same novel name.
-      The enclosing TX wraps both calls (`updateRelationsWithDataEntity`
-      is @ReactiveTransactional at line 97), but in PostgreSQL's READ
-      COMMITTED isolation (default for Postgres+jOOQ-Reactive), the
-      listByNames snapshot does NOT see uncommitted INSERTs from a
-      concurrent TX, so the second caller will attempt bulkCreate with
-      the now-conflicting name, hit `tag_name_unique`, and receive
-      `UniqueConstraintException("Tag with this name already exists")`.
-      The user sees a 500-level error on a normal-looking PUT request.
-      No caller-side retry of listByNames after the conflict.
-      `ingestData` path is safe (ON CONFLICT DO UPDATE upsert); the
-      `bulkCreate` path is NOT.
+      In PostgreSQL's READ COMMITTED isolation the listByNames snapshot does
+      NOT see uncommitted INSERTs from a concurrent TX, so the second caller
+      attempts bulkCreate with the now-conflicting name, hits `tag_name_unique`,
+      and receives `UniqueConstraintException("Tag with this name already
+      exists")`. Because the enclosing service method is @ReactiveTransactional,
+      the losing caller's WHOLE transaction rolls back — its term-relation /
+      data-entity-relation writes are lost too, not just the directory row
+      (createTermTagsRelations sidecar makes this explicit). The `ingestData`
+      path is safe (ON CONFLICT DO UPDATE); the `bulkCreate` path is NOT.
     expected: |-
       Either (a) replace `bulkCreate` with `ingestData`-style upsert in the
       getOrCreateTagsByName path, OR (b) catch UniqueConstraintException
@@ -245,23 +410,26 @@ observed_vs_expected:
     drift_class: toctou_between_list_by_names_and_bulk_create
     provenance: |-
       STATIC — primary-source in batch N ReactiveTagRepositoryImpl sidecar
-      bugs_limitations_corner_cases[0] + tests_coverage_semantic.uncovered_behaviours[2]
-      + TagServiceImpl.java:80-86, 144-159 + ReactiveAbstractCRUDRepository.java:113-126
-      + ExceptionUtils.java:30-36, 54-56. Severity: HIGH.
+      bugs_limitations_corner_cases[0] + X-TAGGING createTermTagsRelations
+      bugs_limitations "Unique-index race on concurrent novel-tag creation"
+      (P-028) + updateDatasetFieldTags resource_boundaries (P-030 covers the
+      dataset-field variant) + TagServiceImpl.java:80-86, 144-159 +
+      ReactiveAbstractCRUDRepository.java:114-126. Severity: HIGH.
   - facet: case-sensitive listByNames enables silent duplicate Tag rows via case variation
     observed: |-
       `ReactiveTagRepositoryImpl.listByNames` (lines 120-125) uses
-      `TAG.NAME.in(names)` which translates to a case-sensitive SQL `IN`.
+      `TAG.NAME.in(names)` — case-sensitive SQL `IN`.
       `TagServiceImpl.divideTagsByExistence` calls listByNames then
       `existingTagNames.contains(n)` — also case-sensitive. A caller submitting
-      tag_name_list `['PII']` against a directory containing `pii` sees `pii`
-      as missing and mints a new `PII` row. The `tag_name_unique` partial
-      index is also case-sensitive (Postgres `text` column default), so both
-      rows coexist. UI tag-dropdown renders BOTH. Two operators searching
-      `pii` may apply different rows, fragmenting the search facet. No
-      normalization layer anywhere. The doc page does NOT document
-      case-sensitivity — operators have no way to know whether `PII` and
-      `pii` collapse or fork.
+      `['PII']` against a directory containing `pii` sees `pii` as missing and
+      mints a new `PII` row; the `tag_name_unique` partial index is also
+      case-sensitive so both rows coexist. The X-TAGGING getPopularTagList +
+      openapi sidecars confirm the asymmetry: the READ-side `query` filter is
+      case-INSENSITIVE (`containsIgnoreCase`, ReactiveAbstractCRUDRepository
+      .java:243), so a user can search 'post', see both 'Postgres' and
+      'postgres', and the write path treats them as distinct rows. No
+      normalization layer anywhere; the doc page does not document
+      case-sensitivity.
     expected: |-
       Either (a) case-fold tag names at the application layer before
       persistence (single-source-of-truth normalisation) OR (b) document the
@@ -269,43 +437,47 @@ observed_vs_expected:
     drift_class: case_sensitive_listbynames_silent_duplicate_rows
     provenance: |-
       STATIC — primary-source in batch N ReactiveTagRepositoryImpl sidecar
-      bugs_limitations_corner_cases[1] + docs_link_semantic.doc_drift_findings[1] +
-      ReactiveTagRepositoryImpl.java:120-125 + TagServiceImpl.java:144-159 +
-      V0_0_64__remove_is_deleted_field.sql:105 + live tagging doc page
-      (WebFetched 2026-05-19, silent on case-sensitivity). Severity: MEDIUM.
-  - facet: tag-name no validation — DoS surface
+      bugs_limitations[1] + X-TAGGING getPopularTagList invariants
+      (case-insensitive query vs case-sensitive write) + openapi `query`
+      request-input analysis + ReactiveTagRepositoryImpl.java:120-125 +
+      ReactiveAbstractCRUDRepository.java:242-243. Severity: MEDIUM.
+  - facet: tag-name no validation — DoS surface (X-TAGGING confirms across all four write endpoints)
     observed: |-
-      `ingestData`, `bulkCreate`, and inherited `create` all accept
-      arbitrary `TagPojo.name: String` content. Postgres `tag.name` has
-      no CHECK constraint visible in any migration (no length-cap, no
-      pattern restriction). OpenAPI declares `type: string` only. A caller
-      with DATA_ENTITY_TAGS_UPDATE can mint tag rows with names of arbitrary
-      length (per TextDataType bound), newline / control characters, or
-      whitespace-only. listMostPopular returns these to every user — a
-      malicious operator could pollute the popular-tags surface with
-      thousands of garbage rows.
+      `ingestData`, `bulkCreate`, and inherited `create` all accept arbitrary
+      `TagPojo.name: String` content. The OpenAPI `TagFormData.name` /
+      `TagsFormData.tag_name_list` items / `DatasetFieldTagsUpdateFormData.tags`
+      items are all declared `type: string` with NO `pattern` / `minLength` /
+      `maxLength`; there is no DB CHECK constraint on `tag.name`. X-TAGGING
+      confirms this gap is shared verbatim across createTag, createTermTagsRelations,
+      and updateDatasetFieldTags (all reach the same getOrCreateTagsByName /
+      bulkCreate code with no trim / normalise). A caller can mint tag rows
+      with names of arbitrary length, newline / control characters, or
+      whitespace-only; `[' tag ', 'tag']` mints two distinct rows.
+      getPopularTagList returns these to every user — the popular-tags surface
+      is polluteable with garbage rows.
     expected: |-
       Add server-side validation: length cap (e.g. 64 chars), charset
-      filter (alphanumeric + hyphen/underscore), trim + reject whitespace-only
-      + reject control characters. Add a migration introducing a CHECK
-      constraint matching the application-layer rule.
+      filter, trim + reject whitespace-only + reject control characters. Add
+      a migration introducing a CHECK constraint matching the application rule.
     drift_class: tag_name_no_validation_no_length_cap_no_charset_filter
     provenance: |-
       STATIC — primary-source in batch N ReactiveTagRepositoryImpl sidecar
-      bugs_limitations_corner_cases[2] + security.known_security_gaps[1] +
-      ReactiveTagRepositoryImpl.java:179-215 + migration suite (no CHECK
-      constraint). Severity: MEDIUM. Cross-ref REFACTOR-223 DoS angle.
+      bugs_limitations[2] + security.known_security_gaps[1] + X-TAGGING
+      createTag bugs_limitations[4] + createTermTagsRelations bugs_limitations
+      "No length / character-set / whitespace validation" + updateDatasetFieldTags
+      bugs_limitations "No length / character-set / whitespace validation" +
+      components.yaml:340-345, 2215-2218, 1830-1833. Severity: MEDIUM.
   - facet: listMostPopular globally-scoped — no per-owner / per-namespace filter
     observed: |-
       `ReactiveTagRepositoryImpl.listMostPopular` (lines 137-167) has NO
-      per-data-entity, per-owner, per-namespace, per-tenant filter. The
-      inherited `listCondition(query)` only filters by name-substring.
-      Any caller able to reach `GET /api/tags/popular` — every
-      authenticated user under LOGIN_FORM/OAUTH2/LDAP; anonymous under
-      DISABLED — sees every tag in the directory. Combined with the
-      side-door write path (REFACTOR-223), a per-data-entity-owner can
-      populate the popular-tags surface for ALL users. No native
-      scoping concept exists at the repository level.
+      per-data-entity, per-owner, per-namespace, per-tenant filter. Combined
+      with the X-TAGGING getPopularTagList finding that GET /api/tags has NO
+      SecurityRule entry at all (it falls through to the catch-all
+      authenticated()), any authenticated user — and any caller under DISABLED
+      — sees every tag in the directory. Combined with the side-door write
+      paths (REFACTOR-223), a per-data-entity-owner can populate the
+      Top-Tags surface for ALL users. No native scoping concept exists at
+      the repository level.
     expected: |-
       Either (a) add per-Owner / per-Namespace scoping to listMostPopular
       (consistent with the proposed multi-tenant pillar canonicalisation
@@ -314,79 +486,63 @@ observed_vs_expected:
     drift_class: list_most_popular_globally_scoped_no_per_owner_filter
     provenance: |-
       STATIC — primary-source in batch N ReactiveTagRepositoryImpl sidecar
-      bugs_limitations_corner_cases[3] + security.data_exposure +
-      ReactiveTagRepositoryImpl.java:137-167 + TagController.java:36-44 +
-      system-mission.md canonicalisation_candidates "Multi-Tenant Metrics".
+      bugs_limitations[3] + security.data_exposure + X-TAGGING getPopularTagList
+      security.data_exposure ("the exposed data is the ENTIRE tag directory")
+      + ReactiveTagRepositoryImpl.java:137-167 + SecurityConstants.java:138-142.
       Severity: MEDIUM.
   - facet: resurrection of soft-deleted Tag does NOT restore relations
     observed: |-
       `TagServiceImpl.delete` (TagServiceImpl.java:64-66) issues
       `Flux.zip(deleteTermRelations(tagId), deleteDataEntityRelations(tagId))`
-      (BOTH HARD DELETES via ReactiveTagRepositoryImpl.java:236-241 /
-      :280-286), then `delete(tagId)` (soft-delete UPDATE). Subsequent
-      `bulkCreate(new TagPojo().setName(name))` with the same name succeeds
-      (the partial unique index `tag_name_unique WHERE deleted_at IS NULL`
-      excludes the soft-deleted row) but produces a NEW tag id. The prior
-      `tag_to_*` rows that referenced the OLD id are PHYSICALLY GONE. No
-      maintainer-visible audit of this — a Tag silently deleted then
-      recreated loses ALL its prior assignment history.
+      (BOTH HARD DELETES), then `delete(tagId)` (soft-delete UPDATE).
+      Subsequent `bulkCreate` with the same name succeeds (the partial unique
+      index excludes the soft-deleted row) but produces a NEW tag id. The
+      prior `tag_to_*` rows that referenced the OLD id are PHYSICALLY GONE. No
+      maintainer-visible audit of this — a Tag silently deleted then recreated
+      loses ALL its prior assignment history.
     expected: |-
       Either (a) keep the soft-delete + partial-index semantic and document
       "Tag deletion is destructive of relation history; restore is not
-      automatic" OR (b) detect the resurrection case (same name + matching
-      pre-delete relations) and offer a restore option.
+      automatic" OR (b) detect the resurrection case and offer a restore.
     drift_class: resurrection_of_soft_deleted_tag_loses_all_relations
     provenance: |-
       STATIC — primary-source in batch N ReactiveTagRepositoryImpl sidecar
-      bugs_limitations_corner_cases[4] + TagServiceImpl.java:58-70 +
-      ReactiveTagRepositoryImpl.java:227-241, 272-286 +
-      V0_0_64__remove_is_deleted_field.sql:105. Severity: LOW.
+      bugs_limitations[4] + X-TAGGING deleteTag concepts.invariants
+      (soft-delete tag row, hard-delete relations) + TagServiceImpl.java:58-70
+      + ReactiveAbstractSoftDeleteCRUDRepository.java:50-59. Severity: LOW.
   - facet: repository emits NO audit log on writes; ingestion-side path emits NO @ActivityLog
     observed: |-
       `ReactiveTagRepositoryImpl.java:1-401` has NO `@Slf4j`-emitted log
-      lines on writes — `ingestData`, inherited `bulkCreate` / `delete`,
-      and every `create*Relations` / `delete*Relations` method are silent.
-      The `TAG_ASSIGNMENT_UPDATED` activity event lives at the SERVICE
-      LAYER on `DataEntityServiceImpl.upsertTags` (line 358 —
-      `@ActivityLog(event = TAG_ASSIGNMENT_UPDATED)`). The
-      ingestion-side path (`ExternalTagIngestionRequestProcessor`) writes
-      via this repository directly and produces NO activity-feed entry.
-      Cross-channel audit asymmetry — UI-side tag changes appear in
-      `/api/activity`, ingestion-side tag changes do not. The Audit-log
-      Presence Asymmetry canonicalisation candidate in `system-mission.md`
-      is extended to the ingestion-side tag mutation path.
+      lines on writes. The `TAG_ASSIGNMENT_UPDATED` activity event lives at
+      the SERVICE LAYER on `DataEntityServiceImpl.upsertTags` (line 358). The
+      ingestion-side path (`ExternalTagIngestionRequestProcessor`) writes via
+      this repository directly and produces NO activity-feed entry.
+      Cross-channel audit asymmetry — UI-side data-entity tag changes appear
+      in `/api/activity`, ingestion-side tag changes do not.
     expected: |-
-      Either (a) emit `@ActivityLog(event = TAG_ASSIGNMENT_UPDATED)` on
-      the ingestion-side service path (symmetric with the UI side), OR
-      (b) document the audit-scope asymmetry explicitly + add a
-      separate audit-export surface for ingestion-side mutations.
+      Either (a) emit `@ActivityLog(event = TAG_ASSIGNMENT_UPDATED)` on the
+      ingestion-side service path, OR (b) document the audit-scope asymmetry.
     drift_class: repository_no_audit_log_on_ingestion_tag_mutations
     provenance: |-
       STATIC — primary-source in batch N ReactiveTagRepositoryImpl sidecar
       security.known_security_gaps[0] + ReactiveTagRepositoryImpl.java:179-371
-      (no @ActivityLog) + ExternalTagIngestionRequestProcessor.java:34-44
-      (no @ActivityLog at the orchestrator) + DataEntityServiceImpl.upsertTags
-      (UPSTREAM @ActivityLog only). Severity: MEDIUM. Cross-ref
-      system-mission.md canonicalisation_candidates "Audit-log Presence
-      Asymmetry (2-tier audit story)".
+      + ExternalTagIngestionRequestProcessor.java:34-44 + DataEntityServiceImpl
+      .upsertTags. Severity: MEDIUM. Cross-ref system-mission.md
+      canonicalisation_candidates "Audit-log Presence Asymmetry". See also
+      the X-TAGGING three-way-audit-asymmetry facet which extends this.
   - facet: partial unique index hardcoded WHERE-clause predicate coupling
     observed: |-
       `ReactiveTagRepositoryImpl.ingestData` upsert at lines 199-210 has a
-      DUAL coupling: (a) `conflictFields` is computed DYNAMICALLY via
-      `Indexes.TAG_NAME_UNIQUE.getFields().stream().map(...)` — a migration
-      that changed the index to `(name, namespace_id)` would automatically
-      propagate to the conflict-target; (b) the `WHERE TAG.DELETED_AT.isNull()`
-      clause at line 207 is HARDCODED — a future migration that broadened
-      the predicate (e.g. `deleted_at IS NULL AND important IS NOT NULL`)
-      WITHOUT updating this hardcoded clause would silently break the upsert
-      — the `ON CONFLICT` would not match and Postgres would raise a
-      unique-violation on every Collector push. Asymmetric coupling — index
-      shape changes propagate, predicate shape changes do NOT.
+      DUAL coupling: `conflictFields` is computed DYNAMICALLY via
+      `Indexes.TAG_NAME_UNIQUE.getFields()` (index shape changes propagate),
+      but the `WHERE TAG.DELETED_AT.isNull()` clause at line 207 is HARDCODED
+      — a future migration broadening the predicate without updating this
+      clause would silently break the upsert (ON CONFLICT would not match,
+      Postgres raises a unique-violation on every Collector push). Asymmetric
+      coupling.
     expected: |-
-      Either (a) extract the partial-index predicate to a constant (consistent
-      with the dynamic conflictFields pattern), OR (b) make the predicate
-      derivable from `Indexes.TAG_NAME_UNIQUE.getCondition()` if jOOQ exposes
-      that API.
+      Either (a) extract the partial-index predicate to a constant, OR (b)
+      make it derivable from `Indexes.TAG_NAME_UNIQUE.getCondition()`.
     drift_class: partial_unique_index_hardcoded_where_clause_predicate_coupling
     provenance: |-
       STATIC — primary-source in batch N ReactiveTagRepositoryImpl sidecar
@@ -396,102 +552,69 @@ observed_vs_expected:
   - facet: onDuplicateKeyIgnore makes relation creates idempotent — replace-all diff baseline
     observed: |-
       `createDataEntityRelations` (line 261), `createDatasetFieldRelations`
-      (line 344), `createTermRelations` (line 367) all use `onDuplicateKeyIgnore()`
-      — making the contract "attach tag if not already attached" rather than
-      "add a new attachment". Consistent across the three relation
-      surfaces. Combined with the replace-all diff pattern in
-      `TagServiceImpl.updateRelationsWithDataEntity`, the operator-visible
-      contract is "PUT /api/dataentities/{id}/tags is a SET, not an APPEND".
-      Not documented at the operator-facing surface; not asserted in tests.
+      (line 344/367), `createTermRelations` (line 367/344) all use
+      `onDuplicateKeyIgnore()` — making the contract "attach tag if not
+      already attached" rather than "add a new attachment". X-TAGGING
+      confirms this across all three relation-write endpoints; combined with
+      the replace-all / delete-then-recreate diff patterns the operator-visible
+      contract is "PUT /api/.../tags is a SET, not an APPEND". Not documented
+      at the operator-facing surface; not asserted in tests.
     expected: |-
       Document the SET-semantic + the idempotence contract on tag-assign
       endpoints in the API reference.
     drift_class: onduplicatekeyignore_idempotent_relation_create
     provenance: |-
       STATIC — primary-source in batch N ReactiveTagRepositoryImpl sidecar
-      implicit_adrs[4] + ReactiveTagRepositoryImpl.java:261, 344, 367.
-      Severity: LOW.
+      implicit_adrs[4] + X-TAGGING createTermTagsRelations implicit_adrs
+      "Term-tag relation INSERT is idempotent by design" + updateDatasetFieldTags
+      invariants "onDuplicateKeyIgnore on the relation insert" +
+      ReactiveTagRepositoryImpl.java:261, 344, 367. Severity: LOW.
   - facet: triple-fetch of listDataEntityDtos per data-entity request
     observed: |-
-      `DataEntityServiceImpl.java:622` (detail-page assembly) +
-      `DataEntityPermissionExtractor.java:67` (policy evaluation) +
-      `TagActivityHandlerImpl.java:41` (activity-feed state) all call
-      `tagRepository.listDataEntityDtos(dataEntityId)` for the same
-      data entity during a single HTTP request. No request-scoped cache.
-      For a per-entity detail page with N tags, this is 3xN DB rows
-      materialised. Same shape as the term-activity-handler triple-re-query
-      (REFACTOR-228 — captured in F-002).
+      `DataEntityServiceImpl.java:622` + `DataEntityPermissionExtractor.java:67`
+      + `TagActivityHandlerImpl.java:41` all call
+      `tagRepository.listDataEntityDtos(dataEntityId)` for the same data
+      entity during a single HTTP request. No request-scoped cache. For a
+      per-entity detail page with N tags, this is 3xN DB rows materialised.
     expected: |-
       Per-request memoisation via reactor Context, OR refactor the three
       consumers to share a single Tag-list fetch.
     drift_class: triple_fetch_list_data_entity_dtos_per_request
     provenance: |-
       STATIC — primary-source in batch N ReactiveTagRepositoryImpl sidecar
-      performance.known_performance_gaps[0] +
-      ReactiveTagRepositoryImpl.java:68-81 +
-      DataEntityServiceImpl.java:622 +
-      DataEntityPermissionExtractor.java:67 +
-      TagActivityHandlerImpl.java:41. Severity: LOW.
+      performance.known_performance_gaps[0] + ReactiveTagRepositoryImpl.java:68-81
+      + DataEntityServiceImpl.java:622 + DataEntityPermissionExtractor.java:67
+      + TagActivityHandlerImpl.java:41. Severity: LOW.
   - facet: Tag facet surfaces on the Catalog Search page — discoverability + enumeration vector (batch ZA — PRIMARY-SOURCE)
     observed: |-
-      `Search.tsx` (the Catalog page root SPA component at `/search/*`)
-      mounts `<Filters/>` (sidecar concepts.entities lists Filters as
-      a child component) which renders SEVEN facets per the WebFetched
-      live doc 2026-05-20 status 200 — Datasource / Type / Namespace /
-      Owner / **Tag** / Groups / Statuses. The Tag facet is a multi-select
-      that surfaces every tag visible to the caller. The user-observable
-      effect: tags created via the Manual Object Tagging surface (F-018)
-      become catalog-wide DISCOVERABLE via Tag-facet search. Combined
-      with F-018's existing finding `data_entity_tags_update_side_channel_into_global_tag_directory`
-      (any user with DATA_ENTITY_TAGS_UPDATE on a single entity can
-      mint novel tag names that become global vocabulary), the Tag
-      facet on the Search Catalog page is the CATALOG-WIDE ENUMERATION
-      surface for the tags minted via the side-channel. Per F-017
-      batch-ZA finding (the Search.tsx sidecar bugs_limitations_corner_cases
-      cross-link): the Tag facet enumeration runs catalog-wide with NO
-      per-owner / per-namespace scoping (cross-owner facet enumeration
-      — F-017 facet 1). Therefore tags minted via the F-018 side-channel
-      become GLOBALLY-DISCOVERABLE — including the lowercase / pathological
-      / case-collision variants surfaced by F-018's
-      `case_sensitive_listbynames_silent_duplicate_rows` facet (the
-      Tag facet renders 'PII' and 'pii' as DISTINCT rows). The cross-feature
-      consequence: F-018's tag-minting side-channel is the PRODUCER;
-      F-017's Tag facet on Search.tsx is the CONSUMER. The full loop:
-      mint a novel tag on one entity → that tag becomes a top-level
-      Search facet → any authenticated user enumerates it → catalog-wide
-      tag vocabulary pollution is OPERATOR-INVISIBLE (the live tagging.md
-      page does not describe the enumeration consequence; sidecar
-      Search.tsx doc_drift_findings[A] severity MEDIUM — undocumented
-      catalog discoverability).
+      `Search.tsx` mounts `<Filters/>` which renders SEVEN facets, one of
+      which is **Tag** — a multi-select surfacing every tag visible to the
+      caller. Tags created via the Manual Object Tagging surface become
+      catalog-wide DISCOVERABLE via Tag-facet search. Combined with the
+      side-channel-mint finding, the Tag facet is the CATALOG-WIDE
+      ENUMERATION surface for side-channel-minted tags; the enumeration runs
+      catalog-wide with NO per-owner / per-namespace scoping (F-017 facet 1).
+      The full loop: mint a novel tag on one entity -> that tag becomes a
+      top-level Search facet -> any authenticated user enumerates it ->
+      catalog-wide tag vocabulary pollution is OPERATOR-INVISIBLE.
     expected: |-
-      Either (a) document the Tag facet enumeration consequence on the
-      live tagging.md page (operator should know that minting a tag
-      makes it globally-discoverable via Search Catalog); OR (b) gate
-      Tag facet visibility per-namespace / per-owner (significant
-      refactor — diverges from the read-collaborative posture); OR
-      (c) tag-mint UX presents the dual responsibility ("This tag will
-      become globally searchable") as a confirmation prompt.
+      Either (a) document the Tag facet enumeration consequence on the live
+      tagging.md page; OR (b) gate Tag facet visibility per-namespace /
+      per-owner; OR (c) a tag-mint UX confirmation prompt ("This tag will
+      become globally searchable").
     drift_class: data_entity_tags_update_side_channel_into_global_tag_directory
     provenance: |-
       STATIC — primary-source verification at Search.tsx:1-92 +
-      Filters.tsx:46-65 (the 7 facets) + Search sidecar
-      docs_link_semantic.fetched_excerpts WebFetched 2026-05-20 status
-      200 (Tag facet verbatim) + Search sidecar invariants[2]
-      (read-collaborative posture — every authenticated user enumerates
-      the catalog) + F-017 batch-ZA facet `cross_owner_facet_enumeration`
-      cross-link. Sister surface: TermSearch.tsx (Dictionary tab,
-      P-06:F-001) — the Term catalog has its own facet surface but
-      tags are NOT one of its facets (TermSearch focuses on Term-level
-      attributes); only Search.tsx surfaces the Tag facet. Cross-link:
-      F-001 (Popular Ranking) does NOT consume tags as a ranking signal;
-      F-017 (Search Filter Facets) is the only F-018 consumer at the
-      Search-surface tier. Severity: MEDIUM.
+      Filters.tsx:46-65 + Search sidecar docs_link_semantic WebFetched
+      2026-05-20 status 200 + F-017 batch-ZA facet
+      `cross_owner_facet_enumeration`. Severity: MEDIUM.
   - facet_id: F-018-DRIFT-LSN019-listMostPopular-ranking
     facet: |-
       listMostPopular: NAME-vs-BEHAVIOUR drift — paginate-inside-CTE yields
       OLDEST-by-tag.id-ASC, NOT MOST-POPULAR-by-count when directory size
       exceeds the page size (LSN-019 SMOKING-GUN — Stress Protocol canary
-      batch VAL-LSN-019)
+      batch VAL-LSN-019; X-TAGGING confirms at the controller-method AND the
+      OpenAPI-spec tier)
     category: name-behavior-drift
     severity: HIGH
     headline: |-
@@ -501,10 +624,10 @@ observed_vs_expected:
     operator_visible_consequence: |-
       UI 'Top Tags' tile on the Catalog Overview shows the OLDEST tags in
       the directory when N > 30, regardless of usage. A newly-minted
-      high-usage tag is INVISIBLE on /api/tags/popular page 1 until it
-      becomes one of the oldest 30 by serial id — i.e., NEVER unless the
-      directory shrinks. Catalog Search Tag facet (F-017 consumer) inherits
-      the same ranking lie when seeded from this endpoint.
+      high-usage tag is INVISIBLE on /api/tags page 1 until it becomes one
+      of the oldest 30 by serial id — i.e., NEVER unless the directory
+      shrinks. Catalog Search Tag facet (F-017 consumer) inherits the same
+      ranking lie when seeded from this endpoint.
     observed: |-
       ReactiveTagRepositoryImpl.listMostPopular (lines 137-167) chain:
       (a) lines 144-145 build a homogeneous `selectFrom(TAG).where(conditions)`;
@@ -513,33 +636,33 @@ observed_vs_expected:
       .paginate (`:63-90`) emits inner `ORDER BY tag.id ASC LIMIT size
       OFFSET (page-1)*size` BEFORE counts are computed; (c) line 150
       materialises this as `tag_cte`; (d) `getDataEntityWithDatasetFields`
-      (`:373-391`) builds `WITH tag_cte AS (size-truncated-paginated-select)
-      SELECT ... LEFT JOIN tag_to_data_entity GROUP BY tag_cte.fields
-      UNION ALL ... LEFT JOIN tag_to_dataset_field GROUP BY tag_cte.fields
-      AS union_usages`; (e) line 158 the outer `cteSelect.orderBy(field(
-      COUNT_FIELD).desc())` re-ranks among the already-truncated window only.
-      Empirical proof (`retrospectives/LSN-019:23-32`, 2026-05-20 maintainer
-      test against demo.oddp.io): 35 tags created with known IDs; every
-      entity tagged by all 35; size=30 → the 30 oldest tags (IDs 1-30) are
-      returned in tag.id ASC order; the 5 newest tags (IDs 31-35) are
-      missing from the response despite being equally popular.
+      (`:373-391`) UNION-ALLs `tag_to_data_entity` + `tag_to_dataset_field`
+      usage counts over the CTE rows; (e) line 158 the outer `cteSelect
+      .orderBy(field(COUNT_FIELD).desc())` re-ranks among the already-truncated
+      window only. X-TAGGING getPopularTagList sidecar traces this end-to-end
+      at the controller tier (no upstream re-sort at controller or service);
+      the `tag` openapi sidecar confirms the OpenAPI `description` text
+      itself (openapi.yaml:345 — 'Gets the list of existing tags sorted by
+      popularity') is the false claim. Empirical proof
+      (`retrospectives/LSN-019:23-32`, 2026-05-20 maintainer test against
+      demo.oddp.io): 35 tags created with known IDs; every entity tagged by
+      all 35; size=30 -> the 30 oldest tags are returned in tag.id ASC order;
+      the 5 newest are missing despite being equally popular.
     expected: |-
       Either (a) move ORDER BY usage_count DESC OUTSIDE the paginate
       (compute the count aggregate over the FULL directory then truncate),
       OR (b) update the OpenAPI description + UI label to honestly
-      describe the actual behaviour ("Returns up to `size` of the oldest
-      tags, re-ordered by usage_count desc within that window"). The
-      method-name `listMostPopular` and the spec promise
-      `'Gets the list of existing tags sorted by popularity'` ARE the
-      operator-facing contract; the implementation cannot satisfy it.
+      describe the actual behaviour. The method-name `listMostPopular` and
+      the spec promise are the operator-facing contract; the implementation
+      cannot satisfy it.
     drift_class: name_behavior_drift_list_most_popular_paginate_inside_cte_yields_oldest_by_id_not_most_popular_by_count
     evidence:
     - 'ReactiveTagRepositoryImpl.java:148 — paginate(homogeneousQuery, [OrderByField(TAG.ID, ASC)], (page-1)*size, size) — inner pagination orders by tag.id ASC, LIMIT 30'
     - 'ReactiveTagRepositoryImpl.java:158 — outer cteSelect.orderBy(COUNT_FIELD.desc()) — only re-ranks the already-truncated window'
-    - 'JooqQueryHelper.java:63-90 — the paginate primitive emits ORDER BY tag.id ASC LIMIT size BEFORE the count aggregation; the LIMIT happens on tag.id ASC'
-    - 'odd-platform-specification/openapi.yaml:344-346 — spec promises ''sorted by popularity'''
-    - 'TagController.java:36-44 + TagServiceImpl.java:72-77 — straight-through delegation; no re-sort at controller or service tier'
-    - 'retrospectives/LSN-019:23-32 — maintainer''s 2026-05-20 empirical test: 35 tags all equally popular, size=30 → response = oldest 30 by tag.id ASC; 5 youngest absent'
+    - 'JooqQueryHelper.java:63-90 — the paginate primitive emits ORDER BY tag.id ASC LIMIT size BEFORE the count aggregation'
+    - 'odd-platform-specification/openapi.yaml:344-346 — spec promises sorted by popularity'
+    - 'TagController.java:36-44 + TagServiceImpl.java:72-77 — straight-through delegation; no re-sort at controller or service tier (X-TAGGING getPopularTagList primary source)'
+    - 'retrospectives/LSN-019:23-32 — maintainer 2026-05-20 empirical test: 35 tags all equally popular, size=30 -> response = oldest 30 by tag.id ASC; 5 youngest absent'
     cross_references:
       retrospectives:
       - LSN-019
@@ -547,18 +670,480 @@ observed_vs_expected:
       - P-010
       - P-LSN019-listMostPopular-drift
       refactoring_scopes:
-      - 'REFACTOR-LSN019-listMostPopular-ranking (created by adr-archaeologist this batch — name-vs-behaviour mismatch + paginate-inside-CTE structural anchor)'
+      - 'REFACTOR-LSN019-listMostPopular-ranking (created by adr-archaeologist VAL-LSN-019 — name-vs-behaviour mismatch + paginate-inside-CTE structural anchor)'
       doc_gaps:
-      - 'DOC-GAP-LSN019-listMostPopular-ranking (created by doc-gap-finder this batch — OpenAPI spec `''sorted by popularity''` promise vs implementation; live tagging.md page silent on Top-Tags semantics)'
+      - 'DOC-GAP-LSN019-listMostPopular-ranking (created by doc-gap-finder VAL-LSN-019 — OpenAPI spec sorted by popularity promise vs implementation; live tagging.md page silent on Top-Tags semantics)'
       test_gaps:
-      - 'TEST-GAP-LSN019-listMostPopular-ranking (created by test-coverage-mapper this batch — TagRepositoryImplTest.testListMostPopular is structurally blind: uses containsExactlyInAnyOrder + size=numberOfTestTags so the LIMIT never fires)'
+      - 'TEST-GAP-LSN019-listMostPopular-ranking (created by test-coverage-mapper VAL-LSN-019 — TagRepositoryImplTest.testListMostPopular structurally blind)'
     provenance: |-
       MEASURED+STATIC — empirical confirmation 2026-05-20 (LSN-019:23-32);
       static trace through ReactiveTagRepositoryImpl.java:138-167 + JooqQueryHelper
-      .java:63-90; promoted to F-018 headline drift facet by batch VAL-LSN-019
-      (the LSN-019 Stress Protocol canary). Severity: HIGH — operator-visible
-      ranking lie on the Catalog Overview Top-Tags tile + Catalog Search Tag
-      facet. Pinned permanently by P-010 + P-LSN019-listMostPopular-drift.
+      .java:63-90; promoted to F-018 headline drift facet by batch VAL-LSN-019;
+      X-TAGGING confirms at the controller-method tier (getPopularTagList
+      sidecar) AND the OpenAPI-spec tier (`tag` openapi sidecar — the
+      description text IS the wrong claim). Pinned permanently by P-010 +
+      P-LSN019-listMostPopular-drift. Severity: HIGH.
+  - facet_id: F-018-DRIFT-XTAGGING-deleteTag-fts-too-late
+    facet: |-
+      deleteTag FTS refresh runs AFTER the tag_to_term rows are hard-deleted —
+      the discovery CTE finds nothing, so the single term-side search-vector
+      refresh the delete path performs is effectively a no-op
+    category: ordering-bug
+    severity: MEDIUM
+    headline: |-
+      TagServiceImpl.delete runs deleteTermRelations in the Flux.zip BEFORE
+      the term-side FTS refresh; the refresh's discovery CTE is keyed on the
+      just-deleted tag_to_term rows so zero terms get re-indexed.
+    operator_visible_consequence: |-
+      After a tag delete, the deleted tag's name token can linger in
+      `term_search_entrypoint.tag_vector` — a global search for the deleted
+      tag name can still surface previously-tagged terms. The single FTS
+      refresh the delete path does perform never cleans the token because
+      it cannot discover which terms to re-index (the relation rows are
+      already gone).
+    observed: |-
+      `TagServiceImpl.delete` (TagServiceImpl.java:57-70, @ReactiveTransactional)
+      step 4 is `Flux.zip(deleteTermRelations(tagId), deleteDataEntityRelations
+      (tagId))` (`:64-65`) — which HARD-deletes the `tag_to_term` rows — and
+      step 6 (`:68-69`) is `reactiveTermSearchEntrypointRepository
+      .updateChangedTagVectors(tagId)`. `ReactiveTermSearchEntrypointRepositoryImpl
+      .updateChangedTagVectors` discovers which terms to re-index via
+      `SELECT term_id FROM tag_to_term WHERE tag_id = ?`
+      (ReactiveTermSearchEntrypointRepositoryImpl.java:141-144) — but those
+      rows were deleted in step 4, so the CTE is empty and ZERO term rows are
+      re-indexed. The zip-then-refresh ordering makes the FTS refresh a no-op.
+    expected: |-
+      Either (a) compute the affected term ids BEFORE the relation delete and
+      pass them to the refresh, OR (b) reorder so updateChangedTagVectors runs
+      before deleteTermRelations, OR (c) refresh the term vectors by tag name
+      rather than by surviving relation rows.
+    drift_class: delete_tag_fts_refresh_runs_after_tag_to_term_hard_delete_so_term_vector_cleanup_no_ops
+    evidence:
+    - 'TagServiceImpl.java:64-65 — Flux.zip(deleteTermRelations(tagId), ...) — hard-deletes tag_to_term'
+    - 'TagServiceImpl.java:68-69 — updateChangedTagVectors(tagId) runs AFTER the zip'
+    - 'ReactiveTermSearchEntrypointRepositoryImpl.java:141-144 — the refresh CTE SELECT term_id FROM tag_to_term WHERE tag_id = ? is keyed on the just-deleted rows'
+    cross_references:
+      probes:
+      - P-033
+    provenance: |-
+      STATIC — primary-source X-TAGGING deleteTag sidecar
+      bugs_limitations_corner_cases "FTS REFRESH RUNS TOO LATE on the delete
+      path" + downstream_side_effects. Severity: MEDIUM. Probe P-033
+      hypothesis H2 pins it.
+  - facet_id: F-018-DRIFT-XTAGGING-deleteTag-data-entity-fts-not-refreshed
+    facet: |-
+      deleteTag refreshes only the term-side search vector; the data-entity-side
+      search_entrypoint.tag_vector is never refreshed — the deleted tag's name
+      token lingers across every previously-tagged data entity
+    category: asymmetric-fts-refresh
+    severity: MEDIUM
+    headline: |-
+      The delete path calls one updateChangedTagVectors (term-side); the update
+      path calls THREE (data-entity + structure + term). The data-entity
+      search_entrypoint.tag_vector keeps the deleted tag's token after a delete.
+    operator_visible_consequence: |-
+      After a tag delete, a global full-text search for the deleted tag name
+      can still surface previously-tagged data entities until an unrelated
+      data-entity write refreshes each affected row. The search index is
+      partially stale; the staleness window is per-entity and unbounded.
+    observed: |-
+      `TagServiceImpl.delete` (`:68-69`) refreshes ONE search vector
+      (`reactiveTermSearchEntrypointRepository.updateChangedTagVectors`); the
+      sibling `update` path refreshes THREE via `updateSearchVectors`
+      (`TagServiceImpl.java:161-167` — the main `search_entrypoint.tag_vector`,
+      the dataset-structure vector, and the term-side vector). The data-entity-side
+      `ReactiveSearchEntrypointRepositoryImpl.updateChangedTagVectors`
+      (`:319-342`) is never called from the delete path. The X-TAGGING updateTag
+      sidecar independently confirms the asymmetry is a delete-side gap (update
+      is symmetric).
+    expected: |-
+      Either (a) call all three updateSearchVectors arms on the delete path
+      symmetric with update, OR (b) document the search-index staleness
+      window after a tag delete.
+    drift_class: delete_tag_data_entity_side_search_vector_not_refreshed_deleted_tag_token_lingers
+    evidence:
+    - 'TagServiceImpl.java:68-69 — delete refreshes only the term-side vector'
+    - 'TagServiceImpl.java:161-167 — update refreshes all three (data-entity + structure + term)'
+    - 'ReactiveSearchEntrypointRepositoryImpl.java:319-342 — the data-entity-side updateChangedTagVectors the delete path never calls'
+    cross_references:
+      probes:
+      - P-033
+    provenance: |-
+      STATIC — primary-source X-TAGGING deleteTag sidecar
+      bugs_limitations_corner_cases "ASYMMETRIC FTS REFRESH (delete vs update)"
+      + cross-confirmed by the updateTag sidecar invariant
+      "update is search-vector-symmetric (3 refreshes); delete is asymmetric
+      (1 refresh)". Severity: MEDIUM. Probe P-033 hypothesis H1 pins it.
+  - facet_id: F-018-DRIFT-XTAGGING-external-guard-data-entity-side-only
+    facet: |-
+      the `!external` guard on updateTag + deleteTag reads only the
+      data-entity aggregate boolOr(tag_to_data_entity.external) — a tag whose
+      ONLY Collector-set origin is an EXTERNAL tag_to_dataset_field row passes
+      the guard and CAN be renamed / deleted by a UI user
+    category: incomplete-ownership-guard
+    severity: MEDIUM
+    headline: |-
+      The Collector-ownership guard that blocks UI mutation of external tags
+      consults only tag_to_data_entity.external; tag_to_dataset_field uses a
+      separate TagOrigin enum the guard never joins.
+    operator_visible_consequence: |-
+      A tag pushed by a Collector exclusively at the dataset-field level
+      (EXTERNAL / EXTERNAL_STATISTICS origin) — with no external data-entity
+      relation — can be renamed via PUT /api/tags/{id} or deleted via
+      DELETE /api/tags/{id} by any UI user holding TAG_UPDATE / TAG_DELETE,
+      silently destroying or mutating the Collector-owned dataset-field tag.
+    observed: |-
+      `TagServiceImpl.update` (`:49`) and `TagServiceImpl.delete` (`:62`)
+      both gate on `tagDto.external()`. `getDto`'s `external` field is
+      `coalesce(boolOr(tag_to_data_entity.external), false)` — the aggregate
+      over DATA-ENTITY relations ONLY (`ReactiveTagRepositoryImpl.java:54-66`
+      joins only `TAG_TO_DATA_ENTITY`). The `tag_to_dataset_field` table
+      carries a `TagOrigin` enum (`INTERNAL` / `EXTERNAL` / `EXTERNAL_STATISTICS`)
+      — `getDto` never joins it. A tag with INTERNAL data-entity relations
+      (or none) plus an EXTERNAL `tag_to_dataset_field` relation passes the
+      `.filter(!external)` guard. The X-TAGGING updateTag AND deleteTag
+      sidecars independently surface this — it cross-cuts both write paths.
+    expected: |-
+      Either (a) extend the `getDto` `external` aggregate to also OR over
+      `tag_to_dataset_field.origin IN ('EXTERNAL','EXTERNAL_STATISTICS')`,
+      OR (b) document that the Collector-ownership guard protects only the
+      data-entity side.
+    drift_class: external_guard_data_entity_side_only_dataset_field_external_origin_unprotected_on_update_and_delete
+    evidence:
+    - 'TagServiceImpl.java:49 — update guard .filter(!tagDto.external())'
+    - 'TagServiceImpl.java:62 — delete guard .filter(!tagDto.external())'
+    - 'ReactiveTagRepositoryImpl.java:54-66 — getDto joins only TAG_TO_DATA_ENTITY; external = boolOr(tag_to_data_entity.external)'
+    - 'ReactiveTagRepositoryImpl.java:84-93 — listDatasetFieldDtos shows tag_to_dataset_field uses ORIGIN, a separate concept'
+    provenance: |-
+      STATIC — primary-source X-TAGGING deleteTag bugs_limitations_corner_cases
+      "The external guard checks only the DATA-ENTITY side" + updateTag
+      bugs_limitations_corner_cases "The !external guard reads only the
+      data-entity aggregate, not dataset-field origins". Severity: MEDIUM.
+  - facet_id: F-018-DRIFT-XTAGGING-ids-param-entity-ids-misdescription
+    facet: |-
+      the `ids` query parameter on getPopularTagList references the SHARED
+      IdsParam component whose description reads "Entity ids" — the
+      implementation filters by tag.id (LSN-020-class input-name-vs-implementation
+      drift)
+    category: input-name-vs-implementation-drift
+    severity: MEDIUM
+    headline: |-
+      getPopularTagList reuses the entity-scoped IdsParam component ("Entity
+      ids") on a tag-scoped operation; a spec consumer supplying data-entity
+      ids gets empty / nonsensical results.
+    operator_visible_consequence: |-
+      A consumer reading the rendered OpenAPI spec for getPopularTagList sees
+      `ids` documented as "Entity ids" and supplies data-entity identifiers;
+      the parameter filters the tag directory by tag.id, so the response is
+      empty — or, when an id value collides with a real tag id, a nonsensical
+      wrong tag. The misunderstanding is masked when an id is BOTH a valid
+      data-entity id AND a valid tag id.
+    observed: |-
+      `getPopularTagList` references the SHARED `IdsParam` component
+      (`openapi.yaml:351` -> `components.yaml:4239-4248`), whose `description`
+      reads `Entity ids`. `TagController.getPopularTagList` binds it as
+      `List<Long> ids` and passes it to `tagService.listMostPopular(query,
+      ids, page, size)`; `ReactiveTagRepositoryImpl.listMostPopular`
+      (`:141-142`) adds `TAG.ID.in(ids)` — a TAG-id filter. The `IdsParam`
+      component IS shared and IS accurate for its OTHER consumer
+      (`openapi.yaml:139`, a data-entity-scoped operation) — so the defect
+      is operation-LOCAL: a tag-scoped operation reuses an entity-scoped
+      parameter component without an operation-level description override.
+    expected: |-
+      Either (a) declare a dedicated `TagIdsParam` component (description
+      'Tag ids') for getPopularTagList, OR (b) add an operation-level
+      parameter description override.
+    drift_class: ids_param_entity_ids_description_filters_by_tag_id_lsn020_class_input_name_drift
+    evidence:
+    - 'openapi.yaml:351 — getPopularTagList references IdsParam'
+    - 'components.yaml:4239-4248 — IdsParam description: Entity ids'
+    - 'openapi.yaml:139 — the OTHER (data-entity-scoped) consumer for which Entity ids IS accurate'
+    - 'ReactiveTagRepositoryImpl.java:141-142 — TAG.ID.in(ids) — the implementation binds it as a tag-id filter'
+    cross_references:
+      probes:
+      - P-031
+    provenance: |-
+      STATIC+PROBE-NEEDED — primary-source X-TAGGING `tag` openapi sidecar
+      bugs_limitations_corner_cases "IdsParam describes the ids query parameter
+      as Entity ids but getPopularTagList filters by TAG id (LSN-020 class)"
+      + getPopularTagList sidecar `ids` request-input. Severity: MEDIUM.
+      Probe P-031 pins the SQL-bind column + the collision case.
+  - facet_id: F-018-DRIFT-XTAGGING-updateTag-response-omits-external-usedcount
+    facet: |-
+      updateTag's response Tag omits `external` and `usedCount` — the terminal
+      `.map(tagMapper::mapToTag)` uses the bare-TagPojo overload; the available
+      mapToTag(TagDto) overload that populates them is not used
+    category: response-shape-drift
+    severity: MEDIUM
+    headline: |-
+      PUT /api/tags/{id} returns a Tag with external/usedCount null; the
+      sibling getPopularTagList returns Tag items WITH those fields populated.
+    operator_visible_consequence: |-
+      A UI (or API consumer) that re-renders a tag chip from the updateTag
+      response loses the usage count and the external flag — both come back
+      null. The OpenAPI Tag schema declares both fields, so a spec-conformant
+      consumer expects them. updateTag exposes LESS than the schema declares.
+    observed: |-
+      `TagServiceImpl.update` ends with `.map(tagMapper::mapToTag)` applied to
+      a bare `TagPojo` (`TagServiceImpl.java:54`); the `mapToTag(TagPojo)`
+      overload (`TagMapper.java:26`) maps only `id, name, important` because
+      `TagPojo` has no `usedCount` / `external` field. The `mapToTag(TagDto)`
+      overload (`TagMapper.java:23-24`) WOULD populate them and is used by
+      `listMostPopular` — it is available but not used by `update`.
+    expected: |-
+      Either (a) re-read the TagDto after the update and map via
+      mapToTag(TagDto) so the response is complete, OR (b) document that
+      updateTag's response omits external/usedCount.
+    drift_class: update_tag_response_tag_omits_external_and_usedcount_maptotag_pojo_overload
+    evidence:
+    - 'TagServiceImpl.java:54 — .map(tagMapper::mapToTag) on a bare TagPojo'
+    - 'TagMapper.java:26 — mapToTag(TagPojo) maps only id/name/important'
+    - 'TagMapper.java:23-24 — mapToTag(TagDto) overload (available, unused by update) populates external/usedCount'
+    provenance: |-
+      STATIC — primary-source X-TAGGING updateTag sidecar
+      bugs_limitations_corner_cases "updateTag's response Tag omits external
+      and usedCount". Severity: MEDIUM.
+  - facet_id: F-018-DRIFT-XTAGGING-update-dataset-field-tags-unset-origin-insert
+    facet: |-
+      updateDatasetFieldTags' relation INSERT builds TagToDatasetFieldPojo
+      with `origin` UNSET and relies on the DB column default 'INTERNAL' — if
+      jOOQ emits an explicit NULL the INSERT violates NOT NULL and the endpoint
+      is broken for any non-empty tags payload (CRITICAL untested path)
+    category: fragile-db-default-reliance
+    severity: HIGH
+    headline: |-
+      The dataset-field tag-relation INSERT never sets origin in code; whether
+      the endpoint works at all depends on jOOQ omitting the unset column so
+      the DB default applies — statically uncertain, untested (P-030).
+    operator_visible_consequence: |-
+      If jOOQ's newRecord-from-pojo emits an explicit NULL for the unset
+      `origin`, every non-empty PUT /api/datasetfields/{id}/tags fails the
+      `origin varchar NOT NULL` constraint — the endpoint is dead for any
+      real payload. If the persisted `origin` ends up something other than
+      'INTERNAL', the next call's `deleteDatasetFieldInternalRelations` filter
+      (`WHERE origin = 'INTERNAL'`) misses those rows and the field accumulates
+      orphan internal relations.
+    observed: |-
+      `DatasetFieldServiceImpl.getUpdatedRelations` (`:264-271`) builds
+      `TagToDatasetFieldPojo` with only `tagId` + `datasetFieldId`, never
+      `.setOrigin(...)`. `createDatasetFieldRelations` maps each pojo via
+      `jooqReactiveOperations.newRecord(TAG_TO_DATASET_FIELD, p)` then INSERTs
+      (`ReactiveTagRepositoryImpl.java:355-368`). The column is
+      `origin varchar NOT NULL DEFAULT 'INTERNAL'` (`V0_0_82__add_tag_to_dataset_field
+      .sql:12`). The data-entity sibling path side-steps this entirely by
+      explicitly calling `.setExternal(false)` on its relation pojo
+      (`TagServiceImpl.java:109`); the dataset-field path relies on the DB
+      default. Whether jOOQ omits the unset column (default applies — correct)
+      or emits an explicit NULL (constraint violation — endpoint dead) is not
+      statically determinable.
+    expected: |-
+      Explicitly call `.setOrigin(TagOrigin.INTERNAL.toString())` on the
+      TagToDatasetFieldPojo (mirror the data-entity path's explicit
+      `.setExternal(false)`), removing the reliance on jOOQ null-field
+      handling.
+    drift_class: update_dataset_field_tags_relation_insert_relies_on_unset_origin_pojo_plus_db_column_default
+    evidence:
+    - 'DatasetFieldServiceImpl.java:264-271 — getUpdatedRelations builds TagToDatasetFieldPojo with no .setOrigin'
+    - 'ReactiveTagRepositoryImpl.java:355-368 — createDatasetFieldRelations newRecord-from-pojo INSERT'
+    - 'V0_0_82__add_tag_to_dataset_field.sql:12 — origin varchar NOT NULL DEFAULT INTERNAL'
+    - 'TagServiceImpl.java:106-109 — the data-entity sibling DOES set its discriminator explicitly (.setExternal(false))'
+    cross_references:
+      probes:
+      - P-030
+    provenance: |-
+      STATIC — primary-source X-TAGGING updateDatasetFieldTags sidecar
+      bugs_limitations_corner_cases "Relation INSERT relies on an UNSET pojo
+      field plus a DB column default" + tests_coverage_semantic CRITICAL
+      uncovered behaviour. Severity: HIGH. Probe P-030 pins the relation-INSERT
+      question.
+  - facet_id: F-018-DRIFT-XTAGGING-dataset-field-tags-delete-all-recreate-churn
+    facet: |-
+      updateDatasetFieldTags discards and rebuilds ALL internal tag relations
+      on every call (delete-all-then-recreate), even for a no-op save — unlike
+      the data-entity path which computes a current-minus-updated diff
+    category: relation-churn
+    severity: LOW
+    headline: |-
+      The dataset-field tag-relation save is delete-all-then-recreate, not a
+      diff; a re-submit of the identical set still issues a full DELETE +
+      full INSERT.
+    operator_visible_consequence: |-
+      A no-op 'save' (re-submitting the same dataset-field tags) issues a full
+      DELETE + full INSERT of the INTERNAL relation rows; PK churn and any
+      DELETE/INSERT triggers fire needlessly. Under concurrency two
+      simultaneous saves of the same field interleave delete/insert pairs and
+      the loser's INSERT can land before the winner's DELETE.
+    observed: |-
+      `DatasetFieldServiceImpl.updateDatasetFieldTags` (`:124-126`) calls
+      `deleteDatasetFieldInternalRelations(datasetFieldId)` — an unconditional
+      `DELETE ... WHERE origin = 'INTERNAL'` (`ReactiveTagRepositoryImpl.java
+      :289-295`) — then re-inserts the full submitted set. The data-entity
+      sibling `updateRelationsWithDataEntity` (`TagServiceImpl.java:113-120`)
+      computes `current \ updated` and deletes only the genuinely-removed
+      subset. The dataset-field path discards and rebuilds; the data-entity
+      path diffs.
+    expected: |-
+      Adopt the data-entity path's diff approach for the dataset-field path
+      (delete only the removed subset, insert only the added subset).
+    drift_class: update_dataset_field_tags_delete_all_then_recreate_churns_internal_relation_rows_no_diff
+    evidence:
+    - 'DatasetFieldServiceImpl.java:124-126 — delete then create, no diff'
+    - 'ReactiveTagRepositoryImpl.java:289-295 — unconditional DELETE WHERE origin = INTERNAL'
+    - 'TagServiceImpl.java:113-120 — the contrasting data-entity diff path'
+    provenance: |-
+      STATIC — primary-source X-TAGGING updateDatasetFieldTags sidecar
+      invariants "Delete-all-then-recreate, NOT a diff" +
+      bugs_limitations_corner_cases "Delete-then-recreate churns relation
+      rows on every call". Severity: LOW.
+  - facet_id: F-018-DRIFT-XTAGGING-three-way-activity-audit-asymmetry
+    facet: |-
+      three-way activity-audit asymmetry across the tag-relation-write trio:
+      the data-entity path audits with the dataEntityId param only, the
+      dataset-field path audits with FULL before/after tag state, the term
+      path does NOT audit at all
+    category: cross-channel-audit-asymmetry
+    severity: MEDIUM
+    headline: |-
+      DATA_ENTITY_TAGS_UPDATED (param-only) vs DATASET_FIELD_TAGS_UPDATED
+      (full before/after state) vs term-tag-change (no @ActivityLog) — three
+      tag-relation-write endpoints, three different audit stories.
+    operator_visible_consequence: |-
+      An operator auditing 'who changed the tags on term X?' via the Activity
+      Feed finds NO record — the term-tag path emits no @ActivityLog (even
+      though sibling term mutations linkTermWithDataEntity / removeTermFromDataEntity
+      DO). The data-entity tag path records the change but only the parent
+      dataEntityId — the diff must be reconstructed. Only the dataset-field
+      path gives a complete, self-contained audit (full before/after tag
+      list). The directory-CRUD operations (createTag / updateTag / deleteTag)
+      also emit no @ActivityLog — a tag rename or delete is untraceable.
+    observed: |-
+      `DatasetFieldServiceImpl.updateDatasetFieldTags` carries
+      `@ActivityLog(event = DATASET_FIELD_TAGS_UPDATED)` (`:119`) +
+      `@ActivityParameter` on the datasetFieldId; `DatasetFieldInformationUpdatedActivityHandler
+      .getState` serialises the field's COMPLETE tag list (id + name per tag)
+      into both oldState and newState (`:53-67`). `DataEntityServiceImpl
+      .upsertTags` carries `@ActivityLog(TAG_ASSIGNMENT_UPDATED)` (`:358`)
+      capturing only the dataEntityId parameter. `TermController
+      .createTermTagsRelations` / `TermServiceImpl.upsertTags` carry NO
+      @ActivityLog at all — asymmetric within TermServiceImpl itself (its
+      `linkTermWithDataEntity` `:169` / `removeTermFromDataEntity` `:183`
+      DO emit TERM_ASSIGNMENT_UPDATED). The directory-CRUD methods
+      (createTag / updateTag / deleteTag) emit no @ActivityLog.
+    expected: |-
+      Either (a) make the three relation-write paths symmetric — emit a
+      tag-assignment activity event with full before/after state on all three
+      (the dataset-field path is the model), OR (b) document the audit-scope
+      asymmetry explicitly (which surfaces are audited, which are not).
+    drift_class: term_tags_update_third_relation_write_path_no_activity_log_no_external_carve_out
+    evidence:
+    - 'DatasetFieldServiceImpl.java:119 — @ActivityLog(DATASET_FIELD_TAGS_UPDATED)'
+    - 'DatasetFieldInformationUpdatedActivityHandler.java:53-67 — serialises full before/after tag list'
+    - 'DataEntityServiceImpl.java:358 — @ActivityLog(TAG_ASSIGNMENT_UPDATED) captures only dataEntityId'
+    - 'TermController.java:129-136 + TermServiceImpl.java:252-264 — NO @ActivityLog on the term-tag path'
+    - 'TermServiceImpl.java:169, 183 — sibling term mutations DO emit @ActivityLog(TERM_ASSIGNMENT_UPDATED)'
+    provenance: |-
+      STATIC — primary-source X-TAGGING createTermTagsRelations sidecar
+      bugs_limitations_corner_cases "No activity-feed audit for term-tag
+      changes" + updateDatasetFieldTags implicit_adrs "Activity audit captures
+      full before/after tag state at the dataset-field surface" + deleteTag /
+      createTag / updateTag sidecars (directory-CRUD no @ActivityLog).
+      Severity: MEDIUM. Extends system-mission.md canonicalisation_candidate
+      "Audit-log Presence Asymmetry (2-tier audit story)" to a 4-surface
+      picture.
+  - facet_id: F-018-DRIFT-XTAGGING-tag-openapi-no-4xx-no-securityschemes
+    facet: |-
+      the `tag` OpenAPI tag declares NO 4xx response on any of the four
+      operations, NO security: block, and NO securitySchemes — every failure
+      mode and every authorization requirement is invisible to the contract;
+      the tag itself is a bare `name:` entry with no description / externalDocs
+    category: contract-illegibility
+    severity: MEDIUM
+    headline: |-
+      A spec consumer of the tag directory CRUD cannot derive auth
+      requirements (which write op needs which TAG_* permission), cannot
+      anticipate 401/403/404/400, and gets a blank tag heading in Swagger UI.
+    operator_visible_consequence: |-
+      An API-gateway / contract-test generator / third-party SDK builder
+      consuming the OpenAPI spec derives ZERO access control for /api/tags
+      (the three write ops need TAG_CREATE / TAG_UPDATE / TAG_DELETE, the read
+      needs only authenticated() — none of it encoded). A generated client
+      has no typed model for the forbidden / not-found / duplicate-name cases.
+      Swagger UI / ReDoc render the `tag` tag heading with no blurb and no
+      link to the docs site.
+    observed: |-
+      The `tag` tag is declared as a bare `name: tag` (`openapi.yaml:19` — no
+      `description`, no `externalDocs`). The contract carries no top-level
+      `security:` block and no `components.securitySchemes` (verified by
+      exhaustive grep on openapi.yaml + components.yaml at `ede5d277`). No
+      `tag`-tagged operation declares any 4xx: getPopularTagList declares only
+      200, createTag / updateTag only 201, deleteTag only 204 — yet the
+      controller raises NotFoundException (404) on updateTag/deleteTag and
+      UniqueConstraintException (400) on createTag/updateTag, and the
+      SecurityRule chain produces 401/403.
+    expected: |-
+      Add `description` + `externalDocs.url` (-> features/data-discovery/tagging)
+      to the `tag` tag; declare 4xx response shapes referencing the existing
+      `ErrorResponse` component on all four operations; add a `security:`
+      block / `securitySchemes` so the auth requirement is machine-readable.
+    drift_class: tag_openapi_tag_no_4xx_response_declared_failure_modes_invisible_to_contract
+    evidence:
+    - 'openapi.yaml:19 — the tag is a single-line `- name: tag` with no description / externalDocs'
+    - 'openapi.yaml:1-49 — no top-level security: block'
+    - 'openapi.yaml:352-421 — every tag operation declares only its success status; no 4xx'
+    - 'components.yaml grep at ede5d277 — no securitySchemes'
+    provenance: |-
+      STATIC — primary-source X-TAGGING `tag` openapi sidecar
+      bugs_limitations_corner_cases (no-4xx + no-description-no-externalDocs)
+      + security.known_security_gaps (no-security). Severity: MEDIUM. Aligns
+      with the alert + dataEntity openapi-tag sidecars' identical findings;
+      cross-link F-029 (Platform Public API Contract — the spec-wide
+      no-securitySchemes gap).
+  - facet_id: F-018-DRIFT-XTAGGING-create-tag-in-batch-duplicate-atomicity-unverified
+    facet: |-
+      createTag's bulk INSERT (no ON CONFLICT) has UNVERIFIED in-batch
+      duplicate atomicity — a payload with a self-duplicate or a cross-batch
+      duplicate may roll back wholly or partially commit; a partial commit is
+      a silent data-shape bug
+    category: atomicity-unverified
+    severity: MEDIUM
+    headline: |-
+      POST /api/tags with [{name:a},{name:a}] hits tag_name_unique on the
+      second row; whether the whole multi-row INSERT rolls back or the
+      distinct names land is not statically determinable (P-026).
+    operator_visible_consequence: |-
+      An operator submits a 5-tag batch, one name collides, the request
+      returns a 4xx — and (if the INSERT partially commits) 4 tags exist
+      anyway. A retry of the batch then hits a duplicate error on the names
+      that already landed. The fail-on-duplicate contract gives no indication
+      WHICH name collided.
+    observed: |-
+      `TagController.createTag` -> `TagServiceImpl.bulkCreate` -> inherited
+      `ReactiveAbstractCRUDRepository.bulkCreate` (`:114-126`) emits a single
+      `insertManyReturning` multi-row INSERT with NO `ON CONFLICT` clause. A
+      payload `[{name:a},{name:a}]` hits the `tag_name_unique` partial index
+      on the second row. Whether the whole INSERT rolls back atomically
+      (zero rows) or partially commits (the distinct names land) depends on
+      the R2DBC `insertManyReturning` emission shape and Spring's reactive-TX
+      rollback semantics — NOT statically determinable.
+    expected: |-
+      Confirm via P-026 whether the bulk INSERT is atomic. If it partially
+      commits, either wrap it so it is atomic, OR document the partial-commit
+      behaviour. Cross-batch duplicate should either be reported per-name or
+      switched to create-or-ignore semantics.
+    drift_class: create_tag_in_batch_duplicate_atomicity_unverified_no_on_conflict_partial_commit_risk
+    evidence:
+    - 'TagController.java:22-28 — createTag delegates to bulkCreate'
+    - 'ReactiveAbstractCRUDRepository.java:114-126 — insertManyReturning, NO ON CONFLICT'
+    - 'V0_0_64__remove_is_deleted_field.sql:105 — tag_name_unique partial index'
+    cross_references:
+      probes:
+      - P-026
+    provenance: |-
+      STATIC+PROBE-NEEDED — primary-source X-TAGGING createTag sidecar
+      bugs_limitations_corner_cases "In-batch duplicate-name atomicity is
+      UNVERIFIED" + stress_findings resource_boundaries (PROBE-NEEDED).
+      Severity: MEDIUM (HIGH if P-026 shows partial commit). Probe P-026
+      pins the data-shape contract.
 test_matrix:
   unit:
     state: PARTIAL
@@ -567,12 +1152,12 @@ test_matrix:
     - testBulkCreateTag (TagRepositoryImplTest:52-67 — bulk create, all names present, no conflicts)
     - testGetTagsByListNames (TagRepositoryImplTest:77-95 — happy path exact-name match)
     - testCreateRelationsWithDataEntity (TagRepositoryImplTest:99-122 — all relations created)
-    - testDeleteRelations (TagRepositoryImplTest:164-190 — all deletes succeed)
-    - testUpdateTag (TagRepositoryImplTest:219-235 — name update happy path)
-    - testListMostPopular (TagRepositoryImplTest:239-267 — happy-path ranking; only tag_to_data_entity arm)
+    - testDeleteRelations (TagRepositoryImplTest:164-190 — deleteDataEntityRelations(Collection) diff-list variant only)
+    - testUpdateTag (TagRepositoryImplTest:219-235 — bare repository update round-trip; NOT the service-layer orchestration)
+    - testListMostPopular (TagRepositoryImplTest:239-267 — happy-path ranking; structurally blind to LSN-019 — size=numberOfTestTags so the LIMIT never fires)
     uncovered:
     - ingestData upsert path (the MOST consequential method — every Collector-pushed tag — is the LEAST covered)
-    - Concurrent novel-name race (testIngestData_ConcurrentNovelName_DoesNotThrow — race-condition assertion)
+    - Concurrent novel-name race (testIngestData_ConcurrentNovelName_DoesNotThrow)
     - Concurrent bulkCreate race (testBulkCreate_ConcurrentDuplicateName_ThrowsUniqueConstraintException — TOCTOU surface)
     - listByNames case-sensitivity (testListByNames_CaseSensitiveExactMatch)
     - listByNames soft-delete filtering (testListByNames_FiltersSoftDeletedTags)
@@ -582,75 +1167,123 @@ test_matrix:
     - listTagsRelations TagOrigin filter (testListTagsRelations_FilterByOrigin)
     - listMostPopular pagination (testListMostPopular_Pagination)
     - tag-name length / charset / pattern validation (testCreate_EmptyName, testCreate_VeryLongName, testCreate_ControlCharacters)
+    - deleteDatasetFieldRelations(long) overload (the asymmetric-cascade method — TagRepositoryImplTest covers only the Collection overload)
+    - deleteTermRelations(long) overload (used by deleteTag — uncovered; only the Collection overload is tested)
   integration:
     state: PARTIAL
     covered:
-    - TagRepositoryImplTest is a BaseIntegrationTest (Testcontainers-Postgres) — happy-path coverage exists at the integration tier
+    - TagRepositoryImplTest is a BaseIntegrationTest (Testcontainers-Postgres) — happy-path repository coverage exists at the integration tier
     uncovered:
-    - End-to-end side-channel — DATA_ENTITY_TAGS_UPDATE-holder mints a directory row visible to a separate user via /api/tags/popular
-    - End-to-end TOCTOU — two concurrent setDataEntityTags with overlapping novel names, assert one succeeds + one surfaces UniqueConstraintException at HTTP layer (500 vs 400)
-    - Ingestion-side tag creation emits no @ActivityLog (cross-channel audit asymmetry pin)
-    - listMostPopular global-scope cross-Owner enumeration (asserts current read-collaborative posture as a regression baseline)
+    - 'TagController has ZERO controller-perimeter tests — no TagControllerTest.java exists (X-TAGGING verified by Grep across all four controller-method sidecars); createTag / getPopularTagList / updateTag / deleteTag are all unverified end-to-end'
+    - 'createTag in-batch / cross-batch duplicate atomicity — P-026 (does a self-duplicate batch roll back wholly or partially commit?)'
+    - 'createTag duplicate-name failure surfaces a 4xx not a 500 (UniqueConstraintException translation)'
+    - 'getPopularTagList LSN-019 ranking drift at the REST boundary — 35-tag fixture + size=30 + assert response IDs are the 30 LOWEST — P-010'
+    - 'getPopularTagList page/size degenerate inputs (page=0 negative OFFSET, size=-1 negative LIMIT, null Integer NPE) surface as a clean 4xx not a 500 — P-029'
+    - 'updateTag rename propagates the new name into search_entrypoint.tag_vector + does NOT leave the old token (overwrite-vs-append) — P-025'
+    - 'deleteTag soft-deletes the tag row + hard-deletes tag_to_term + tag_to_data_entity'
+    - 'deleteTag asymmetric cascade — tag_to_dataset_field rows are NOT deleted, orphans persist pointing at the soft-deleted tag — P-032'
+    - 'deleteTag asymmetric + too-late FTS refresh — data-entity-side tag_vector not refreshed (H1); term-side refresh no-ops because it runs after the relation delete (H2) — P-033'
+    - 'createTermTagsRelations replace-all + empty-tag_name_list-clears-all + auto-create-on-miss — P-027'
+    - 'createTermTagsRelations unique-index race on concurrent novel-tag creation — P-028'
+    - 'updateDatasetFieldTags relation INSERT with unset origin actually persists with origin=INTERNAL (CRITICAL — endpoint dead if jOOQ emits explicit NULL) — P-030'
+    - 'updateDatasetFieldTags delete-all-then-recreate — tags:[] removes all INTERNAL relations; EXTERNAL_STATISTICS relations survive'
+    - 'updateDatasetFieldTags emits DATASET_FIELD_TAGS_UPDATED with correct before/after tag-state JSON'
+    - 'End-to-end side-channel — entity-tag-update-permission-holder mints a directory row visible to a separate user via GET /api/tags'
+    - 'Ingestion-side tag creation emits no @ActivityLog (cross-channel audit asymmetry pin)'
   performance:
     state: GAP
     covered: []
     uncovered:
     - ingestData upsert at BATCH_SIZE partition boundaries (10K novel tags split into BATCH_SIZE-sized partitions sequentially)
     - listMostPopular UNION-ALL CTE cost for a directory with 10K+ tags (no EXPLAIN benchmark exists)
-    - Triple-fetch of listDataEntityDtos on a per-entity detail page (1 request → 3 identical DB calls)
+    - getPopularTagList size=100000 large UNION-ALL aggregation (no maxItems / size clamp at any layer)
+    - Triple-fetch of listDataEntityDtos on a per-entity detail page (1 request -> 3 identical DB calls)
+    - updateTag FTS-upsert cost unbounded in the tag's usage breadth — renaming a tag on 10K entities triggers a 10K-row search_entrypoint upsert inside the request transaction
+    - updateTag fires the full triple search-vector refresh even on a no-name-change important-flag-only edit (no name-changed short-circuit)
+    - updateDatasetFieldTags delete-all-then-recreate churns every INTERNAL relation row on every save (no diff)
   security:
     state: GAP
     covered: []
     uncovered:
-    - REFACTOR-223 side-channel regression-pin — assert DATA_ENTITY_TAGS_UPDATE-holder CAN mint a directory row (current behaviour) + assert TERM_UPDATE-holder + S2S-ingestion-holder same surface
-    - Tag-name DoS — assert pathological inputs (very long, control characters, whitespace) are accepted (current behaviour) — pin so the fix is gated by an explicit test edit
-    - listMostPopular under DISABLED — anonymous caller sees full directory (current behaviour pin)
-    - Cross-Owner enumeration via listMostPopular — assert all tags visible regardless of caller's Owner
-    - LSN-019 listMostPopular ranking lie regression-pin — N > size with equal counts → response = OLDEST size by tag.id ASC; the 5 youngest equally-popular tags are ABSENT. P-010 + P-LSN019-listMostPopular-drift target.
-    - LSN-019 listMostPopular varying-count case — N > size with the YOUNGEST having HIGHER counts than the OLDEST — assert the response STILL contains only the oldest size (i.e. the bug surfaces even when the count signal is unambiguous). Promotes the drift to operator-visible regardless of count distribution.
-    - LSN-019 service-tier zero-permission-checks pin — TagServiceImpl.java:1-167 grep `@PreAuthorize|permissionService.hasPermission` returns ZERO matches; pin the absence so a regression that bypasses the service-tier-zero posture (e.g. adding a programmatic check) surfaces in CI.
-    - LSN-019 updateRelationsWithDataEntity empty-set destruction — assert that `PUT /api/dataentities/{id}/tags` with empty body removes ALL non-external relations on the entity (the diff treats empty as delete-all rather than no-op). P-LSN019-updateRelations-empty-deletes-all target.
+    - 'REFACTOR-223 side-channel regression-pin — assert each of DATA_ENTITY_TAGS_UPDATE / TERM_TAGS_UPDATE / DATASET_FIELD_TAGS_UPDATE holders CAN mint a directory row (current behaviour) without TAG_CREATE'
+    - 'createTag TAG_CREATE enforcement — a caller without TAG_CREATE (holding only DATA_ENTITY_TAGS_UPDATE) gets 403'
+    - 'updateTag TAG_UPDATE enforcement + deleteTag TAG_DELETE enforcement — no-permission caller gets 403; unauthenticated gets 401/302'
+    - 'getPopularTagList open-read posture — a caller holding NO TAG_* permission gets 200 + the full directory (the absence of a GET SecurityRule); under DISABLED an anonymous caller sees the full directory'
+    - 'createTermTagsRelations TERM_TAGS_UPDATE (not TERM_UPDATE) is the gate — a caller holding TERM_UPDATE but not TERM_TAGS_UPDATE is denied'
+    - 'updateDatasetFieldTags parent-scoped authorization — a caller without DATASET_FIELD_TAGS_UPDATE on the dataset field PARENT data entity gets 403; the dataset-field-to-parent resolution returns the right parent'
+    - 'external-guard incompleteness — a tag whose ONLY external origin is a tag_to_dataset_field EXTERNAL row CAN be renamed (updateTag) and deleted (deleteTag) by a UI user — pin the current gap'
+    - 'deleteTag !external guard — a tag with an external=true data-entity relation is rejected with BadUserRequestException / 422'
+    - 'Tag-name DoS — assert pathological inputs (very long, control characters, whitespace) are accepted across createTag / createTermTagsRelations / updateDatasetFieldTags (current behaviour) — pin so the fix is gated by an explicit test edit'
+    - 'DISABLED-mode bypass — anonymous PUT /api/terms/{id}/tags and PUT /api/datasetfields/{id}/tags overwrite tag sets + mint directory rows (current behaviour pin)'
+    - 'LSN-019 listMostPopular ranking lie regression-pin — N > size with equal counts -> response = OLDEST size by tag.id ASC; the 5 youngest equally-popular tags are ABSENT. P-010 + P-LSN019-listMostPopular-drift target.'
+    - 'LSN-019 listMostPopular varying-count case — N > size with the YOUNGEST having HIGHER counts than the OLDEST — assert the response STILL contains only the oldest size.'
+    - 'LSN-019 service-tier zero-permission-checks pin — TagServiceImpl.java:1-167 grep @PreAuthorize|permissionService.hasPermission returns ZERO matches; pin the absence so a regression surfaces in CI.'
+    - 'LSN-019 updateRelationsWithDataEntity empty-set destruction — PUT /api/dataentities/{id}/tags with empty body removes ALL non-external relations on the entity.'
 control_summary: |-
-  PARTIAL unit + integration (TagRepositoryImplTest covers basic CRUD + relation
-  surfaces happy-path); GAP on performance + security cells. Feature emerges
-  from batch-N primary-source audit of ReactiveTagRepositoryImpl. The
-  pillar-anchored feature is "Manual Object Tagging" per system-mission.md
-  P-01's sub-feature seed — promoted from drift-facet status in F-002
-  (tag_create_bypass_via_upsert_tags) to a standalone feature because the
-  Tag directory is reached by THREE independent write paths (UI tag-assign,
-  Term upsertTags, S2S ingestion), each with distinct gates and audit
-  characteristics, making the Tag directory itself a load-bearing user-observable
-  capability rather than a sub-detail of Term/Description editing.
+  PARTIAL unit + PARTIAL integration + GAP performance + GAP security.
+  Batch X-TAGGING recomposes F-018's flow from SEVEN newly-enriched
+  tag-mutation-surface sidecars — the four /api/tags directory-CRUD
+  controller methods (createTag / getPopularTagList / updateTag /
+  deleteTag), the two sibling relation-write endpoints
+  (TermController.createTermTagsRelations + DatasetFieldController
+  .updateDatasetFieldTags), and the `tag` OpenAPI rollup. Prior batches
+  (N repository, VAL-LSN-019 service+repository+controller-class,
+  W controller-class, Z stats-path) carried the persistence + service
+  evidence; X-TAGGING closes the controller-method tier at primary
+  source AND adds the two NON-/api/tags relation-write endpoints that
+  complete the side-channel enumeration.
 
-  Ten substantive drift facets cluster around three load-bearing themes:
-  (1) write-side-channel access amplification — REFACTOR-223 is the headline;
-  DATA_ENTITY_TAGS_UPDATE, TERM_UPDATE, and S2S-ingestion all mint global
-  directory rows without consulting TAG_CREATE; the doc page documents the
-  permission triad but is silent on the side-channels; the auto-create UX
-  on the tag-dropdown is the operator-visible surface;
-  (2) data-integrity drifts — TOCTOU between listByNames + bulkCreate produces
-  500-error surface on concurrent novel-name submits + case-sensitive
-  listByNames silently mints duplicates for case variants + no tag-name
-  validation enables DoS via pathological inputs + resurrection of
-  soft-deleted Tag loses all prior relations + partial-index predicate
-  hardcoded coupling latent migration-time bug;
-  (3) read-collaborative posture + audit gaps — listMostPopular globally-scoped
-  (no per-Owner/per-Namespace filter) + ingestion-side mutation path emits NO
-  activity-feed entry (UI-side does — cross-channel audit asymmetry, extends
-  the Audit-log Presence Asymmetry canonicalisation candidate) + triple-fetch
-  of listDataEntityDtos per data-entity detail page (no request-scoped cache).
+  The feature is the user-observable "Manual Object Tagging" capability
+  per system-mission.md P-01's sub-feature seed; the chain begins at the
+  five write entry points (createTag + setDataEntityTags +
+  createTermTagsRelations + updateDatasetFieldTags + the ingestion path)
+  and terminates at db-write on the global `tag` directory plus its
+  three relation tables, plus the FTS search-vector side effects.
 
-  The highest-leverage probe candidates are: (a) REFACTOR-223 side-channel
-  regression-pin (configure two unrelated Owners + grant DATA_ENTITY_TAGS_UPDATE
-  only on entity X to user A + assert A can mint a novel tag visible in
-  user B's /api/tags/popular response); (b) TOCTOU race (two parallel
-  setDataEntityTags with the same novel name + assert one succeeds + one
-  surfaces 500-class error at HTTP layer); (c) ingestion-side audit silence
-  (POST /ingestion/entities with attached tags + assert NO TAG_ASSIGNMENT_UPDATED
-  in /api/activity, contrast with UI-side mutation that DOES emit). Local
-  docker-compose probe stack: ODD platform + Postgres + two seeded Owners +
-  collector-mock pushing tags via /ingestion/entities + curl scripts for the
-  UI-side endpoints.
+  The drift facets cluster around four load-bearing themes:
+  (1) write-side-channel access amplification — REFACTOR-223 is the
+  headline; X-TAGGING confirms ALL THREE relation-write endpoints at
+  controller-method primary source (DATA_ENTITY_TAGS_UPDATE /
+  TERM_TAGS_UPDATE / DATASET_FIELD_TAGS_UPDATE) plus the ingestion path
+  all mint global directory rows without TAG_CREATE; createTag IS gated
+  but is one of five paths;
+  (2) directory-CRUD auth + contract gaps — GET /api/tags has NO
+  SecurityRule (open-read to any authenticated user); TagServiceImpl
+  is zero-auth at every method; the `tag` OpenAPI tag declares no 4xx,
+  no securitySchemes, and is a bare name: entry; status-code drift
+  200-vs-201 on createTag + updateTag;
+  (3) destructive / asymmetric mechanics — listMostPopular ranking lie
+  (LSN-019, now confirmed at controller + spec tier); deleteTag's
+  doubly-asymmetric cascade (tag_to_dataset_field orphaned + the FTS
+  refresh runs too late so it no-ops); the !external guard reading only
+  the data-entity aggregate; updateDatasetFieldTags' CRITICAL unset-origin
+  INSERT reliance on a DB column default;
+  (4) cross-channel audit asymmetry — now a THREE-WAY picture: the
+  data-entity path audits with the dataEntityId param only, the
+  dataset-field path audits with FULL before/after tag state, the term
+  path audits NOT at all; the directory-CRUD operations emit no
+  @ActivityLog either.
+
+  POSITIVE invariants confirmed at primary source this batch: the
+  `!external` guard protects Collector-pushed tags from UI overwrite
+  (X-TAGGING re-confirms on update + delete); EXTERNAL / EXTERNAL_STATISTICS
+  dataset-field tag relations survive a UI replace-all
+  (updateDatasetFieldTags); auto-created tags get `important = false`
+  hardcoded so the side-channel cannot mint promoted tags.
+
+  Highest-leverage probe candidates (all LOCAL docker-compose +
+  Testcontainers-Postgres executable): P-030 (the CRITICAL dataset-field
+  unset-origin INSERT — endpoint may be dead for any non-empty payload);
+  P-010 (the LSN-019 ranking lie at the REST boundary); P-032 + P-033
+  (the deleteTag asymmetric cascade + too-late FTS refresh); P-026 (the
+  createTag bulk-INSERT atomicity); P-027 + P-028 (the term-tag replace-all
+  + unique-index race); P-029 (getPopularTagList degenerate inputs);
+  P-025 (the updateTag search-vector overwrite-vs-append). The REFACTOR-223
+  side-channel regression-pin (mint via a non-TAG_CREATE permission, assert
+  visibility in another user's GET /api/tags) remains the single
+  highest-value security probe. Local probe stack: ODD platform + Postgres
+  + two seeded Owners + a collector-mock + curl scripts for the UI-side
+  endpoints.
 batch_extensions:
 - batch: W
   entry_point_added: |-
@@ -668,412 +1301,168 @@ batch_extensions:
   - odd-platform java TagController controller-class:TagController
   notes: |-
     The controller-class sidecar STRENGTHENS existing F-018 facets at
-    the controller-perimeter layer AND surfaces FIVE new drift facets.
-    Listed in order of architectural leverage:
-
-    (1) `deleteTag` CASCADE IS ASYMMETRIC — `tag_to_dataset_field`
-    ROWS ORPHANED (MEDIUM, NEW FINDING) — TagServiceImpl.delete (lines
-    57-70, @ReactiveTransactional) HARD-deletes `tag_to_data_entity`
-    + `tag_to_term` via `Flux.zip(deleteTermRelations + deleteDataEntityRelations)`
-    (lines 64-65) but does NOT call `reactiveTagRepository.deleteDatasetFieldRelations(tagId)`
-    (which EXISTS at ReactiveTagRepositoryImpl.java:299-306 but has
-    NO caller from TagServiceImpl.delete). A tag attached to dataset
-    fields via the side-door `DATASET_FIELD_TAGS_UPDATE` path, when
-    deleted via this controller, leaves orphaned `tag_to_dataset_field`
-    rows referencing the soft-deleted tag id. Reads via
-    `listDatasetFieldDtos` filter these out via `addSoftDeleteFilter`
-    on the join (lines 84-98) so the orphans are UI-invisible — but
-    they persist in the DB indefinitely. Future garbage-collection
-    migrations would need to address this; right now no cleanup job
-    exists. NEW drift facet:
-    `delete_tag_cascade_asymmetric_tag_to_dataset_field_rows_orphaned_after_soft_delete`.
-
-    (2) GET /api/tags HAS NO RBAC GATE — CONTROLLER-TIER PRIMARY
-    SOURCE (HIGH, STRENGTHENS F-018 batch-N
-    `list_most_popular_globally_scoped_no_per_owner_filter`) —
-    SecurityConstants.java:138-142 contains ONLY POST/PUT/DELETE rules
-    for /api/tags; NO GET entry. Any authenticated user (including
-    a user with ONLY the per-entity DATA_ENTITY_TAGS_UPDATE permission)
-    can enumerate the entire global Tag directory regardless of any
-    TAG_* permission. Combined with the side-door write paths catalogued
-    in F-018 batch-N
-    (`data_entity_tags_update_side_channel_into_global_tag_directory`),
-    a per-entity-tag-editor can both READ and WRITE the global tag
-    namespace without holding any vocabulary-level permission. The
-    live tagging doc page (WebFetched 2026-05-20 status 200) does NOT
-    document the open-read posture. NEW drift facet:
-    `get_popular_tag_list_no_security_rule_open_read_to_any_authenticated_user`.
-
-    (3) SERVICE-TIER ZERO-PERMISSION-CHECKS POSTURE (MEDIUM, PRIMARY
-    SOURCE) — TagServiceImpl (lines 1-167) has ZERO @PreAuthorize
-    annotations and ZERO programmatic permission checks. The four
-    SecurityRule entries at the controller perimeter are the SOLE
-    authorisation defence; any future path-drift bug (a path-pattern
-    mismatch like REFACTOR-217 on the term-tags surface) would silently
-    bypass authorisation. Cross-link to F-002 batch-K
-    `second_security_constants_misrouted_path` finding. NEW drift
-    facet: `tag_service_tier_zero_permission_checks_controller_perimeter_sole_authorization`.
-
-    (4) STATUS-CODE DRIFT — CONTROLLER VS OPENAPI (MEDIUM, NEW)
-    — TagController.java:27 createTag returns 200 via
-    `.map(ResponseEntity::ok)` vs openapi.yaml:372 declares 201;
-    line 51 updateTag returns 200 vs openapi.yaml:400 declares 201.
-    Same drift class as TermController.createTerm / .updateTerm
-    (batch-U) and CollectorController.registerCollector / .updateCollector
-    (batch-W THIS BATCH). THREE controller pairs ship the same
-    200-vs-201 drift; cross-batch pattern. NEW drift facet:
-    `tag_status_code_drift_controller_200_vs_spec_201_create_and_update`.
-
-    (5) `!external` GUARD PROTECTS COLLECTOR-PUSHED TAGS FROM UI
-    OVERWRITE — POSITIVE INVARIANT (PRIMARY SOURCE; STRENGTHENS) —
-    TagServiceImpl.update (lines 49-50) and TagServiceImpl.delete
-    (lines 62-63) both reject tags with any `external = true` usage
-    via BadUserRequestException ("Can't update tag which has external
-    relations" / "Can't delete tag which has external relations").
-    The intent: a Collector that pushes a tag via
-    ExternalTagIngestionRequestProcessor claims ownership; UI mutations
-    would silently override the Collector-side semantics on next push.
-    POSITIVE case-law that constrains REFACTOR-223 — the side-door
-    creates Collector-owned tags that the UI CANNOT subsequently
-    delete or rename until the operator removes all external relations.
-    Cross-link to F-020 (the collector lifecycle producing these
-    external = true rows) + F-008 (the ingestion path stamping
-    external = true). NEW drift facet (positive case-law shaped):
-    `external_tag_guard_protects_collector_pushed_tags_from_ui_overwrite_positive_invariant`.
-
-    (6) NO @ActivityLog ON ANY TagController WRITE PATH — CONTROLLER-TIER
-    PRIMARY SOURCE (MEDIUM, STRENGTHENS the 9-SIDECAR audit-silence
-    pattern) — TagController createTag / updateTag / deleteTag carry
-    NO @ActivityLog annotation; TagServiceImpl mutations also do NOT.
-    Contrast with DataEntityServiceImpl.java:358 which DOES carry
-    @ActivityLog(event = TAG_ASSIGNMENT_UPDATED) on the PER-ENTITY
-    tag-assignment path. The asymmetry: directory-vocabulary mutations
-    (create/update/delete via this controller) are NOT audited;
-    per-entity tag-assignment mutations ARE audited. An operator using
-    Management → Tags tab to delete or rename a tag produces no audit
-    trace. STRENGTHENS the cross-batch 9-SIDECAR audit-silence pattern
-    (batches E/H/N/Q/R/P/S/T audit-silence pattern extends to
-    Tags-directory controller-tier in this batch). NEW drift facet:
-    `tag_controller_write_paths_no_activity_log_asymmetric_with_per_entity_tag_assignment_path`.
-
-    (7) REQUEST-BODY VALIDATION ABSENT (LOW, STRENGTHENS) —
-    TagController.createTag accepts `BulkTagFormData` declared in
-    openapi.yaml:370 as `type: string` only (no pattern, no minLength,
-    no maxLength on the `name` field); no DB CHECK constraint visible
-    in the migration suite (per batch-N invariant). An operator with
-    TAG_CREATE can mint tag rows with empty names, whitespace-only
-    names, control-character names, or names of unbounded length. The
-    popular-tags surface then renders these to every other user.
-    STRENGTHENS F-018 batch-N `tag_name_no_validation_no_length_cap_no_charset_filter`.
-
-    Coherence: STRENGTHENS=6 across F-018 existing drift facets +
-    9-SIDECAR audit-silence pattern (per cross-batch tracking). NEW
-    drift facets ADDED to F-018's drift_class_summary (5 net-new):
-    `delete_tag_cascade_asymmetric_tag_to_dataset_field_rows_orphaned_after_soft_delete`,
-    `get_popular_tag_list_no_security_rule_open_read_to_any_authenticated_user`,
-    `tag_service_tier_zero_permission_checks_controller_perimeter_sole_authorization`,
-    `tag_status_code_drift_controller_200_vs_spec_201_create_and_update`,
-    `external_tag_guard_protects_collector_pushed_tags_from_ui_overwrite_positive_invariant`.
-    NO conflicts surfaced; NO supersedes. The HIGHEST-LEVERAGE
-    finding is the `tag_to_dataset_field` cascade omission — a
-    one-line fix at TagServiceImpl.delete adding the missing
-    `deleteDatasetFieldRelations` call closes the orphan-row
-    accumulation; the regression-test that PINs the orphan rows
-    BEFORE the fix is a high-leverage probe candidate (configure tag
-    attached to a dataset field via DATASET_FIELD_TAGS_UPDATE, DELETE
-    via TagController, raw-SQL query the join table for the orphan).
+    the controller-perimeter layer AND surfaces FIVE new drift facets
+    (deleteTag cascade asymmetric / GET /api/tags ungated /
+    service-tier zero-permission-checks / status-code 200-vs-201 /
+    !external positive invariant). The HIGHEST-LEVERAGE finding is the
+    `tag_to_dataset_field` cascade omission. NO conflicts; NO supersedes.
 - batch: Z
   entry_point_added: |-
     controller-method:postDataSetStatsList (POST
     /ingestion/entities/datasets/stats) — the FOURTH side-channel
-    mint path into the global Tag directory. F-018 batch-N catalogued
-    THREE side-channel mint paths (DATA_ENTITY_TAGS_UPDATE via
-    setDataEntityTags + TERM_UPDATE via TermServiceImpl.upsertTags +
-    auth.ingestion.filter.enabled via ExternalTagIngestionRequestProcessor).
-    This batch adds the FOURTH side-channel via DatasetFieldServiceImpl.
-    updateStatistics → tagService.getOrCreateTagsByName, reached via
-    the postDataSetStatsList ingestion endpoint — which is
-    UNAUTHENTICATED in every supported deployment posture (the path
-    is uncovered by IngestionDataEntitiesFilter AND in
-    SecurityConstants.WHITELIST_PATHS). The TAG_CREATE bypass is
-    therefore reachable WITHOUT authentication AND WITHOUT any
-    permission at all.
+    mint path into the global Tag directory via DatasetFieldServiceImpl
+    .updateStatistics -> tagService.getOrCreateTagsByName, reached via
+    the postDataSetStatsList ingestion endpoint — UNAUTHENTICATED in
+    every supported deployment posture.
   contributing_nodes_added:
   - odd-platform java IngestionController controller-method:postDataSetStatsList
   notes: |-
-    TWO new drift facets surface from the postDataSetStatsList sidecar
-    + one MAJOR STRENGTHENS on the existing REFACTOR-223 headline.
-    Listed in order of architectural leverage:
-
-    (1) **TAG_CREATE bypass via UNAUTHENTICATED stats ingestion —
-    REFACTOR-223 side-door family extension to ZERO-AUTH path**
-    (HIGH severity, NEW FINDING, MAJOR STRENGTHENS) — DatasetFieldServiceImpl
-    .updateStatistics (line 191-231 — `updateFieldsTags`) calls
-    `tagService.getOrCreateTagsByName(...)` at line 202 to ensure
-    tag rows exist for any `tags: List<Tag>` declared in a
-    `DataSetFieldStat` payload. `tagService.getOrCreateTagsByName`
-    is the auto-create-on-miss primitive (catalogued at F-018 batch-N)
-    that uses `bulkCreate` (no TAG_CREATE consultation). The
-    upstream entry-point is `POST /ingestion/entities/datasets/stats`
-    (IngestionController.postDataSetStatsList, lines 82-87) — a
-    four-line thin proxy with NO `@PreAuthorize`. The path is NOT
-    covered by `IngestionDataEntitiesFilter` (exact-literal matcher
-    `/ingestion/entities`, IngestionDataEntitiesFilter.java:28 — does
-    NOT match the sub-path) AND is in
-    `SecurityConstants.WHITELIST_PATHS` (`/ingestion/**`,
-    SecurityConstants.java:95-96 — exempted from UI auth). Result:
-    ANY caller able to reach the platform's HTTP port can POST a
-    `DatasetStatisticsList` payload with arbitrary
-    `tags: [{name: 'attacker-tag'}]` entries and silently populate
-    the catalog's global tag namespace WITHOUT authentication AND
-    WITHOUT any permission. The newly-minted tags are discoverable
-    by every other user via `GET /api/tags/popular` (which has no
-    GET RBAC gate per F-018 batch-W). The live security docs
-    (WebFetched 2026-05-20) EXPLICITLY enumerate
-    `/ingestion/entities/datasets/stats` as a sibling endpoint that
-    "remains outside the ingestion filter's coverage" — but do NOT
-    describe the tag-as-side-effect contract. REFACTOR-223 promoted
-    from "3-path side-channel via authenticated routes" to
-    "4-path side-channel including ZERO-AUTH route". NEW drift
-    facet:
-    `tag_create_bypass_via_unauthenticated_post_data_set_stats_list_refactor_223_side_door_fourth_path`.
-
-    (2) **EXTERNAL_STATISTICS tag origin reconciliation removes
-    tags absent from re-POST — replace-not-merge applied to tag
-    relations** (MEDIUM severity, NEW FINDING) —
-    DatasetFieldServiceImpl.updateStatistics (lines 191-231):
-    `relationsToDelete = existingRelations.filter(r ->
-    !relationsToCreate.contains(r))` (line 221-223) deletes existing
-    EXTERNAL_STATISTICS-origin tag relations NOT present in the new
-    payload; `relationsToCreate` re-creates the desired set. A
-    re-POST with a smaller tag set SILENTLY REMOVES the absent
-    EXTERNAL_STATISTICS-origin tags from the affected fields. Same
-    shape as F-008 `silent_destruction_replace_not_merge` applied
-    to the dataset-field-tag-relation surface — the destructive
-    verb lives in the stats ingestion path. A collector that briefly
-    stops emitting a tag (sampling bug, transient OOM, partial
-    scrape) silently loses that tag at the dataset_field level.
-    Cross-channel audit asymmetry compounds: NO `@ActivityLog` on
-    the postDataSetStatsList path; UI-side tag changes appear in
-    `/api/activity`, ingestion-side stats-path tag changes do not.
-    NEW drift facet:
-    `external_statistics_tag_reconciliation_replace_not_merge_silent_tag_removal_on_partial_reingest`.
-
-    (3) **The ALREADY-DOCUMENTED `data_entity_tags_update_side_channel_into_global_tag_directory`
-    headline gains a 4TH ENTRY POINT — `tagService.getOrCreateTagsByName`
-    now confirmed reachable from FOUR independent upstreams** (the
-    F-018 headline drift class, STRENGTHENS) — prior batches
-    enumerated three side-channels into `tagService.getOrCreateTagsByName`:
-    (a) DataEntityController.setDataEntityTags (DATA_ENTITY_TAGS_UPDATE
-    gate); (b) TermServiceImpl.upsertTags (TermServiceImpl.java:257,
-    TERM_UPDATE gate); (c) ExternalTagIngestionRequestProcessor
-    (auth.ingestion.filter.enabled gate). This batch adds the
-    FOURTH: (d) DatasetFieldServiceImpl.updateStatistics
-    (DatasetFieldServiceImpl.java:202, NO gate). The fourth entry
-    point is the most permissive — no authentication, no permission.
-    REFACTOR-223 remediation options now span FOUR upstreams; the
-    "consult TAG_CREATE inside tagService.getOrCreateTagsByName"
-    direction CLOSES all four in one place (the leverage argument
-    for fix-direction A from the F-018 batch-N expected block).
-    STRENGTHENS the headline via PRIMARY-SOURCE LINE-ANCHOR:
-    `tag_service_get_or_create_tags_by_name_fourth_upstream_unauthenticated_dataset_field_stats_path`.
-
-    Coherence (LSN-018 Rule 6 sweep):
-    STRENGTHENS=3 across F-018 existing facets:
-    `data_entity_tags_update_side_channel_into_global_tag_directory`
-    (the F-018 headline gains a 4th upstream),
-    `repository_no_audit_log_on_ingestion_tag_mutations` (the
-    stats-path tag mutations also emit no @ActivityLog — the
-    audit-asymmetry pattern extends to a fourth ingestion-side
-    write surface),
-    `case_sensitive_listbynames_silent_duplicate_rows` (the stats
-    path inherits the same case-sensitive listByNames mechanism;
-    attacker-controlled tag names from the stats path silently
-    duplicate case variants of existing operator-curated tags).
-    SUPERSEDES=0.
-    CONFLICTS=0.
-
-    HIGHEST-LEVERAGE remediation: move the TAG_CREATE permission
-    check from the controller perimeter to the
-    `tagService.getOrCreateTagsByName` upsert primitive (REFACTOR-223
-    fix-direction A from F-018 batch-N). The fix closes all FOUR
-    upstreams in one place; the zero-auth stats path becomes
-    structurally incapable of minting new tag rows. Probe:
-    unauthenticated POST /ingestion/entities/datasets/stats with
-    `tags: [{name: 'attacker-tag-2026-05-20'}]` against a known
-    dataset_field ODDRN; query the `tag` table for the
-    'attacker-tag-2026-05-20' row; assert the row was created
-    BEFORE the fix and assert the row is NOT created AFTER. Local
-    docker-compose probe stack: ODD platform + Postgres + curl
-    with no Authorization header.
-
-    Cross-references: F-008 (Batch Ingestion) — same controller
-    class (IngestionController) + same WHITELIST_PATHS coverage +
-    same audit-silence pattern + same payload-driven scoping;
-    F-030 (Metrics Ingestion, batch-Z minted) — the SAME
-    unauthenticated-by-default + audit-silence + filter-coverage
-    gap pattern applied to a third sibling endpoint; F-029 (Platform
-    Public API Contract) — the sibling ingestion-api spec carries
-    the same no-securitySchemes gap as the platform-api spec.
+    TWO new drift facets (TAG_CREATE bypass via unauthenticated stats
+    ingestion — REFACTOR-223 4-path side-door extension;
+    EXTERNAL_STATISTICS tag reconciliation replace-not-merge) + one
+    MAJOR STRENGTHENS on the REFACTOR-223 headline (4th upstream
+    confirmed). STRENGTHENS=3, SUPERSEDES=0, CONFLICTS=0.
 - batch: VAL-LSN-019
   entry_point_added: |-
     NONE — VAL-LSN-019 is the LSN-019 Stress Protocol validation canary
-    batch. The three sidecars re-enriched this batch
-    (ReactiveTagRepositoryImpl, TagServiceImpl, TagController) carry the
-    new `stress_findings` block (rev-4 schema, LSN-019) which surfaces
-    NAME-vs-BEHAVIOUR drift, AUTH-gate enumeration absences, TUNABLE
-    boundary conditions, ORDERING / pagination semantics, and RESOURCE
-    boundary races. No new entry-points; the existing chain composition
-    (UI tag-assign → setDataEntityTags → TagService → ReactiveTagRepository
-    → ingestData/bulkCreate + listMostPopular) is unchanged. What CHANGES
-    is the operator-visible truth at hop 3 (`listMostPopular`) and the
-    repository/service-tier auth posture catalogue.
+    batch. Re-enriched ReactiveTagRepositoryImpl + TagServiceImpl +
+    TagController controller-class under the rev-4 stress_findings schema.
   contributing_nodes_added: []
   contributing_nodes_re_enriched:
   - odd-platform java repository reactive repository:ReactiveTagRepositoryImpl
   - odd-platform java service service:TagServiceImpl
   - odd-platform java TagController controller-class:TagController
   notes: |-
-    LSN-019 Stress Protocol canary batch. ONE NEW HEADLINE drift facet
-    + FOUR STRENGTHENS on existing F-018 facets + ONE cross-cutting
-    posture confirmation. Ordered by architectural leverage:
+    ONE NEW HEADLINE drift facet (F-018-DRIFT-LSN019-listMostPopular-ranking
+    — paginate-inside-CTE yields OLDEST-by-tag.id-ASC) + FOUR STRENGTHENS
+    + ONE SUPERSEDES (the batch-W TagController "orders by descending
+    count" transcription error). STRENGTHENS=6, SUPERSEDES=1, CONFLICTS=0.
+- batch: X-TAGGING
+  entry_point_added: |-
+    SEVEN newly-enriched tag-mutation-surface sidecars closing the
+    controller-method tier of the Tag directory CRUD + the two
+    non-/api/tags relation-write endpoints + the OpenAPI rollup:
+    (1) TagController.createTag (POST /api/tags) — the controller-method
+    primary source for the operator-explicit TAG_CREATE-gated bulk create;
+    (2) TagController.getPopularTagList (GET /api/tags) — the single
+    READ endpoint, no SecurityRule, LSN-019 ranking lie traced end-to-end;
+    (3) TagController.updateTag (PUT /api/tags/{id}) — rename + triple
+    FTS refresh;
+    (4) TagController.deleteTag (DELETE /api/tags/{id}) — soft-delete +
+    doubly-asymmetric cascade;
+    (5) TermController.createTermTagsRelations (PUT /api/terms/{id}/tags)
+    — the SECOND relation-write endpoint, TERM_TAGS_UPDATE-gated;
+    (6) DatasetFieldController.updateDatasetFieldTags
+    (PUT /api/datasetfields/{id}/tags) — the THIRD relation-write
+    endpoint, DATASET_FIELD_TAGS_UPDATE parent-scoped;
+    (7) the `tag` OpenAPI rollup — the contract surface for the four
+    directory-CRUD operations.
+    Prior batches carried the persistence + service-tier evidence; this
+    batch closes the controller-method perimeter at PRIMARY SOURCE and
+    adds the two relation-write endpoints that the REFACTOR-223 side-door
+    enumeration always referenced but had not been enriched.
+  contributing_nodes_added:
+  - odd-platform java TagController controller-method:createTag
+  - odd-platform java TagController controller-method:getPopularTagList
+  - odd-platform java TagController controller-method:updateTag
+  - odd-platform java TagController controller-method:deleteTag
+  - odd-platform java TermController controller-method:createTermTagsRelations
+  - odd-platform java DatasetFieldController controller-method:updateDatasetFieldTags
+  - odd-platform openapi tags openapi-tag:tag
+  notes: |-
+    ELEVEN net-new drift facets + SEVEN STRENGTHENS on existing F-018
+    facets. Ordered by architectural leverage:
 
-    (1) NEW HEADLINE — **listMostPopular ranking lie — paginate-inside-CTE
-    yields OLDEST-by-tag.id-ASC, NOT MOST-POPULAR-by-count** (HIGH
-    severity, F-018-DRIFT-LSN019-listMostPopular-ranking). The OpenAPI
-    spec promises "sorted by popularity" (`odd-platform-specification/
-    openapi.yaml:344-346`); the implementation truncates the candidate
-    pool by `tag.id ASC` BEFORE counts are computed
-    (ReactiveTagRepositoryImpl.java:148 `paginate(homogeneousQuery,
-    [OrderByField(TAG.ID, ASC)], (page-1)*size, size)`). The outer
-    `cteSelect.orderBy(field(COUNT_FIELD).desc())` at line 158 only
-    re-ranks the already-truncated window. Empirical confirmation:
-    LSN-019:23-32 (2026-05-20 maintainer test against demo.oddp.io — 35
-    tags all equally popular, size=30 → response = oldest 30 by tag.id
-    ASC; 5 youngest absent). Operator-visible consequence: UI 'Top Tags'
-    tile on Catalog Overview shows the OLDEST tags when directory N > 30;
-    a newly-created high-usage tag is INVISIBLE on page 1 of /api/tags
-    /popular. P-010 (file-analyser-emitted) + P-LSN019-listMostPopular-
-    drift (service-sidecar-emitted) pin the SQL contract permanently in
-    CI; REFACTOR-LSN019-listMostPopular-ranking captures the fix-shape
-    options.
+    NET-NEW (11):
+    (1) F-018-DRIFT-XTAGGING-update-dataset-field-tags-unset-origin-insert
+    (HIGH) — the CRITICAL finding. updateDatasetFieldTags' relation INSERT
+    builds TagToDatasetFieldPojo with `origin` UNSET and relies on the
+    `origin varchar NOT NULL DEFAULT 'INTERNAL'` column default. If jOOQ's
+    newRecord-from-pojo emits an explicit NULL the INSERT violates the
+    NOT NULL constraint and the endpoint is DEAD for any non-empty `tags`
+    payload. The data-entity sibling sidesteps this by explicitly calling
+    .setExternal(false). Statically uncertain + untested — P-030 pins it.
+    (2) F-018-DRIFT-XTAGGING-deleteTag-fts-too-late (MEDIUM) —
+    TagServiceImpl.delete hard-deletes the tag_to_term rows in the
+    Flux.zip BEFORE the term-side FTS refresh; the refresh's discovery
+    CTE (SELECT term_id FROM tag_to_term WHERE tag_id=?) is keyed on the
+    just-deleted rows, finds nothing, re-indexes zero terms. The single
+    FTS refresh the delete path performs is a no-op. P-033 H2.
+    (3) F-018-DRIFT-XTAGGING-deleteTag-data-entity-fts-not-refreshed
+    (MEDIUM) — delete refreshes only the term-side vector; the
+    data-entity-side search_entrypoint.tag_vector keeps the deleted tag's
+    token (update refreshes all three; delete only one). P-033 H1.
+    (4) F-018-DRIFT-XTAGGING-external-guard-data-entity-side-only (MEDIUM)
+    — the !external guard on updateTag + deleteTag reads only
+    boolOr(tag_to_data_entity.external); a tag whose only Collector-set
+    origin is an EXTERNAL tag_to_dataset_field row passes the guard and
+    can be renamed/deleted by a UI user. Cross-cuts both write paths.
+    (5) F-018-DRIFT-XTAGGING-ids-param-entity-ids-misdescription (MEDIUM)
+    — getPopularTagList's `ids` parameter reuses the shared IdsParam
+    component ("Entity ids") but filters by tag.id (LSN-020 class).
+    P-031 pins.
+    (6) F-018-DRIFT-XTAGGING-updateTag-response-omits-external-usedcount
+    (MEDIUM) — updateTag's response Tag omits external/usedCount (the
+    bare-pojo mapToTag overload); the populating mapToTag(TagDto)
+    overload is available but unused.
+    (7) F-018-DRIFT-XTAGGING-tag-openapi-no-4xx-no-securityschemes
+    (MEDIUM) — the `tag` OpenAPI tag declares no 4xx on any operation,
+    no security: block, no securitySchemes, and is a bare name: entry.
+    (8) F-018-DRIFT-XTAGGING-create-tag-in-batch-duplicate-atomicity-unverified
+    (MEDIUM) — createTag's bulk INSERT (no ON CONFLICT) has unverified
+    in-batch duplicate atomicity; a partial commit is a silent data-shape
+    bug. P-026.
+    (9) F-018-DRIFT-XTAGGING-dataset-field-tags-delete-all-recreate-churn
+    (LOW) — updateDatasetFieldTags discards+rebuilds all INTERNAL
+    relations on every call (no diff, unlike the data-entity path).
+    (10) F-018-DRIFT-XTAGGING-three-way-activity-audit-asymmetry (MEDIUM)
+    — the three relation-write endpoints have three different audit
+    stories: data-entity (param-only), dataset-field (full before/after
+    state), term (no @ActivityLog at all). Extends the Audit-log Presence
+    Asymmetry canonicalisation candidate to a 4-surface picture.
+    (11) the `tag` openapi tag's bare-name no-description / no-externalDocs
+    shape — folded into facet (7); a Swagger-rendering finding (LOW).
 
-    The pre-existing F-018 drift facet
-    `list_most_popular_globally_scoped_no_per_owner_filter` (batch-N) is
-    ORTHOGONAL — that one is about scope (no per-Owner / per-Namespace
-    filter); THIS one is about RANKING SEMANTICS (the rank-by-count
-    promise unmet for N > size). Both facets coexist on the same SQL
-    method but describe distinct drifts.
+    SEVEN STRENGTHENS on existing F-018 facets:
+    — data_entity_tags_update_side_channel_into_global_tag_directory:
+      X-TAGGING confirms ALL THREE relation-write endpoints at
+      controller-method primary source (createTermTagsRelations
+      TERM_TAGS_UPDATE + updateDatasetFieldTags DATASET_FIELD_TAGS_UPDATE
+      + setDataEntityTags) — REFACTOR-223 was previously largely
+      service/repository-anchored.
+    — name_behavior_drift_list_most_popular...: the LSN-019 headline
+      gains controller-method (getPopularTagList) AND OpenAPI-spec (`tag`
+      sidecar — the description text is the wrong claim) primary-source
+      tiers.
+    — tag_service_tier_zero_permission_checks...: createTag / updateTag /
+      deleteTag controller-method sidecars all independently cite the
+      verified zero-auth TagServiceImpl posture.
+    — tag_status_code_drift_controller_200_vs_spec_201...: createTag +
+      updateTag sidecars + the `tag` openapi sidecar all confirm the
+      200-vs-201 drift at primary source.
+    — delete_tag_cascade_asymmetric_tag_to_dataset_field...: the deleteTag
+      controller-method sidecar promotes this from controller-class to
+      controller-method primary source + adds the available-but-unused
+      deleteDatasetFieldRelations(long) fix anchor.
+    — get_popular_tag_list_no_security_rule_open_read...: the
+      getPopularTagList controller-method sidecar is the dedicated
+      primary source for the no-GET-SecurityRule open-read posture.
+    — tag_name_no_validation...: createTag + createTermTagsRelations +
+      updateDatasetFieldTags sidecars confirm the no-validation gap is
+      shared verbatim across all four write endpoints.
 
-    (2) STRENGTHENS — **service-tier zero-permission-checks posture pinned
-    by Stress Protocol Category D** (MEDIUM severity, STRENGTHENS the
-    existing F-018 facet `tag_service_tier_zero_permission_checks_
-    controller_perimeter_sole_authorization` — batch-W primary source).
-    TagServiceImpl.java:1-167 verified line-by-line: ZERO `@PreAuthorize`,
-    ZERO `permissionService.hasPermission(...)`, ZERO
-    `OwnerAuthorizationFacade` invocations, ZERO `SecurityContextHolder`
-    reads, ZERO programmatic permission checks of any kind, across all 9
-    public methods + 2 private helpers. The Stress Protocol Category D
-    enumeration confirms the absence is COMPLETE (not just at one method
-    — at every method) and CONSISTENT (not just on read paths — on every
-    write path including the five side-door entry points TermService /
-    DataEntityService / DatasetFieldService / Collector S2S /
-    TagController). This finding is CROSS-CUTTING (also applies to many
-    other ODD services per the prior batch-T 9-SIDECAR audit-silence
-    pattern), but its instantiation on F-018 is captured here; the
-    cross-cutting posture itself is documented under P-09 Security &
-    Access Control as the architectural decision. NO new P-09 feature
-    minted by this batch — the existing F-018 facet is the canonical
-    home for the Tag-directory instance.
-
-    (3) STRENGTHENS — **TagController.getPopularTagList ranking-promise
-    failure pinned at the controller perimeter** (HIGH severity,
-    STRENGTHENS the new headline F-018-DRIFT-LSN019-listMostPopular-
-    ranking from the controller tier). The TagController sidecar's
-    stress_findings.name_behavior_pairs[0] traces the FULL chain
-    (TagController → TagService → ReactiveTagRepository → JooqQueryHelper
-    .paginate semantics) and ANCHORS the operator-visible UI-surface
-    misnaming at the controller layer (`@GetMapping('/popular')`,
-    `getPopularTagList`). The trace closes the picture: NO upstream
-    re-sort at controller or service tier; UI consumes the response
-    verbatim. The previous batch-W TagController sidecar transcribed
-    this as 'orders by descending count' — the WRONG claim, the canonical
-    LSN-019 failure mode that motivated the rev-4 schema. The corrected
-    transcription is the load-bearing pillar of this canary batch.
-
-    (4) STRENGTHENS — **`updateRelationsWithDataEntity` empty-set
-    destructive semantic** (MEDIUM severity, NEW STRENGTHENS on the
-    existing implicit F-018 contract). Stress Protocol Category C
-    finding S-C-2 (TagServiceImpl sidecar): an empty `tagNames` Set
-    passed to `updateRelationsWithDataEntity(dataEntityId, {})` is
-    INTERPRETED as "remove all non-external tag relations from this data
-    entity" via the diff semantic (`pojosToDelete = current \\ updated =
-    current`). The contract is intentional but the trap is real: callers
-    must NOT pass `{}` to mean "no-op"; it is a delete-all. The method
-    name does not advertise the asymmetry. P-LSN019-updateRelations-empty
-    -deletes-all probe-skeleton emitted.
-
-    (5) STRENGTHENS — **case-sensitivity divergence between divideTagsByExistence
-    and listMostPopular's query** (MEDIUM severity, STRENGTHENS existing
-    F-018 facet `case_sensitive_listbynames_silent_duplicate_rows` —
-    batch-N primary source). Stress Protocol Category B finding S-B-3
-    (TagServiceImpl sidecar): `divideTagsByExistence` uses `listByNames`
-    which is case-SENSITIVE; the UI tag-search-facet (`listMostPopular`'s
-    `query` parameter) uses `listCondition`'s `containsIgnoreCase` —
-    case-INSENSITIVE. A user can search "postgres" + see a "Postgres" tag,
-    then submit "postgres" for a new entity, and the service silently
-    mints a SECOND "postgres" tag row distinct from the "Postgres" row
-    because the `tag_name_unique` partial index is byte-exact. The
-    Stress Protocol confirms this is INTENTIONAL at the SQL layer (no
-    LOWER/ILIKE on the dedup primitive) but UNDOCUMENTED at the
-    operator-facing tagging.md page. P-LSN019-divide-case-sensitive
-    probe-skeleton emitted.
-
-    (6) STRENGTHENS — **getOrCreateTagsByName TOCTOU window pinned** (HIGH
-    severity, STRENGTHENS existing F-018 facet
-    `toctou_between_list_by_names_and_bulk_create`). Stress Protocol
-    Category E finding S-E-1 (TagServiceImpl sidecar) provides per-method
-    `@ReactiveTransactional` enumeration: `getOrCreateTagsByName` is
-    multi-step (listByNames + optional bulkCreate) WITHOUT
-    `@ReactiveTransactional` at the service tier; the inherited
-    `ReactiveAbstractCRUDRepository.bulkCreate` annotation wraps the
-    INSERT alone, not the read+write pair. Sibling `getOrInjectTagByName`
-    silences the race via ON CONFLICT DO UPDATE — intentional dual-method
-    design. `deleteRelationsWithTerm` is also multi-step without TX
-    (separate but related shape). P-LSN019-getOrCreate-vs-getOrInject-
-    toctou probe-skeleton emitted.
-
-    Coherence (LSN-018 Rule 6 sweep):
-    STRENGTHENS=6 (existing F-018 facets + the new headline pinned at
-    controller tier).
-    SUPERSEDES=1 (the batch-W TagController sidecar's "orders by
-    descending count" claim about getPopularTagList — SUPERSEDED by the
-    LSN-019 canary's primary-source trace; the canary was AUTHORED to
-    fix exactly this miss).
-    CONFLICTS=0.
-
-    HIGHEST-LEVERAGE remediation: implement the fix at
-    ReactiveTagRepositoryImpl.listMostPopular (move ORDER BY count DESC
-    OUTSIDE the paginate-inside-CTE, OR add an OUTER paginate AFTER count
-    aggregation) — this closes the operator-visible ranking lie. The
-    P-010 probe pins the current behaviour; the fix flips the assertion.
-    Local docker-compose probe stack: ODD platform + Postgres + curl
-    script seeding 35 tags with known IDs + tag-assignment fixture +
-    GET /api/tags/popular?size=30&page=1; assert response IDs ⊆ [1..30]
-    BEFORE fix; assert response IDs ⊄ {1..30} AFTER fix.
-
-    Methodology-meta: this batch is the LSN-019 Stress Protocol
-    VALIDATION CANARY. The rev-4 file-analyser schema (with
-    `stress_findings` block + Category A/B/C/D/E exhaustion + named
-    questions per category + REFERENCE/STATIC-INFERRED/PROBE-NEEDED
-    confidence flags) was designed specifically to catch the
-    name-vs-behaviour drift class that earlier schemas missed (batch-W
-    transcribed `listMostPopular` as "orders by descending count" — the
-    WRONG claim). This canary batch proves the rev-4 schema CAN surface
-    a known-bug at the right severity and with empirical pin (LSN-019:
-    23-32) when applied to the same source file. The headline drift
-    facet F-018-DRIFT-LSN019-listMostPopular-ranking IS the validation
-    success criterion.
+    Coherence (LSN-018 Rule 6 pre-emit sweep): STRENGTHENS=7,
+    SUPERSEDES=0, CONFLICTS=0. The 7 new probes (P-025 / P-026 / P-029 /
+    P-030 / P-031 / P-032 / P-033) and the LSN-020-class `ids`-parameter
+    drift were grepped against the F-018 registry — all genuinely new,
+    no duplicate. NO new feature minted — the seven sidecars are wholly
+    within F-018's directory-CRUD + relation-write territory (the
+    relation-write endpoints are the side-channels F-018 already
+    enumerates; the directory CRUD is F-018's terminal surface). The
+    HIGHEST-LEVERAGE finding is P-030: updateDatasetFieldTags may be
+    structurally broken for every non-empty payload — a primary-source
+    static read cannot resolve the jOOQ null-field-handling question, so
+    the probe is load-bearing.
 drift_class_summary_batch_z_extensions:
 - tag_create_bypass_via_unauthenticated_post_data_set_stats_list_refactor_223_side_door_fourth_path
 - external_statistics_tag_reconciliation_replace_not_merge_silent_tag_removal_on_partial_reingest
@@ -1084,15 +1473,28 @@ drift_class_summary_batch_val_lsn_019_extensions:
 - update_relations_with_data_entity_empty_set_is_delete_all_intentional_diff_semantic_with_misleading_method_name
 - toctou_get_or_create_tags_by_name_listbynames_bulkcreate_without_reactive_transactional_at_service_tier
 - divide_tags_by_existence_case_sensitive_vs_list_most_popular_query_case_insensitive_ux_divergence
+drift_class_summary_batch_x_tagging_extensions:
+- delete_tag_fts_refresh_runs_after_tag_to_term_hard_delete_so_term_vector_cleanup_no_ops
+- delete_tag_data_entity_side_search_vector_not_refreshed_deleted_tag_token_lingers
+- external_guard_data_entity_side_only_dataset_field_external_origin_unprotected_on_update_and_delete
+- ids_param_entity_ids_description_filters_by_tag_id_lsn020_class_input_name_drift
+- update_tag_response_tag_omits_external_and_usedcount_maptotag_pojo_overload
+- tag_openapi_tag_no_4xx_response_declared_failure_modes_invisible_to_contract
+- update_dataset_field_tags_relation_insert_relies_on_unset_origin_pojo_plus_db_column_default
+- update_dataset_field_tags_delete_all_then_recreate_churns_internal_relation_rows_no_diff
+- term_tags_update_third_relation_write_path_no_activity_log_no_external_carve_out
+- dataset_field_tags_update_path_full_before_after_activity_audit_three_way_audit_asymmetry
+- create_tag_in_batch_duplicate_atomicity_unverified_no_on_conflict_partial_commit_risk
 related_refactoring_scopes:
 - REFACTOR-223
-- 'REFACTOR-LSN019-listMostPopular-ranking (created by adr-archaeologist this batch — paginate-inside-CTE structural anchor + name-vs-behaviour fix-shape options)'
+- 'REFACTOR-LSN019-listMostPopular-ranking (paginate-inside-CTE structural anchor + name-vs-behaviour fix-shape options)'
 related_test_gaps:
 - TEST-GAP-017
-- 'TEST-GAP-LSN019-listMostPopular-ranking (created by test-coverage-mapper this batch — TagRepositoryImplTest.testListMostPopular structurally blind to LSN-019; needs the 35-tag fixture + size=30 assertion)'
+- 'TEST-GAP-LSN019-listMostPopular-ranking (TagRepositoryImplTest.testListMostPopular structurally blind to LSN-019; needs the 35-tag fixture + size=30 assertion)'
 related_doc_gaps:
 - DOC-GAP-001
-- 'DOC-GAP-LSN019-listMostPopular-ranking (created by doc-gap-finder this batch — OpenAPI ''sorted by popularity'' promise vs implementation; live tagging.md page silent on Top-Tags semantics)'
+- DOC-GAP-168
+- 'DOC-GAP-LSN019-listMostPopular-ranking (OpenAPI sorted by popularity promise vs implementation; live tagging.md page silent on Top-Tags semantics)'
 related_concepts:
 - Tag
 - Tag Origin (INTERNAL vs EXTERNAL vs EXTERNAL_STATISTICS)
@@ -1106,6 +1508,13 @@ related_retrospectives:
 - LSN-019
 related_probes:
 - P-010
+- P-025
+- P-026
+- P-029
+- P-030
+- P-031
+- P-032
+- P-033
 - P-LSN019-listMostPopular-drift
 - P-LSN019-updateRelations-external-preserve
 - P-LSN019-divide-case-sensitive
@@ -1116,13 +1525,15 @@ related_probes:
 - P-LSN019-createRelationsWithTerm-tx-propagation
 probe_verifications: []
 related_features:
-- F-002   # Term-to-Entity Linkage — TERM_TAGS_UPDATE / TermServiceImpl.upsertTags is the SECOND side-door into the Tag directory
-- F-008   # Batch Ingestion — ExternalTagIngestionRequestProcessor is the THIRD side-door; produces external = true rows
-- F-020   # Collector Lifecycle Management — collectors produce the external = true tags; F-018 batch-W !external positive invariant guards them
-- F-021   # Activity Feed — VAL-LSN-019-B CROSS-BATCH CONFIRMATION: independently surfaces the SAME service-tier zero-authorization root cause on the Activity service. Validates the posture is system-wide, NOT Tag-specific. F-018 remains canonical home; F-021 is the cross-feature validator.
-- F-028   # batch-W Namespace Lifecycle — structurally identical side-door bypass pattern (NAMESPACE_CREATE via 4 sister services); cross-pillar pattern match
-- F-029   # batch-Z Platform Public API Contract — the platform-api spec is silent on the tag-as-side-effect contract for /api/dataentities/{id}/tags AND the sibling ingestion-api spec is silent on the same for /ingestion/entities/datasets/stats
-- F-030   # batch-Z Metrics Ingestion — the THIRD unauthenticated /ingestion/ sibling endpoint (alongside metrics + the stats path catalogued here); shared unauthenticated-by-default + audit-silence + filter-coverage gap pattern
+- F-002   # Term-to-Entity Linkage — TERM_TAGS_UPDATE / TermServiceImpl.upsertTags is the SECOND side-door into the Tag directory; createTermTagsRelations is X-TAGGING primary source
+- F-004   # Dataset-field metadata — updateDatasetFieldTags is on the dataset-field surface; the THIRD side-door + the EXTERNAL_STATISTICS carve-out
+- F-008   # Batch Ingestion — ExternalTagIngestionRequestProcessor is the ingestion-side write path; produces external = true rows
+- F-017   # Search Filter Facets — the Tag facet on the Catalog Search page is the catalog-wide enumeration consumer of side-channel-minted tags
+- F-020   # Collector Lifecycle Management — collectors produce the external = true tags; the !external positive invariant guards them
+- F-021   # Activity Feed — VAL-LSN-019-B cross-batch confirmation of the service-tier zero-authorization posture; the three-way audit asymmetry surfaces the Activity-Feed coverage boundary
+- F-028   # batch-W Namespace Lifecycle — structurally identical side-door bypass pattern (NAMESPACE_CREATE via 4 sister services)
+- F-029   # batch-Z Platform Public API Contract — the `tag` OpenAPI tag's no-4xx / no-securitySchemes gap is the spec-wide pattern; the LSN-020-class ids drift is a sibling of the spec drifts F-029 catalogues
+- F-030   # batch-Z Metrics Ingestion — the unauthenticated /ingestion/ sibling endpoint pattern
 related_features_cross_batch_confirmation:
 - batch_pair: [VAL-LSN-019, VAL-LSN-019-B]
   finding: service_tier_zero_authorization_posture
@@ -1133,16 +1544,11 @@ related_features_cross_batch_confirmation:
     TagServiceImpl (VAL-LSN-019, this feature) was independently
     confirmed on ActivityServiceImpl (VAL-LSN-019-B, F-021) by a
     sister batch applying the SAME rev-4 Stress Protocol. The two
-    findings VALIDATE each other: this is not a Tag-specific or
-    Activity-specific posture; it is the PLATFORM's service-tier
+    findings VALIDATE each other: this is the PLATFORM's service-tier
     auth contract — controller perimeter is the sole authorization
-    gate; service tier is auth-free by design. The cross-batch
-    confirmation also proves the Stress Protocol fires
-    CONSISTENTLY across feature SHAPES (Tag is a Discovery-pillar
-    primary-write feature; Activity is an Audit-pillar
-    primary-read feature). Future batches will likely find the
-    same pattern on additional services (OwnershipServiceImpl,
-    DataEntityServiceImpl, etc). REFACTOR-547 remains the
-    canonical fix anchor on this feature; F-021 adds the
-    cross-feature validator note.
+    gate; service tier is auth-free by design. Batch X-TAGGING adds a
+    THIRD corroboration: the createTag / updateTag / deleteTag
+    controller-method sidecars each independently re-verify
+    TagServiceImpl.java:1-167 has zero @PreAuthorize + zero
+    programmatic checks. REFACTOR-547 remains the canonical fix anchor.
 maintainer_curated: false

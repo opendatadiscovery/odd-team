@@ -1,0 +1,55 @@
+gap_id: TEST-GAP-887
+category: missing-integration
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java DatasetFieldController controller-method:updateDatasetFieldTags"
+pillars_affected: [P-01, P-08]
+surfaced_by:
+  - "odd-platform__java__DatasetFieldController__controller-method__updateDatasetFieldTags.md:tests_coverage_semantic.uncovered_behaviours.[Relation INSERT with unset origin — no test verifies that createDatasetFieldRelations for a TagToDatasetFieldPojo with origin left null actually persists a row, and that the persisted row's origin is 'INTERNAL']"
+  - "odd-platform__java__DatasetFieldController__controller-method__updateDatasetFieldTags.md:bugs_limitations_corner_cases.[Relation INSERT relies on an UNSET pojo field plus a DB column default]"
+behaviour: |-
+  **CRITICAL — `PUT /api/datasetfields/{dataset_field_id}/tags` (updateDatasetFieldTags) inserts `tag_to_dataset_field` relation rows from a `TagToDatasetFieldPojo` that has `tagId` and `datasetFieldId` set but `origin` LEFT UNSET — the endpoint relies entirely on the DB column default `origin varchar NOT NULL DEFAULT 'INTERNAL'`. Whether jOOQ's `newRecord(table, pojo)` OMITS the unset column (default applies — correct) or EMITS an explicit `NULL` (violates `NOT NULL` — the INSERT fails) is NOT statically determinable. If the latter, the endpoint is BROKEN for any non-empty `tags` payload. The data-entity sibling path side-steps this entirely by explicitly calling `.setExternal(false)` on its relation pojo (`TagServiceImpl.java:109`); the dataset-field path does NOT set its discriminator. No test covers this load-bearing path.** Method-level primary source from the batch-X-TAGGING `updateDatasetFieldTags` controller-method sidecar:
+
+  - `DatasetFieldServiceImpl.getUpdatedRelations` (`:264-271`): builds `TagToDatasetFieldPojo` instances with `tagId` + `datasetFieldId` set, NEVER calling `.setOrigin(...)`.
+  - `ReactiveTagRepositoryImpl.createDatasetFieldRelations` (`:350-371`): maps each pojo via `jooqReactiveOperations.newRecord(TAG_TO_DATASET_FIELD, p)` then INSERTs, ending with `.onDuplicateKeyIgnore()` (`:367`).
+  - `V0_0_82__add_tag_to_dataset_field.sql:12`: `origin varchar NOT NULL DEFAULT 'INTERNAL'` — the relied-upon default. The PK is `(tag_id, dataset_field_id)` (`:14`).
+  - Contrast: `TagServiceImpl.updateRelationsWithDataEntity` explicitly calls `.setExternal(false)` on every `TagToDataEntityPojo` (`TagServiceImpl.java:109`) — the data-entity path sets its discriminator IN CODE; the dataset-field path relies on the DB default.
+
+  **Two failure modes if jOOQ emits an explicit NULL:**
+  - **Endpoint dead for non-empty payloads** — the INSERT violates `origin NOT NULL`; every `PUT` with a non-empty `tags` list returns a 500. (The empty-list `tags: []` path does only a DELETE, so it would still appear to work — masking the breakage in any smoke test that only exercises clear-all.)
+  - **Worse — silent orphan accumulation if `origin` lands as something OTHER than 'INTERNAL'**: the next call's `deleteDatasetFieldInternalRelations` filters `WHERE origin = 'INTERNAL'` (`ReactiveTagRepositoryImpl.java:292`) — a row persisted with a non-INTERNAL origin is never deleted by a subsequent replace-all, and the field accumulates orphan relations the cleanup cannot reach.
+
+  **Why this is fragile-by-construction and CRITICAL**: the correctness of the endpoint's PRIMARY write path depends on an UNTESTED, statically-uncertain jOOQ behaviour (null-field-handling × `onDuplicateKeyIgnore` interaction). A jOOQ version bump changing null-field handling, OR a maintainer adding `.setOrigin(null)`, would either break the endpoint outright or corrupt the replace-all semantic. The repository tests (`TagRepositoryImplTest`) cover the data-entity relation path (which DOES set its discriminator explicitly) — NOT the dataset-field path.
+
+  **Test gap shape**: a Testcontainers-backed `@SpringBootTest` test promoting probe P-030: `PUT /api/datasetfields/{id}/tags` with a non-empty `tags` list, assert (a) the call returns 200 (NOT 500); (b) a raw DB `SELECT origin FROM tag_to_dataset_field WHERE dataset_field_id = ?` returns `'INTERNAL'` for every inserted row; (c) a subsequent replace-all `PUT` correctly deletes those rows (proving the persisted `origin` IS `'INTERNAL'` so the delete filter reaches them). The current state is PINNED — failures land if a jOOQ change or a `.setOrigin` edit alters the persisted value.
+test_class: missing-integration
+criticality_rationale: |-
+  CRITICAL — this is the ONLY CRITICAL-rated uncovered behaviour across the 7 batch-X-TAGGING sidecars, and the rating is the sidecar's own (updateDatasetFieldTags tests_coverage_semantic). It is the load-bearing PRIMARY write path of the endpoint resting on a statically-uncertain, untested jOOQ behaviour: one failure mode kills the endpoint for all non-empty payloads, the other silently corrupts the replace-all delete-filter semantic (orphan accumulation the cleanup cannot reach). F-018's drift_class_summary already carries the dataset-field-relation and onDuplicateKeyIgnore facets. Per Rule 3, criticality = max(security, performance, baseline) and the data-shape-correctness-of-the-primary-path risk anchors CRITICAL here.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/TagRepositoryImplTest.java (repository-layer; covers createDataEntityRelations / deleteDataEntityRelations — the DATA-ENTITY relation path which DOES set .setExternal explicitly. Contains NO tag_to_dataset_field test method — VERIFIED by reading the file end-to-end: the 10 test methods touch tag, tag_to_data_entity, and listMostPopular only)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DatasetFieldTagRelationOriginTest.java"
+  name: "updateDatasetFieldTags_nonEmptyPayload_persistsRelationWithOriginInternal_pinsP030"
+evidence:
+  - "updateDatasetFieldTags sidecar says (tests_coverage_semantic.uncovered_behaviours): 'Relation INSERT with unset origin — no test verifies that createDatasetFieldRelations for a TagToDatasetFieldPojo with origin left null actually persists a row, and that the persisted row's origin is INTERNAL. This is the load-bearing untested path (see stress_findings / P-030).' criticality CRITICAL; note: 'If jOOQ's newRecord-from-pojo emits an explicit NULL for the unset origin field, the INSERT violates the NOT NULL column constraint and the endpoint is broken for any non-empty tags list.'"
+  - "updateDatasetFieldTags sidecar says (bugs_limitations_corner_cases): 'Relation INSERT relies on an UNSET pojo field plus a DB column default — getUpdatedRelations (DatasetFieldServiceImpl.java:264-271) builds TagToDatasetFieldPojo with only tagId + datasetFieldId, never origin. If jOOQ's newRecord(table, pojo) marks the origin field as changed-with-value-NULL, the INSERT emits an explicit NULL and violates origin varchar NOT NULL (V0_0_82__add_tag_to_dataset_field.sql:12). The data-entity sibling path side-steps this entirely by explicitly calling .setExternal(false).' severity HIGH"
+  - "updateDatasetFieldTags sidecar says (gaps): 'the highest-leverage gap there is CRITICAL: nothing verifies that the relation INSERT path (createDatasetFieldRelations with an unset-origin pojo) actually persists. ... A regression that flips this — e.g. a jOOQ version bump changing null-field-handling — would either break the endpoint outright or, worse, persist relations the deleteDatasetFieldInternalRelations filter cannot later remove.'"
+  - "Verified at primary source: read TagRepositoryImplTest.java end-to-end (285 lines, 10 test methods) — confirms ZERO tag_to_dataset_field relation test methods; the relation coverage is tag_to_data_entity only (testCreateRelationsWithDataEntity etc.)"
+cross_references:
+  - "lineage/odd-platform/probes/P-030.yaml (the unset-origin relation-INSERT probe — this gap promotes P-030 to a CI test)"
+  - "feature-flows:F-018 drift_class_summary.[onduplicatekeyignore_idempotent_relation_create] — the onDuplicateKeyIgnore on this exact INSERT compounds the static uncertainty"
+  - "REFACTOR-NNN candidate: make getUpdatedRelations explicitly call .setOrigin(TagOrigin.INTERNAL) — a 1-line fix that removes the DB-default reliance and matches the data-entity path's .setExternal(false) discipline"
+  - "TEST-GAP-303 (existing batch-G — data-entity REPLACE-ALL for INTERNAL tags; sister replace-all but the data-entity path sets its discriminator in code so it has no equivalent unset-field fragility)"
+related_features: [F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `DatasetFieldTagRelationOriginTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Promote probe P-030 to CI:
+  1. `updateDatasetFieldTags_nonEmptyPayload_returns200NotServerError` — `PUT /api/datasetfields/{id}/tags` with `{"tags":["x","y"]}`; assert HTTP 200 (NOT 500). If this fails, the unset-origin INSERT is emitting an explicit NULL — the endpoint is broken; raise a CRITICAL bug.
+  2. `updateDatasetFieldTags_persistedRelationOriginIsInternal` — after #1, raw DB `SELECT origin FROM tag_to_dataset_field WHERE dataset_field_id = ?`; assert every row's `origin == 'INTERNAL'`.
+  3. `updateDatasetFieldTags_subsequentReplaceAll_deletesInternalRelations` — after #1, `PUT` `{"tags":[]}`; assert ALL the rows from #1 are deleted. This proves the persisted `origin` IS `'INTERNAL'` (so `deleteDatasetFieldInternalRelations`'s `WHERE origin = 'INTERNAL'` filter reaches them) — guarding against the silent-orphan-accumulation failure mode.
+
+  Pair with REFACTOR-NNN: make `getUpdatedRelations` explicitly `.setOrigin(TagOrigin.INTERNAL)` to remove the DB-default reliance — a 1-line fix matching the data-entity path's `.setExternal(false)` discipline. When the fix lands, tests #1-#3 still pass (they pin the OBSERVABLE contract regardless of whether origin is set in code or by default).
+batch: 2026-05-21-X-TAGGING
+feature_id: F-018

@@ -1,0 +1,251 @@
+name: Replace Internal Dataset-Field Tag Relations (origin-scoped delete-then-recreate)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-08
+  - P-09
+description: |-
+  NEW OPERATION, batch X-TAGGING (2026-05-21) — captures
+  `PUT /api/datasetfields/{dataset_field_id}/tags` (operationId
+  `updateDatasetFieldTags`) at the operation-concept level. This is the
+  DATASET-FIELD-side member of the tag-relation write trio; it is a
+  DISTINCT operation from `upsert-internal-tag-relations-replace-all`
+  (the data-entity path) and `replace-all-term-tag-relations` (the term
+  path). The three are kept as separate concepts because the
+  dataset-field path differs materially: it discards-and-rebuilds rather
+  than diffs, it has a THREE-VALUE TagOrigin discriminator, and it
+  carries the most-complete activity-feed audit story of the trio.
+
+  THE ENDPOINT:
+    PUT /api/datasetfields/{dataset_field_id}/tags -> HTTP 200, Flux<Tag>.
+    Authorization is PARENT-SCOPED: the DATASET_FIELD AuthorizationManagerType
+    resolves the dataset-field id to its owning data-entity id (via
+    DatasetFieldResourceExtractor.getDataEntityIdByDatasetFieldId), then
+    evaluates DATASET_FIELD_TAGS_UPDATE — itself a DATA_ENTITY-scoped
+    enum member — against the PARENT data entity's Policy context.
+    SecurityConstants.SECURITY_RULES at SecurityConstants.java:288-290.
+
+  THE CHAIN — delete-all-then-recreate (NOT a diff):
+    DatasetFieldController.updateDatasetFieldTags (DatasetFieldController.java:55-63)
+    — 4-line reactive handler reading Mono<DatasetFieldTagsUpdateFormData>.
+    -> DatasetFieldServiceImpl.updateDatasetFieldTags
+       (DatasetFieldServiceImpl.java:117-132, @ReactiveTransactional +
+       @ActivityLog(event = DATASET_FIELD_TAGS_UPDATED)):
+       Step a: deleteDatasetFieldInternalRelations(datasetFieldId) —
+               unconditional `DELETE FROM tag_to_dataset_field WHERE
+               dataset_field_id = ? AND origin = 'INTERNAL'`
+               (ReactiveTagRepositoryImpl.java:289-295).
+       Step b: getOrCreateTagsByName auto-creates any submitted name
+               absent from the global tag directory; each resolved tag
+               becomes a TagToDatasetFieldPojo with tagId + datasetFieldId
+               set but `origin` LEFT UNSET.
+       Step c: createDatasetFieldRelations — batched INSERT with
+               onDuplicateKeyIgnore.
+       Step d: updateDatasetFieldSearchVectors refreshes the
+               dataset-field search vector.
+       Step e: markDataEntityByTags toggles
+               data_entity_filled.dataset_field_tags_filled.
+       Step f: re-read listDatasetFieldDtos and map to Flux<Tag>.
+
+  ORIGIN-SCOPED REPLACE — INTERNAL only, ingestion-set protected:
+    The delete is gated by `origin = 'INTERNAL'`. The TagOrigin enum has
+    THREE members: INTERNAL, EXTERNAL, EXTERNAL_STATISTICS. EXTERNAL and
+    EXTERNAL_STATISTICS relations (ingestion-sourced, including the
+    dataset-statistics-derived tags written by DatasetFieldServiceImpl.updateFieldsTags)
+    SURVIVE this UI/API call. A caller cannot remove ingested-statistics
+    tag relations through this endpoint. This is the schema-level
+    multi-channel ownership model — see the existing
+    `tag-with-internal-vs-external-distinction` candidate.
+
+  THE LOAD-BEARING FRAGILITY — relation INSERT relies on a DB default
+  (probe P-030):
+    getUpdatedRelations builds TagToDatasetFieldPojo with only tagId +
+    datasetFieldId, NEVER origin — it relies on the DB column default
+    `origin varchar NOT NULL DEFAULT 'INTERNAL'`
+    (V0_0_82__add_tag_to_dataset_field.sql:12). The data-entity sibling
+    path side-steps this entirely by explicitly calling .setExternal(false).
+    If jOOQ's newRecord-from-pojo emits an explicit NULL for the unset
+    origin field, the INSERT violates the NOT NULL constraint and the
+    endpoint is BROKEN for any non-empty tags payload. Statically
+    uncertain; untested; pinned by probe P-030. This is a CRITICAL
+    untested path.
+
+  ACTIVITY AUDIT — the most complete of the trio:
+    @ActivityLog(event = DATASET_FIELD_TAGS_UPDATED) annotates the
+    service method; DatasetFieldInformationUpdatedActivityHandler.getState
+    serialises the field's COMPLETE before/after tag list (id + name per
+    tag) into both oldState and newState. This is notably more complete
+    than the data-entity tag path (which captures only the parent
+    dataEntityId) and than the term-tag path (which emits NO event at all).
+
+nodes:
+  - odd-platform java DatasetFieldController controller-method:updateDatasetFieldTags
+
+contributors:
+  - |-
+    DatasetFieldController.updateDatasetFieldTags batch X-TAGGING
+    (PRIMARY SOURCE — controller-method tier):
+    concepts.operations[replace-internal-tags-for-dataset-field;
+    auto-create-tag-on-miss; resolve-dataset-field-to-parent-data-entity] +
+    concepts.invariants[Delete-all-then-recreate NOT a diff;
+    EXTERNAL / EXTERNAL_STATISTICS relations are protected;
+    Activity-feed event with FULL before/after tag state] +
+    implicit_adrs[Parent-scoped authorization; INTERNAL tag relations
+    owned by UI/API channel; origin column default is the relied-upon
+    discriminator mechanism] +
+    bugs_limitations_corner_cases (relation INSERT relies on unset pojo
+    field + DB default P-030; permission side-door; tags:[] clears all
+    internal tags; delete-then-recreate churns rows)
+
+evidence:
+  - 'DatasetFieldController.java:55-63 (the 4-line reactive handler)'
+  - 'updateDatasetFieldTags.md:concepts.operations[replace-internal-tags-for-dataset-field]'
+  - 'updateDatasetFieldTags.md:concepts.invariants[Delete-all-then-recreate; EXTERNAL/EXTERNAL_STATISTICS protected]'
+  - 'updateDatasetFieldTags.md:bugs_limitations_corner_cases (relation INSERT relies on DB default P-030; permission side-door)'
+  - 'DatasetFieldServiceImpl.java:117-132 (the @ReactiveTransactional + @ActivityLog pipeline)'
+  - 'ReactiveTagRepositoryImpl.java:289-295 (deleteDatasetFieldInternalRelations — origin = INTERNAL filter)'
+  - 'V0_0_82__add_tag_to_dataset_field.sql:12 (origin varchar NOT NULL DEFAULT INTERNAL)'
+  - 'SecurityConstants.java:288-290 (DATASET_FIELD_TAGS_UPDATE permission gate)'
+  - 'DatasetFieldResourceExtractor.java:20-27 (resolve dataset-field id to parent data-entity id)'
+  - 'P-030 (probe pinning the relation-INSERT unset-origin question — CRITICAL)'
+
+axes_present:
+  - controllers
+
+security_aggregate:
+  overall: MEDIUM
+  auth_modes_relevant:
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
+  ingestion_filter_relevance: NO
+  authorization_consistency:
+    verdict: CONSISTENT
+    detail: |-
+      Gated at the controller perimeter via SecurityConstants.SECURITY_RULES
+      (DATASET_FIELD type, DATASET_FIELD_TAGS_UPDATE permission). NO
+      @PreAuthorize on the method; the service and repository tiers have
+      none — path-based rule is the sole gate, consistent with every
+      other dataset-field write rule.
+  owner_scoping:
+    verdict: RESPECTS
+    detail: |-
+      DATASET_FIELD_TAGS_UPDATE is a DATA_ENTITY-scoped permission
+      evaluated against the dataset field's PARENT data entity (the
+      dataset field is a sub-resource of the data entity). A Policy with
+      a dataEntity:owner condition scopes tag-edit to owned entities'
+      fields. NOTE: granting this permission for a data entity also
+      grants tag-edit on ALL of that entity's dataset fields — a
+      consequence the Permissions doc does not state.
+  strengths:
+    - |-
+      EXTERNAL / EXTERNAL_STATISTICS relations are protected by the
+      origin = INTERNAL delete filter — ingestion-derived tags survive
+      a UI replace-all.
+    - |-
+      The most complete activity-feed audit of the tag-relation trio —
+      full before/after tag-list state captured (id + name per tag).
+    - |-
+      @ReactiveTransactional single boundary — delete + auto-create +
+      insert + search-vector refresh + filled-toggle + re-read run
+      atomically.
+  weaknesses:
+    - |-
+      MEDIUM — permission side-door — DATASET_FIELD_TAGS_UPDATE mints
+      global tag directory rows without TAG_CREATE; WORSE than the
+      data-entity sibling because the dataset-field endpoint's OpenAPI
+      spec (openapi.yaml:2500) does not even mention the auto-create.
+      See the `spec-documented-auto-create-with-scope-asymmetry`
+      invariant.
+    - |-
+      MEDIUM — tags:[] clears all internal dataset-field tags,
+      undiscoverably from the spec; the DatasetFieldTagsUpdateFormData
+      schema has NO required block.
+    - |-
+      HIGH under DISABLED — the DATASET_FIELD_TAGS_UPDATE SecurityRule
+      is bypassed; anonymous callers can overwrite any dataset field's
+      internal tag set and mint directory rows.
+    - |-
+      MEDIUM — no length / character-set / whitespace validation on the
+      tags items — the global tag directory accumulates typos and
+      free-text junk.
+  cross_file_inconsistencies:
+    - |-
+      Single contributing sidecar this batch — no cross-file conflict.
+      The auto-create side-door matches the existing
+      `spec-documented-auto-create-with-scope-asymmetry-tag-side-door-past-tag-create`
+      invariant — same drift class, dataset-field instance, with the
+      WORSE property that the spec does not document the auto-create.
+  contributing_files:
+    - updateDatasetFieldTags.md
+  evidence:
+    - 'updateDatasetFieldTags.md:security.authorization_assertions'
+    - 'updateDatasetFieldTags.md:bugs_limitations_corner_cases (permission side-door; DISABLED bypass)'
+
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+    - |-
+      Runs once per dataset-field tags-panel save on a data entity's
+      Structure tab — low frequency.
+      odd-platform java DatasetFieldController controller-method:updateDatasetFieldTags
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: |-
+      One dataset field per call; no bulk endpoint. The submitted tags
+      array can be arbitrarily long (no maxItems).
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: |-
+      Stateless controller. Concurrent saves of the SAME field interleave
+      delete/insert pairs (last-commit-wins replace-all); concurrent
+      novel-tag creation races on the tag-directory partial unique index.
+  weaknesses:
+    - |-
+      LOW — delete-then-recreate churns relation rows on EVERY call,
+      even a no-op save where the submitted set equals the current one;
+      the data-entity sibling diffs and deletes only the removed subset.
+    - |-
+      LOW — no cap on the tags array size — a very large list materialises
+      fully into heap, sends an oversized IN(...) clause, and attempts a
+      correspondingly large batched INSERT.
+  contributing_files:
+    - updateDatasetFieldTags.md
+  evidence:
+    - 'updateDatasetFieldTags.md:bugs_limitations_corner_cases (delete-then-recreate churn; no maxItems)'
+    - 'updateDatasetFieldTags.md:stress_findings.resource_boundaries'
+
+notes: |-
+  CAPTURED batch X-TAGGING (2026-05-21). This is a DISTINCT concept
+  from `upsert-internal-tag-relations-replace-all` (data-entity path)
+  and `replace-all-term-tag-relations` (term path) per the
+  conservative-clustering rule — the dataset-field path discards-and-
+  rebuilds (vs the data-entity diff), has a three-value TagOrigin
+  discriminator (vs the data-entity boolean external / vs the term
+  no-discriminator), and carries the most-complete activity audit of
+  the trio.
+
+  The CRITICAL untested path (relation INSERT relies on the DB column
+  default for origin — P-030) is the highest-leverage probe in the
+  tag-relation surface.
+
+  Cross-cutting connections:
+    - Pairs with the Tag entity (the directory rows it auto-creates)
+    - Sibling of `upsert-internal-tag-relations-replace-all` and
+      `replace-all-term-tag-relations` — the three-member tag-relation
+      write trio
+    - Pairs with `tag-with-internal-vs-external-distinction` (the
+      three-value TagOrigin model this operation enforces)
+    - Pairs with `spec-documented-auto-create-with-scope-asymmetry-tag-side-door-past-tag-create`
+      (the auto-create side-door, here WORSE because spec-undocumented)
+    - Pairs with `tag-creation-as-side-effect-bypasses-tag-create-permission`
+      (the EXTERNAL_STATISTICS ingestion path that writes the protected
+      dataset-field relations)
+related_operations:
+  - upsert-internal-tag-relations-replace-all
+  - replace-all-term-tag-relations
+  - create-tag
+related_pillar_features:
+  - P-01:F-018
+maintainer_curated: false

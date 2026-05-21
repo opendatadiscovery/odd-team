@@ -1,0 +1,52 @@
+gap_id: TEST-GAP-895
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java TermController controller-method:createTermTagsRelations"
+  - "odd-platform java DatasetFieldController controller-method:updateDatasetFieldTags"
+pillars_affected: [P-01, P-04, P-08, P-09]
+surfaced_by:
+  - "odd-platform__java__TermController__controller-method__createTermTagsRelations.md:bugs_limitations_corner_cases.[Under auth.type=DISABLED, the TERM_TAGS_UPDATE SecurityRule is bypassed]"
+  - "odd-platform__java__DatasetFieldController__controller-method__updateDatasetFieldTags.md:bugs_limitations_corner_cases.[Under auth.type=DISABLED, the DATASET_FIELD_TAGS_UPDATE SecurityRule is bypassed]"
+behaviour: |-
+  **HIGH — under `auth.type=DISABLED`, the `TERM_TAGS_UPDATE` and `DATASET_FIELD_TAGS_UPDATE` `SecurityRule`s are bypassed entirely (`DisabledAuthSecurityConfiguration` permits all exchanges; the `AuthorizationCustomizer` is not installed). Anonymous callers can `PUT /api/terms/{id}/tags` and `PUT /api/datasetfields/{id}/tags` to (a) overwrite the tag set of ANY term / dataset field via the replace-all semantic, AND (b) mint arbitrary new rows in the global `tag` directory via the `getOrCreateTagsByName` side-channel. For the term path the overwrite is DOUBLY invisible — no auth AND no audit (the term-tag path carries no `@ActivityLog`).** Method-level primary source from the batch-X-TAGGING `createTermTagsRelations` + `updateDatasetFieldTags` controller-method sidecars:
+
+  - `createTermTagsRelations` sidecar: `SecurityConstants.java:185-186` registers the `TERM_TAGS_UPDATE` rule. Under DISABLED, per the cross-batch DISABLED-bypass case-law (`DisabledAuthSecurityConfiguration` permits all exchanges, `AuthorizationCustomizer` not installed), anonymous callers reach the endpoint. The term-tag path has NO `@ActivityLog` (verified — no annotation on the controller method, on `TermServiceImpl.upsertTags`, or on the `TagServiceImpl` methods) — so a DISABLED-deployment term-tag overwrite is doubly invisible.
+  - `updateDatasetFieldTags` sidecar: `SecurityConstants.java:288-290` registers the `DATASET_FIELD_TAGS_UPDATE` rule. Under DISABLED, anonymous callers can overwrite the internal tag set of any dataset field AND mint global `tag` rows. The `@ActivityLog` event still fires but the caller identity is undefined.
+
+  **Two distinct sub-behaviours, both unpinned (the SAME DISABLED-bypass class, two endpoints):**
+  - **Term-tag DISABLED bypass** — anonymous `PUT /api/terms/{id}/tags` overwrites any term's tag set + mints directory rows; no auth, no audit. DOUBLE-invisible.
+  - **Dataset-field-tag DISABLED bypass** — anonymous `PUT /api/datasetfields/{id}/tags` overwrites any dataset field's internal tag set + mints directory rows; the `DATASET_FIELD_TAGS_UPDATED` activity event fires with an undefined caller identity.
+
+  **Why HIGH**: DISABLED is documented as dev-only, but the absence of a fail-fast on a network-reachable port makes accidental production deployment plausible. The DISABLED-bypass on these two side-channels means an anonymous network caller can rewrite the catalog's term and dataset-field tag sets AND pollute the global vocabulary. The sidecars rate this MEDIUM-to-HIGH (HIGH under DISABLED on a network-reachable port; LOW if DISABLED is honestly dev-only). No test pins the DISABLED-mode behaviour on either endpoint.
+
+  **Test gap shape**: a `@SpringBootTest` with `auth.type=DISABLED` asserting (a) an UNAUTHENTICATED `PUT /api/terms/{id}/tags` succeeds and rewrites the term's tags + mints a directory row; (b) the same call produces NO activity-feed entry (the double-invisibility); (c) an unauthenticated `PUT /api/datasetfields/{id}/tags` succeeds and rewrites the dataset field's internal tags; (d) for (c), a `DATASET_FIELD_TAGS_UPDATED` activity row IS produced but with an undefined caller. The current state is PINNED — the DISABLED-bypass is documented-and-tested rather than silent.
+test_class: missing-security
+criticality_rationale: |-
+  HIGH per Rule 3: the createTermTagsRelations and updateDatasetFieldTags sidecars both rate the DISABLED-bypass MEDIUM (HIGH under DISABLED on a network-reachable port). Rule's cross-pillar bump applies — pillars_affected len 4 (P-01, P-04, P-08, P-09) and the gap spans the security pillar's auth-mode boundary; the term-path double-invisibility (no auth AND no audit) makes anonymous catalog rewriting forensically untraceable. +1 step from MEDIUM lands HIGH. Consistent with the existing TEST-GAP-304 (data-entity DISABLED bypass) rating posture.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/TagSideChannelDisabledAuthBypassTest.java"
+  name: "termAndDatasetFieldTagWrites_underAuthDisabled_anonymousCallerRewritesTagsAndMintsDirectoryRows"
+evidence:
+  - "createTermTagsRelations sidecar says (bugs_limitations_corner_cases): 'Under auth.type=DISABLED, the TERM_TAGS_UPDATE SecurityRule is bypassed. Anonymous callers can PUT /api/terms/{id}/tags and (a) overwrite the tag set for any term, (b) mint arbitrary new tag directory rows. No activity-feed event fires either way (this endpoint has no @ActivityLog), so a DISABLED-deployment term-tag overwrite is doubly invisible — no auth AND no audit.' severity MEDIUM (HIGH under DISABLED on a network-reachable port)"
+  - "updateDatasetFieldTags sidecar says (bugs_limitations_corner_cases): 'Under auth.type=DISABLED, the DATASET_FIELD_TAGS_UPDATE SecurityRule is bypassed — DisabledAuthSecurityConfiguration permits all exchanges. Anonymous callers can PUT /api/datasetfields/{id}/tags and (a) overwrite the internal tag set of any dataset field, (b) mint arbitrary global Tag directory rows. The @ActivityLog event still fires but the caller identity is undefined.' severity HIGH (under DISABLED on a network-reachable port; LOW if DISABLED is honestly dev-only)"
+  - "Verified at primary source via the sidecars: SecurityConstants.java:185-186 (TERM_TAGS_UPDATE rule) + SecurityConstants.java:288-290 (DATASET_FIELD_TAGS_UPDATE rule) + the cross-batch DISABLED-bypass case-law citing DisabledAuthSecurityConfiguration.java:9-19 (permits all exchanges)"
+cross_references:
+  - "TEST-GAP-304 (existing batch-G — the data-entity-path DISABLED-mode anonymous tag-relation rewrite + directory growth via /api/dataentities/{id}/tags. DISTINCT NODES: TEST-GAP-304 = the data-entity side-channel; TEST-GAP-895 = the term + dataset-field side-channels. Together the three gaps cover all three DISABLED-bypassable tag side-channels)"
+  - "feature-flows:F-018 — the three tag side-channels (data-entity, term, dataset-field) all share the DISABLED-bypass exposure"
+  - "retrospectives/LSN-001 / LSN-002 family — the dev-only-default-deployed-to-production failure mode (a DISABLED auth.type on a network-reachable port is the same operator-cliff class)"
+related_features: [F-018]
+related_pillar_features: ["P-01:F-006-manual-object-tagging", "P-09:F-001"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `TagSideChannelDisabledAuthBypassTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/` annotated `@SpringBootTest` with `auth.type=DISABLED`. Four test methods:
+  1. `createTermTagsRelations_underDisabledAuth_anonymousCallerRewritesTermTags` — no token; `PUT /api/terms/{id}/tags`; assert 200 and the term's tag set is rewritten.
+  2. `createTermTagsRelations_underDisabledAuth_producesNoActivityEntry_pinsDoubleInvisibility` — after #1, assert ZERO activity-feed rows for the term-tag change (no auth AND no audit).
+  3. `updateDatasetFieldTags_underDisabledAuth_anonymousCallerRewritesInternalTags` — no token; `PUT /api/datasetfields/{id}/tags`; assert 200 and the internal tag set is rewritten.
+  4. `updateDatasetFieldTags_underDisabledAuth_activityEntryHasUndefinedCaller` — after #3, assert a `DATASET_FIELD_TAGS_UPDATED` activity row exists but with an undefined/null caller identity.
+
+  These tests PIN the DISABLED-bypass as documented behaviour. Pair with the LSN-001/LSN-002-family operator-cliff awareness: consider a fail-fast or a loud startup warning when `auth.type=DISABLED` is set on a non-loopback bind address (a separate REFACTOR/DOC item spanning all DISABLED-mode endpoints).
+batch: 2026-05-21-X-TAGGING
+feature_id: F-018

@@ -7,3 +7,11 @@ Every target the `panel-adversary` expert has spot-checked, across all runs. The
 | Date | Target (file:symbol or capability) | Sampling strategy |
 |---|---|---|
 <!-- chair appends one row per Adversary spot-check below this line -->
+| 2026-05-21 | JooqFTSHelper.tsQuery / ftsCondition — multi-word search semantics | random-walk |
+| 2026-05-21 | HousekeepingJobManager — @Scheduled cadence + ConditionalOnProperty default | boundary |
+| 2026-05-21 | DataEntityController#getPopular — ranking signal | capability |
+| 2026-05-21 | cteDataEntitySelect — EXCLUDE_FROM_SEARCH filter on list-shape reads | negative-space |
+| 2026-05-21 | ReactiveDataEntityRepositoryImpl#getQuerySuggestions — result cap | boundary |
+| 2026-05-21 | tsquery-operator-injection invariant — ftsCondition facet call-site enumeration | negative-space |
+| 2026-05-21 | PostgreSQLLeaderElectionManagerImpl#acquire — advisory-lock leader election | random-walk |
+| 2026-05-21 | spring.session.timeout = -1 + session.provider IN_MEMORY (application.yml) | negative-space |

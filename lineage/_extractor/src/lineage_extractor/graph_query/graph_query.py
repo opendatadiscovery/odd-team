@@ -16,6 +16,8 @@ whole-index load.
 """
 from __future__ import annotations
 
+import hashlib
+import pickle
 import re
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -75,6 +77,11 @@ class GraphQuery:
             # rows are processed in score-agnostic order; the per-query topk
             # decides ranking, so here we only need any-row-per-node.
             self._best_vector.setdefault(key, (row, 0.0))
+        # human node_id -> the graph keys that share it (a CodeNode and its
+        # Sidecar share one node_id) — the resolver for the agentic primitives.
+        self._node_id_keys: dict[str, list[str]] = {}
+        for n in self.graph.all_nodes():
+            self._node_id_keys.setdefault(n.node_id, []).append(n.key)
 
     # -- construction ------------------------------------------------------
 
@@ -87,16 +94,30 @@ class GraphQuery:
         model_id: str = config.EMBEDDING_MODEL,
     ) -> "GraphQuery":
         """Deterministically rebuild the ephemeral graph + vector index from
-        the canonical files. Cache-checked — unchanged sections are not
-        re-embedded. `embeddings=False` skips the embedding half entirely
-        (graph-only, fast)."""
+        the canonical files. A pickle build-cache keyed on the substrate file
+        signature makes a repeat build sub-second — load_substrate + project +
+        embed-cache-load only run when the substrate actually changed. This is
+        what makes the agentic retriever's many tool calls practical.
+        `embeddings=False` skips the embedding half (graph-only, faster)."""
         lineage_dir = Path(lineage_dir)
+        sig = _build_signature(lineage_dir)
+        cached = _load_built(lineage_dir, sig)
+        if cached is not None:
+            graph, vectors = cached
+            embedder = Embedder(model_id=model_id) if embeddings else None
+            if not embeddings:
+                vectors = VectorIndex(model_id=model_id, matrix=_empty_matrix(),
+                                      rows=[], available=False,
+                                      stats={"reason": "graph-only build"})
+            return cls(lineage_dir, graph, vectors, embedder)
+
         substrate = load_substrate(lineage_dir)
         graph = project(substrate)
-        embedder: Embedder | None = None
+        embedder = None
         if embeddings:
             embedder = Embedder(model_id=model_id)
             vectors = embedder.embed_graph(graph, lineage_dir)
+            _save_built(lineage_dir, sig, graph, vectors)
         else:
             vectors = VectorIndex(
                 model_id=model_id, matrix=_empty_matrix(), rows=[],
@@ -258,6 +279,107 @@ class GraphQuery:
             "embedding_stats": self.vectors.stats,
         }
 
+    # -- agentic primitives ------------------------------------------------
+    # Small, composable, deterministic tools for the graph-retriever subagent
+    # (adrs/drafts/agentic-graph-retriever.md). The agent is the intelligence;
+    # these never reason, never iterate — they just answer one question each.
+
+    def search(self, text: str, *, k: int = 12) -> list[QueryResult]:
+        """Pure semantic search — vector top-k entry points, NO graph expansion.
+        Degrades to keyword search when the embedding half is unavailable."""
+        seeds = (self._vector_seeds(text, k) if self.vectors.available
+                 else self._keyword_seeds(text, k))
+        via = "vector" if self.vectors.available else "keyword"
+        out: list[QueryResult] = []
+        for key, score in seeds:
+            node = self.graph.get(key)
+            if node is not None:
+                out.append(QueryResult(
+                    label=node.label, node_id=node.node_id, title=node.title,
+                    source_file=node.source_file, source_line=node.source_line,
+                    score=score, hop=0, via=via, props=node.props))
+        return _dedup_by_node_id(out)
+
+    def node(self, node_id: str) -> dict | None:
+        """The full content of one node — every graph node sharing this node_id
+        merged, plus the sections of any finding it surfaces. This is the
+        'entire node description' the retriever reads to judge relevance."""
+        keys = self._node_id_keys.get(node_id)
+        if not keys:
+            return None
+        labels, props, sections, src_file, src_line, title = [], {}, [], "", 0, node_id
+        for key in keys:
+            n = self.graph.get(key)
+            if n is None:
+                continue
+            labels.append(n.label)
+            props.update(n.props)
+            src_file = src_file or n.source_file
+            src_line = src_line or n.source_line
+            if n.title:
+                title = n.title
+            for unit_name, unit_text in n.embed_units:
+                sections.append({"section": unit_name, "text": unit_text})
+            # pull in the surfaced findings so one call gives the whole picture
+            for direction, etype, other in self.graph.edges_of(key):
+                if direction == "out" and etype == config.E_SURFACES_FINDING:
+                    fn = self.graph.get(other)
+                    if fn is not None:
+                        for un, ut in fn.embed_units:
+                            sections.append({"section": f"finding:{un}", "text": ut})
+        return {
+            "node_id": node_id, "labels": labels, "title": title,
+            "source_file": src_file, "source_line": src_line, "props": props,
+            "sections": sections,
+            "neighbour_count": len(self.neighbours(node_id)),
+        }
+
+    def neighbours(self, node_id: str) -> list[dict]:
+        """The node's adjacency — one row per edge: direction, edge type, and
+        the neighbour's id / label / title. Lets the agent decide where to walk."""
+        keys = self._node_id_keys.get(node_id) or []
+        seen: set[tuple[str, str, str]] = set()
+        out: list[dict] = []
+        for key in keys:
+            for direction, etype, other_key in self.graph.edges_of(key):
+                other = self.graph.get(other_key)
+                if other is None:
+                    continue
+                sig = (direction, etype, other.node_id)
+                if sig in seen:
+                    continue
+                seen.add(sig)
+                out.append({
+                    "direction": direction, "edge_type": etype,
+                    "node_id": other.node_id, "label": other.label,
+                    "title": other.title,
+                })
+        out.sort(key=lambda r: (r["direction"], r["edge_type"], r["node_id"]))
+        return out
+
+    def subgraph(
+        self, node_id: str, *, depth: int = 2, edge_filter: set[str] | None = None,
+        limit: int = 80,
+    ) -> list[QueryResult]:
+        """A bounded subgraph around a node — the agent picks `depth` and the
+        `edge_filter`. The hop bound + token cap keep the payload bounded."""
+        keys = self._node_id_keys.get(node_id) or []
+        best_hop: dict[str, int] = {}
+        for key in keys:
+            for nbr_key, hop in self.graph.neighbourhood(key, depth, edge_filter).items():
+                if nbr_key not in best_hop or hop < best_hop[nbr_key]:
+                    best_hop[nbr_key] = hop
+        out: list[QueryResult] = []
+        for key, hop in best_hop.items():
+            n = self.graph.get(key)
+            if n is not None:
+                out.append(QueryResult(
+                    label=n.label, node_id=n.node_id, title=n.title,
+                    source_file=n.source_file, source_line=n.source_line,
+                    score=1.0 / (1 + hop), hop=hop, via=f"{hop}-hop", props=n.props))
+        out.sort(key=lambda r: (r.hop, r.label, r.node_id))
+        return _cap(_dedup_by_node_id(out)[:limit])
+
     # -- internals ---------------------------------------------------------
 
     def _vector_seeds(self, text: str, k: int) -> list[tuple[str, float]]:
@@ -314,6 +436,72 @@ def _empty_matrix():
     import numpy as np
 
     return np.empty((0, 0), dtype=np.float32)
+
+
+# -- the pickle build-cache --------------------------------------------------
+# A built (graph, vectors) pair is pickled keyed on a signature of the
+# substrate files. A repeat build with an unchanged substrate unpickles in
+# sub-second time instead of re-parsing ~2,700 files. Ephemeral + git-ignored
+# (it lives under graph/.cache/); a stale or corrupt entry is silently a miss.
+
+_SUBSTRATE_DIRS = (
+    "understanding", "concepts/detail", "implicit-adrs/detail",
+    "refactoring-scopes/detail", "doc-gaps/detail", "test-map/detail",
+    "feature-flows/detail", "feature-reflections/detail",
+)
+
+
+def _build_signature(lineage_dir: Path) -> str:
+    """A content signature of every canonical substrate file — (path, mtime,
+    size). Any edit to any file changes it, correctly invalidating the cache."""
+    parts: list[tuple[str, int, int]] = []
+    for name in ("nodes.jsonl", "edges.jsonl"):
+        p = lineage_dir / name
+        if p.is_file():
+            st = p.stat()
+            parts.append((name, st.st_mtime_ns, st.st_size))
+    for sub in _SUBSTRATE_DIRS:
+        base = lineage_dir / sub
+        if base.is_dir():
+            for f in base.rglob("*"):
+                if f.is_file():
+                    st = f.stat()
+                    parts.append((str(f.relative_to(lineage_dir)), st.st_mtime_ns, st.st_size))
+    return hashlib.sha256(repr(sorted(parts)).encode()).hexdigest()[:16]
+
+
+def _cache_path(lineage_dir: Path) -> Path:
+    return config.graph_dir(lineage_dir) / ".cache" / "built.pkl"
+
+
+def _load_built(lineage_dir: Path, sig: str):
+    """Return the cached (graph, vectors) if the signature still matches."""
+    path = _cache_path(lineage_dir)
+    if not path.is_file():
+        return None
+    try:
+        with open(path, "rb") as fh:
+            data = pickle.load(fh)
+        if data.get("sig") != sig:
+            return None
+        return data["graph"], data["vectors"]
+    except Exception:  # noqa: BLE001 — a corrupt/incompatible cache is just a miss
+        return None
+
+
+def _save_built(lineage_dir: Path, sig: str, graph, vectors) -> None:
+    """Pickle the built (graph, vectors). Best-effort — a failure to cache
+    never fails the build."""
+    path = _cache_path(lineage_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        with open(tmp, "wb") as fh:
+            pickle.dump({"sig": sig, "graph": graph, "vectors": vectors}, fh,
+                        protocol=pickle.HIGHEST_PROTOCOL)
+        tmp.replace(path)
+    except Exception:  # noqa: BLE001
+        tmp.unlink(missing_ok=True)
 
 
 def _matches(props: dict, where: dict | None) -> bool:

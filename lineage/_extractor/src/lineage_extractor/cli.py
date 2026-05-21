@@ -294,6 +294,111 @@ def query_probe_cmd(repo: str, gold: Path | None, as_json: bool, workspace: Path
         sys.exit(1)
 
 
+# --------------------------------------------------------------------------
+# Agentic-retriever primitives (adrs/drafts/agentic-graph-retriever.md).
+# Small, composable, deterministic tools the graph-retriever subagent calls.
+
+
+@main.command("graph-search")
+@click.argument("repo")
+@click.argument("text")
+@click.option("--k", default=12, type=int, help="Number of entry-point nodes.")
+@click.option("--json", "as_json", is_flag=True)
+@click.option("--workspace", type=click.Path(file_okay=False, path_type=Path), default=None)
+def graph_search_cmd(repo: str, text: str, k: int, as_json: bool, workspace: Path | None) -> None:
+    """Pure semantic search — vector top-k entry-point nodes, NO graph expansion.
+
+    The retriever agent's entry-point primitive. Use `query` for the one-shot
+    hybrid (search + traversal + fusion) instead.
+    """
+    from lineage_extractor.graph_query import GraphQuery
+
+    gq = GraphQuery.build(_resolve_lineage_dir(repo, workspace))
+    _print_results(gq.search(text, k=k), as_json)
+
+
+@main.command("graph-node")
+@click.argument("repo")
+@click.argument("node_id")
+@click.option("--json", "as_json", is_flag=True)
+@click.option("--workspace", type=click.Path(file_okay=False, path_type=Path), default=None)
+def graph_node_cmd(repo: str, node_id: str, as_json: bool, workspace: Path | None) -> None:
+    """The full content of one node — labels, props, provenance, every section's
+    text, and the sections of any finding it surfaces. The retriever reads this
+    to judge a candidate's relevance.
+    """
+    from lineage_extractor.graph_query import GraphQuery
+
+    gq = GraphQuery.build(_resolve_lineage_dir(repo, workspace), embeddings=False)
+    detail = gq.node(node_id)
+    if detail is None:
+        raise click.ClickException(f"node not found: {node_id}")
+    if as_json:
+        import json
+
+        click.echo(json.dumps(detail, indent=2, default=str))
+        return
+    click.echo(f"{detail['node_id']}  {detail['labels']}")
+    click.echo(f"  cite: {detail['source_file']}:{detail['source_line']}")
+    click.echo(f"  props: {detail['props']}")
+    click.echo(f"  neighbours: {detail['neighbour_count']}")
+    for sec in detail["sections"]:
+        click.echo(f"  --- {sec['section']} ---")
+        click.echo(f"  {sec['text'][:600]}")
+
+
+@main.command("graph-neighbours")
+@click.argument("repo")
+@click.argument("node_id")
+@click.option("--json", "as_json", is_flag=True)
+@click.option("--workspace", type=click.Path(file_okay=False, path_type=Path), default=None)
+def graph_neighbours_cmd(repo: str, node_id: str, as_json: bool, workspace: Path | None) -> None:
+    """A node's adjacency — one row per edge: direction, edge type, neighbour
+    id / label / title. Lets the retriever decide which edges to walk.
+    """
+    from lineage_extractor.graph_query import GraphQuery
+
+    gq = GraphQuery.build(_resolve_lineage_dir(repo, workspace), embeddings=False)
+    rows = gq.neighbours(node_id)
+    if as_json:
+        import json
+
+        click.echo(json.dumps(rows, indent=2, default=str))
+        return
+    if not rows:
+        click.echo("  (no neighbours / node not found)")
+        return
+    for r in rows:
+        arrow = "->" if r["direction"] == "out" else "<-"
+        click.echo(f"  {arrow} {r['edge_type']:18s} [{r['label']}] {r['node_id'][:64]}")
+    click.echo(f"\n  {len(rows)} edge(s)")
+
+
+@main.command("graph-traverse")
+@click.argument("repo")
+@click.argument("node_id")
+@click.option("--depth", default=2, type=int, help="Traversal depth (agent-chosen).")
+@click.option("--edge", "edges", multiple=True, help="Restrict to these edge types.")
+@click.option("--limit", default=80, type=int)
+@click.option("--json", "as_json", is_flag=True)
+@click.option("--workspace", type=click.Path(file_okay=False, path_type=Path), default=None)
+def graph_traverse_cmd(
+    repo: str, node_id: str, depth: int, edges: tuple[str, ...], limit: int,
+    as_json: bool, workspace: Path | None,
+) -> None:
+    """A bounded subgraph around NODE_ID — the retriever picks the depth and the
+    edge filter when it judges the answer sits in a node's neighbourhood.
+    """
+    from lineage_extractor.graph_query import GraphQuery
+
+    gq = GraphQuery.build(_resolve_lineage_dir(repo, workspace), embeddings=False)
+    results = gq.subgraph(
+        node_id, depth=depth, limit=limit,
+        edge_filter={e.upper() for e in edges} or None,
+    )
+    _print_results(results, as_json)
+
+
 def _resolve_lineage_dir(repo: str, workspace: Path | None) -> Path:
     workspace_root = workspace or _default_workspace_root()
     lineage_dir = workspace_root / "lineage" / repo

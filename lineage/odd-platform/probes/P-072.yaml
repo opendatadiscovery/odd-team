@@ -1,0 +1,92 @@
+---
+probe_id: P-072
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__DataSourcesList.md
+emitted_at: 2026-05-22T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-031
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (bugs_limitations_corner_cases — the totalDataSources mirror
+  at DataSourcesList.tsx:44,50-52): the screen header shows
+  '<N> datasources overall' where N is `totalDataSources`, a LOCAL React-state
+  copy of the Redux slice `total` updated ONLY by a useEffect guarded
+  `if (!query)` (DataSourcesList.tsx:50-52). Hypothesis: while a search is
+  active (query non-empty), the header count stays FROZEN at the pre-search
+  catalog total instead of reflecting the search-scoped total — e.g. in a
+  10-datasource catalog, searching for a prefix matching 2 sources still shows
+  '10 datasources overall' above a 2-card list. Clearing the search box
+  resyncs the header to the slice total.
+---
+arrange:
+  - kind: docker-compose-up
+    note: local odd-platform stack (odd-minimal profile), auth.type=DISABLED
+  - kind: sql
+    query: |
+      -- 10 datasources; exactly 2 share the 'alpha-' name prefix
+      INSERT INTO data_source (id, name, oddrn, description, created_at) VALUES
+        (7201, 'alpha-one',   '//p072-source/datasource/7201', 'probe P-072', NOW()),
+        (7202, 'alpha-two',   '//p072-source/datasource/7202', 'probe P-072', NOW()),
+        (7203, 'beta-three',  '//p072-source/datasource/7203', 'probe P-072', NOW()),
+        (7204, 'beta-four',   '//p072-source/datasource/7204', 'probe P-072', NOW()),
+        (7205, 'gamma-five',  '//p072-source/datasource/7205', 'probe P-072', NOW()),
+        (7206, 'gamma-six',   '//p072-source/datasource/7206', 'probe P-072', NOW()),
+        (7207, 'delta-seven', '//p072-source/datasource/7207', 'probe P-072', NOW()),
+        (7208, 'delta-eight', '//p072-source/datasource/7208', 'probe P-072', NOW()),
+        (7209, 'eps-nine',    '//p072-source/datasource/7209', 'probe P-072', NOW()),
+        (7210, 'eps-ten',     '//p072-source/datasource/7210', 'probe P-072', NOW());
+act:
+  - kind: dom-probe
+    note: Playwright (local, headless) against the running UI
+    steps:
+      - navigate: /management/datasources
+      - wait_for_selector: "#datasources-list"
+      - capture_as: header_count_before_search
+        expression: "numeric value in the 'N datasources overall' header"
+      - capture_as: card_count_before_search
+        expression: "count of datasource cards rendered"
+      # active search — 'alpha-' matches exactly 2
+      - type_into: { selector: "input[placeholder='Search datasource']", text: "alpha-" }
+      - wait: 800ms   # past the 500ms debounce
+      - wait_for_network_idle: true
+      - capture_as: header_count_during_search
+        expression: "numeric value in the 'N datasources overall' header"
+      - capture_as: card_count_during_search
+        expression: "count of datasource cards rendered"
+      # clear the search — header should resync
+      - clear: "input[placeholder='Search datasource']"
+      - wait: 800ms
+      - wait_for_network_idle: true
+      - capture_as: header_count_after_clear
+        expression: "numeric value in the 'N datasources overall' header"
+observe:
+  - kind: rest
+    method: GET
+    path: /api/datasources?page=1&size=30&query=alpha-
+    capture_as: api_search_response
+assert:
+  - "header_count_before_search == 10"
+  - "card_count_before_search == 10"
+  - "card_count_during_search == 2  # search correctly narrows the list"
+  - "api_search_response.pageInfo.total == 2  # the slice DOES receive the correct search-scoped total"
+  - "header_count_during_search == 10  # BUG: header is frozen at the pre-search total, not 2"
+  - "header_count_after_clear == 10  # header resyncs once the query is cleared"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__DataSourcesList
+  retrospectives: [LSN-019, LSN-023]
+realism_caveats: |
+  The defect hypothesis is `header_count_during_search == 10`. If the header
+  instead reads 2, the totalDataSources mirror is being updated during search
+  and the sidecar's bugs_limitations_corner_cases entry is wrong — re-read
+  DataSourcesList.tsx:44,50-52. This probe characterises an operator-confusion
+  defect, not a data-correctness one: the card list itself is correct
+  throughout (the slice total is also correct, as the api_search_response
+  assertion shows); only the header NUMBER lags. The probe does not assert
+  what happens to the count during an in-flight debounce window.

@@ -1,0 +1,148 @@
+---
+probe_id: P-078
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__DataSourceItem.md
+emitted_at: 2026-05-22T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-031
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category B, name-behavior drift): the DataSourceItem card's
+  "Delete" control promises to delete the data source. The backend
+  deleteDataSource is a GUARDED soft-delete that returns HTTP 400
+  (CascadeDeleteException, "Data source cannot be deleted: there are still data
+  entities attached") whenever the source still has at least one non-soft-
+  deleted data_entity child. This probe drives the actual UI to find out what
+  the operator sees on that 400.
+
+  Hypothesis (from the static read of DataSourceItem.tsx:58-74,
+  ConfirmationDialog.tsx:25-35, handleResponseThunk.ts:34-42,
+  errorHandling.tsx:48-68): clicking Delete then confirming on an
+  actively-ingested data source produces (a) a generic red error toast
+  carrying the raw backend message verbatim, and (b) a ConfirmationDialog that
+  STAYS OPEN with its confirm button stuck in the loading state — because
+  ConfirmationDialog.onClose does `.then(() => { setIsLoading(false);
+  handleClose(); }).catch(() => {})`, so on rejection neither handleClose nor
+  setIsLoading(false) ever runs. The happy-path control (delete of a source
+  with no live children) is also exercised to confirm the dialog DOES close
+  and a success toast appears.
+
+  If the hypothesis holds, the DataSource UI surface ships an operator-hostile
+  failure path for the single most likely delete attempt (deleting a source
+  that is still being collected) — a HIGH-severity product defect feeding
+  F-031.
+---
+arrange:
+  - kind: docker-compose-up
+    note: odd-platform + Postgres via the local odd-minimal compose stack
+  - kind: env
+    auth_type: DISABLED
+    note: DISABLED so the headless browser reaches /management/datasources with the open permission set; DATA_SOURCE_DELETE is granted
+  - kind: sql
+    query: |
+      -- Data source A: actively-ingested (has a live data_entity child) -> delete must 400
+      INSERT INTO data_source (id, name, oddrn, description, active, deleted_at)
+      VALUES (7801, 'probe-ds-active', '//probe/p078/active', 'has live child', true, NULL);
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, deleted_at)
+      VALUES (78010, '//probe/p078/active/entity', 'p078_live_entity', 7801, 1, NULL);
+  - kind: sql
+    query: |
+      -- Data source B: empty (no data_entity children) -> delete must 204
+      INSERT INTO data_source (id, name, oddrn, description, active, deleted_at)
+      VALUES (7802, 'probe-ds-empty', '//probe/p078/empty', 'no children', true, NULL);
+act:
+  - kind: dom-probe
+    step: navigate
+    url: /management/datasources
+  - kind: dom-probe
+    step: click
+    target: "DataSourceItem card for 'probe-ds-active' -> Delete button (Button with text 'Delete', startIcon DeleteIcon)"
+  - kind: dom-probe
+    step: click
+    target: "ConfirmationDialog confirm action button (text 'Delete', buttonType 'main-lg')"
+    capture_as: active_delete_clicked
+  - kind: dom-probe
+    step: wait
+    for: "network DELETE /api/datasources/7801 to settle"
+  - kind: dom-probe
+    step: snapshot
+    capture_as: after_active_delete
+    note: capture (1) whether a toast is present and its text, (2) whether the ConfirmationDialog is still in the DOM, (3) whether the confirm button shows a loading/disabled state, (4) whether the 'probe-ds-active' card is still present
+  - kind: dom-probe
+    step: navigate
+    url: /management/datasources
+    note: fresh load to clear any stuck dialog before the happy-path case
+  - kind: dom-probe
+    step: click
+    target: "DataSourceItem card for 'probe-ds-empty' -> Delete button"
+  - kind: dom-probe
+    step: click
+    target: "ConfirmationDialog confirm action button (text 'Delete')"
+  - kind: dom-probe
+    step: wait
+    for: "network DELETE /api/datasources/7802 to settle"
+  - kind: dom-probe
+    step: snapshot
+    capture_as: after_empty_delete
+observe:
+  - kind: capture
+    name: active_delete_http_status
+    from: "network response status of DELETE /api/datasources/7801"
+  - kind: capture
+    name: active_delete_toast_text
+    from: "after_active_delete — text content of any react-hot-toast AppToast element"
+  - kind: capture
+    name: active_delete_dialog_still_open
+    from: "after_active_delete — boolean: is the ConfirmationDialog DialogWrapper still mounted"
+  - kind: capture
+    name: active_delete_confirm_button_loading
+    from: "after_active_delete — boolean: does the confirm button show isLoading (disabled/spinner)"
+  - kind: capture
+    name: active_card_still_present
+    from: "after_active_delete — boolean: is the 'probe-ds-active' DataSourceItem card still in the list"
+  - kind: capture
+    name: empty_delete_http_status
+    from: "network response status of DELETE /api/datasources/7802"
+  - kind: capture
+    name: empty_delete_toast_text
+    from: "after_empty_delete — text content of any AppToast element"
+  - kind: capture
+    name: empty_delete_dialog_still_open
+    from: "after_empty_delete — boolean: is the ConfirmationDialog still mounted"
+  - kind: capture
+    name: empty_card_still_present
+    from: "after_empty_delete — boolean: is the 'probe-ds-empty' card still in the list"
+assert:
+  - "active_delete_http_status == 400  # backend cascade-guard fires"
+  - "active_delete_toast_text contains 'data entities'  # raw backend CascadeDeleteException message reaches the operator"
+  - "active_delete_dialog_still_open == true  # HYPOTHESIS: dialog stays open on rejection (.catch swallows it)"
+  - "active_delete_confirm_button_loading == true  # HYPOTHESIS: isLoading never reset on rejection"
+  - "active_card_still_present == true  # the source was NOT deleted"
+  - "empty_delete_http_status == 204  # happy path"
+  - "empty_delete_toast_text contains 'successfully deleted'  # success toast"
+  - "empty_delete_dialog_still_open == false  # happy path: dialog closes"
+  - "empty_card_still_present == false  # the source was removed from the list"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__DataSourceItem
+    - odd-platform__java__DataSourceController__controller-method__deleteDataSource
+  retrospectives: [LSN-019, LSN-023]
+realism_caveats: |
+  The probe pins the DRIFT and the dialog-recovery hypothesis. If the active-
+  source assertions PASS, the DataSource UI ships an operator-hostile delete
+  failure path (stuck modal + jargon toast) — a HIGH product defect for F-031.
+  If `active_delete_dialog_still_open` or `active_delete_confirm_button_loading`
+  comes back false, the recovery hypothesis is wrong and the ConfirmationDialog
+  / DialogWrapper interaction must be re-read (DialogWrapper was not read this
+  pass — it may reset isLoading on its own).
+  The probe runs under auth.type=DISABLED so the permission gate is open; it
+  does NOT exercise the cross-auth-mode permission matrix (that is P-080). It
+  also does not cover the collector-re-ingest race (an actively-collected
+  source whose children are soft-deleted then re-created mid-delete) — that is
+  a dynamic-timing scenario beyond this static-precondition probe.

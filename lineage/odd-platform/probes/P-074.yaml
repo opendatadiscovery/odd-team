@@ -1,0 +1,100 @@
+---
+probe_id: P-074
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__DataSourceForm.md
+emitted_at: 2026-05-22T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-031
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category F, namespaceName): the DataSourceForm Namespace
+  field is the NamespaceAutocomplete select-or-create combo-box. Confirm the
+  two halves of the affordance end-to-end through the real UI + backend:
+  (a) picking an EXISTING namespace from the dropdown submits that namespace's
+  name unchanged, so the registered data source is attached to the existing
+  namespace_id (no new namespace row); (b) typing a name that matches NO
+  existing namespace surfaces the labelled "Create new custom namespace «X»"
+  suggestion, and selecting it submits the typed string such that POST
+  /api/datasources get-or-creates that namespace and attaches it. Hypothesis:
+  both behave as the labelled UI promises — this is the deliberate affordance
+  of LSN-023, NOT a permission side-door; the probe is the executable evidence
+  superseding the REFACTOR-584 / DOC-GAP-262 "side-door" framing.
+---
+arrange:
+  - kind: docker-compose-up
+    note: odd-platform + Postgres, auth.type=DISABLED for the headless run
+  - kind: sql
+    query: |
+      INSERT INTO namespace (id, name, created_at, updated_at)
+      VALUES (8001, 'p074-existing-namespace', NOW(), NOW())
+  - kind: env
+    note: |
+      Confirm no namespace named 'p074-brand-new-namespace' exists before the
+      run — SELECT count(*) FROM namespace WHERE name = 'p074-brand-new-namespace'
+      must return 0.
+act:
+  - kind: dom-probe
+    note: |
+      Playwright. Navigate to /management/datasources. Click "+ Add datasource".
+      SCENARIO A (select existing): fill Name='p074-ds-existing', ODDRN=
+      '//p074/existing'. Click the Namespace field, type 'p074-existing', wait
+      for the debounced dropdown, click the row 'p074-existing-namespace'
+      (the real option, the one WITHOUT the "Create new" label). Click Save.
+    capture_as: scenario_a_done
+  - kind: dom-probe
+    note: |
+      Re-open "+ Add datasource". SCENARIO B (create new): fill Name=
+      'p074-ds-new', ODDRN='//p074/new'. Click the Namespace field, type
+      'p074-brand-new-namespace' in full, wait for the debounce; assert the
+      dropdown shows an option whose text contains 'Create new' and
+      'custom namespace' and 'p074-brand-new-namespace'. Click that suggestion.
+      Click Save.
+    capture_as: scenario_b_done
+observe:
+  - kind: sql
+    query: |
+      SELECT ds.name AS ds_name, ns.name AS ns_name, ns.id AS ns_id
+      FROM data_source ds JOIN namespace ns ON ds.namespace_id = ns.id
+      WHERE ds.name IN ('p074-ds-existing', 'p074-ds-new')
+      ORDER BY ds.name
+    capture_as: attached_namespaces
+  - kind: sql
+    query: |
+      SELECT count(*) AS n FROM namespace
+      WHERE name = 'p074-brand-new-namespace'
+    capture_as: new_ns_count
+  - kind: sql
+    query: |
+      SELECT count(*) AS n FROM namespace
+      WHERE name = 'p074-existing-namespace'
+    capture_as: existing_ns_count
+assert:
+  - "attached_namespaces[0].ds_name == 'p074-ds-existing'"
+  - "attached_namespaces[0].ns_name == 'p074-existing-namespace'"
+  - "attached_namespaces[0].ns_id == 8001  # existing namespace reused, not re-created"
+  - "existing_ns_count == 1  # scenario A created NO duplicate namespace"
+  - "attached_namespaces[1].ds_name == 'p074-ds-new'"
+  - "attached_namespaces[1].ns_name == 'p074-brand-new-namespace'"
+  - "new_ns_count == 1  # scenario B created the namespace via the labelled 'Create new' affordance"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__DataSourceForm
+    - odd-platform__ts__react-component__component__NamespaceAutocomplete
+    - odd-platform__java__DataSourceController__controller-method__registerDataSource
+  retrospectives: [LSN-023]
+realism_caveats: |
+  The probe runs with auth.type=DISABLED, so it does NOT exercise the
+  NAMESPACE_CREATE-vs-DATA_SOURCE_CREATE permission question — that is P-039's
+  job on the backend side. P-074 verifies only the FUNCTIONAL select-or-create
+  affordance: that the combo-box submits a name, and the backend reuses or
+  creates accordingly. If scenario B's assertion fails (no namespace created),
+  re-read NamespaceAutocomplete.handleOptionChange — the synthetic option's
+  onChange path may not be submitting the typed string. The probe also assumes
+  the seeded 'p074-existing-namespace' is within the combo-box's first 30
+  results for the typed query; with a near-empty namespace table that holds.

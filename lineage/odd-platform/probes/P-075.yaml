@@ -1,0 +1,88 @@
+---
+probe_id: P-075
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__DataSourceForm.md
+emitted_at: 2026-05-22T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-031
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (bugs_limitations_corner_cases — error feedback): when the
+  backend REJECTS a DataSourceForm submit, what does the operator see?
+  DataSourceForm.onSubmit chains `.then(() => clearState())` onto the dispatch
+  with no `.catch` and no rejection check, and handleResponseAsyncThunk catches
+  the error and rejectWithValue's it WITHOUT re-throwing — so the dispatch
+  promise resolves even on a 400, `.then()` runs, and clearState() resets the
+  form. Hypothesis: on a duplicate-ODDRN 400 the modal CLOSES (discarding the
+  values the operator typed), and the ONLY failure feedback is the transient
+  global server-error toast; the modal never stays open with an inline field
+  error. This is the operator-visible defect class — typed work lost, failure
+  signalled only by a toast that disappears.
+---
+arrange:
+  - kind: docker-compose-up
+    note: odd-platform + Postgres, auth.type=DISABLED
+  - kind: sql
+    query: |
+      INSERT INTO token (id, name, value, created_at, updated_at)
+      VALUES (7501, 'p075-token', 'p075tokenvalue0000000000000000000000token', NOW(), NOW())
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, name, oddrn, token_id, created_at, updated_at)
+      VALUES (7501, 'p075-pre-existing-ds', '//p075/collision-oddrn', 7501, NOW(), NOW())
+act:
+  - kind: dom-probe
+    note: |
+      Playwright. Navigate to /management/datasources, click "+ Add datasource".
+      Fill Name='p075-attempt', Description='p075 description text the operator
+      typed', ODDRN='//p075/collision-oddrn' (deliberately COLLIDES with the
+      seeded data source). Click Save. Wait for the dispatch to settle.
+    capture_as: submit_attempt
+  - kind: dom-probe
+    note: |
+      Immediately after the submit settles, capture: (1) is the modal DOM node
+      still present/visible? (2) is a toast with role=alert / error styling
+      visible? (3) re-open "+ Add datasource" — are the Name / Description /
+      ODDRN inputs empty (reset) or do they still hold 'p075-attempt' etc.?
+    capture_as: post_reject_ui
+observe:
+  - kind: dom-state
+    selector: "the DataSourceForm modal dialog"
+    capture_as: modal_visible_after_reject
+  - kind: dom-state
+    selector: "any inline error region inside the modal (DialogWrapper errorText slot)"
+    capture_as: inline_error_present
+  - kind: dom-state
+    selector: "global toast / snackbar with error styling"
+    capture_as: error_toast_shown
+  - kind: sql
+    query: |
+      SELECT count(*) AS n FROM data_source WHERE oddrn = '//p075/collision-oddrn'
+    capture_as: ds_count_for_oddrn
+assert:
+  - "error_toast_shown == true  # the only failure feedback is the global toast"
+  - "inline_error_present == false  # the modal has no inline error region — DataSourceForm passes no errorText"
+  - "modal_visible_after_reject == false  # the modal CLOSED on the rejection, same as on success"
+  - "ds_count_for_oddrn == 1  # no second data source — the backend rejected; only the seeded row exists"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__DataSourceForm
+    - odd-platform__java__DataSourceController__controller-method__registerDataSource
+  retrospectives: [LSN-023]
+realism_caveats: |
+  The probe pins the failure-UX hypothesis via an ODDRN-collision 400. If
+  `modal_visible_after_reject` comes back true, the static reading is wrong —
+  re-check whether the DialogWrapper auto-close effect (handleCloseSubmittedForm
+  keyed on the isLoaded selector) actually fires on a rejected dispatch: on
+  rejection the *creating/updating* status may go to error rather than loaded,
+  in which case the modal stays open BUT still shows no inline error. Either
+  outcome (modal closes, or modal stays but blank) is a UX finding worth a
+  backlog item; the probe distinguishes which. The probe does not assert toast
+  TEXT (server error messages vary); it asserts only that an error-styled toast
+  appeared.

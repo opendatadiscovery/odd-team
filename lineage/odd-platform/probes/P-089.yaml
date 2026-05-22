@@ -1,0 +1,99 @@
+---
+probe_id: P-089
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__NamespaceAutocomplete
+emitted_at: 2026-05-22T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-031
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category B + Category F — does the labelled "Create new
+  custom namespace «X»" affordance behave end-to-end as the UI promises, and
+  is the LSN-023 backend "permission side-door" finding actually a deliberate
+  UX path?). The end-to-end claim under test: typing a brand-new namespace
+  name, selecting the highlighted "Create new custom namespace «X»" row, and
+  saving the data source must (a) succeed, (b) create exactly ONE namespace
+  row named X, (c) stamp the new data_source.namespace_id to that row. This
+  probe is the primary evidence converting the batch-ZB `permission_side_door`
+  framing (REFACTOR-584 / DOC-GAP-262) into a documented intended affordance:
+  it proves the create path is the user-visible, labelled outcome of an
+  explicit UI control, not a hidden side effect of the field name.
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: env
+    description: |
+      auth.type=LOGIN_FORM. Seed a Policy granting DATA_SOURCE_CREATE but NOT
+      NAMESPACE_CREATE; log the Playwright session in as a user bound to it
+      (this is the same least-privilege principal as backend probe P-039).
+  - kind: sql
+    query: "SELECT count(*) AS n FROM namespace WHERE name = 'brand-new-ns-p089'"
+    capture_as: namespace_precount
+act:
+  - kind: dom-probe
+    description: |
+      Playwright. Open "+ Add datasource". Fill Name='probe-ds-p089',
+      ODDRN='//probe/ds/p089'. Focus the Namespace combo-box and type
+      'brand-new-ns-p089' (no such namespace exists). Assert the dropdown
+      shows a row whose text contains 'No result.' and
+      'Create new custom namespace "brand-new-ns-p089"'. Click that row.
+      Assert the input now holds 'brand-new-ns-p089'. Click Save.
+    steps:
+      - "open Add-datasource form"
+      - "fill #name 'probe-ds-p089', fill ODDRN '//probe/ds/p089'"
+      - "page.locator('#namespace-name-search').fill('brand-new-ns-p089')"
+      - "page.waitForTimeout(700)"
+      - "capture the suggestion <li> text -> capture_as suggestion_row_text"
+      - "click the <li> containing 'Create new custom namespace'"
+      - "capture #namespace-name-search input value -> capture_as input_after_select"
+      - "click Save"
+      - "page.waitForResponse(r => r.url().includes('/api/datasources') && r.request().method() === 'POST')"
+    capture_as: register_outcome
+observe:
+  - kind: capture
+    description: "The POST /api/datasources request body and response status."
+    capture_as: post_body_and_status
+  - kind: sql
+    query: "SELECT id, name FROM namespace WHERE name = 'brand-new-ns-p089'"
+    capture_as: namespace_after
+  - kind: sql
+    query: |
+      SELECT ds.id, ds.name, ds.namespace_id, ns.name AS ns_name
+      FROM data_source ds LEFT JOIN namespace ns ON ns.id = ds.namespace_id
+      WHERE ds.oddrn = '//probe/ds/p089'
+    capture_as: datasource_after
+assert:
+  - "suggestion_row_text.includes('No result.')"
+  - "suggestion_row_text.includes('Create new custom namespace')"
+  - "suggestion_row_text.includes('brand-new-ns-p089')"
+  - "input_after_select == 'brand-new-ns-p089'"
+  - "post_body_and_status.body.namespaceName == 'brand-new-ns-p089'"
+  - "post_body_and_status.status == 200"
+  - "namespace_precount.n == 0"
+  - "namespace_after.length == 1  # exactly one namespace created, no duplicate"
+  - "datasource_after.length == 1"
+  - "datasource_after[0].ns_name == 'brand-new-ns-p089'  # data_source linked to the new namespace"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__NamespaceAutocomplete
+    - odd-platform__java__DataSourceController__controller-method__registerDataSource
+  retrospectives: [LSN-023]
+realism_caveats: |
+  The probe deliberately runs as a DATA_SOURCE_CREATE-only principal to make
+  the point that the namespace creation IS reachable for that principal — but
+  the conclusion is NOT "this is a vulnerability". It is the UI-side evidence
+  that this is the intended product behaviour: the user is shown an explicit,
+  labelled "Create new custom namespace" control and chooses it. The
+  LSN-023-correcting finding is that the batch-ZB `permission_side_door`
+  facet was emitted from a backend-only chain that never saw this control.
+  The probe does NOT decide whether namespace creation SHOULD require
+  NAMESPACE_CREATE — that is a product-owner call; it documents that the
+  current product treats select-or-create as one combined affordance gated by
+  the create-the-parent permission (here DATA_SOURCE_CREATE), and that this is
+  the same pattern as OwnerAutocomplete, TermsAutocomplete, etc.

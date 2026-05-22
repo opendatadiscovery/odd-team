@@ -1,0 +1,83 @@
+---
+probe_id: P-070
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__DataSourcesList.md
+emitted_at: 2026-05-22T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-031
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category A — tunables, the size=30 page size at
+  DataSourcesList.tsx:42): with a catalog larger than one page, does the
+  Management -> Datasources screen load the first 30 datasources, then
+  scroll-load the rest 30 at a time, APPENDING (not replacing) earlier rows?
+  Hypothesis: at a catalog of 31, page 1 renders 30 cards and the
+  infinite-scroll loader (a 5-card skeleton) appears at the bottom; scrolling
+  the #datasources-list container to the bottom dispatches
+  GET /api/datasources?page=2&size=30 and the slice setMany-appends the 31st
+  card, giving 31 cards total with no duplicates and no dropped rows. At a
+  catalog of 3000, the same append behaviour holds across many scroll-fetches.
+  The screen renders datasources in data_source.id ASC (creation) order with
+  no client re-sort.
+---
+arrange:
+  - kind: docker-compose-up
+    note: local odd-platform stack (odd-minimal profile — platform + postgres), auth.type=DISABLED
+  - kind: sql
+    query: |
+      -- 31 datasources, ascending creation order
+      INSERT INTO data_source (id, name, oddrn, description, created_at)
+      SELECT i,
+             'p070-ds-' || lpad(i::text, 3, '0'),
+             '//p070-source/datasource/' || i,
+             'probe P-070 datasource ' || i,
+             NOW() - (31 - i) * INTERVAL '1 minute'
+      FROM generate_series(1, 31) AS i;
+act:
+  - kind: dom-probe
+    note: Playwright (local, headless) against the running UI
+    steps:
+      - navigate: /management/datasources
+      - wait_for_selector: "#datasources-list"
+      - capture_as: first_page_card_count
+        expression: "count of [data-testid card] under #datasources-list"
+      - capture_as: first_page_first_name
+        expression: "text of the first card's name heading"
+      - scroll_to_bottom: "#datasources-list"
+      - wait_for_network_idle: true
+      - capture_as: after_scroll_card_count
+        expression: "count of [data-testid card] under #datasources-list"
+      - capture_as: after_scroll_names
+        expression: "ordered list of every card's name heading text"
+observe:
+  - kind: sql
+    query: "SELECT name FROM data_source WHERE name LIKE 'p070-ds-%' ORDER BY id ASC"
+    capture_as: db_names_id_asc
+assert:
+  - "first_page_card_count == 30"
+  - "after_scroll_card_count == 31"
+  - "len(after_scroll_names) == len(set(after_scroll_names))  # no duplicate cards after append"
+  - "after_scroll_names == db_names_id_asc  # rendered order is data_source.id ASC, no client re-sort"
+  - "first_page_first_name == 'p070-ds-001'  # oldest datasource is first, not the newest"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__DataSourcesList
+    - odd-platform__java__DataSourceController__controller-method__getDataSourceList
+  retrospectives: [LSN-019, LSN-023]
+realism_caveats: |
+  The 3000-catalog leg is not asserted here — it would mostly re-prove the
+  31-catalog append behaviour at higher cost; if the maintainer wants the
+  DOM-growth (non-virtualized infinite-scroll) characterisation, that is a
+  performance-class probe, separate from this integration probe. This probe
+  verifies append-not-replace and the id-ASC order; it does not measure
+  scroll-fetch latency. The card name selector must be adjusted to whatever
+  test id / DOM shape DataSourceItem actually exposes (DataSourceItem renders
+  the name in a Typography h4 at DataSourceItem.tsx:39-41 — there is no
+  data-testid today, so the probe-runner may need to select by the h4 or add
+  a test id).

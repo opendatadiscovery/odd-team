@@ -1,0 +1,86 @@
+---
+probe_id: P-076
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__DataSourceForm.md
+emitted_at: 2026-05-22T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-031
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (name_behavior_pairs — "Edit datasource" vs REPLACE-not-MERGE,
+  reached FROM the UI): the updateDataSource backend sidecar's P-043 establishes
+  that the PUT is a full-form REPLACE — an omitted/blank field nulls the column.
+  This probe confirms that hazard is reachable through the actual DataSourceForm
+  edit modal: open "Edit datasource" on a data source that HAS a stored
+  description, change ONLY the Name, leave the Description field exactly as the
+  modal pre-filled it, and — separately — clear the Description field. Hypothesis:
+  the modal submits whatever Description it holds; if the operator clears
+  Description (or it was not pre-filled), Save nulls the stored description.
+  The operator gets no warning that a blank field overwrites. This is the UI
+  half of the data-loss-on-partial-edit class.
+---
+arrange:
+  - kind: docker-compose-up
+    note: odd-platform + Postgres, auth.type=DISABLED
+  - kind: sql
+    query: |
+      INSERT INTO token (id, name, value, created_at, updated_at)
+      VALUES (7601, 'p076-token', 'p076tokenvalue0000000000000000000000token', NOW(), NOW())
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, name, oddrn, description, token_id, created_at, updated_at)
+      VALUES (7601, 'p076-original-name', '//p076/ds', 'p076 original description must survive a name-only edit', 7601, NOW(), NOW())
+act:
+  - kind: dom-probe
+    note: |
+      Playwright. Navigate to /management/datasources. Find the row
+      'p076-original-name' and click its edit control to open the
+      "Edit datasource" modal. Assert the modal title reads "Edit datasource",
+      assert the Description input is PRE-FILLED with 'p076 original description
+      must survive a name-only edit', assert the ODDRN input is DISABLED.
+      SCENARIO A (name-only edit, description untouched): change Name to
+      'p076-renamed-A', leave Description as pre-filled, click Save.
+    capture_as: edit_name_only
+  - kind: dom-probe
+    note: |
+      Re-open the edit modal on the (now renamed) data source.
+      SCENARIO B (description cleared): clear the Description input entirely so
+      it is empty, leave Name as-is, click Save.
+    capture_as: edit_description_cleared
+observe:
+  - kind: sql
+    query: |
+      SELECT name, description FROM data_source WHERE id = 7601
+    capture_as: ds_after_scenario_b
+  - kind: sql
+    query: |
+      SELECT description FROM data_source WHERE id = 7601
+    capture_as: final_description
+assert:
+  - "ds_after_scenario_b.name == 'p076-renamed-A'  # scenario A's rename persisted"
+  - "final_description == null OR final_description == ''  # scenario B: clearing Description in the modal NULLED the stored description — REPLACE-not-MERGE confirmed from the UI"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__DataSourceForm
+    - odd-platform__java__DataSourceController__controller-method__updateDataSource
+  retrospectives: [LSN-023]
+realism_caveats: |
+  Scenario A asserts only the rename — it does NOT assert the description
+  survived, because react-hook-form pre-fills the Description input from the
+  `dataSource` prop, so a name-only edit DOES re-submit the pre-filled
+  description and it survives; the data-loss bite is scenario B (operator
+  actively clears the field) and the latent case where the description was
+  never pre-filled. If a future maintainer wants to also pin "description NOT
+  pre-filled" they must seed a data source whose description column is already
+  null and confirm the modal renders an empty Description input. The probe runs
+  DISABLED-auth so it does not exercise DATA_SOURCE_UPDATE; that gate is the
+  updateDataSource backend sidecar's P-044. If scenario B's assertion fails
+  (description retained), re-check DataSourceMapper.applyToPojo null-handling —
+  a global nullValuePropertyMappingStrategy=IGNORE would convert the PUT from
+  REPLACE to MERGE and invalidate the hypothesis.

@@ -1,0 +1,98 @@
+---
+probe_id: P-073
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__DataSourcesList.md
+emitted_at: 2026-05-22T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-031
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category E — resource boundaries, concurrency): the
+  Management -> Datasources screen can have an in-flight scroll-triggered
+  next-page fetch (fetchNextPage, DataSourcesList.tsx:67-70) AND an in-flight
+  debounced search fetch (handleSearch, DataSourcesList.tsx:54-56) at the same
+  time. The slice keys append-vs-replace on `pageInfo.page` of the RESOLVED
+  payload (datasources.slice.ts:25 — page>1 => setMany append, page 1 =>
+  setAll replace); there is no request-generation guard and no abort of stale
+  fetches. Hypothesis: if a page-2 response of an OLD query resolves AFTER a
+  page-1 response of a NEW query, the slice setMany-appends the old query's
+  page-2 rows onto the new query's page-1 rows — the operator sees a card list
+  mixing two searches. The probe forces the interleave with a network delay
+  and checks whether stale rows leak in.
+---
+arrange:
+  - kind: docker-compose-up
+    note: local odd-platform stack (odd-minimal profile), auth.type=DISABLED
+  - kind: sql
+    query: |
+      -- 60 'old-' datasources (so 'old' has a page 2) + 3 'new-' datasources
+      INSERT INTO data_source (id, name, oddrn, description, created_at)
+      SELECT i,
+             'old-' || lpad(i::text, 3, '0'),
+             '//p073-source/datasource/' || i,
+             'probe P-073 old', NOW()
+      FROM generate_series(1, 60) AS i;
+      INSERT INTO data_source (id, name, oddrn, description, created_at) VALUES
+        (7361, 'new-one',   '//p073-source/datasource/7361', 'probe P-073 new', NOW()),
+        (7362, 'new-two',   '//p073-source/datasource/7362', 'probe P-073 new', NOW()),
+        (7363, 'new-three', '//p073-source/datasource/7363', 'probe P-073 new', NOW());
+act:
+  - kind: dom-probe
+    note: |
+      Playwright (local, headless). Uses Playwright route interception to add a
+      controlled delay to GET /api/datasources?...page=2... so the page-2
+      response of the 'old' search is held until after the 'new' search's
+      page-1 response has been applied.
+    steps:
+      - navigate: /management/datasources
+      - wait_for_selector: "#datasources-list"
+      - intercept_route:
+          url_glob: "**/api/datasources*page=2*"
+          action: "delay 2500ms then continue"
+      # search 'old' -> page 1 of 30 'old-' cards
+      - type_into: { selector: "input[placeholder='Search datasource']", text: "old" }
+      - wait: 800ms
+      - wait_for_network_idle: true
+      # scroll to bottom -> dispatches the (intercepted, delayed) page-2 fetch for 'old'
+      - scroll_to_bottom: "#datasources-list"
+      - wait: 200ms   # let the page-2 request leave, but it is held 2500ms
+      # immediately change the search to 'new' -> page-1 fetch for 'new' (not intercepted, resolves fast)
+      - clear: "input[placeholder='Search datasource']"
+      - type_into: { selector: "input[placeholder='Search datasource']", text: "new" }
+      - wait: 800ms
+      - wait_for_network_idle: true   # 'new' page-1 applied; delayed 'old' page-2 still pending
+      - wait: 2500ms                  # let the delayed 'old' page-2 response resolve and reduce
+      - capture_as: final_card_names
+        expression: "ordered list of every datasource card's name heading text"
+      - capture_as: final_query_box_value
+        expression: "value of input[placeholder='Search datasource']"
+observe:
+  - kind: noop
+    note: assertions run on the captured DOM state
+assert:
+  # the search box still says 'new'; a correct screen shows ONLY 'new-' cards
+  - "final_query_box_value == 'new'"
+  - "all(name.startswith('new-') for name in final_card_names)  # FAILS if stale 'old-' page-2 rows were appended"
+  - "len(final_card_names) == 3  # exactly the 3 'new-' datasources; >3 means stale-row leak"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__DataSourcesList
+  retrospectives: [LSN-017, LSN-023]
+realism_caveats: |
+  This probe deliberately ENGINEERS the race with route interception; whether
+  the interleave occurs under normal operator timing without an artificial
+  2500ms delay is a separate (harder) question this probe does NOT answer — it
+  proves the race is REACHABLE and shows the consequence, not its real-world
+  frequency. If the assertions PASS (only 'new-' cards), the slice or thunk has
+  a stale-response guard the file-analyser missed during the static trace —
+  re-read datasources.slice.ts:19-31 and handleResponseThunk.ts. The probe
+  assumes setMany-on-page>1 keys off the resolved payload's page; if a
+  request-generation token exists this whole class is moot. The card-name DOM
+  selector must match whatever DataSourceItem exposes (today an h4, no
+  data-testid — see P-070's caveat).

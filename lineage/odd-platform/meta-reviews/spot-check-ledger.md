@@ -30,3 +30,7 @@ Every target the meta-review's spot-checks have covered, across all runs. The `m
 | 2026-05-22 | DataEntityRunController.getRuns — per-entity test/job runs list | capability |
 | 2026-05-22 | V0_0_79__data_deprecation.sql — data-entity status migration / activity-row purge | negative-space |
 | 2026-05-22 | AlertActionResolverImpl.toHalt — per-entity alert-halting suppression semantics | boundary |
+| 2026-05-22 | SearchController.getSearchResults / SearchServiceImpl.getSearchResults — search-result pagination + my-objects empty-result branch | capability |
+| 2026-05-22 | CollectorController.registerCollector / CollectorServiceImpl.create — namespace_name get-or-create on collector registration | random-walk |
+| 2026-05-22 | AlertController.changeAlertStatus — legal alert-status value set (AlertStatusEnum) | boundary |
+| 2026-05-22 | DataEntityRunController.getRuns — per-entity run history (re-check of prior MISSED-SILENT) | negative-space |

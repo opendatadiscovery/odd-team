@@ -1,0 +1,93 @@
+gap_id: TEST-GAP-905
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DataSourceController controller-method:deleteDataSource"
+pillars_affected: [P-08]
+surfaced_by:
+  - "odd-platform__java__DataSourceController__controller-method__deleteDataSource.md:tests_coverage_semantic.uncovered_behaviours.[Orphan-token: after a successful delete, the token row referenced by the (now soft-deleted) data_source still exists, unreferenced by any live data_source]"
+  - "odd-platform__java__DataSourceController__controller-method__deleteDataSource.md:tests_coverage_semantic.uncovered_behaviours.[FTS not cleared: after a successful delete, the search_entrypoint vector row for the data source is not removed]"
+behaviour: |-
+  **MEDIUM — `DELETE /api/datasources/{id}` is an INCOMPLETE cleanup: a successful
+  soft-delete leaves the `token` row ORPHANED (the `token` table has no `deleted_at` and no
+  GC path — every register/delete cycle leaks one plaintext-secret row) AND leaves the FTS
+  `search_entrypoint` vector UNCLEARED (unlike the `update` path). Neither leak is tested.**
+  Method-level primary source from the batch-ZB `deleteDataSource` controller-method
+  sidecar:
+
+  - **Orphan token**: `data_source.token_id` is an FK to the `token` table
+    (V0_0_28__add_token.sql:13). The soft-delete sets only `data_source.deleted_at`
+    (ReactiveAbstractSoftDeleteCRUDRepository.java:106-110); it never deletes the `token`
+    row. The `token` table has NO `deleted_at` column (V0_0_28__add_token.sql:1-9) so the
+    token cannot even be soft-deleted, and NO code path GCs orphan tokens (no scheduled
+    job, no Flyway migration — Grep-confirmed). Each register-then-delete cycle leaks one
+    `token` row. The orphaned row is a stale 40-char plaintext secret at rest (`token.value
+    varchar(40)`) — a DB-level reader sees a credential that no longer maps to any live
+    data source.
+  - **FTS uncleared**: `DataSourceServiceImpl.delete` (lines 85-96) calls NO
+    `searchEntrypointRepository` method — unlike `update` (which calls
+    `updateSearchVectors` at lines 127-136). Whether a soft-deleted data source still
+    appears in catalog search depends entirely on whether the search query JOINs
+    `data_source` with a `deleted_at IS NULL` predicate; if it does not, the soft-deleted
+    source remains searchable.
+
+  **Why MEDIUM**: neither leak is an active security breach or a correctness failure on the
+  request path — they are slow accumulation hazards (unbounded `token`-table growth; stale
+  search rows; stale plaintext secrets at rest). But `deleteDataSource` is a priority-1
+  data-mutation node and the `delete` endpoint + `DataSourceServiceImpl.delete` are entirely
+  uncovered (Glob-verified — no `DataSourceControllerTest`, no `DataSourceServiceImplTest`).
+  This is the SAME orphan-token pattern batch W confirmed for Collector delete
+  (TEST-GAP-675). A test would pin the current (leaking) state and surface the cleanup gap
+  for triage.
+
+  **Test gap shape**: a `@SpringBootTest` integration test that: (1) registers a data
+  source (with no children), records its `token_id`; (2) `DELETE /api/datasources/{id}` →
+  204; (3) asserts `SELECT COUNT(*) FROM token WHERE id = <token_id>` returns 1 — the
+  token row PERSISTS, now unreferenced by any live data source (PIN the orphan-token leak);
+  (4) asserts the `search_entrypoint` row for the data source still exists (PIN the
+  uncleared-FTS leak). Pinned by probes P-046 (orphan token) and P-048 (FTS uncleared).
+  When a cleanup fix lands (a token-delete on data-source delete, an FTS-clear), tests #3
+  and #4 invert.
+test_class: missing-edge-case
+criticality_rationale: |-
+  MEDIUM per Rule 3: the deleteDataSource sidecar rates BOTH the orphan-token and the
+  FTS-uncleared uncovered behaviours MEDIUM, and the node's bugs_limitations_corner_cases
+  rates the orphan-token finding MEDIUM (unbounded table growth + stale plaintext secret at
+  rest) and the FTS-uncleared finding MEDIUM (potential stale search result). Neither is a
+  CRITICAL/HIGH security_aggregate weakness — they are resource-accumulation +
+  stale-secret-at-rest hazards, not active breaches. pillars_affected len 1 (P-08) — no
+  cross-pillar bump. Consistent with the MEDIUM rating of the parallel collector
+  orphan-token gap (TEST-GAP-675).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DataSourceDeleteOrphanCleanupTest.java"
+  name: "deleteDataSource_leavesOrphanedTokenRowAndUnclearedFtsVector_pinsIncompleteCleanup"
+evidence:
+  - "deleteDataSource sidecar says (tests_coverage_semantic.uncovered_behaviours): 'Orphan-token: after a successful delete, the token row referenced by the (now soft-deleted) data_source still exists, unreferenced by any live data_source. test_class: integration; criticality: MEDIUM; note: Pinned by P-046. Unbounded growth over register/delete cycles.'"
+  - "deleteDataSource sidecar says (tests_coverage_semantic.uncovered_behaviours): 'FTS not cleared: after a successful delete, the search_entrypoint vector row for the data source is not removed (delete calls no searchEntrypointRepository method). test_class: integration; criticality: MEDIUM; note: Pinned by P-048.'"
+  - "deleteDataSource sidecar says (bugs_limitations_corner_cases): 'The token row is orphaned on every data source delete. The soft-delete sets only data_source.deleted_at; it never deletes the token row, and the token table has NO deleted_at column so it cannot even be soft-deleted. No code path GCs orphan tokens. Each register-then-delete cycle leaks one token row. This is the SAME orphan-token pattern batch W confirmed for Collector delete.' severity MEDIUM"
+  - "deleteDataSource sidecar says (bugs_limitations_corner_cases): 'The FTS search_entrypoint vector is not cleared on delete. DataSourceServiceImpl.delete calls no searchEntrypointRepository method — unlike update.' severity MEDIUM"
+  - "deleteDataSource sidecar says (security.data_exposure): 'The orphan token row left behind (P-046) is a stale plaintext secret at rest: a 40-char token value persists in the token table unreferenced after the data source is deleted.'"
+  - "Verified at primary source via the sidecar: DataSourceServiceImpl.java:85-96 (no searchEntrypointRepository call) + ReactiveAbstractSoftDeleteCRUDRepository.java:106-110 (delete touches only data_source.deleted_at) + V0_0_28__add_token.sql:1-13 (token FK + no deleted_at)"
+  - "Verified this batch via Glob: no DataSourceControllerTest.java / DataSourceServiceImplTest.java exists under odd-platform-api/src/test"
+cross_references:
+  - "TEST-GAP-675 (batch W — soft-deleted collector leaves an orphaned TOKEN row with plaintext value persisting indefinitely; TEST-GAP-905 is the structural parallel for the DATA-SOURCE delete path — same token-table-has-no-deleted_at root, distinct entity)"
+  - "TEST-GAP-753 (batch W — DataSource cascade-delete block/allow; DISTINCT — that gap pins the cascade-GUARD, TEST-GAP-905 pins the post-delete CLEANUP incompleteness. STRENGTHENED this batch with the deleteDataSource method node)"
+  - "TEST-GAP-902 (this batch — registerDataSource transaction-rollback; the SAME orphan-token accumulation hazard — TEST-GAP-902 pins that a FAILED register adds no orphan, TEST-GAP-905 pins that a SUCCESSFUL delete DOES leave one)"
+  - "probe P-046 (lineage/odd-platform/probes/P-046.yaml — orphan-token probe); probe P-048 (lineage/odd-platform/probes/P-048.yaml — FTS-uncleared probe)"
+  - "REFACTOR-NNN candidate: add a token-row cleanup + search_entrypoint clear to DataSourceServiceImpl.delete, OR a scheduled housekeeping job that GCs orphaned token rows"
+related_features: [F-008]
+related_pillar_features: ["P-08:F-NN-Datasources-tab"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `DataSourceDeleteOrphanCleanupTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Three test methods:
+  1. `deleteDataSource_leavesOrphanedTokenRow_pinsTokenLeak` — register a data source with no children, capture `data_source.token_id` via raw DB query; DELETE /api/datasources/{id} (assert 204); assert `SELECT COUNT(*) FROM token WHERE id = <token_id>` returns 1 — the token row persists, unreferenced by any live data source. PIN the orphan-token leak.
+  2. `deleteDataSource_doesNotClearSearchEntrypointVector_pinsFtsLeak` — register a data source; assert a `search_entrypoint` row exists for it; DELETE; assert the `search_entrypoint` row still exists. PIN the uncleared-FTS leak.
+  3. `registerThenDeleteCycle_repeated_accumulatesOrphanTokens_pinsUnboundedGrowth` — record `SELECT COUNT(*) FROM token`; run register+delete 5 times; assert the token count grew by 5. PIN the unbounded accumulation.
+
+  These tests PIN the current (leaking) cleanup behaviour. Pair with a REFACTOR follow-up:
+  add token-row cleanup + search_entrypoint clear to `DataSourceServiceImpl.delete`, OR a
+  scheduled housekeeping job. When the fix lands, tests #1-#3 invert.
+batch: 2026-05-21-ZB
+feature_id: F-008

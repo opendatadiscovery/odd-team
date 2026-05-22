@@ -1,0 +1,84 @@
+---
+probe_id: P-041
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DataSourceController__controller-method__registerDataSource.md
+emitted_at: 2026-05-21T00:00:00Z
+status: pending-stress-protocol
+feature_id: null   # P-08:F-NN-Datasources-tab
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category E — resource boundary): DataSourceServiceImpl.create
+  is annotated @ReactiveTransactional (line 52). Its chain does THREE writes:
+  (1) tokenRepository.create — INSERT INTO token (line 54);
+  (2) namespaceService.getOrCreate — may INSERT INTO namespace (line 57);
+  (3) createDataSource -> dataSourceRepository.create — INSERT INTO data_source
+  (line 59/123), which can fail on ODDRN unique-constraint violation (SQLSTATE
+  23505). Hypothesis: when step (3) fails because the ODDRN already belongs to a
+  live data_source, the @ReactiveTransactional boundary rolls back the token row
+  AND the namespace row created in steps (1) and (2) — i.e. a failed
+  registration leaves NO orphan token and NO orphan namespace.
+---
+arrange:
+  - kind: docker-compose-up
+    profile: odd-minimal
+  - kind: env
+    note: auth.type=DISABLED.
+  - kind: sql
+    query: |
+      -- pre-seed a LIVE data_source occupying the ODDRN the probe will collide with
+      INSERT INTO namespace (id, name) VALUES (9041, 'p041-existing-namespace');
+      INSERT INTO token (id, value, created_at, updated_at)
+      VALUES (9041, 'p041existingtokenvalue000000000000000000', NOW(), NOW());
+      INSERT INTO data_source (id, oddrn, name, namespace_id, token_id, created_at)
+      VALUES (9041, '//probe/p041/collision', 'p041-incumbent', 9041, 9041, NOW());
+  - kind: sql
+    query: |
+      SELECT count(*) AS token_pre   FROM token;
+      SELECT count(*) AS ns_pre      FROM namespace WHERE name = 'p041-fresh-namespace';
+act:
+  - kind: rest
+    method: POST
+    path: /api/datasources
+    body: |
+      {
+        "name": "p041-collision-probe",
+        "oddrn": "//probe/p041/collision",
+        "namespace_name": "p041-fresh-namespace",
+        "description": "P-041 transaction-rollback probe — ODDRN collides"
+      }
+    capture_as: register_response
+observe:
+  - kind: http-status
+    of: register_response
+    capture_as: status_code
+  - kind: sql
+    query: "SELECT count(*) AS token_post FROM token"
+    capture_as: token_post
+  - kind: sql
+    query: |
+      SELECT count(*) AS ns_post FROM namespace WHERE name = 'p041-fresh-namespace'
+    capture_as: ns_post
+assert:
+  - "status_code == 400  # UniqueConstraintException -> HTTP 400 via ControllerAdvice"
+  - "token_post.token_post == 1  # only the pre-seeded token survives — the new token row was rolled back"
+  - "ns_post.ns_post == 0        # the namespace getOrCreate'd before the failure was rolled back"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DataSourceController__controller-method__registerDataSource
+    - odd-platform__java__service__service__DataSourceIngestionServiceImpl
+  retrospectives: [LSN-001]
+realism_caveats: |
+  The probe verifies the @ReactiveTransactional boundary spans all three INSERTs.
+  If token_post > 1 or ns_post > 0, the transaction does NOT enclose the token /
+  namespace writes (they would be committed by a nested or separate
+  R2DBC connection) — an orphan-row leak on every failed registration. The probe
+  collides on ODDRN to FORCE the failure deterministically; it does not exercise
+  the namespace-getOrCreate-fails or token-insert-fails ordering. If those need
+  coverage, a sibling probe with a fault-injected namespace repository is
+  required.

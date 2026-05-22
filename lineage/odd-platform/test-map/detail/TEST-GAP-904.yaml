@@ -1,0 +1,90 @@
+gap_id: TEST-GAP-904
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DataSourceController controller-method:getDataSourceList"
+pillars_affected: [P-08]
+surfaced_by:
+  - "odd-platform__java__DataSourceController__controller-method__getDataSourceList.md:tests_coverage_semantic.uncovered_behaviours.[Happy-path list: GET /api/datasources?page=1&size=10 returns 200 with a DataSourceList]"
+  - "odd-platform__java__DataSourceController__controller-method__getDataSourceList.md:tests_coverage_semantic.uncovered_behaviours.[RBAC: a user with NO MANAGEMENT permission CAN still list all datasources (GET is not in SECURITY_RULES)]"
+  - "odd-platform__java__DataSourceController__controller-method__getDataSourceList.md:tests_coverage_semantic.uncovered_behaviours.[List ordering is data_source.id ASC (creation order)]"
+behaviour: |-
+  **MEDIUM — `GET /api/datasources` has ZERO HTTP-tier coverage: the happy-path list
+  response, the read-collaborative no-permission posture, and the `data_source.id ASC`
+  ordering contract are all unverified at the endpoint.** Method-level primary source from
+  the batch-ZB `getDataSourceList` controller-method sidecar:
+
+  - **Happy-path** — `GET /api/datasources?page=1&size=10` returns HTTP 200 with a
+    `DataSourceList` (`items: List<DataSource>` + `page_info{total, has_next}`); each item
+    carries `id / name / oddrn / namespace / token`. The OpenAPI contract declares only the
+    `200` response (openapi.yaml:434-440). No test exercises this.
+  - **Read-collaborative posture** — `GET /api/datasources` has NO entry in
+    `SecurityConstants.SECURITY_RULES` (Grep-confirmed — SecurityConstants.java:116-126 has
+    only POST/PUT/DELETE rules for `/api/datasources*`). ANY authenticated user lists the
+    entire catalog (ids, ODDRNs, namespaces, masked tokens) with NO MANAGEMENT permission
+    and NO owner scope. This is an intentional posture (sidecar `implicit_adrs[1]`) but it
+    is untested — there is no parametrized auth-mode controller security test in the repo.
+  - **Ordering** — `listDto` calls the 3-arg `jooqQueryHelper.paginate` which delegates to
+    the default overload `ORDER BY data_source.id ASC` (ReactiveDataSourceRepositoryImpl.java:62
+    + JooqQueryHelper.java:42-45). The list is creation-order (ascending PK); the OpenAPI
+    spec states NO ordering. A maintainer switching to a name-ordered or recency-ordered
+    `paginate` overload changes operator-visible behaviour with no contract change and no
+    test to catch it.
+
+  **Why MEDIUM**: this is the HTTP-floor regression net for the read endpoint of the
+  Datasources management surface — no security or correctness defect, but the endpoint is
+  entirely unguarded against a contract-altering refactor. The only protection underneath
+  is the repository-tier `DataSourceRepositoryImplTest.listDtoTest`, which exercises the
+  SQL but NOT the HTTP endpoint, NOT the auth posture, and NOT the operator-visible
+  ordering. The id-ASC ordering is also a documented-feature gap (the management doc page
+  is silent on it — see `docs_link_semantic.doc_drift_findings`).
+
+  **Test gap shape**: a `@SpringBootTest` / `WebTestClient` integration test that: (1)
+  registers ≥3 data sources, `GET /api/datasources?page=1&size=10` → asserts 200, a
+  `DataSourceList` with the expected `items` and `page_info`; (2) asserts the `items` are
+  ordered by ascending `id` (creation order) — NOT name-alphabetical, NOT recency; (3)
+  authenticates as a user holding NO `DATA_SOURCE_*` / MANAGEMENT permission and `GET
+  /api/datasources` → asserts HTTP 200 with the FULL list (pinning the read-collaborative
+  posture — the GET is intentionally not permission-gated). Pinned by probes P-034
+  (ordering) and the happy-path floor.
+test_class: missing-integration
+criticality_rationale: |-
+  MEDIUM per Rule 3: the getDataSourceList sidecar rates the happy-path uncovered behaviour
+  HIGH and the no-permission RBAC + ordering behaviours MEDIUM. The aggregate of this
+  HTTP-floor entry is MEDIUM: it carries no security weakness (the no-permission posture is
+  an intentional, documented design, not a vulnerability — the masked-token leak surface is
+  separately tracked at TEST-GAP-901 as HIGH) and no correctness defect; it is a
+  regression-net gap. The node has no concept-level security_aggregate weakness driving it
+  higher. pillars_affected len 1 (P-08) — no cross-pillar bump.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/DataSourceRepositoryImplTest.java (VERIFIED present this batch — listDtoTest at line 86, listDtoNameQueryTest at line 151 exercise listDto at the REPOSITORY tier; NEITHER exercises the HTTP endpoint, the auth posture, or asserts the operator-visible id-ASC ordering)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DataSourceListEndpointTest.java"
+  name: "getDataSourceList_returns200OrderedByIdAsc_andSucceedsForUserWithNoManagementPermission_pinsReadCollaborativePosture"
+evidence:
+  - "getDataSourceList sidecar says (tests_coverage_semantic.uncovered_behaviours): 'Happy-path list: GET /api/datasources?page=1&size=10 returns 200 with a DataSourceList; items carry id/name/oddrn/namespace/token. test_class: integration; criticality: HIGH; note: No DataSourceControllerTest exists — the entire HTTP surface of this endpoint is uncovered.'"
+  - "getDataSourceList sidecar says (tests_coverage_semantic.uncovered_behaviours): 'RBAC: a user with NO MANAGEMENT permission CAN still list all datasources (GET is not in SECURITY_RULES). test_class: security; criticality: MEDIUM; note: The read-collaborative posture under test — no parametrized auth-mode controller security test exists in the repo.'"
+  - "getDataSourceList sidecar says (tests_coverage_semantic.uncovered_behaviours): 'List ordering is data_source.id ASC (creation order), NOT name-alphabetical, NOT recency. test_class: integration; criticality: MEDIUM; note: Pinned by probe P-034 — no test asserts the ordering today.'"
+  - "getDataSourceList sidecar says (implicit_adrs[1]): 'The Data Sources list is intentionally NOT permission-gated — read-collaborative posture. evidence: SecurityConstants.java:116-126 (Grep-confirmed: only POST/PUT/DELETE rules for /api/datasources*; the GET has no SecurityRule).' confidence HIGH"
+  - "Verified at primary source via the sidecar: DataSourceController.java:21-28 + ReactiveDataSourceRepositoryImpl.java:62 + JooqQueryHelper.java:42-45 (ORDER BY data_source.id ASC) + SecurityConstants.java:116-126 (Grep-confirmed GET absent)"
+  - "Verified this batch via Glob: DataSourceRepositoryImplTest.java EXISTS (repository-tier); no DataSourceControllerTest.java exists"
+cross_references:
+  - "TEST-GAP-901 (this batch — getDataSourceList token-masking; the SECURITY-class sibling on the same endpoint — TEST-GAP-904 is the HTTP-floor + ordering + read-posture coverage, TEST-GAP-901 is the masked-token regression guard)"
+  - "TEST-GAP-909 (this batch — the DataSourceController HTTP-floor META anchor; this gap is one of its children)"
+  - "probe P-034 (lineage/odd-platform/probes/P-034.yaml — the id-ASC ordering probe)"
+  - "DOC-NNN candidate: the management doc page is silent on the list ordering (id-ASC creation order) and on pagination/size limits — surface the ordering so operators are not surprised newly-registered sources appear LAST"
+related_features: [F-008]
+related_pillar_features: ["P-08:F-NN-Datasources-tab"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `DataSourceListEndpointTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Three test methods:
+  1. `getDataSourceList_happyPath_returns200WithDataSourceList` — register 3 data sources; GET /api/datasources?page=1&size=10; assert HTTP 200, a DataSourceList body with 3 items each carrying id/name/oddrn/namespace/token, and page_info{total=3, has_next=false}.
+  2. `getDataSourceList_orderedByIdAsc_pinsCreationOrder` — register data sources with names that are NOT in ascending alphabetical order relative to their insertion order; GET /api/datasources; assert the items[] are ordered by ascending `id`, NOT by name. PIN the id-ASC ordering (probe P-034).
+  3. `getDataSourceList_userWithoutManagementPermission_stillListsFullCatalog_pinsReadCollaborativePosture` — authenticate as a user whose Policy grants NO DATA_SOURCE_* / MANAGEMENT permission; GET /api/datasources; assert HTTP 200 with the full list. PIN that the GET is intentionally not permission-gated.
+
+  Pair with a DOC-NNN follow-up: the management doc page should state the list is ordered
+  by creation (id-ASC) so operators are not surprised that newly-registered sources appear
+  at the bottom.
+batch: 2026-05-21-ZB
+feature_id: F-008

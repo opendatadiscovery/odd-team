@@ -2228,3 +2228,66 @@ The tag surface was partially enriched — `TagController` (class), `TagServiceI
 - **Pre-existing broken YAML** — `feature-reflections/detail/F-021.yaml`, `test-map/detail/TEST-GAP-363.yaml`, `TEST-GAP-687.yaml` + 5 concept files remain `yaml_safe_fix`-unfixable (backed up). Not a regression from this batch.
 - **Probe-id collision** — 7 parallel analysers raced on `P-NNN` allocation; the openapi-tag analyser's placeholder was renumbered to P-031, and P-027's broken YAML was auto-fixed. The known fix (analysers reserve ids up-front) is already logged from the VAL-LSN-019 batch.
 
+
+## Batch 2026-05-21-ZB — DataSource controller method surface (5/5) — method-level deepening of the batch-W class sidecar
+
+- **Date**: 2026-05-21
+- **Branch**: `feature/ontology-batch-2026-05-21` (fresh branch off `main` — the 2026-05-19 sprint branch `feature/ontology-finalize-2026-05-20` was merged to main via PR 145 with its theme queue fully drained; ZB is a maintainer-directed post-merge continuation batch)
+- **Substrate**: 154 prior sidecars + 5 new = **159 total** (40.3% direct); 0 deferred, 0 file-analyser failures
+- **Theme**: DataSourceController endpoint surface — the 5 controller-method nodes (`getDataSourceList` / `registerDataSource` / `updateDataSource` / `deleteDataSource` / `regenerateDataSourceToken`) left un-enriched when batch W enriched only the controller CLASS node. Established class→methods deepening pattern (cf. batch G DataEntity, batch L DataEntityController, batch X-TAGGING).
+- **Driver**: maintainer ran `/next-batch` manually; the skill's queue was empty + its branch merged, so the batch was bootstrapped on a fresh branch + theme per the maintainer's "queue a new batch" choice.
+
+### Sidecars added (5)
+
+| Sidecar | Headline finding |
+|---|---|
+| `getDataSourceList` | `GET /api/datasources` has **NO SecurityRule** — any authenticated user lists the full data-source catalog. The list projection carries collector token material, masked API-side via `TokenMapper.mapValue` gated by `TokenDto.showToken` — `false` on the list path (`ReactiveDataSourceRepositoryImpl.java:167`), `true` on register/regenerate. A one-line flip at :167 would leak every plaintext token to every authenticated user. 30 stress questions; probes P-034..P-037. |
+| `registerDataSource` | `POST /api/datasources` gated only by `DATA_SOURCE_CREATE`, yet the `namespace_name` field silently calls `namespaceService.getOrCreate` (`NamespaceServiceImpl.java:37-40`) — a least-privilege operator mints namespace directory rows **bypassing `NAMESPACE_CREATE`** (batch-W flag PRIMARY-SOURCE confirmed). Confirmed 200-not-201 status drift (`DataSourceController.java:35` vs `openapi.yaml:454`); plaintext token in the create response. 30 stress questions; probes P-038..P-041. |
+| `updateDataSource` | Does NOT share batch-I's silent-UPDATE-on-missing pattern — `getDto(id).switchIfEmpty(NotFoundException)` + `getDto` filters `deleted_at IS NULL` → clean 404 on missing/soft-deleted. BUT a full-form **REPLACE-not-MERGE**: `MapperConfig` sets no `nullValuePropertyMappingStrategy`, so MapStruct's `SET_TO_NULL` default nulls any omitted field — editing only `name` silently wipes `description` + detaches the namespace. `DataSourceUpdateFormData` has exactly 3 fields (corrects the class sidecar's stale `connectionUrl` claim — that column was dropped by V0_0_71). 25 stress questions; probes P-042..P-044. |
+| `deleteDataSource` | Guarded **SOFT-delete** that drifts from its name — BLOCKS with HTTP 400 if any live `data_entity` child exists (an actively-ingested source is effectively undeletable; collector re-ingest re-creates children; undocumented). On success it orphans the `token` row (no `deleted_at`, no GC — same pattern batch W confirmed for Collector delete) and leaves the FTS `search_entrypoint` vector uncleared. 16 stress questions; probes P-046..P-048. |
+| `regenerateDataSourceToken` | **CROSS-BATCH CORRECTION** — confirmed primary-source MISSING `@ReactiveTransactional` (`DataSourceServiceImpl.java:99`, vs annotated siblings 52/69/86) but this is a LOW code-smell, NOT the atomicity bug batch-W's TEST-GAP-749 framed it as: the only DB write is a single atomic `UPDATE` and token generation is in-memory — no partial-write window. The genuine HIGH findings: destructive in-place rotation with no grace period (collector locked out the instant the UPDATE commits), plaintext token returned + stored unhashed, `RandomStringUtils` not `SecureRandom`, no audit log, `auth.type=DISABLED` bypass = credential-rotation-hijack. 22 stress questions; probes P-050..P-052. |
+
+### Reducer diffs (all 5 ran; rev-7.1 graph-search dedup UNAVAILABLE — see Follow-ups #1 — all 5 fell back to grep dedup per `registry-search-spawn.md` §Fallback)
+
+| Reducer | Before → After | Delta |
+|---|---|---|
+| concept-merger | 421 → **427 concepts** | +6 net-new (1 entity / 2 invariants / 3 operations) + 7 strengthened. New invariants: `datasource-update-replace-not-merge-mapstruct-set-to-null`, `datasource-delete-incomplete-cleanup-orphan-token-uncleared-fts`. `collector-token` strengthened — the DataSource token IS A Collector Token; API-side-vs-UI-side redaction ambiguity RESOLVED (API-side). |
+| adr-archaeologist (ADRs) | **0 new ADR candidates** | 9 candidates failed the 3-question wisdom test → reclassified to scopes. 2 existing ADRs strengthened (ADR-CANDIDATE-017 token model, ADR-CANDIDATE-068 soft-delete taxonomy). |
+| adr-archaeologist (scopes) | 532 → **543 scopes** | +11 (REFACTOR-581..591: 1 HIGH / 6 MEDIUM / 4 LOW) + 8 strengthened. HIGH REFACTOR-581: `deleteDataSource` orphans the plaintext-credential `token` row. |
+| doc-gap-finder | 266 → **268 findings** | +2 (DOC-GAP-261 delete-semantics undocumented HIGH; DOC-GAP-262 namespace-bypass undocumented MEDIUM) + 3 strengthened (034 token-rotation, 074 201-vs-200, 022 unbounded `size`). 3 live URLs WebFetch-verified status 200. |
+| test-coverage-mapper | 894 → **906 test-gaps** | +12 (TEST-GAP-898..909: 2 CRITICAL / 5 HIGH / 5 MEDIUM) + 7 strengthened (advisory — see Follow-ups #2). 0 sidecar-quality findings — all 5 sidecars' test-file claims Glob+Grep-verified. CRITICAL 898 (token-rotation binary-cutover), 899 (DISABLED-bypass credential-rotation-hijack). |
+| feature-flow-builder | 30 → **31 features** | +1 — **F-031 / P-08:F-007 Data Source Lifecycle Management** (the 4th P-08 UI-admin lifecycle sibling, alongside F-019 Owner / F-020 Collector / F-028 Namespace). 19 drift facets; all 4 test-matrix cells GAP. F-031 is DISJOINT from F-008 (S2S `/ingestion/datasources`). |
+
+### Coverage state after batch ZB
+
+| Dimension | Count | of 395 |
+|---|---|---|
+| Direct enrichment (nodes with own sidecar) | 159 | **40.3%** (was 39.0%) |
+| Effective coverage (touched by any feature-flow OR own sidecar) | 313 | **79.2%** (was 77.5%) |
+| Features discovered | 31 | +1 (F-031) |
+| Stress questions total | 379 | 335 STATIC-INFERRED / 32 PROBE-NEEDED / 12 REFERENCE |
+| Stress verified % | 88.4% | (was 91.5% — the 5 ZB sidecars honestly emitted 20 new PROBE-NEEDED skeletons; not a regression) |
+| Test-gaps | 906 | 151 CRITICAL / 294 HIGH / 338 MEDIUM / 123 LOW |
+
+### Cross-batch triangulation deltas
+
+- **DataSourceController is now fully covered** at class (batch W) + 5-method (batch ZB) granularity; F-031 composes the lifecycle.
+- **End-to-end plaintext-token chain** — the DataSource token surface is structurally identical to the Collector token surface (batch W F-020): shared `TokenGeneratorImpl` + `ReactiveTokenRepositoryImpl` + `TokenMapper`. A `SecureRandom` / hash-at-rest / grace-period fix applies to both.
+- **NAMESPACE_CREATE side-door** — `registerDataSource` + `updateDataSource` are the DataSource vertices of the side-door cluster (batch W: 4 sister services / 8 call sites). REFACTOR-584 + DOC-GAP-262.
+- **CROSS-BATCH CORRECTION** — TEST-GAP-749's CRITICAL "split-state atomicity" framing of `regenerateDataSourceToken` is refuted by the method-level read; `state/coherence-conflicts-batch-ZB.md` SUPERSEDES-1.
+- **`auth.type=DISABLED` bypass cluster** — +4 surfaces (the 4 DataSource mutating verbs); REFACTOR-185 cluster, DOC-GAP-082 META.
+
+### Follow-ups (logged, not blocking)
+
+1. **[HIGH — methodology] The rev-7.1 semantic-dedup cutover is non-functional — all 5 reducers fell back to grep dedup.** The 5 reducer agent defs (`.claude/agents/{concept-merger,adr-archaeologist,doc-gap-finder,test-coverage-mapper,feature-flow-builder}.md`) grant only `Read, Glob, Grep, Write` — NO `Bash`. The rev-7.1 cutover (commit `c255473`) routes dedup through `lineage-extractor graph-search` (a Bash CLI call) and updated `playbooks/registry-search-spawn.md` + the 5 agent defs' "Rule 7 / rev 7.1" prose — but did NOT add the `Bash` tool grant. Every reducer this batch hit the playbook's §Fallback path (`dedup_fallback: grep`). The batch is sound (grep dedup worked) but rev-7.1's promise — catching synonym-phrased duplicates by meaning — was not delivered. Fix: add `Bash` to the 5 reducer agent defs (precedent: `graph-retriever`, `probe-runner` carry scoped Bash) + the matching `lineage-extractor` permission allowlist. NOT auto-fixed this batch — granting Bash is a security-posture decision for the maintainer (cf. the deliberately-narrow `probe-runner` Bash scope).
+2. **[MEDIUM — methodology] Reducers cannot do cross-file edits → 3 delta files carry un-applied reverse-back-links.** Same root cause as #1 (no `Edit` tool). `test-map/index.delta.batch-ZB.pending-merge.yaml` (7 strengthen annotations to TEST-GAP-749/750/751/752/753/098/659), `feature-flows/batch-ZB-delta.yaml` (F-008←F-031 reciprocal back-link + batch_discovery_delta + frontmatter), `concepts/concepts.delta.batch-ZB.pending-merge.yaml` (processed_node_ids + batch_history). The new detail files carry FORWARD cross-references inline; only reverse links are pending. Preserved on disk (NOT deleted — the skill's Phase-3 delete was skipped) for a reconciliation pass once #1 is fixed.
+3. **[MEDIUM — maintainer-triage] TEST-GAP-749 stale CRITICAL framing.** `state/coherence-conflicts-batch-ZB.md` SUPERSEDES-1 — adr-archaeologist recommends CRITICAL→LOW (the atomicity premise is refuted); test-coverage-mapper's strengthen note argues keep-CRITICAL via the plaintext-token compound. The `TEST-GAP-749.yaml` detail file was NOT modified this batch (test-coverage-mapper has no Edit). Maintainer picks the disposition + corrects the behaviour text.
+4. **[LOW — methodology-tool] `coherence_sweep.py` cross-product explosion.** 84575 candidates (49.9k at batch W) — an O(anchors²) cross-product dominated by single-anchor fan-outs (one `ActivityEventTypeDto` negation × hundreds of artefacts). Only 1 of 84575 touches a ZB artefact; the real ZB coherence finding was caught by the adr-archaeologist's per-finding semantic Rule-6 check, not the sweep. The sweep needs a fan-out cap or a top-tier ranking to stay useful.
+5. **[LOW — pre-existing] Markdown-index systemic staleness.** `implicit-adrs` / `refactoring-scopes` / `doc-gaps` `index.md` frontmatter counts are stale by ~100s (`sidecar_count: 55` vs 159; `total_scopes: 227` vs 543); detail-without-index drift 135/305/93. Flagged across prior batches (X-TAGGING). ZB merged its own 13 new headlines (drift unchanged) but did not touch the stale frontmatter — a one-off markdown-index reconciliation tool is the proper fix.
+6. **[LOW — pre-existing, not a ZB regression] Unfixable broken YAML.** `yaml_safe_fix.py` reports unfixable: probes P-011/012/013/015/017/024, `test-map/detail/TEST-GAP-363.yaml` + `TEST-GAP-687.yaml`, 5 concept detail files — all pre-existing (X-TAGGING flagged the same set). No ZB-authored file is broken (rebuild_indexes skipped 0 ZB files; F-031.yaml + all 12 TEST-GAP yaml parse clean).
+7. **[LOW — methodology] `/next-batch` skill is stale post-merge.** Pre-flight hardcodes `feature/ontology-finalize-2026-05-20` (merged via PR 145 — a dead branch); `state/sprint-themes.yaml` `policy.push_target_branch` was likewise stale. The skill needs a branch argument or a current-sprint-branch pointer. (`policy.push_target_branch` updated to `feature/ontology-batch-2026-05-21` this batch.)
+8. **[LOW — state hygiene] VAL-LSN-019-B stale lock.** `sprint-themes.yaml` shows theme VAL-LSN-019-B `in_progress` although the sprint branch's final commit `d495119` is titled "theme VAL-LSN-019-B done" and it is absent from `batch_history` — a Phase-4 flip that didn't land. Left as-is (pre-ZB; not on this branch's critical path).
+
+### Next-batch planning notes
+
+DataSourceController is now class+method complete. High-value fully-dark controller surfaces remaining (by un-enriched method count): `ReferenceDataController` (16), `QueryExampleController` (12), `OwnerAssociationRequestController` (7 — class enriched), `DataQualityController` (5), `NamespaceController` (5 — class enriched batch W). The token-rotation hardening surfaced here (REFACTOR-581 family) + the Collector twin is a coherent cross-controller REFACTOR sprint candidate.

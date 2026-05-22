@@ -1,0 +1,218 @@
+name: |-
+  DataSource delete is an incomplete soft-delete — orphans the token row and leaves the FTS search_entrypoint vector uncleared
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-08
+description: |-
+  NEW MEDIUM-SEVERITY INVARIANT, batch 2026-05-21ZB — surfaced at
+  primary source by the deleteDataSource method-level sidecar. The
+  UI-admin delete endpoint DELETE /api/datasources/{data_source_id}
+  is a guarded soft-delete that does NOT cascade and does NOT clean
+  up adjacent rows. A "successful" delete leaves the catalogue with
+  orphaned and stale rows.
+
+  THE DELETE'S ACTUAL SCOPE — what soft-delete touches and what it
+  leaves:
+
+    DataSourceServiceImpl.delete (DataSourceServiceImpl.java:85-96,
+    @ReactiveTransactional) runs a cascade-guard then an inherited
+    soft-delete. The soft-delete (ReactiveAbstractSoftDeleteCRUDRepository.java:50-58
+    + getDeleteChangedFields:106-110) sets ONLY `data_source.deleted_at
+    = NOW()`. It DOES NOT touch:
+
+      (1) THE TOKEN ROW — orphaned on every delete.
+          `data_source.token_id` is a FK to the `token` table
+          (V0_0_28__add_token.sql:13). The soft-delete never deletes
+          the token row, and the `token` table has NO `deleted_at`
+          column (V0_0_28__add_token.sql:1-9) so it cannot even BE
+          soft-deleted. No code path GCs orphan tokens — no scheduled
+          job, no Flyway migration (Grep-confirmed in the sidecar).
+          Each register-then-delete cycle LEAKS one `token` row. This
+          is the SAME orphan-token pattern batch W confirmed for the
+          Collector delete path. Pinned by probe P-046.
+
+      (2) THE FTS SEARCH VECTOR — left uncleared on delete.
+          DataSourceServiceImpl.delete calls NO searchEntrypointRepository
+          method — UNLIKE DataSourceServiceImpl.update (lines 127-136)
+          which explicitly refreshes the FTS vectors. Whether a
+          soft-deleted data source still appears in catalog search
+          depends entirely on whether the search query JOINs
+          `data_source` with a `deleted_at IS NULL` predicate; if it
+          does not, the soft-deleted source remains searchable.
+          Pinned by probe P-048.
+
+      (3) HISTORICAL CHILD ENTITIES — left FK-attached to a
+          soft-deleted parent. `data_entity_fk_data_source`
+          (V0_0_1__init.sql:82) has NO `ON DELETE` clause (Postgres
+          default NO ACTION). Once the operator soft-deletes the child
+          entities (the prerequisite for the source delete to succeed)
+          and then deletes the source, those soft-deleted `data_entity`
+          rows still carry `data_source_id` pointing at the
+          soft-deleted `data_source`.
+
+  THE TWO SECURITY-RELEVANT CONSEQUENCES:
+
+    (a) STALE-SECRET-AT-REST: the orphan `token` row is a 40-char
+        plaintext credential (`token.value varchar(40)`,
+        V0_0_28__add_token.sql:4) that persists in the `token` table
+        unreferenced after the data source is deleted. A DB-level
+        reader, backup, or replica carries a credential that no
+        longer maps to any live data source. (deleteDataSource.md
+        security.known_security_gaps — orphan plaintext token
+        persists.)
+
+    (b) UNBOUNDED TABLE GROWTH: `token` rows accumulate without bound
+        across register/delete cycles — a slow table-growth leak.
+
+  WHY THIS IS A DISTINCT INVARIANT (not folded into the soft-delete
+  catalogue or the 5-vertex triangulation):
+
+    The platform's `three-soft-delete-mechanisms-across-the-repository-layer`
+    invariant catalogues WHICH mechanism each table uses; it confirms
+    `data_source` uses `deleted_at`. The
+    `datasource-ui-admin-disjoint-from-s2s-five-vertex-triangulation`
+    invariant catalogues the cascade-guard. NEITHER names the
+    INCOMPLETE-CLEANUP fact — that the delete leaves an orphan token
+    and a stale FTS vector. This invariant is the file-local
+    cleanup-completeness finding: a "delete" whose name promises
+    "remove the data source and its footprint" leaves three classes
+    of residue. It pairs with the soft-delete catalogue but is a
+    separate concern.
+
+  SEVERITY MEDIUM — the orphan-token stale-secret-at-rest + the
+  unbounded `token`-table growth are the load-bearing concerns; the
+  uncleared FTS vector is a probe-pending potential stale-search
+  surface; the FK-orphaned historical children are a long-term
+  schema-hygiene concern (soft-deleted rows are invisible to reads).
+nodes:
+  - odd-platform java DataSourceController controller-method:deleteDataSource
+contributors:
+  - |-
+    deleteDataSource batch ZB (PRIMARY SOURCE):
+    bugs_limitations_corner_cases[The token row is orphaned on every
+    data source delete — MEDIUM] +
+    bugs_limitations_corner_cases[The FTS search_entrypoint vector is
+    not cleared on delete — MEDIUM] +
+    bugs_limitations_corner_cases[Historical data_entity children
+    remain FK-attached to a soft-deleted parent — LOW] +
+    implicit_adrs.[1] (soft-delete via the inherited
+    ReactiveAbstractSoftDeleteCRUDRepository base) +
+    downstream_side_effects[db-write — ORPHANS the token row;
+    db-write — does NOT clear the FTS search_entrypoint vector] +
+    security.known_security_gaps[orphan plaintext token persists
+    after delete — MEDIUM]
+evidence:
+  - |-
+    deleteDataSource.md:bugs_limitations_corner_cases — orphan token —
+    evidence: DataSourceServiceImpl.java:85-96 +
+    ReactiveAbstractSoftDeleteCRUDRepository.java:106-110 (delete
+    touches only data_source.deleted_at) + V0_0_28__add_token.sql:1-13
+    (token FK + no deleted_at column) — pinned by probe P-046
+  - |-
+    deleteDataSource.md:bugs_limitations_corner_cases — FTS uncleared —
+    evidence: DataSourceServiceImpl.java:85-96 (no searchEntrypointRepository
+    call) vs DataSourceServiceImpl.java:127-136 (update DOES refresh
+    FTS) — pinned by probe P-048
+  - |-
+    deleteDataSource.md:bugs_limitations_corner_cases — FK-orphaned
+    children — evidence: V0_0_1__init.sql:82 (data_entity_fk_data_source
+    has NO ON DELETE clause) + ReactiveAbstractSoftDeleteCRUDRepository.java:106-110
+  - |-
+    deleteDataSource.md:downstream_side_effects — two db-write entries
+    recording the orphan-token and uncleared-FTS as observable
+    consequences-by-absence-of-cleanup
+  - |-
+    deleteDataSource.md:security.known_security_gaps — orphan plaintext
+    token persists; token table has no deleted_at, no GC path —
+    stale-secret-at-rest — MEDIUM
+  - |-
+    Cross-references invariant three-soft-delete-mechanisms-across-the-repository-layer
+    (confirms data_source uses the deleted_at mechanism; THIS
+    invariant adds the incomplete-cleanup fact)
+  - |-
+    Cross-references invariant collector-plaintext-token-at-rest-end-to-end-sql-to-dom-chain
+    (the orphan-token pattern is the SAME one batch W confirmed for
+    the Collector delete path — the DataSource token IS A COLLECTOR
+    TOKEN per the shared TOKEN table)
+  - |-
+    Cross-references operation delete-data-source-ui-admin-guarded-soft-delete
+    (the operation that carries this invariant)
+axes_present:
+  - controllers
+triangulation_count: 1
+cross_batch: true
+cross_batch_refs:
+  - batch-W (Collector delete confirmed the SAME orphan-token pattern — collector-plaintext-token chain)
+  - batch-ZB (deleteDataSource method sidecar — THIS INVARIANT)
+severity: MEDIUM
+severity_dim: data-hygiene+security
+probes:
+  - P-046
+  - P-048
+mitigations_unimplemented:
+  - |-
+    Decide the token lifecycle on data-source delete. Either:
+    (a) hard-delete the `token` row inside DataSourceServiceImpl.delete's
+        @ReactiveTransactional boundary (the token is 1:1 with the
+        data source, has no other referent, so a hard delete is
+        safe) — closes the stale-secret-at-rest AND the unbounded-growth
+        leak; or
+    (b) add a `deleted_at` column to the `token` table and soft-delete
+        it alongside the data source (consistent with the platform's
+        soft-delete convention).
+    Option (a) is simpler and matches the token's 1:1 lifecycle.
+  - |-
+    Clear the FTS search_entrypoint vector on delete — add a
+    searchEntrypointRepository call to DataSourceServiceImpl.delete
+    mirroring the update path's updateSearchVectors (lines 127-136),
+    so a soft-deleted data source cannot surface in catalog search.
+    First verify via probe P-048 whether the search query already
+    filters deleted_at — if it does, the FTS leak is moot.
+  - |-
+    Add the integration test (criticality HIGH, currently absent):
+    register a data source, attach a live data_entity, assert
+    DELETE → 400; soft-delete the entity, assert DELETE → 204; then
+    assert (a) data_source.deleted_at is set, (b) the token row is
+    orphaned (still present — pins the current bug), (c) the
+    search_entrypoint vector is cleared/uncleared per the chosen fix.
+  - |-
+    Add an orphan-token housekeeping job — same shape as the
+    dataset_field orphan-cleanup proposal — removing `token` rows
+    where `id NOT IN (SELECT token_id FROM data_source) AND id NOT IN
+    (SELECT token_id FROM collector)`. Bounds the growth if the
+    inline hard-delete is not adopted.
+notes: |-
+  This invariant captures the cleanup-INCOMPLETENESS of the DataSource
+  delete. The `three-soft-delete-mechanisms` invariant tells a
+  maintainer that `data_source` uses `deleted_at`; it does NOT tell
+  them that the delete leaves an orphan plaintext token and a stale
+  FTS vector. A maintainer reading the soft-delete catalogue would
+  conclude "delete is handled"; the method-level trace shows the
+  delete handles ONLY the `data_source` row.
+
+  The load-bearing observation: a "soft-delete" that the operator
+  expects to "remove the data source and its footprint" actually
+  removes only one row's `deleted_at` flag and leaves three classes
+  of residue — an orphan credential, a stale search vector, and
+  FK-dangling historical children. The orphan-credential is the
+  security-relevant one; it is also an exact repeat of the Collector
+  delete pattern, which means a single fix shape applies to both
+  token-bearing entities.
+
+  Cross-cutting connections:
+    - Pairs with three-soft-delete-mechanisms-across-the-repository-layer
+      (the soft-delete-mechanism catalogue; THIS adds the
+      incomplete-cleanup fact for data_source)
+    - Pairs with collector-plaintext-token-at-rest-end-to-end-sql-to-dom-chain
+      (the orphan-token-on-delete pattern is identical for Collector)
+    - Pairs with operation delete-data-source-ui-admin-guarded-soft-delete
+      (the operation carrying this invariant)
+    - Pairs with audit-log-presence-asymmetry-2-tier-audit-story
+      (the delete also emits no Activity Event — recorded under the
+      audit invariant, cross-linked here)
+
+  Two DOC-NNN candidates: (a) document on /features/management that
+  deleting a data source is a soft-delete that leaves the ingested
+  data entities and the token in the database; (b) document the
+  orphan-token cleanup expectation once the maintainer picks a fix.

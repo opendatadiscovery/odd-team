@@ -1,0 +1,89 @@
+---
+probe_id: P-047
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DataSourceController__controller-method__deleteDataSource.md
+emitted_at: 2026-05-21T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category B + Category E — name-vs-behaviour + cascade):
+  the endpoint is named `deleteDataSource` and the doc page describes the UI
+  affordance as "remove a source no longer ingested". An operator reasonably
+  expects "delete" to remove the source and its catalog footprint. The service
+  (DataSourceServiceImpl.java:85-96) GUARDS on `existsNonDeletedByDataSourceId`
+  — it BLOCKS the delete with HTTP 400 CascadeDeleteException if any
+  non-soft-deleted data_entity child exists. Hypothesis: the only way an
+  operator can actually delete a data source is to first remove every child
+  data_entity. The `data_entity` rows are ingested by the collector and are
+  re-created on the collector's next ingest tick — so a still-running collector
+  makes the data source effectively undeletable (the operator deletes the
+  entities, the collector re-ingests them, the next delete attempt 400s again).
+  This probe pins both the block behaviour AND the re-ingest race.
+---
+arrange:
+  - kind: docker-compose-up
+    compose_profile: odd-minimal
+  - kind: rest
+    method: POST
+    path: /api/datasources
+    body: |
+      {"name": "p047-delete-block-src", "oddrn": "//probe/p047/src",
+       "description": "probe P-047 cascade-block check"}
+    capture_as: created
+  - kind: sql
+    query: |
+      INSERT INTO data_entity (oddrn, external_name, data_source_id, type_id, hollow, exclude_from_search)
+      VALUES ('//probe/p047/src/entity-1', 'p047_entity_1', :created.id, 1, false, false)
+    capture_as: child_entity
+act:
+  - kind: rest
+    method: DELETE
+    path: /api/datasources/:created.id
+    capture_as: blocked_delete
+  - kind: sql
+    query: |
+      UPDATE data_entity SET deleted_at = NOW() WHERE data_source_id = :created.id
+  - kind: rest
+    method: DELETE
+    path: /api/datasources/:created.id
+    capture_as: allowed_delete
+observe:
+  - kind: capture
+    of: blocked_delete.status
+    capture_as: blocked_status
+  - kind: capture
+    of: blocked_delete.body
+    capture_as: blocked_body
+  - kind: capture
+    of: allowed_delete.status
+    capture_as: allowed_status
+  - kind: sql
+    query: |
+      SELECT deleted_at FROM data_source WHERE id = :created.id
+    capture_as: ds_row_after
+assert:
+  - "blocked_status == 400                                     # delete BLOCKED while a live child entity exists"
+  - "blocked_body contains 'there are still data entities attached'"
+  - "allowed_status == 204                                     # delete ALLOWED once all children are soft-deleted"
+  - "ds_row_after.deleted_at != null                           # data source itself is now soft-deleted"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DataSourceController__controller-method__deleteDataSource
+  retrospectives: []
+realism_caveats: |
+  The probe pins the static-state block/allow split. It does NOT exercise the
+  LIVE collector re-ingest race — to observe an operator deleting entities and
+  a collector re-creating them between two delete attempts, a real collector
+  process (or a scripted POST /ingestion/entities loop) must run concurrently.
+  That dynamic race is a separate probe; this probe establishes the
+  precondition (the guard is real and entity-existence-based). If
+  `blocked_status` is 204 instead of 400, the guard does not fire — re-read
+  ReactiveDataEntityRepositoryImpl.existsNonDeletedByDataSourceId for a
+  soft-delete-filter bug.

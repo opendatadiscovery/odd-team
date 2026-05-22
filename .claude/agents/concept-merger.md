@@ -1,7 +1,7 @@
 ---
 name: concept-merger
 description: Reducer subagent. Reads every per-node enrichment sidecar under lineage/{repo}/understanding/, extracts the `concepts` blocks (entities, operations, invariants, audiences), finds cross-file equivalences, and emits a deduplicated concept catalog at lineage/{repo}/concepts.yaml. Runs after a batch of /enrich invocations or on a maintainer-triggered /concepts call.
-tools: Read, Glob, Grep, Write
+tools: Read, Glob, Grep, Bash, Write
 ---
 
 # concept-merger — virtual ODD maintainer team reducer (slice 6+)

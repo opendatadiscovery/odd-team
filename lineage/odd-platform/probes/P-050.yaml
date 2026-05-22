@@ -1,0 +1,90 @@
+---
+probe_id: P-050
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken
+emitted_at: 2026-05-21T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-020
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category E, Q1): regenerateDataSourceToken delegates to a service
+  method (DataSourceServiceImpl.regenerateDataSourceToken, lines 99-106) that is NOT
+  @ReactiveTransactional. Two simultaneous PUT /api/datasources/{id}/token requests
+  against the SAME data source each run tokenGenerator.regenerateToken (in-memory) then
+  tokenRepository.updateToken (a single jOOQ `UPDATE token SET ... WHERE id = :id`).
+  There is no @Version column, no optimistic-lock predicate (ReactiveTokenRepositoryImpl
+  .java:33-36 — `WHERE TOKEN.ID.eq(...)` only). Hypothesis: last-write-wins — both
+  UPDATEs commit, the second overwrites the first; caller A and caller B receive DIFFERENT
+  plaintext token.value strings in their respective 200 responses; only the value from the
+  later-committing UPDATE actually authenticates against IngestionDataEntitiesFilter's
+  plaintext `.equals()` check. Caller whose response lost the race walks away believing a
+  token that is already invalid. The probe pins which response (if either) is authoritative
+  and confirms no row-corruption / no duplicate token row occurs.
+---
+arrange:
+  - kind: docker-compose-up
+    profile: odd-minimal
+  - kind: env
+    set:
+      auth.type: DISABLED
+      auth.ingestion.filter.enabled: "true"
+  - kind: sql
+    query: |
+      INSERT INTO token (id, value, created_at, updated_at, created_by, updated_by)
+      VALUES (8050, 'p050-original-token-0000000000000000000000', NOW(), NOW(), 'probe', 'probe')
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name, token_id, active)
+      VALUES (8050, '//probe-source/p050/ds', 'p050_ds', 8050, true)
+act:
+  - kind: rest
+    description: fire two concurrent token-regeneration requests against the same data source
+    parallel: true
+    requests:
+      - method: PUT
+        path: /api/datasources/8050/token
+        capture_as: response_a
+      - method: PUT
+        path: /api/datasources/8050/token
+        capture_as: response_b
+observe:
+  - kind: sql
+    query: "SELECT value FROM token WHERE id = 8050"
+    capture_as: persisted_token
+  - kind: sql
+    query: "SELECT count(*) AS n FROM token WHERE id = 8050"
+    capture_as: token_row_count
+  - kind: rest
+    description: probe the persisted token against the ingestion path to confirm it authenticates
+    method: POST
+    path: /ingestion/entities
+    headers:
+      Authorization: "Bearer {persisted_token.value}"
+    body: '{"data_source_oddrn": "//probe-source/p050/ds", "items": []}'
+    capture_as: ingest_with_persisted
+assert:
+  - "token_row_count.n == 1                                  # no duplicate row — in-place UPDATE confirmed"
+  - "response_a.body.token.value != response_b.body.token.value  # both responses carry distinct plaintext tokens"
+  - "persisted_token.value == response_a.body.token.value OR persisted_token.value == response_b.body.token.value"
+  - "persisted_token.value != 'p050-original-token-0000000000000000000000'  # old value is gone, irrecoverable"
+  - "ingest_with_persisted.status != 401                     # the persisted token authenticates"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken
+    - odd-platform__java__DataSourceController__controller-class__DataSourceController
+  retrospectives: [LSN-019]
+realism_caveats: |
+  The probe runs with auth.type=DISABLED so the parallel requests do not need session
+  cookies — this isolates the concurrency behaviour of the service/repository layer from
+  the auth filter chain. It does NOT verify the LOGIN_FORM/OAUTH2/LDAP path; the
+  permission gate runs identically before the controller in those modes and does not
+  change the last-write-wins outcome. The probe cannot deterministically force a true
+  simultaneous commit (R2DBC connection scheduling is non-deterministic); if both UPDATEs
+  serialise cleanly the assertions still hold — the test confirms the ABSENCE of
+  corruption and the in-place semantics, not a specific interleaving.

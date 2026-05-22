@@ -1,0 +1,85 @@
+gap_id: TEST-GAP-908
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DataSourceController controller-method:registerDataSource"
+  - "odd-platform java DataSourceController controller-method:updateDataSource"
+pillars_affected: [P-08]
+surfaced_by:
+  - "odd-platform__java__DataSourceController__controller-method__registerDataSource.md:tests_coverage_semantic.uncovered_behaviours.[201-vs-200 status: POST /api/datasources returns HTTP 200, contradicting the OpenAPI-declared 201]"
+  - "odd-platform__java__DataSourceController__controller-method__updateDataSource.md:bugs_limitations_corner_cases.[The OpenAPI contract declares response 201 for this PUT but the controller hard-codes ResponseEntity.ok() (200)]"
+behaviour: |-
+  **MEDIUM — `POST /api/datasources` AND `PUT /api/datasources/{id}` both return HTTP 200,
+  while the OpenAPI spec declares HTTP 201 for both operations. A client generated from the
+  published spec asserts `status == 201` and treats a correct registration / update as a
+  failure. Two endpoints, the same spec-vs-implementation contract drift, no test.**
+  Method-level primary source from the batch-ZB `registerDataSource` and `updateDataSource`
+  controller-method sidecars:
+
+  - **register**: `DataSourceController.java:35` is `.map(ResponseEntity::ok)` — HTTP 200.
+    `openapi.yaml:453-455` declares `'201': The resource has been successfully created` for
+    operationId `registerDataSource`. The resource IS created (the `data_source` row is
+    inserted) but the status is 200, not the spec-declared 201.
+  - **update**: `DataSourceController.java:44` is `ResponseEntity.ok()` — HTTP 200.
+    `openapi.yaml:481-487` declares `'201': The resource has been successfully updated` for
+    the PUT (a 201 for an update is itself unusual). The controller hard-codes 200.
+
+  **Why MEDIUM**: this is a real, observable spec-vs-code drift — a generated client
+  (TypeScript / Java / Python from the published OpenAPI) compiled to assert the declared
+  201 will mis-detect every successful register and update as an error. It is not a
+  security or data-loss defect. The drift is SISTER to a class-wide pattern: Owner / Role /
+  Policy CRUD all share the same 200-vs-201 drift (TEST-GAP-227 / TEST-GAP-234 /
+  TEST-GAP-235 territory), and `IngestionController.postDataEntityList` shares it too —
+  this entry pins the DataSource-controller instance, which batch-W did NOT separately
+  capture. The endpoints have ZERO direct test coverage (Glob-verified — no
+  `DataSourceControllerTest`).
+
+  **Test gap shape**: a `@SpringBootTest` / `WebTestClient` contract-conformance test that:
+  (1) `POST /api/datasources` with a valid body → asserts the ACTUAL status is 200 (PIN
+  the current behaviour) and asserts the OpenAPI spec at `openapi.yaml:453-455` declares
+  201 (the asymmetry); (2) `PUT /api/datasources/{id}` with a valid body → asserts the
+  ACTUAL status is 200 and the spec at `openapi.yaml:481-487` declares 201. When the drift
+  is resolved (either the controller is changed to return 201, or the spec is corrected to
+  200), the test inverts — forcing an explicit decision.
+test_class: missing-edge-case
+criticality_rationale: |-
+  MEDIUM per Rule 3: the registerDataSource sidecar rates the 201-vs-200 uncovered
+  behaviour MEDIUM, and bugs_limitations_corner_cases rates it LOW-MEDIUM; the
+  updateDataSource sidecar rates the same drift LOW in bugs_limitations_corner_cases. The
+  aggregate is MEDIUM — a spec-driven generated client mis-detects success as failure (a
+  real client-integration defect), but no security weakness, no data loss, and a clear
+  (non-degenerate) HTTP response. The nodes' CRITICAL/HIGH security_aggregate weaknesses
+  drive other DataSource gaps, not this contract-drift gap. pillars_affected len 1 (P-08) —
+  no cross-pillar bump. Consistent with the MEDIUM rating of the sister Owner 201-vs-200
+  drift (TEST-GAP-235).
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DataSourceStatusCodeContractTest.java"
+  name: "registerAndUpdateDataSource_return200WhileSpecDeclares201_pinsContractDrift"
+evidence:
+  - "registerDataSource sidecar says (tests_coverage_semantic.uncovered_behaviours): '201-vs-200 status: POST /api/datasources returns HTTP 200, contradicting the OpenAPI-declared 201. test_class: integration; criticality: MEDIUM; note: Probe P-038.'"
+  - "registerDataSource sidecar says (bugs_limitations_corner_cases): '201-vs-200 status drift: the controller returns HTTP 200 where the OpenAPI spec declares 201 for operationId registerDataSource. evidence: DataSourceController.java:35 (.map(ResponseEntity::ok) — HTTP 200) vs openapi.yaml:453-455 (201: The resource has been successfully created). severity LOW-MEDIUM (clients generated from the spec assert status == 201 and will treat a correct registration as a failure; verified-by-probe P-038).'"
+  - "updateDataSource sidecar says (bugs_limitations_corner_cases): 'The OpenAPI contract declares response 201 for this PUT (openapi.yaml:482 201: The resource has been successfully updated) but the controller hard-codes ResponseEntity.ok() (200) at DataSourceController.java:44 — a client checking for 201 per the spec will mis-detect success.' severity LOW"
+  - "Verified at primary source via the sidecars: DataSourceController.java:35 (register .map(ResponseEntity::ok)) + DataSourceController.java:44 (update ResponseEntity.ok()) + openapi.yaml:453-455 (register 201) + openapi.yaml:481-487 (update 201)"
+  - "Verified this batch via Glob: no DataSourceControllerTest.java exists under odd-platform-api/src/test"
+cross_references:
+  - "TEST-GAP-235 (batch 2026-05-12-E — OwnerController 201-vs-200 status drift; the SISTER instance — Owner / Role / Policy CRUD all share the same drift, and IngestionController.postDataEntityList too. TEST-GAP-908 pins the DataSourceController register+update instance)"
+  - "TEST-GAP-743 (batch 2026-05-20-V — DatasetField spec/code response-code drift; another sibling spec-conformance gap)"
+  - "TEST-GAP-909 (this batch — the DataSourceController HTTP-floor META anchor; this gap is one of its children)"
+  - "probe P-038 (lineage/odd-platform/probes/P-038.yaml — the 201-vs-200 register probe)"
+  - "DOC-NNN candidate: the OpenAPI spec should be corrected to 200, OR the controllers changed to return 201 — a class-wide decision spanning Owner/Role/Policy/DataSource/Ingestion"
+related_features: [F-008]
+related_pillar_features: ["P-08:F-NN-Datasources-tab"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `DataSourceStatusCodeContractTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Two test methods:
+  1. `registerDataSource_returns200_specDeclares201_pinsDrift` — POST /api/datasources with a valid body; assert the ACTUAL HTTP status is 200; pair with a comment / assertion documenting that `openapi.yaml:453-455` declares 201 for operationId `registerDataSource`.
+  2. `updateDataSource_returns200_specDeclares201_pinsDrift` — PUT /api/datasources/{id} with a valid body; assert the ACTUAL HTTP status is 200; document that `openapi.yaml:481-487` declares 201.
+
+  These tests PIN the current 200 behaviour. When the class-wide 201-vs-200 drift is
+  resolved (Owner / Role / Policy / DataSource / Ingestion together — either the
+  controllers return 201, or the spec is corrected to 200), the tests invert, forcing the
+  explicit decision rather than letting the drift persist silently.
+batch: 2026-05-21-ZB
+feature_id: F-008

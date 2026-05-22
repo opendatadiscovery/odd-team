@@ -1,0 +1,82 @@
+---
+probe_id: P-046
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DataSourceController__controller-method__deleteDataSource.md
+emitted_at: 2026-05-21T00:00:00Z
+status: pending-stress-protocol
+feature_id: null  # P-08:F-NN-Datasources-tab not yet carved into an F-NNN id
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category E — cascade / resource boundary): when DELETE
+  /api/datasources/{id} succeeds for a data source that has NO live data_entity
+  children, the soft-delete writes `data_source.deleted_at = NOW()`. The
+  data_source row carries a `token_id` FK to the `token` table
+  (V0_0_28__add_token.sql:13). The soft-delete code (getDeleteChangedFields,
+  ReactiveAbstractSoftDeleteCRUDRepository.java:106-110) sets ONLY
+  `deleted_at` — it does NOT touch `token_id`, and there is no application
+  code path that deletes the token row. The `token` table has no `deleted_at`
+  column (V0_0_28__add_token.sql:1-9), so it cannot even be soft-deleted.
+  Hypothesis: after a successful data source delete, the `token` row that the
+  (now soft-deleted) data_source pointed to STILL EXISTS in the `token` table,
+  unreferenced — an orphan row identical in shape to the orphan-token leak that
+  batch W confirmed for Collector delete. Over many register/delete cycles the
+  `token` table grows without bound.
+---
+arrange:
+  - kind: docker-compose-up
+    compose_profile: odd-minimal
+  - kind: rest
+    method: POST
+    path: /api/datasources
+    body: |
+      {"name": "p046-orphan-token-src", "oddrn": "//probe/p046/src",
+       "description": "probe P-046 orphan-token check"}
+    capture_as: created
+  - kind: sql
+    query: |
+      SELECT token_id FROM data_source WHERE id = :created.id
+    capture_as: token_id_before
+act:
+  - kind: rest
+    method: DELETE
+    path: /api/datasources/:created.id
+    capture_as: delete_response
+observe:
+  - kind: sql
+    query: |
+      SELECT deleted_at FROM data_source WHERE id = :created.id
+    capture_as: ds_row_after
+  - kind: sql
+    query: |
+      SELECT count(*) AS n FROM token WHERE id = :token_id_before.token_id
+    capture_as: token_row_after
+  - kind: sql
+    query: |
+      SELECT count(*) AS n FROM data_source
+      WHERE token_id = :token_id_before.token_id AND deleted_at IS NULL
+    capture_as: live_refs_to_token
+assert:
+  - "delete_response.status == 204"
+  - "ds_row_after.deleted_at != null            # data source is soft-deleted"
+  - "token_row_after.n == 1                     # ORPHAN: token row survives the delete"
+  - "live_refs_to_token.n == 0                  # no live data_source references it — it is unreachable"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DataSourceController__controller-method__deleteDataSource
+    - odd-platform__java__DataSourceController__controller-class__DataSourceController
+  retrospectives: [LSN-001]
+realism_caveats: |
+  The probe pins the orphan-token hypothesis for the simple case (data source
+  with no entities, clean delete). It does NOT measure the unbounded-growth
+  rate over many cycles, and does NOT verify whether any background job or
+  Flyway migration ever GCs orphan tokens (a Grep of the migration tree found
+  none, but a scheduled job outside the migration tree was not exhaustively
+  ruled out). If assertion `token_row_after.n == 1` FAILS, a token-cleanup
+  path exists that the static walk missed — re-trace DataSourceServiceImpl
+  and ReactiveTokenRepositoryImpl.

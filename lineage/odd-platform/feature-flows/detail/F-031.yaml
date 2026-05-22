@@ -1,0 +1,929 @@
+feature_id: F-031
+pillar_id: P-08
+pillar_anchored_id: P-08:F-007
+pillar_anchored_feature_name: Data Source Lifecycle Management
+feature_name: Data Source Lifecycle — list / register / update / delete / regenerate-token
+primary_drift_class: replace_not_merge_silent_field_wipe
+drift_class_summary:
+- replace_not_merge_silent_field_wipe
+- permission_side_door
+- spec_says_X_impl_does_Y
+- orphan_row_on_delete
+- disabled_mode_bypass
+- destructive_rotation_no_grace_period
+- ungated_list_read_no_security_rule
+- list_token_leaks_real_last_six_chars
+- list_ordering_id_asc_undocumented
+- list_query_page_vs_count_predicate_divergence
+- unbounded_pagination_size_no_cap
+- plaintext_token_in_register_and_rotate_response_no_cache_control
+- audit_silence_no_activity_log_no_logging_any_layer
+- regenerate_token_not_reactive_transactional_inconsistent_with_siblings
+- token_entropy_not_securerandom_randomstringutils
+- delete_cascade_block_on_live_children_undeletable_actively_ingested_source
+- delete_does_not_clear_fts_vector
+- oddrn_required_at_runtime_optional_in_openapi_contract
+- no_rate_limit_on_any_endpoint
+- concurrent_update_lost_update_no_optimistic_lock
+cross_pillar_relationships:
+- pillar_id: P-10
+  kind: feeds
+  via: |-
+    Data Source Lifecycle is the operator-facing credential + registration
+    surface for the Integrations & Ingestion pillar. A data source registered
+    here mints a 40-char ingestion token (registerDataSource) that the Push /
+    Collector client later presents on POST /ingestion/entities — validated
+    by IngestionDataEntitiesFilter (opt-in, default-off per
+    application.yml). regenerateDataSourceToken rotates that same credential.
+    The UI-admin registration path (POST /api/datasources) is DISJOINT from
+    the S2S collector-driven path (POST /ingestion/datasources via
+    IngestionController.createDataSourceEntity) — same data_source table,
+    separate auth model (RBAC DATA_SOURCE_CREATE + UI session vs collector
+    token), separate service class, separate merge semantics. Cross-link to
+    F-008 (Batch Ingestion) which owns the S2S half + the
+    ADR-CANDIDATE-142 / ADR-CANDIDATE-143 UI-vs-S2S asymmetry.
+- pillar_id: P-09
+  kind: shares_data_with
+  via: |-
+    The four mutating endpoints are gated by DATA_SOURCE_CREATE /
+    DATA_SOURCE_UPDATE / DATA_SOURCE_DELETE / DATA_SOURCE_TOKEN_REGENERATE
+    (all MANAGEMENT-tier permissions, declared in
+    SecurityConstants.SECURITY_RULES lines 116-126). The list read
+    (GET /api/datasources) has NO SecurityRule — read-collaborative posture
+    (REFACTOR-024 family). Under auth.type=DISABLED every endpoint including
+    the four destructive verbs is anonymously reachable (REFACTOR-185
+    cluster). registerDataSource opens a permission side-door — the
+    namespace_name field reaches namespaceService.getOrCreate, minting a
+    namespace under DATA_SOURCE_CREATE without NAMESPACE_CREATE. Cross-link
+    to F-006 (RBAC) for the central gate.
+- pillar_id: P-08
+  kind: shares_data_with
+  via: |-
+    Fourth sibling P-08 Management UI-admin lifecycle surface alongside
+    F-019 (Owner Lifecycle), F-020 (Collector Lifecycle), F-028 (Namespace
+    Lifecycle). All four share the thin-OpenAPI-delegate controller pattern,
+    the MapStruct full-form-REPLACE update semantic, the 200-not-201 status
+    drift, the audit-silence pattern, the DISABLED-mode bypass, and the
+    no-rate-limit posture. The system-mission.md P-08 sub-feature seed names
+    "Datasources tab (audit, edit, link Collector + Namespace)" as a
+    distinct sub-feature — this anchors F-031 within the pillar. Per
+    management.md daily-ops sequence, the Datasources tab is the
+    most-frequently-used Management surface.
+- pillar_id: P-01
+  kind: feeds
+  via: |-
+    A registered data source is the parent of every data_entity ingested
+    under it; the data_source FTS vector feeds catalog Search and the
+    Directory drill-down. updateDataSource refreshes that FTS vector;
+    deleteDataSource does NOT clear it (drift facet
+    delete_does_not_clear_fts_vector). Cross-link to F-023 (Directory
+    Browsing) which READS the same data_source rows via
+    /api/directory/datasources — a different surface from this feature's
+    /api/datasources UI-admin CRUD.
+batch_origin: ZB
+created_in_batch: ZB
+discovered_from_entry_point: ui_route:/management/datasources
+description: |-
+  Data Source Lifecycle Management is the operator-facing CRUD +
+  token-rotation surface under Management → Datasources (the
+  /management/datasources SPA route). Five endpoints on DataSourceController
+  (DataSourceController.java:21-59, each a 3-5 line thin proxy implementing
+  the OpenAPI-generated DataSourceApi) compose the full UI-admin lifecycle:
+
+  - List and search data sources (GET /api/datasources?page=&size=&query=,
+    getDataSourceList) — paginated read backing the Datasources tab. NO
+    SecurityRule entry — any authenticated user enumerates the full
+    catalog. Tokens render MASKED ("******" + real last 6 chars) via the
+    1-arg TokenDto constructor (showToken=false).
+  - Register a data source (POST /api/datasources, registerDataSource) —
+    gated by DATA_SOURCE_CREATE. Mints a fresh 40-char plaintext token,
+    optionally get-or-creates the named namespace, rejects an empty ODDRN
+    with HTTP 400, INSERTs the data_source row, returns the DataSource
+    with the token in PLAINTEXT.
+  - Edit a data source (PUT /api/datasources/{id}, updateDataSource) —
+    gated by DATA_SOURCE_UPDATE. Full-form REPLACE of name / description /
+    namespace_name on an existing live row; 404 if absent or soft-deleted.
+  - Delete a data source (DELETE /api/datasources/{id}, deleteDataSource)
+    — gated by DATA_SOURCE_DELETE. Guarded soft-delete: 400
+    CascadeDeleteException if any live data_entity child exists, else
+    UPDATE data_source SET deleted_at = NOW(); returns 204.
+  - Regenerate the ingestion token (PUT /api/datasources/{id}/token,
+    regenerateDataSourceToken) — gated by DATA_SOURCE_TOKEN_REGENERATE.
+    Destructive in-place UPDATE of the single token row's value; no grace
+    window; returns the new 40-char token in PLAINTEXT.
+
+  All behaviour lives in DataSourceServiceImpl (DataSourceServiceImpl.java) —
+  create at lines 51-66, update at 68-83, delete at 85-96, list at 38-43,
+  regenerateDataSourceToken at 99-106. The repository tier is
+  ReactiveDataSourceRepositoryImpl (listDto + getDto + inherited
+  soft-delete) + ReactiveTokenRepositoryImpl (token create + updateToken) +
+  TokenGeneratorImpl (40-char RandomStringUtils minting). Token
+  visibility is decided API-side by the TokenDto.showToken boolean —
+  plaintext on register/regenerate, masked on list.
+
+  This feature is the FOURTH P-08 UI-admin lifecycle sibling — F-019
+  (Owner), F-020 (Collector), F-028 (Namespace), and now F-031 (Data
+  Source) — each a distinct operator-facing CRUD surface composed of a
+  thin-delegate controller + MapStruct-mapped service. It is DISJOINT
+  from F-008 (Batch Ingestion / S2S API): the UI-admin registration path
+  POST /api/datasources is a separate endpoint, separate service class,
+  separate auth model, and separate merge semantics from the S2S
+  collector-driven path POST /ingestion/datasources
+  (IngestionController.createDataSourceEntity). The batch-W
+  DataSourceController class sidecar established that disjointness as a
+  counterfactual extension of F-008; this ZB batch mints F-031 as the
+  feature for the UI-admin half, with its 5 endpoint-method sidecars
+  giving the full lifecycle picture.
+
+  The user-observable reality, per the 5 batch-ZB endpoint-method
+  sidecars, surfaces 19 load-bearing drift facets. The HIGH-severity
+  headline cluster: (a) updateDataSource is REPLACE-not-MERGE — a
+  partial PUT body silently nulls the omitted fields (MapStruct default
+  SET_TO_NULL, MapperConfig sets no nullValuePropertyMappingStrategy);
+  (b) registerDataSource opens a permission side-door — the
+  namespace_name field mints a namespace under DATA_SOURCE_CREATE,
+  bypassing NAMESPACE_CREATE; (c) regenerateDataSourceToken is a
+  destructive rotation with NO grace period — the collector still using
+  the old token starts 401-ing the instant the UPDATE commits; (d) under
+  auth.type=DISABLED all four mutating verbs (register / update /
+  delete / regenerate-token) are anonymously reachable. Secondary:
+  deleteDataSource orphans the token row (token table has no deleted_at,
+  no GC path) and leaves the FTS vector uncleared; the 200-vs-201 status
+  drift spans register AND update; the list endpoint leaks the real last
+  6 chars of every token to read-only users and is itself ungated.
+contributing_nodes:
+- odd-platform java DataSourceController controller-method:getDataSourceList
+- odd-platform java DataSourceController controller-method:registerDataSource
+- odd-platform java DataSourceController controller-method:updateDataSource
+- odd-platform java DataSourceController controller-method:deleteDataSource
+- odd-platform java DataSourceController controller-method:regenerateDataSourceToken
+- odd-platform java DataSourceController controller-class:DataSourceController
+- odd-platform java service service:DataSourceServiceImpl
+- odd-platform java service service:NamespaceServiceImpl
+- odd-platform java service service:TokenGeneratorImpl
+- odd-platform java repository reactive repository:ReactiveDataSourceRepositoryImpl
+- odd-platform java repository reactive repository:ReactiveTokenRepositoryImpl
+- odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl
+- odd-platform java auth filter:IngestionDataEntitiesFilter
+- odd-platform java SecurityConstants
+chain:
+- hop: 1a
+  node: odd-platform ts react-component:datasources-list
+  sidecar: (UI datasources-list React component — not yet enriched; REFERENCE per class + method sidecars)
+  multiplicity_per_trigger: unresolved
+  evidence: |-
+    The Management → Datasources tab is the operator surface (WebFetch
+    2026-05-21 of features/management, status 200). The UI invokes the
+    OpenAPI-generated DataSourceApi client via
+    odd-platform-ui/src/redux/thunks/datasources.thunks.ts +
+    lib/hooks/api/datasource.ts + lib/api.ts (file list per the batch-W
+    DataSourceController class sidecar's upstream_callers). One operator
+    action = one DataSourceApi call. The UI thunk node is not yet
+    enriched as a sidecar — multiplicity recorded unresolved.
+  unresolved: true
+- hop: 1b
+  node: odd-platform java DataSourceController controller-method:getDataSourceList
+  sidecar: odd-platform__java__DataSourceController__controller-method__getDataSourceList.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    DataSourceController.java:21-28 — GET /api/datasources. 3-line proxy
+    to dataSourceService.list(page, size, query), wrapped ResponseEntity.ok
+    (HTTP 200). NO SecurityRule entry (Grep-confirmed SecurityConstants.java:116-126
+    holds only the 4 mutating rules). One service call per request.
+  unresolved: false
+  resolved_in_batch: ZB
+- hop: 1c
+  node: odd-platform java DataSourceController controller-method:registerDataSource
+  sidecar: odd-platform__java__DataSourceController__controller-method__registerDataSource.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    DataSourceController.java:30-36 — POST /api/datasources. 5-line proxy
+    flatMapping Mono<DataSourceFormData> into dataSourceService.create(form),
+    wrapped ResponseEntity.ok (HTTP 200 — drift vs OpenAPI-declared 201).
+    Gated by DATA_SOURCE_CREATE (SecurityConstants.java:116-117). One
+    submit = one POST.
+  unresolved: false
+  resolved_in_batch: ZB
+- hop: 1d
+  node: odd-platform java DataSourceController controller-method:updateDataSource
+  sidecar: odd-platform__java__DataSourceController__controller-method__updateDataSource.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    DataSourceController.java:38-45 — PUT /api/datasources/{data_source_id}.
+    4-line proxy to dataSourceService.update(id, form), wrapped
+    ResponseEntity.ok (HTTP 200 — drift vs declared 201). Gated by
+    DATA_SOURCE_UPDATE (SecurityConstants.java:118-120). One edit = one PUT.
+  unresolved: false
+  resolved_in_batch: ZB
+- hop: 1e
+  node: odd-platform java DataSourceController controller-method:deleteDataSource
+  sidecar: odd-platform__java__DataSourceController__controller-method__deleteDataSource.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    DataSourceController.java:47-51 — DELETE /api/datasources/{data_source_id}.
+    4-line proxy to dataSourceService.delete(id), mapped to 204 No Content.
+    Gated by DATA_SOURCE_DELETE (SecurityConstants.java:121-123). One
+    delete click = one DELETE.
+  unresolved: false
+  resolved_in_batch: ZB
+- hop: 1f
+  node: odd-platform java DataSourceController controller-method:regenerateDataSourceToken
+  sidecar: odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    DataSourceController.java:53-59 — PUT /api/datasources/{data_source_id}/token.
+    5-line proxy to dataSourceService.regenerateDataSourceToken(id),
+    wrapped ResponseEntity.ok (HTTP 200). Gated by
+    DATA_SOURCE_TOKEN_REGENERATE (SecurityConstants.java:124-126). One
+    Regenerate click = one PUT.
+  unresolved: false
+  resolved_in_batch: ZB
+- hop: 2
+  node: odd-platform java service service:DataSourceServiceImpl
+  sidecar: (service-tier — referenced primary-source by all 5 method sidecars; not yet a standalone sidecar)
+  multiplicity_per_trigger: 1
+  evidence: |-
+    DataSourceServiceImpl owns ALL five lifecycle verbs: list (lines 38-43,
+    NOT @ReactiveTransactional, read-only), create (51-66,
+    @ReactiveTransactional — mint token + get-or-create namespace +
+    INSERT data_source), update (68-83, @ReactiveTransactional —
+    getDto-or-404 + applyToPojo REPLACE + FTS refresh), delete (85-96,
+    @ReactiveTransactional — cascade-guard + soft-delete), and
+    regenerateDataSourceToken (99-106, NOT @ReactiveTransactional — the
+    code-shape inconsistency vs the 3 annotated siblings). NO activity
+    emitter import, NO log call on any path.
+  unresolved: true
+- hop: 3a
+  node: odd-platform java repository reactive repository:ReactiveDataSourceRepositoryImpl
+  sidecar: odd-platform__java__repository__reactive-repository__ReactiveDataSourceRepositoryImpl.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    listDto (lines 58-82) — the CTE-paginated SELECT (ordered data_source.id
+    ASC) with 2 LEFT JOINs against NAMESPACE and TOKEN; queryCondition
+    (151-160) applies deleted_at IS NULL + optional startsWithIgnoreCase
+    name filter. getDto resolves a single live row for update / regenerate.
+    create INSERTs the data_source row; inherited
+    ReactiveAbstractSoftDeleteCRUDRepository.delete rewrites delete into
+    UPDATE deleted_at = NOW(). Batch-R repository sidecar primary-source
+    confirmed the listDto page-vs-count predicate divergence (REFACTOR-425)
+    + data_source.name partial unique index + orphan-token-on-delete.
+  unresolved: false
+  resolved_in_batch: ZB
+- hop: 3b
+  node: odd-platform java repository reactive repository:ReactiveTokenRepositoryImpl
+  sidecar: (repository-tier — referenced primary-source by registerDataSource + regenerateDataSourceToken sidecars)
+  multiplicity_per_trigger: 1
+  evidence: |-
+    ReactiveTokenRepositoryImpl.create (lines 20-27) — INSERT INTO token,
+    constructs new TokenDto(pojo, true) (showToken=true → plaintext).
+    updateToken (30-39) — DSL.update(TOKEN).set(record).where(TOKEN.ID.eq(id)),
+    re-reads into TokenDto with showToken=true. The single token row per
+    data source (1:1 via data_source.token_id) is the rotation target;
+    the in-place UPDATE is what makes regeneration destructive with no
+    old/new overlap.
+  unresolved: true
+- hop: 3c
+  node: odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl
+  sidecar: odd-platform__java__repository__reactive-repository__ReactiveDataEntityRepositoryImpl.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    existsNonDeletedByDataSourceId (lines 158-163) — SELECT EXISTS(SELECT 1
+    FROM data_entity WHERE data_source_id = ? AND deleted_at IS NULL). The
+    cascade-guard primitive deleteDataSource consults: a live child entity
+    makes the delete 400. data_entity_fk_data_source (V0_0_1__init.sql:82)
+    has NO ON DELETE clause — the guard is a SERVICE-tier business rule,
+    not a schema constraint.
+  unresolved: false
+  resolved_in_batch: ZB
+terminal_side_effect:
+  side_effect_class: db-write
+  description: |-
+    Per-call, varying by verb:
+    - REGISTER (POST /api/datasources): 1x INSERT token + 0-or-1x INSERT
+      namespace + 1x INSERT data_source; all inside one @ReactiveTransactional.
+      Plus a page-render returning the DataSource with the token in
+      PLAINTEXT (HTTP 200).
+    - UPDATE (PUT /api/datasources/{id}): 1x SELECT getDto + 0-or-1x INSERT
+      namespace + 1x UPDATE data_source (full-form REPLACE of
+      name/description/namespace_id) + 2x UPDATE search_entrypoint (FTS
+      refresh); all inside one @ReactiveTransactional. Page-render HTTP 200.
+    - DELETE (DELETE /api/datasources/{id}): 1x SELECT EXISTS (cascade-guard)
+      + 1x UPDATE data_source SET deleted_at = NOW() (soft-delete) — OR a
+      400 CascadeDeleteException with no mutation. Leaves the token row
+      ORPHANED and the FTS vector UNCLEARED. Returns 204.
+    - REGENERATE-TOKEN (PUT /api/datasources/{id}/token): 1x SELECT getDto
+      + 1x UPDATE token SET value = <new 40-char> (NOT @ReactiveTransactional;
+      atomic at statement level). Page-render returns the new token in
+      PLAINTEXT (HTTP 200). Indirectly invalidates the credential a
+      separate POST /ingestion/entities depends on.
+    - LIST (GET /api/datasources): 0 writes — pure paginated read; but no
+      SecurityRule. Page-render returns the DataSourceList with MASKED
+      tokens.
+    NO Activity Event is emitted by ANY of the 5 verbs — the data_source
+    lifecycle is fully invisible to the Activity Feed.
+  evidence: |-
+    DataSourceServiceImpl.java:38-43 (list) + 51-66 (create) + 68-83 (update)
+    + 85-96 (delete) + 99-106 (regenerate-token) + ReactiveTokenRepositoryImpl.java:20-27,30-39
+    + ReactiveDataSourceRepositoryImpl.java:58-82 + ReactiveAbstractSoftDeleteCRUDRepository.java:50-58,106-110
+    + ReactiveDataEntityRepositoryImpl.java:158-163 + V0_0_28__add_token.sql:1-13
+    + SecurityConstants.java:116-126.
+  cardinality_per_call: 0-5 writes per call (varies by verb; LIST=0, REGISTER=2-3, UPDATE=3-4, DELETE=0-1, REGENERATE=1)
+amplification_factor: 1
+amplification_factor_provenance: |-
+  STATIC — per-call multiplicity is 1 along the chain for every verb
+  (one operator action = one DataSourceApi call = one service-method
+  invocation = a fixed small set of DB writes determined by the verb,
+  not multiplied by any hop). The UI thunk hop (1a) is unresolved — no
+  UI-tier sidecar yet — but the 5 controller-method sidecars each record
+  multiplicity_per_trigger: 1 with primary-source evidence, and there is
+  no dep-array re-fire pattern of the LSN-017 class on a Management-tab
+  CRUD form. The amplification factor is recorded as 1; if a future
+  UI-tier sidecar surfaces a double-dispatch it would be revisited.
+observed_vs_expected:
+  facets:
+  - facet: updateDataSource is REPLACE-not-MERGE — a partial PUT body silently wipes omitted fields
+    observed: |-
+      DataSourceUpdateFormData has exactly 3 OPTIONAL fields (description,
+      name, namespace_name) with no `required` block (components.yaml:1317-1325).
+      DataSourceServiceImpl.update (lines 68-83) applies the form to the
+      existing pojo via DataSourceMapper.applyToPojo — a MapStruct
+      @MappingTarget method (DataSourceMapper.java:49-56). MapperConfig
+      (MapperConfig.java:7-11) sets componentModel / unmappedTargetPolicy /
+      injectionStrategy but NO nullValuePropertyMappingStrategy; MapStruct's
+      default for an unspecified strategy is SET_TO_NULL. An omitted JSON
+      field deserialises to a null Java field and is written as null onto
+      the existing row. The namespace overload (DataSourceMapper.java:51-56)
+      explicitly sets namespace_id to null when namespace == null. An
+      operator (or an API consumer, or a UI bug) sending a partial body to
+      change one field silently nulls the other two — editing only `name`
+      wipes `description` AND detaches the `namespace`. There is no MERGE
+      option on this endpoint.
+    expected: |-
+      Either (a) MERGE semantics — a global MapStruct
+      nullValuePropertyMappingStrategy = IGNORE so an omitted field
+      preserves the existing column value; OR (b) explicit doc-side
+      statement that update is a full-form REPLACE and callers must
+      resend every field they want to keep. The endpoint name `update`
+      does not signal REPLACE; the live management doc page (WebFetch
+      2026-05-21, status 200) is silent on whether edits replace or merge.
+    drift_class: replace_not_merge_silent_field_wipe
+    provenance: |-
+      STATIC — primary-source in updateDataSource sidecar (batch ZB)
+      bugs_limitations_corner_cases[0] + implicit_adrs[0] +
+      DataSourceMapper.java:49-56 + MapperConfig.java:7-11 +
+      components.yaml:1317-1325. Pinned by probe P-043. Severity: MEDIUM.
+      Structural analog to the F-020 Collector
+      `update_full_form_replace_silently_nulls_unsubmitted_fields` facet
+      (batch W) — same MapStruct @MappingTarget pattern, same
+      operator-surprise potential.
+  - facet: registerDataSource opens a permission side-door — namespace_name mints a namespace bypassing NAMESPACE_CREATE
+    observed: |-
+      DataSourceServiceImpl.create (lines 56-57) reads form.getNamespaceName()
+      and, if non-empty, calls namespaceService.getOrCreate —
+      NamespaceServiceImpl.getOrCreate (lines 37-40) is
+      `getByName(name).switchIfEmpty(createByName(name))`, which CREATES a
+      namespace if absent. The register endpoint is gated only by
+      DATA_SOURCE_CREATE (SecurityConstants.java:116-117); the explicit
+      POST /api/namespaces is gated by NAMESPACE_CREATE. A principal
+      scoped to only DATA_SOURCE_CREATE (without NAMESPACE_CREATE) mints
+      brand-new namespaces through the namespace_name field — escalation
+      by side effect. updateDataSource has the SAME side-door
+      (DataSourceServiceImpl.java:74-76). No Activity Event records the
+      namespace creation.
+    expected: |-
+      Either (a) the register / update paths consult NAMESPACE_CREATE
+      before get-or-create can mint a namespace; OR (b) a DataSourceFormData
+      `namespace_id` field so the caller SELECTS an existing namespace
+      without the create-on-miss risk; OR (c) the live doc page warns that
+      registering / editing a data source with an unknown namespace_name
+      creates that namespace. None exists.
+    drift_class: permission_side_door
+    provenance: |-
+      STATIC — primary-source in registerDataSource sidecar (batch ZB)
+      bugs_limitations_corner_cases[0] + security.known_security_gaps[0]
+      + request_inputs[namespace_name] DRIFT_INPUT_NAME_VS_IMPLEMENTATION
+      + DataSourceServiceImpl.java:56-57 + NamespaceServiceImpl.java:37-40
+      + SecurityConstants.java:116-117. Pinned by probe P-039. Severity:
+      MEDIUM. The same side-door is one of the 8 call sites catalogued in
+      F-028 (Namespace Lifecycle) primary drift
+      `namespace_create_side_door_bypass_via_four_sister_services`
+      (DataSourceServiceImpl.java:57, 75) — cross-link.
+  - facet: 200-not-201 status drift — register AND update return HTTP 200 where OpenAPI declares 201
+    observed: |-
+      registerDataSource (DataSourceController.java:35, `.map(ResponseEntity::ok)`)
+      returns HTTP 200; openapi.yaml:453-455 declares `'201': The resource
+      has been successfully created` for operationId registerDataSource.
+      updateDataSource (DataSourceController.java:44) returns HTTP 200;
+      openapi.yaml:481-487 declares `'201': The resource has been
+      successfully updated`. A client generated from the published
+      OpenAPI spec asserts status == 201 and treats a correct
+      registration / edit as a failure; manual API consumers see 200
+      where the spec says 201. Separately: DataSourceFormData marks only
+      `name` required (components.yaml:1314-1315) but the code rejects an
+      empty `oddrn` at runtime with HTTP 400 — `oddrn` is de-facto
+      required, the contract understates it (own facet
+      oddrn_required_at_runtime_optional_in_openapi_contract).
+    expected: |-
+      Either the controller returns 201 for register + update (aligning
+      with the published spec and REST convention) OR the OpenAPI spec is
+      corrected to declare 200. The class-wide 200-vs-201 drift is shared
+      with F-019 (Owner), F-020 (Collector), F-028 (Namespace), and the
+      Term controllers — a single platform-wide OpenAPI consistency fix.
+    drift_class: spec_says_X_impl_does_Y
+    provenance: |-
+      STATIC — primary-source in registerDataSource sidecar (batch ZB)
+      bugs_limitations_corner_cases[1] + updateDataSource sidecar
+      bugs_limitations_corner_cases[4] + DataSourceController.java:35,44
+      + openapi.yaml:453-455,481-487. Pinned by probe P-038. Severity:
+      LOW-MEDIUM.
+  - facet: deleteDataSource orphans the token row, leaves the FTS vector uncleared, and blocks on live children
+    observed: |-
+      deleteDataSource is a guarded SOFT-delete. (1) ORPHAN TOKEN —
+      data_source.token_id is a FK to the token table
+      (V0_0_28__add_token.sql:13); the soft-delete sets only
+      data_source.deleted_at (ReactiveAbstractSoftDeleteCRUDRepository.java:106-110),
+      never deletes the token row, and the token table has NO deleted_at
+      column (V0_0_28__add_token.sql:1-9) so it cannot even be
+      soft-deleted. No code path GCs orphan tokens. Each register-then-delete
+      cycle leaks one token row carrying a stale 40-char plaintext
+      secret. (2) FTS UNCLEARED — DataSourceServiceImpl.delete (lines
+      85-96) calls no searchEntrypointRepository method, unlike update
+      (lines 127-136); whether the soft-deleted source still appears in
+      catalog search depends on the search query's deleted_at predicate.
+      (3) CASCADE-BLOCK — the delete 400s with CascadeDeleteException
+      whenever a live data_entity child exists
+      (existsNonDeletedByDataSourceId). data_entity rows are
+      collector-created and re-created on the next ingest tick, so an
+      actively-ingested source is effectively undeletable — the
+      delete-children-then-delete-source sequence races the collector;
+      the only reliable path is to stop the collector first, which no
+      doc page mentions.
+    expected: |-
+      Either (a) the delete cascades or soft-deletes the token row (and a
+      housekeeping job GCs orphan tokens); (b) the delete clears the FTS
+      vector like update does; (c) the live doc page documents the
+      400-on-live-children precondition and the stop-the-collector-first
+      workaround. The token table's missing deleted_at column makes (a)
+      a schema change. The orphan-token pattern is identical to the one
+      F-020 (Collector) batch-R confirmed for Collector delete.
+    drift_class: orphan_row_on_delete
+    provenance: |-
+      STATIC — primary-source in deleteDataSource sidecar (batch ZB)
+      bugs_limitations_corner_cases[0,2,1] + downstream_side_effects +
+      DataSourceServiceImpl.java:85-96 + ReactiveAbstractSoftDeleteCRUDRepository.java:106-110
+      + V0_0_28__add_token.sql:1-13 + DataSourceServiceImpl.java:127-136
+      (update FTS, contrast) + ReactiveDataEntityRepositoryImpl.java:158-163.
+      Pinned by probes P-046 (orphan token), P-047 (cascade block/allow),
+      P-048 (FTS uncleared). Severity: MEDIUM. Cross-link to F-010
+      (Housekeeping) — the orphan-token GAP has no housekeeping job; and
+      to F-020 batch-R orphan-token finding for the identical Collector
+      shape.
+  - facet: under auth.type=DISABLED all four mutating verbs are anonymously reachable
+    observed: |-
+      Under auth.type=DISABLED the platform's DisabledSecurityConfiguration
+      sets all paths .permitAll() and binds no principal; the
+      SecurityConstants.SECURITY_RULES rules for DATA_SOURCE_CREATE /
+      DATA_SOURCE_UPDATE / DATA_SOURCE_DELETE / DATA_SOURCE_TOKEN_REGENERATE
+      (lines 116-126) are not enforced. Any caller able to reach the
+      platform can register / edit / delete a data source AND rotate any
+      data source's ingestion token, receiving the new plaintext
+      credential in the response. For regenerateDataSourceToken this is a
+      credential-rotation-hijack surface — an attacker on a DISABLED
+      deployment can break ingestion platform-wide and harvest the new
+      tokens. TokenGeneratorImpl falls back to a null `updated_by`/`created_by`
+      when no principal exists, so the destructive action succeeds with
+      no actor attribution.
+    expected: |-
+      Either (a) the SecurityRule entries are honoured even under
+      DISABLED for the four destructive verbs; OR (b) the live
+      enable-security doc page warns that auth.type=DISABLED leaves every
+      data-source mutation (including token rotation) anonymously
+      reachable on a network-exposed deployment. DISABLED is doc-marked
+      dev-only; operators running it in production have no namespace,
+      data-source, or token protection.
+    drift_class: disabled_mode_bypass
+    provenance: |-
+      STATIC — primary-source in all 5 batch-ZB sidecars' security blocks
+      + the batch-W class sidecar DISABLED-mode analysis +
+      SecurityConstants.java:116-126. Pinned by probes P-044
+      (update auth matrix) + P-052 (regenerate-token auth matrix).
+      Severity: HIGH under a misconfigured production DISABLED
+      deployment. Member of the REFACTOR-185 DISABLED-mode-bypass cluster
+      (batch-W confirmed DataSourceController among the surfaces).
+      Cross-link to DOC-GAP-082 (the 29-sidecar DISABLED-bypass
+      meta-finding).
+  - facet: regenerateDataSourceToken is a destructive rotation with no grace period
+    observed: |-
+      Rotation is a destructive in-place UPDATE of the single token row
+      (ReactiveTokenRepositoryImpl.updateToken — `UPDATE token SET
+      value=<new> WHERE id=:id`). There is NO old/new overlap, NO
+      previous_token / valid_until column anywhere in the schema, NO
+      separate revoke step. A collector / push-client still presenting
+      the old token starts failing POST /ingestion/entities with 401
+      `Token is not correct` the instant the UPDATE commits
+      (IngestionDataEntitiesFilter.java:56-57 does a literal plaintext
+      .equals). An operator rotating a data-source token during active
+      ingestion locks out ingestion until the collector picks up the new
+      token (a config-file change + restart). No warning is logged, no
+      notification fires, the docs do not document it. The PUT is also
+      non-idempotent — a UI double-submit or network retry rotates the
+      token twice, invalidating the value the operator copied from the
+      first response before they can use it.
+    expected: |-
+      Either (a) a grace window — a previous_token column accepted by the
+      ingestion filter for a bounded period; OR (b) the UI / API surface
+      warns at rotation time that the old token is invalidated
+      immediately and the collector must be redeployed; OR (c) an
+      enable-security `Token rotation` operational doc section. None
+      exists. Note: the rotation also has NO security effect at all on
+      the default deployment, because auth.ingestion.filter.enabled
+      defaults to false — the filter that validates the token is not
+      even registered.
+    drift_class: destructive_rotation_no_grace_period
+    provenance: |-
+      STATIC — primary-source in regenerateDataSourceToken sidecar
+      (batch ZB) bugs_limitations_corner_cases[1] + downstream_side_effects
+      (external-call) + ReactiveTokenRepositoryImpl.java:30-39 +
+      IngestionDataEntitiesFilter.java:43-58. Pinned by probe P-051
+      (binary cutover) + P-050 (concurrent rotation). Severity: HIGH.
+      Structurally IDENTICAL to the F-020 Collector
+      `token_rotation_no_grace_period_old_token_401s_immediately`
+      facet — the two rotation paths share TokenGeneratorImpl +
+      ReactiveTokenRepositoryImpl; a grace-period fix applies to both.
+  - facet: GET /api/datasources is ungated and leaks the real last 6 chars of every token
+    observed: |-
+      GET /api/datasources has NO entry in SecurityConstants.SECURITY_RULES
+      (Grep-confirmed lines 116-126 hold only POST/PUT/DELETE rules) —
+      any authenticated user lists the full catalog (id, name, oddrn,
+      description, namespace, token) with no MANAGEMENT permission and no
+      owner scope; read-collaborative posture. The list token field
+      renders the MASKED form via TokenMapper.mapValue — but the mask is
+      `"******" + the real last 6 plaintext characters of the token`
+      (TokenMapper.java:15-18), not a placeholder. A read-only user reads
+      genuine token material for every data source. Additionally: the
+      list is ordered data_source.id ASC (creation order, undocumented —
+      newly-registered sources appear LAST); the `query` parameter uses
+      startsWithIgnoreCase on the page but containsIgnoreCase on the
+      empty-page count, producing a phantom `total` ("0 of 1") when a
+      query matches by substring-not-prefix (REFACTOR-425 family); and
+      `size` has no upper bound at any layer.
+    expected: |-
+      Either (a) a SecurityRule on GET /api/datasources scoping the list
+      to a permission; OR (b) explicit doc-side framing of the
+      read-collaborative posture; AND the mask should not expose real
+      token characters (or the doc should state that "partially-redacted"
+      means real trailing characters). The list ordering, the
+      query-predicate divergence, and the unbounded size are all
+      undocumented.
+    drift_class: ungated_list_read_no_security_rule
+    provenance: |-
+      STATIC — primary-source in getDataSourceList sidecar (batch ZB)
+      bugs_limitations_corner_cases (all entries) + security blocks +
+      implicit_adrs[1] + SecurityConstants.java:116-126 +
+      TokenMapper.java:15-18 + ReactiveDataSourceRepositoryImpl.java:62,151-160,167.
+      Pinned by probes P-034 (id-ASC ordering), P-035 (masked token
+      form / real last 6), P-036 (query page-vs-count divergence),
+      P-037 (unbounded size). Severity: MEDIUM (read-collaborative
+      posture) / LOW (the 6-of-40-char leak). Sibling facets
+      list_token_leaks_real_last_six_chars, list_ordering_id_asc_undocumented,
+      list_query_page_vs_count_predicate_divergence,
+      unbounded_pagination_size_no_cap roll up here.
+  - facet: register and regenerate-token responses carry the 40-char token in plaintext with no Cache-Control
+    observed: |-
+      registerDataSource (showToken=true via the 2-arg TokenDto on create,
+      ReactiveTokenRepositoryImpl.java:26) and regenerateDataSourceToken
+      (showToken=true on updateToken, ReactiveTokenRepositoryImpl.java:38)
+      both return the DataSource with `token.value` carrying the
+      unredacted 40-char secret. The controller sets no response header
+      marking the body sensitive — DataSourceController.java:33-35 and
+      53-58 are bare `.map(ResponseEntity::ok)` with no
+      `Cache-Control: no-store`. Any reverse-proxy, API-gateway, browser
+      response cache, server-side response-body logger, or APM tool on
+      those paths records a live ingestion credential in cleartext. The
+      token is also stored plaintext in the token table (no hashing /
+      encryption-at-rest — confirmed by IngestionDataEntitiesFilter doing
+      a literal .equals). Token entropy uses
+      RandomStringUtils.randomAlphanumeric(40), NOT a
+      cryptographically-secure RNG by default.
+    expected: |-
+      Either (a) `Cache-Control: no-store` on the register + regenerate
+      responses; (b) a one-shot token-reveal model where the plaintext is
+      shown once and never re-served; (c) hash-at-rest for stored tokens;
+      (d) SecureRandom for token generation. The plaintext-everywhere
+      posture is an implicit ADR (collector tokens as deployment-internal
+      shared secrets) but is not defended in any comment or doc.
+    drift_class: plaintext_token_in_register_and_rotate_response_no_cache_control
+    provenance: |-
+      STATIC — primary-source in registerDataSource sidecar (batch ZB)
+      bugs_limitations_corner_cases[2] + regenerateDataSourceToken sidecar
+      bugs_limitations_corner_cases[4,5] + security.known_security_gaps
+      + ReactiveTokenRepositoryImpl.java:26,38 + TokenMapper.java:15-18 +
+      TokenGeneratorImpl.java:49 + DataSourceController.java:33-35,53-58.
+      Pinned by probe P-040. Severity: MEDIUM (plaintext-in-response) /
+      HIGH (RandomStringUtils not SecureRandom). The data-source
+      token-handling posture is structurally identical to the F-020
+      Collector token posture — TokenGeneratorImpl + ReactiveTokenRepositoryImpl
+      are shared; a SecureRandom + hash-at-rest fix applies to both.
+  - facet: the entire data-source lifecycle is invisible to the Activity Feed (audit silence)
+    observed: |-
+      DataSourceServiceImpl emits NO Activity Event for any of the five
+      verbs — the class imports no ActivityEvent emitter (verified in the
+      batch-W class sidecar). register, update, delete, and
+      regenerate-token all complete with no Activity Feed row. There is
+      also no log.info / log.warn on any path (DataSourceController /
+      DataSourceServiceImpl / TokenGeneratorImpl / ReactiveTokenRepositoryImpl
+      carry no log call). An operator auditing "who registered / edited /
+      deleted this data source, or who rotated its token, and when" has
+      no audit trail — the only signals are the row's deleted_at /
+      updated_at timestamps and token.updated_by, all actor-thin or
+      single-state (overwritten on the next mutation). A security review
+      of "who rotated data-source token X before the last rotation"
+      cannot be answered from production data.
+    expected: |-
+      Either (a) @ActivityLog on the four mutating service methods; OR
+      (b) a separate platform_event audit surface. ActivityEventTypeDto
+      has no DATA_SOURCE_* enum constant — the same enum-rooted
+      audit-silence the platform-wide 9-sidecar pattern catalogues
+      (F-006 RBAC / F-019 Owner / F-020 Collector / F-028 Namespace all
+      carry it). A separate platform_event audit surface would cover
+      data-source lifecycle + collector lifecycle + namespace lifecycle +
+      RBAC + Owner CRUD as one architectural addition.
+    drift_class: audit_silence_no_activity_log_no_logging_any_layer
+    provenance: |-
+      STATIC — primary-source in all 5 batch-ZB sidecars
+      (downstream_side_effects NO-Activity-Event entries +
+      bugs_limitations_corner_cases) + DataSourceServiceImpl.java:38-106
+      (no emitter, no log). Severity: MEDIUM. Member of the platform-wide
+      audit-silence cluster — cross-link to F-006, F-019, F-020, F-028
+      and the system-mission.md "Audit-log Presence Asymmetry"
+      canonicalisation candidate.
+  - facet: regenerateDataSourceToken is not @ReactiveTransactional — code-shape inconsistency vs the 3 annotated siblings
+    observed: |-
+      DataSourceServiceImpl.regenerateDataSourceToken (line 99) is NOT
+      annotated @ReactiveTransactional, whereas the sibling create
+      (line 52), update (line 69), and delete (line 86) ALL carry the
+      annotation — primary-source confirmed by reading
+      DataSourceServiceImpl.java end-to-end this batch. The missing
+      annotation does NOT currently produce a partial-write bug because
+      the only DB write (tokenRepository.updateToken) is a single jOOQ
+      UPDATE statement (atomic at the DB level) and
+      tokenGenerator.regenerateToken is a purely in-memory mutation —
+      there is no old-invalidated-but-new-not-persisted window. The risk
+      is latent: a future change adding a second write to this method
+      (an audit-log insert, a notification dispatch, an FTS refresh)
+      would NOT be wrapped in a transaction and could half-commit.
+    expected: |-
+      Consistent transactional posture across all four mutating
+      DataSourceServiceImpl methods — regenerateDataSourceToken annotated
+      @ReactiveTransactional like its siblings, so a future second write
+      is atomic.
+    drift_class: regenerate_token_not_reactive_transactional_inconsistent_with_siblings
+    provenance: |-
+      STATIC — primary-source in regenerateDataSourceToken sidecar
+      (batch ZB) bugs_limitations_corner_cases[0] +
+      DataSourceServiceImpl.java:99 (no annotation) vs lines 52,69,86
+      (annotated). Severity: LOW (latent code-smell, not an active
+      atomicity bug). This is the
+      `regenerate_datasource_token_not_reactive_transactional` finding
+      F-008 batch-W surfaced via the DataSourceController class sidecar —
+      now PRIMARY-SOURCE confirmed at the method tier and homed on F-031.
+  surfaced_by:
+  - 'getDataSourceList: odd-platform__java__DataSourceController__controller-method__getDataSourceList.md (batch ZB)'
+  - 'registerDataSource: odd-platform__java__DataSourceController__controller-method__registerDataSource.md (batch ZB)'
+  - 'updateDataSource: odd-platform__java__DataSourceController__controller-method__updateDataSource.md (batch ZB)'
+  - 'deleteDataSource: odd-platform__java__DataSourceController__controller-method__deleteDataSource.md (batch ZB)'
+  - 'regenerateDataSourceToken: odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken.md (batch ZB)'
+  - 'DataSourceController class sidecar (batch W) — the disjointness-from-S2S counterfactual'
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+    - 'regenerateDataSourceToken 500 path — TokenGeneratorImpl.regenerate(null) when a data source has a null token (TokenGeneratorImpl.java:45-47)'
+    - 'TokenGeneratorImpl token generation — no TokenGeneratorImplTest exists (Glob-verified this batch)'
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+    - 'Happy-path register — POST /api/datasources with a complete body returns the persisted DataSource (id assigned, token minted)'
+    - 'Empty-ODDRN rejection — POST with oddrn empty/absent returns HTTP 400; no token/namespace/data_source row committed'
+    - 'ODDRN unique-constraint collision — POST with an oddrn matching a live data_source returns HTTP 400'
+    - 'Transaction rollback on collision — a failed register leaves NO orphan token row and NO orphan namespace row (P-041)'
+    - '201-vs-200 status — POST and PUT return HTTP 200, contradicting the OpenAPI-declared 201 (P-038)'
+    - 'updateDataSource REPLACE-not-MERGE — a PUT omitting description nulls the existing description; omitting namespace_name detaches the namespace (P-043)'
+    - 'updateDataSource 404 — PUT to a never-existed or soft-deleted id returns a clean 404, not a silent 200 (P-042)'
+    - 'updateDataSource rename collision — renaming to a name held by another live source returns 400'
+    - 'deleteDataSource cascade block/allow — 400 while a live data_entity child exists, 204 once all children are soft-deleted (P-047)'
+    - 'deleteDataSource orphan token — after a successful delete the token row still exists, unreferenced (P-046)'
+    - 'deleteDataSource FTS uncleared — after a successful delete the search_entrypoint vector is not removed (P-048)'
+    - 'regenerateDataSourceToken happy path — PUT returns 200 with a token whose value differs and is full 40-char plaintext'
+    - 'regenerateDataSourceToken binary cutover — old token 401s and new token non-401s on POST /ingestion/entities the instant rotation commits (P-051)'
+    - 'regenerateDataSourceToken concurrent double-rotation — last-write-wins, distinct plaintext tokens, only the later value authenticates, no duplicate row (P-050)'
+    - 'getDataSourceList happy path — GET /api/datasources?page=1&size=10 returns 200 with a DataSourceList carrying id/name/oddrn/namespace/token'
+    - 'getDataSourceList id-ASC ordering — the list is ordered data_source.id ASC, not name-alphabetical, not recency (P-034)'
+    - 'getDataSourceList query page-vs-count divergence — a query matching by substring-not-prefix yields empty items[] with non-zero page_info.total (P-036)'
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+    - 'getDataSourceList unbounded size — size=Integer.MAX_VALUE emits LIMIT 2147483647; size=0/negative and page=0 boundary behaviour (P-037)'
+    - 'register/delete cycle token-table growth — N register-then-delete cycles leak N orphan token rows (unbounded table growth)'
+    - 'concurrent updateDataSource lost-update — two concurrent PUTs to the same id; the later commit overwrites the earlier with no optimistic-lock detection'
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+    - 'getDataSourceList masked token form — the list endpoint returns the masked "******"+last6 form, NOT the 40-char plaintext (P-035)'
+    - 'getDataSourceList RBAC — a user with NO MANAGEMENT permission CAN still list all datasources (GET not in SECURITY_RULES)'
+    - 'registerDataSource namespace side-door — a principal with DATA_SOURCE_CREATE but NOT NAMESPACE_CREATE creates a namespace via namespace_name (P-039)'
+    - 'registerDataSource plaintext token — the POST response body token.value is the unredacted 40-char secret (P-040)'
+    - 'updateDataSource auth matrix — no-permission 403 / with-permission 200 / unauthenticated 401 / DISABLED open (P-044)'
+    - 'deleteDataSource RBAC — a caller without DATA_SOURCE_DELETE gets 403; the SecurityRule fires before the controller'
+    - 'regenerateDataSourceToken auth matrix — permission-absent 403 / present 200 / unauthenticated 401 / DISABLED any-caller-200 credential-rotation-hijack (P-052)'
+control_summary: |-
+  0 of 16 cells PROBED — feature MINTED this batch (ZB) from the 5
+  DataSourceController endpoint-method sidecars. NINETEEN load-bearing
+  drift facets, anchored on the full UI-admin DataSource lifecycle
+  (list / register / update / delete / regenerate-token). The endpoint
+  surface has ZERO direct test coverage at controller, service,
+  repository, AND integration tiers — verified this batch: no
+  DataSourceControllerTest, no DataSourceServiceImplTest, no
+  TokenGeneratorImplTest (all Glob-confirmed absent). The only
+  protection underneath is the repository-tier DataSourceRepositoryImplTest
+  (exercises listDto at the repository tier, not the HTTP endpoint).
+
+  The HIGHEST-LEVERAGE probe candidates, all executable on the
+  maintainer's local workstation (a local docker-compose / Testcontainers
+  ODD platform + Postgres stack — NO cloud infrastructure):
+
+  (a) updateDataSource REPLACE-not-MERGE pin (P-043) — POST a complete
+      data source, then PUT a body omitting `description`; assert the
+      stored description is nulled. This is the operator-visible
+      data-loss-on-partial-edit class; a routine global MapStruct
+      IGNORE-on-null setting would silently flip REPLACE to MERGE with no
+      guard. Highest priority — it is the headline drift.
+
+  (b) regenerateDataSourceToken destructive-cutover pin (P-051) — register
+      a data source, capture the token, enable
+      auth.ingestion.filter.enabled, POST /ingestion/entities with the
+      old token (expect non-401), rotate via PUT
+      /api/datasources/{id}/token, then POST /ingestion/entities with the
+      old token (expect 401) and the new token (expect non-401). Pins the
+      no-grace-period contract — the single most operationally important
+      uncovered behaviour.
+
+  (c) namespace side-door regression-pin (P-039) — grant a test user only
+      DATA_SOURCE_CREATE (NOT NAMESPACE_CREATE), POST /api/datasources
+      with a never-seen namespace_name, then GET /api/namespaces and
+      assert the row was minted. Repeat via PUT (updateDataSource side-door).
+
+  (d) deleteDataSource cascade + orphan-token pin (P-046/P-047/P-048) —
+      register a data source, attach a live data_entity, assert DELETE
+      400; soft-delete the entity, assert DELETE 204; then assert (1) the
+      data_source row carries deleted_at, (2) the token row is orphaned
+      (still present), (3) the search_entrypoint vector is uncleared.
+
+  (e) DISABLED-mode anonymous-mutation matrix (P-044/P-052) — bring up the
+      stack with auth.type=DISABLED and assert all four mutating verbs
+      (register / update / delete / regenerate-token) succeed with no
+      principal; assert regenerate returns the new plaintext token.
+
+  Probe ids P-034 through P-052 are already authored as probe skeletons
+  by the 5 file-analyser sidecars (lineage/odd-platform/probes/P-0NN.yaml).
+  This feature is the acceptance-target home for that probe range.
+
+  Cross-feature coherence: F-031 LIVES INSIDE pillar P-08 Management &
+  Administration as the FOURTH UI-admin lifecycle sibling alongside
+  F-019 (Owner Lifecycle), F-020 (Collector Lifecycle), and F-028
+  (Namespace Lifecycle) — per system-mission.md P-08 sub-feature seed
+  "Datasources tab (audit, edit, link Collector + Namespace)". It is
+  DISJOINT from F-008 (Batch Ingestion / S2S API): the UI-admin
+  registration path POST /api/datasources is a separate endpoint +
+  service class + auth model + merge semantic from the S2S
+  collector-driven path POST /ingestion/datasources. The batch-W
+  DataSourceController class sidecar established that disjointness as a
+  counterfactual extension of F-008; F-031 is the feature for the
+  UI-admin half. The token-handling posture (plaintext-everywhere,
+  RandomStringUtils-not-SecureRandom, in-place destructive rotation,
+  orphan-token-on-delete, audit silence) is STRUCTURALLY IDENTICAL to
+  F-020 (Collector) because both rotation paths share TokenGeneratorImpl +
+  ReactiveTokenRepositoryImpl — a SecureRandom / hash-at-rest /
+  grace-period fix applies to both. The 200-vs-201 status drift is
+  shared across F-019 / F-020 / F-028 / F-031 — a single platform-wide
+  OpenAPI consistency fix.
+related_refactoring_scopes:
+- REFACTOR-185 # DISABLED-mode bypass cluster — batch W confirmed DataSourceController among the surfaces
+- REFACTOR-425 # listDto page-vs-count predicate divergence (startsWith page vs contains count)
+related_test_gaps:
+- TEST-GAP-NNN (updateDataSource REPLACE-not-MERGE field-wipe pin — P-043)
+- TEST-GAP-NNN (regenerateDataSourceToken destructive binary cutover pin — P-051)
+- TEST-GAP-NNN (registerDataSource namespace side-door regression pin — P-039)
+- TEST-GAP-NNN (deleteDataSource cascade block/allow + orphan-token + FTS-uncleared — P-046/P-047/P-048)
+- TEST-GAP-NNN (DISABLED-mode anonymous-mutation matrix across 4 verbs — P-044/P-052)
+- TEST-GAP-NNN (getDataSourceList masked token form — P-035)
+- TEST-GAP-NNN (200-vs-201 status drift on register + update — P-038)
+- TEST-GAP-NNN (getDataSourceList unbounded size + id-ASC ordering + query divergence — P-034/P-036/P-037)
+related_doc_gaps:
+- DOC-GAP-082 # META — auth.type=DISABLED bypasses the Authorization framework; all 4 datasource mutating verbs anonymously reachable
+- DOC-GAP-NNN (features/management Datasources row silent on REPLACE-not-MERGE editing semantics)
+- DOC-GAP-NNN (features/management Datasources row silent on the 400-on-live-children delete precondition + stop-the-collector-first workaround)
+- DOC-GAP-NNN (no doc warns that registering / editing a data source with an unknown namespace_name creates that namespace bypassing NAMESPACE_CREATE)
+- DOC-GAP-NNN (no enable-security "Token rotation" section — destructive in-place rotation, no grace period, plaintext-in-response undocumented)
+- DOC-GAP-NNN (API Reference hub explicitly omits a Data Sources sub-page — the 5 DataSourceController endpoints are undocumented)
+related_concepts:
+- Datasource (Management — registered data source)
+- Token (collector / data-source shared-secret credential)
+- read-collaborative posture (REFACTOR-024 family — datasource list reachable to any authenticated user)
+- Audit-log Presence Asymmetry (2-tier audit story — cross-batch canonicalisation candidate)
+- Partial Unique Index on Soft-Delete Tables (data_source_name / data_source_oddrn partial-unique pattern)
+related_retrospectives:
+- LSN-017 # cross-layer effects — the 5 endpoint sidecars only compose into a coherent lifecycle when threaded together
+- LSN-018 # pre-emit coherence — the F-031 facets STRENGTHEN F-008 / F-020 / F-028 rather than contradict; no conflict surfaced
+- LSN-001 # permissive defaults hide operator error — DISABLED-mode anonymous mutation + token rotation with no security effect on default
+related_features:
+- F-008 # Batch Ingestion (S2S API) — DISJOINT: the S2S createDataSourceEntity / POST /ingestion/datasources path; F-031 is the UI-admin half
+- F-020 # Collector Lifecycle Management — structural twin (same 5-verb UI-admin lifecycle; shared TokenGeneratorImpl + ReactiveTokenRepositoryImpl)
+- F-028 # Namespace Lifecycle Management — sibling P-08; the namespace_name side-door is one of F-028's 8 catalogued side-door call sites
+- F-019 # Owner Lifecycle Management — sibling P-08 UI-admin lifecycle; shared thin-delegate + 200-vs-201 + audit-silence patterns
+- F-010 # Housekeeping TTL Enforcement — the orphan-token-on-delete row has no housekeeping GC job
+- F-006 # RBAC — the central SecurityConstants.SECURITY_RULES gate the 4 mutating verbs depend on; the side-door bypasses it
+related_probes:
+- P-034
+- P-035
+- P-036
+- P-037
+- P-038
+- P-039
+- P-040
+- P-041
+- P-042
+- P-043
+- P-044
+- P-046
+- P-047
+- P-048
+- P-050
+- P-051
+- P-052
+probe_verifications: []
+maintainer_curated: false
+batch_origin_note: |-
+  2026-05-21 batch ZB — NEW pillar-anchored feature minted from the 5
+  DataSourceController endpoint-method sidecars (getDataSourceList,
+  registerDataSource, updateDataSource, deleteDataSource,
+  regenerateDataSourceToken). Per Rule 0 evaluation: the Data Source
+  lifecycle is a USER-OBSERVABLE Management capability — operators CRUD
+  registered data sources + rotate ingestion tokens via the Management →
+  Datasources tab. The system-mission.md P-08 sub-feature seed names
+  "Datasources tab (audit, edit, link Collector + Namespace)" as a
+  distinct sub-feature; this anchors F-031 as P-08:F-007, the FOURTH
+  P-08 UI-admin lifecycle sibling alongside F-019 (Owner), F-020
+  (Collector), F-028 (Namespace).
+
+  Dedup (rev-7.1 protocol, registry-search-spawn.md): the
+  lineage/_extractor/.venv exists, but this agent environment has no
+  Bash tool to invoke `lineage-extractor graph-search`; per the
+  playbook's "graph layer unavailable" fallback the dedup was run as a
+  grep over feature-flows/index.yaml for `DataSource` / `datasource` /
+  `Datasources tab`. dedup_fallback: grep. The grep is conclusive: every
+  hit is either F-008 (the S2S `/ingestion/datasources` path), F-023
+  (Directory's read-only `/api/directory/datasources`), or an F-020 /
+  F-028 cross-reference. There is NO existing UI-admin DataSource
+  lifecycle feature. The batch-W DataSourceController CLASS sidecar was
+  used only to EXTEND F-008 by counterfactual (UI-admin path DISJOINT
+  from S2S). MINT F-031 is therefore correct — the 5 endpoint-method
+  sidecars give the full lifecycle shape and the UI-admin Management
+  capability is too rich to fold into F-008 (which is the P-10 S2S
+  ingestion pillar) without losing the user-observable Management shape.
+
+  The substitution from EXTEND-F-008 to MINT-F-031 is justified
+  because (a) the UI-admin half is a different pillar (P-08 Management)
+  from F-008's pillar (P-10 Ingestion); (b) the substrate evidence —
+  5-endpoint controller surface + the REPLACE-not-MERGE update + the
+  cascade-guarded soft-delete + the destructive in-place token rotation
+  + the namespace side-door — is the operator-facing lifecycle, not the
+  S2S receiving end; (c) F-031 is the structural twin of F-020
+  (Collector Lifecycle) which itself was minted (not folded into F-008)
+  for exactly this reason in batch Q.
+
+  Rule 6 pre-emit coherence check (LSN-018): grepped the 4 other
+  registries (refactoring-scopes, implicit-adrs, test-map, doc-gaps) for
+  the F-031 anchors (DataSource / data_source / regenerateDataSourceToken
+  / DATA_SOURCE_). STRENGTHENS: DOC-GAP-082 (the 29-sidecar
+  DISABLED-bypass meta-finding) — F-031's disabled_mode_bypass facets
+  add the 4 DataSourceController mutating verbs as further surfaces;
+  back-link added (related_doc_gaps: DOC-GAP-082). The
+  `regenerate_datasource_token_not_reactive_transactional` finding F-008
+  surfaced via the batch-W class sidecar is PRIMARY-SOURCE confirmed at
+  the method tier and homed on F-031. SUPERSEDES: 0. CONFLICTS: 0 — no
+  registry artefact disagrees with any F-031 claim; all `datasource`
+  hits in the other registries concern the S2S `/ingestion/datasources`
+  surface (F-008) or the Directory `/api/directory/datasources` surface
+  (F-023), both DISTINCT from this feature's `/api/datasources`
+  UI-admin CRUD. No state/coherence-conflicts-batch-ZB.md needed.
+
+  Cross-references emit back-links to F-008 (DISJOINT S2S half), F-020
+  (structural twin — shared token infrastructure), F-028 (the
+  namespace_name side-door is one of F-028's catalogued call sites),
+  F-019 (sibling P-08 lifecycle), F-010 (orphan-token GC gap), F-006
+  (the central RBAC gate).

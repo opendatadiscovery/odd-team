@@ -1,0 +1,96 @@
+gap_id: TEST-GAP-898
+category: missing-integration
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java DataSourceController controller-method:regenerateDataSourceToken"
+pillars_affected: [P-08, P-10]
+surfaced_by:
+  - "odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken.md:tests_coverage_semantic.uncovered_behaviours.[Destructive rotation cross-path: after PUT /api/datasources/{id}/token, the OLD token receives 401 on POST /ingestion/entities and the NEW token receives non-401]"
+behaviour: |-
+  **CRITICAL — `PUT /api/datasources/{data_source_id}/token` is a DESTRUCTIVE in-place
+  credential rotation whose BINARY-CUTOVER contract is entirely untested at every
+  layer. The single most operationally important uncovered behaviour on the
+  DataSourceController surface: the instant `tokenRepository.updateToken` commits,
+  the OLD data-source token must start failing `POST /ingestion/entities` with 401
+  `Token is not correct` and the NEW token must start authenticating — with NO
+  two-valid window and NO zero-valid window.** Method-level primary source from the
+  batch-ZB `regenerateDataSourceToken` controller-method sidecar:
+
+  - `DataSourceServiceImpl.regenerateDataSourceToken` (DataSourceServiceImpl.java:99-106):
+    loads the `DataSourceDto`, hands its `TokenPojo` to `tokenGenerator.regenerateToken`
+    (an in-memory `setValue(RandomStringUtils.randomAlphanumeric(40))` mutation), persists
+    via `tokenRepository.updateToken` — a single jOOQ `UPDATE token SET value=<new> WHERE id=:id`.
+  - There is exactly ONE `token` row per data source (1:1 via `DataSourcePojo.token_id`);
+    the UPDATE overwrites the old value. There is NO `previous_token` column and NO
+    `valid_until` column anywhere in the schema — revocation of the old token is a
+    side effect of overwriting it (sidecar `implicit_adrs[0]`, `stress_findings.name_behavior_pairs`).
+  - **The downstream consumer** is `IngestionDataEntitiesFilter` (IngestionDataEntitiesFilter.java:43-58):
+    it resolves `dataSourceRepository.getDtoByOddrn(...)`, takes `dto.token()`, and does a
+    literal plaintext `.equals(token)` (line 56-57) — throwing `AccessDeniedException("Token is
+    not correct")` on mismatch. The moment `updateToken` commits, an in-flight ingestion
+    request carrying the old token starts 401-ing.
+
+  **Why CRITICAL**: this is the load-bearing operator contract of the entire token-rotation
+  feature — "rotation invalidates the old credential, the new one works." It is also a
+  security contract (a leaked token MUST stop working after rotation). The endpoint, its
+  service, its repository, and the cross-path integration with `IngestionDataEntitiesFilter`
+  ALL have ZERO direct test coverage (Glob-verified at the class sidecar — no
+  `DataSourceControllerTest`, no `DataSourceServiceImplTest`). A regression — e.g. a
+  `getDtoByOddrn` cache, a `.contains` instead of `.equals`, an FTS-stale token snapshot —
+  would silently break the binary cutover with NO test to catch it. The sidecar rates this
+  the highest-leverage single test on the node and the maintainer's class sidecar already
+  recorded an open CRITICAL test-gap for it; this entry pins it with the specific probe.
+
+  **Test gap shape**: a `WebTestClient` / `@SpringBootTest` integration test (or a
+  Testcontainers ingestion-flow test) that: (1) registers a data source, captures its
+  token T_old; (2) `POST /ingestion/entities` with T_old → assert non-401 (the baseline);
+  (3) `PUT /api/datasources/{id}/token` → capture the response body's NEW plaintext
+  T_new (T_new != T_old); (4) `POST /ingestion/entities` with T_old → assert 401
+  `Token is not correct`; (5) `POST /ingestion/entities` with T_new → assert non-401.
+  Pinned by probe P-051.
+test_class: missing-integration
+criticality_rationale: |-
+  CRITICAL per Rule 3: the regenerateDataSourceToken node carries a HIGH-severity
+  security_aggregate weakness cluster (destructive rotation, plaintext token, DISABLED
+  bypass, no audit log — sidecar security.known_security_gaps lists 4 HIGH-severity
+  entries). The binary-cutover behaviour is BOTH a correctness contract and a security
+  contract (a rotated-away token MUST stop authenticating). The sidecar itself rates this
+  uncovered behaviour CRITICAL and names it "the single most operationally important
+  uncovered behaviour." pillars_affected len 2 (P-08 Datasources management + P-10
+  ingestion-S2S boundary) — the test spans the rotation endpoint and the ingestion filter,
+  so it is integration-class crossing two pillars; the cross-pillar bump is already
+  absorbed (the base security rating is CRITICAL, capped).
+test_files_existing:
+  - "NONE — no DataSourceControllerTest / DataSourceServiceImplTest / TokenGeneratorImplTest exists (Glob-verified this batch under odd-platform-api/src/test — confirmed absent). CollectorRepositoryImplTest.java EXISTS for the analogous Collector path but does NOT exercise the data-source token-rotation flow."
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DataSourceTokenRotationCutoverTest.java"
+  name: "regenerateDataSourceToken_oldTokenStops401NewTokenStarts200OnIngestionEntities_pinsBinaryCutover"
+evidence:
+  - "regenerateDataSourceToken sidecar says (tests_coverage_semantic.uncovered_behaviours): 'Destructive rotation cross-path: after PUT /api/datasources/{id}/token, the OLD token receives 401 on POST /ingestion/entities and the NEW token receives non-401. test_class: integration; criticality: CRITICAL; note: The single most operationally important uncovered behaviour — pinned by probe P-051.'"
+  - "regenerateDataSourceToken sidecar says (coupling): 'The rotated data-source token is consumed by IngestionDataEntitiesFilter for POST /ingestion/entities (IngestionDataEntitiesFilter.java:43-58): the filter resolves dataSourceRepository.getDtoByOddrn(...), takes dto.token() if non-null, and does a literal plaintext .equals(token) (line 56-57) — throwing AccessDeniedException(Token is not correct) on mismatch. The moment updateToken commits, an in-flight ingestion request carrying the old token starts 401-ing.'"
+  - "regenerateDataSourceToken sidecar says (bugs_limitations_corner_cases): 'No rotation grace period — rotation is a destructive in-place UPDATE with no old/new overlap. A collector / push-client still using the old token starts failing POST /ingestion/entities with 401 Token is not correct the moment the UPDATE commits.' severity HIGH"
+  - "Verified at primary source via the sidecar: DataSourceServiceImpl.java:99-106 + ReactiveTokenRepositoryImpl.java:30-39 (single UPDATE) + IngestionDataEntitiesFilter.java:43-58 (plaintext .equals)"
+  - "Verified this batch via Glob: no DataSourceControllerTest.java / DataSourceServiceImplTest.java exists under odd-platform-api/src/test (the test tree exists — 70 *Test.java files — but none for DataSourceController)"
+cross_references:
+  - "TEST-GAP-750 (batch W — end-to-end plaintext token chain at DataSourceController + CollectorController; DISTINCT from THIS gap — TEST-GAP-750 pins the plaintext-render-in-response shape, TEST-GAP-898 pins the destructive-cutover authentication contract against the ingestion filter)"
+  - "TEST-GAP-749 (batch W — regenerateDataSourceToken NOT @ReactiveTransactional split-state; DISTINCT — that gap pins the partial-write failure mode, this one pins the success-path cutover)"
+  - "TEST-GAP-119 (batch 2026-05-11 — datasource-without-token fallback to collector token in IngestionDataEntitiesFilter; sibling ingestion-filter coverage gap)"
+  - "doc-gaps:DOC-GAP-034 (Token Rotation operational mechanics absent from enable-security pages — DOUBLE-JEOPARDY: the binary-cutover / no-grace-period behaviour is BOTH undocumented AND untested)"
+  - "probe P-051 (lineage/odd-platform/probes/P-051.yaml — the binary-cutover probe)"
+  - "REFACTOR-NNN candidate: add a rotation grace window (previous_token + valid_until columns) so a collector restart is not a hard lockout"
+related_features: [F-008, F-020]
+related_pillar_features: ["P-08:F-NN-Datasources-tab", "P-10:F-001"]
+related_refactor_ids: []
+related_doc_gap_ids: [DOC-GAP-034]
+proposed_action: |-
+  Add `DataSourceTokenRotationCutoverTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. The single load-bearing test method:
+  1. `regenerateDataSourceToken_oldTokenStops401NewTokenStarts200OnIngestionEntities_pinsBinaryCutover` — register a data source via POST /api/datasources, capture token T_old from the response; with `auth.ingestion.filter.enabled=true`, POST /ingestion/entities with T_old and assert the request is NOT rejected with 401; PUT /api/datasources/{id}/token and capture the NEW plaintext token T_new from the response body (assert T_new != T_old, both 40-char alphanumeric); POST /ingestion/entities with T_old and assert 401 AccessDeniedException "Token is not correct"; POST /ingestion/entities with T_new and assert non-401.
+
+  This is the highest-leverage single test on the regenerateDataSourceToken node — it
+  protects the load-bearing operator contract (rotation invalidates the old credential)
+  AND would catch a regression that flips the response token to masked (breaking the
+  operator's copy-to-clipboard flow). Pair with DOC-GAP-034: the token-rotation operational
+  mechanics (destructive, no grace period, immediate ingestion lockout) must be documented
+  in the enable-security pages.
+batch: 2026-05-21-ZB
+feature_id: F-008

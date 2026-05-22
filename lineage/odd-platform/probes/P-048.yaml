@@ -1,0 +1,85 @@
+---
+probe_id: P-048
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DataSourceController__controller-method__deleteDataSource.md
+emitted_at: 2026-05-21T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category E — cascade completeness across FTS / lineage):
+  when a data source is deleted (soft-delete), the service `delete`
+  (DataSourceServiceImpl.java:85-96) does NOT call any
+  `searchEntrypointRepository.*` method — unlike `update`
+  (DataSourceServiceImpl.java:127-136) which refreshes FTS vectors. Delete
+  also performs no lineage cleanup. Hypothesis: after a data source is soft-
+  deleted, (a) its search_entrypoint FTS vector row is NOT cleared — the row
+  persists; whether the soft-deleted data source still surfaces in catalog
+  search depends entirely on whether the search query JOINs `data_source` with
+  a `deleted_at IS NULL` predicate; (b) any lineage edges that referenced the
+  data source's entities are not torn down by this code path. This probe pins
+  the FTS-leak half: does a soft-deleted data source still appear in search
+  results?
+---
+arrange:
+  - kind: docker-compose-up
+    compose_profile: odd-minimal
+  - kind: rest
+    method: POST
+    path: /api/datasources
+    body: |
+      {"name": "p048-fts-leak-zzqtag", "oddrn": "//probe/p048/src",
+       "description": "probe P-048 fts-after-delete check"}
+    capture_as: created
+  - kind: rest
+    method: PUT
+    path: /api/datasources/:created.id
+    body: |
+      {"name": "p048-fts-leak-zzqtag", "description": "probe P-048 updated to force FTS vector write"}
+    capture_as: updated
+  - kind: sql
+    query: |
+      SELECT count(*) AS n FROM search_entrypoint
+      WHERE data_source_id = :created.id
+    capture_as: fts_before
+act:
+  - kind: rest
+    method: DELETE
+    path: /api/datasources/:created.id
+    capture_as: delete_response
+observe:
+  - kind: sql
+    query: |
+      SELECT count(*) AS n FROM search_entrypoint
+      WHERE data_source_id = :created.id
+    capture_as: fts_after
+  - kind: sql
+    query: |
+      SELECT deleted_at FROM data_source WHERE id = :created.id
+    capture_as: ds_row_after
+assert:
+  - "delete_response.status == 204"
+  - "ds_row_after.deleted_at != null"
+  - "fts_after.n == fts_before.n      # FTS vector NOT cleared by delete — leak hypothesis"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DataSourceController__controller-method__deleteDataSource
+    - odd-platform__java__DataSourceController__controller-method__updateDataSource
+  retrospectives: []
+realism_caveats: |
+  The probe assumes the FTS index for data sources is the `search_entrypoint`
+  table keyed by `data_source_id` — confirmed indirectly via
+  DataSourceServiceImpl.updateSearchVectors (updateChangedDataSourceVector /
+  clearNamespaceVector) but the exact `search_entrypoint` column name was not
+  read in this sidecar's scope; the probe-runner must confirm the column
+  against the search-entrypoint schema before running, and adjust the SQL.
+  The probe does NOT verify whether catalog SEARCH (the user-facing query)
+  excludes the soft-deleted data source — that requires hitting the search
+  endpoint and is a follow-on. If `fts_after.n == 0`, a delete-time FTS
+  cleanup exists that the static walk missed.

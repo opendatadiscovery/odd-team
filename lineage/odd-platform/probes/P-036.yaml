@@ -1,0 +1,85 @@
+---
+probe_id: P-036
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DataSourceController__controller-method__getDataSourceList
+emitted_at: 2026-05-21T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (REFACTOR-425 refinement — Category C / Category F `query`
+  parameter): GET /api/datasources?query=<text> — the page predicate is
+  DATA_SOURCE.NAME.startsWithIgnoreCase(query) (ReactiveDataSourceRepositoryImpl
+  queryCondition line 156); the empty-page count fallback fetchCount(query) uses
+  listCondition -> nameField.containsIgnoreCase(query)
+  (ReactiveAbstractCRUDRepository.java:243). The two predicates DIVERGE. The
+  divergence only surfaces in the EMPTY-PAGE branch of JooqQueryHelper.pageifyResult
+  (line 95-101): when the startsWith page returns ZERO rows, total is taken from
+  fetchCount (the contains count). Hypothesis: a query that matches by `contains`
+  but not by `startsWith` produces an EMPTY items[] list WITH a non-zero
+  page_info.total — a phantom-count. When the page is non-empty, total comes from
+  the window-function count over the startsWith query (JooqQueryHelper.java:73,114)
+  and the two AGREE. This probe pins the exact operator-visible shape so the
+  doc-gap-finder / REFACTOR-425 fix can target the right branch.
+---
+arrange:
+  - kind: docker-compose-up
+    compose_file: odd-minimal
+  - kind: sql
+    query: |
+      INSERT INTO token (id, value, created_at, updated_at)
+      VALUES (8901, 'p036tokenAAAAAAAAAAAAAAAAAAAAAAAAAAAA01', NOW(), NOW())
+  - kind: sql
+    query: |
+      -- name 'my-snowflake-dev' CONTAINS 'snow' but does NOT START WITH 'snow'
+      INSERT INTO data_source (id, name, oddrn, description, token_id, created_at, updated_at)
+      VALUES (8901, 'my-snowflake-dev', '//p036/snow', 'd', 8901, NOW(), NOW())
+act:
+  - kind: rest
+    method: GET
+    path: /api/datasources?page=1&size=10&query=snow
+    auth: login-form-authenticated-read-only-user
+    capture_as: contains_only_response
+  - kind: rest
+    method: GET
+    path: /api/datasources?page=1&size=10&query=my-snow
+    auth: login-form-authenticated-read-only-user
+    capture_as: startswith_match_response
+observe:
+  - kind: extract
+    expr: "len(contains_only_response.items)"
+    capture_as: contains_only_item_count
+  - kind: extract
+    expr: "contains_only_response.page_info.total"
+    capture_as: contains_only_total
+  - kind: extract
+    expr: "len(startswith_match_response.items)"
+    capture_as: startswith_item_count
+  - kind: extract
+    expr: "startswith_match_response.page_info.total"
+    capture_as: startswith_total
+assert:
+  - "contains_only_item_count == 0  # 'my-snowflake-dev' does NOT start with 'snow'"
+  - "contains_only_total == 1  # but fetchCount uses containsIgnoreCase -> phantom count"
+  - "startswith_item_count == 1  # 'my-snowflake-dev' starts with 'my-snow'"
+  - "startswith_total == 1  # non-empty page: window-count agrees with the page predicate"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DataSourceController__controller-method__getDataSourceList
+    - odd-platform__java__repository__reactive__repository__ReactiveDataSourceRepositoryImpl
+  retrospectives: [LSN-019]
+realism_caveats: |
+  This probe REFINES the class sidecar's REFACTOR-425 framing ("page shows 1,
+  total reports 2"). The static re-trace through JooqQueryHelper.pageifyResult
+  shows the divergence is gated by the EMPTY-PAGE branch only — when the page is
+  non-empty the window-function count uses the SAME startsWith query and the
+  numbers agree. The operator-visible defect is therefore an empty list with a
+  non-zero total ("0 of 1"), not a wrong count on a populated page. If the
+  contains_only_total asserts 0, the soft-delete listCondition override changed
+  the predicate and the trace must be re-walked.

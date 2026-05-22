@@ -1,0 +1,85 @@
+gap_id: TEST-GAP-902
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java DataSourceController controller-method:registerDataSource"
+pillars_affected: [P-08]
+surfaced_by:
+  - "odd-platform__java__DataSourceController__controller-method__registerDataSource.md:tests_coverage_semantic.uncovered_behaviours.[Transaction rollback on collision: a failed register (ODDRN collision) leaves NO orphan token row and NO orphan namespace row]"
+behaviour: |-
+  **HIGH — `POST /api/datasources` mints a token row + (conditionally) a namespace row +
+  the data_source row inside ONE `@ReactiveTransactional` boundary. The atomicity invariant
+  — a failed register leaks NO orphan token row and NO orphan namespace row — is entirely
+  untested.** Method-level primary source from the batch-ZB `registerDataSource`
+  controller-method sidecar:
+
+  - `DataSourceServiceImpl.create` (DataSourceServiceImpl.java:51-66, annotated
+    `@ReactiveTransactional` at line 52) runs THREE sequential DB writes inside one R2DBC
+    transaction: `INSERT INTO token` (line 54, unconditional — a fresh 40-char token is
+    minted on EVERY register), conditional `INSERT INTO namespace` (line 56-57, when
+    `namespace_name` is non-empty and unknown), `INSERT INTO data_source` (line 122-123).
+  - The `data_source` ODDRN partial-unique index raises `UniqueConstraintException`
+    (SQLSTATE 23505) on a live-ODDRN collision; the empty-ODDRN check throws
+    `BadUserRequestException` (DataSourceServiceImpl.java:119-120) — both INSIDE the
+    transaction boundary.
+  - **The invariant to pin**: when the `data_source` INSERT fails (ODDRN collision) AFTER
+    the token INSERT and the namespace INSERT have already executed in the same
+    transaction, the `@ReactiveTransactional` rollback MUST discard the token row and the
+    namespace row — leaving no orphans.
+
+  **Why this matters**: orphan tokens are a confirmed accumulation hazard on the DELETE
+  path (TEST-GAP-905 — the `token` table has no `deleted_at` and no GC). If the rollback
+  on a FAILED register did NOT discard the token row, every failed-register attempt would
+  ALSO leak a token — compounding the unbounded `token`-table growth AND scattering stale
+  plaintext secrets at rest. The `@ReactiveTransactional` annotation is the only thing
+  protecting this invariant, and there is no test (Glob-verified — no
+  `DataSourceControllerTest`, no `DataSourceServiceImplTest`). A regression removing the
+  annotation, or splitting `create` into separately-committed writes, would silently start
+  leaking token + namespace rows on every failed register.
+
+  **Test gap shape**: a `@SpringBootTest` integration test that: (1) registers a data
+  source with ODDRN X (succeeds); (2) attempts a SECOND register with the SAME ODDRN X
+  AND a never-seen `namespace_name` AND records the `token` / `namespace` table row counts
+  before; (3) asserts the second register returns HTTP 400 (UniqueConstraintException);
+  (4) asserts `SELECT COUNT(*) FROM token` is UNCHANGED from the pre-call count (no orphan
+  token); (5) asserts `SELECT COUNT(*) FROM namespace WHERE name = <the never-seen name>`
+  returns 0 (the namespace INSERT rolled back). Pinned by probe P-041.
+test_class: missing-integration
+criticality_rationale: |-
+  HIGH per Rule 3: the registerDataSource sidecar rates this uncovered behaviour HIGH and
+  flags it the second-priority gap on the node (after the namespace-bypass security gap).
+  The atomicity invariant is the only thing preventing a failed register from compounding
+  the confirmed orphan-token accumulation hazard (TEST-GAP-905) AND scattering stale
+  plaintext secrets. Not CRITICAL — the failure mode is resource accumulation + stale
+  secrets at rest, not an active cross-boundary breach, and the @ReactiveTransactional
+  annotation IS present (the gap is the absence of a regression guard, not a known live
+  bug). pillars_affected len 1 (P-08) — no cross-pillar bump.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DataSourceRegisterTransactionRollbackTest.java"
+  name: "registerDataSource_oddrnCollision_rollsBackTokenAndNamespaceInserts_noOrphanRows"
+evidence:
+  - "registerDataSource sidecar says (tests_coverage_semantic.uncovered_behaviours): 'Transaction rollback on collision: a failed register (ODDRN collision) leaves NO orphan token row and NO orphan namespace row. test_class: integration; criticality: HIGH; note: Probe P-041.'"
+  - "registerDataSource sidecar says (gaps): 'The second priority is the transaction-rollback integration test (P-041) — it is the only test that protects the @ReactiveTransactional invariant that a failed register does not leak orphan token/namespace rows.'"
+  - "registerDataSource sidecar says (dependencies_semantic.coupling): 'Transactional coupling: the token row, the namespace row, and the data_source row are created within ONE @ReactiveTransactional boundary — a failure in any write should roll back the others (verified-by-probe — see stress_findings / P-041).'"
+  - "registerDataSource sidecar says (downstream_side_effects.db-write[token]): 'INSERT INTO token — a new 40-char-secret token row is created on EVERY register call (unconditional).'"
+  - "Verified at primary source via the sidecar: DataSourceServiceImpl.java:51-66 (the @ReactiveTransactional create chain — token INSERT line 54, namespace INSERT line 56-57, data_source INSERT line 122-123) + ReactiveTokenRepositoryImpl.java:20-27"
+  - "Verified this batch via Glob: no DataSourceServiceImplTest.java / DataSourceControllerTest.java exists under odd-platform-api/src/test"
+cross_references:
+  - "TEST-GAP-905 (this batch — orphan token on DELETE; the SAME orphan-token accumulation hazard. TEST-GAP-902 pins that a FAILED register must NOT add to it; TEST-GAP-905 pins that a SUCCESSFUL delete DOES add to it — the two together bound the orphan-token leak surface)"
+  - "TEST-GAP-675 (batch W — soft-deleted collector leaves an orphaned TOKEN row; the parallel orphan-token-at-rest finding on the collector path)"
+  - "TEST-GAP-903 (this batch — registerDataSource 201-vs-200 + namespace-bypass STRENGTHEN of TEST-GAP-751 — sibling registerDataSource gaps)"
+  - "probe P-041 (lineage/odd-platform/probes/P-041.yaml — the transaction-rollback probe)"
+related_features: [F-008]
+related_pillar_features: ["P-08:F-NN-Datasources-tab"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `DataSourceRegisterTransactionRollbackTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Two test methods:
+  1. `registerDataSource_oddrnCollision_rollsBackTokenAndNamespaceInserts_noOrphanRows` — register a data source with ODDRN X (succeeds); record `SELECT COUNT(*) FROM token` and `SELECT COUNT(*) FROM namespace` as baselines; POST /api/datasources again with ODDRN X AND a never-seen `namespace_name`; assert HTTP 400 (UniqueConstraintException); assert `SELECT COUNT(*) FROM token` equals the baseline (no orphan token from the rolled-back attempt); assert `SELECT COUNT(*) FROM namespace WHERE name = <never-seen name>` returns 0 (the namespace INSERT rolled back).
+  2. `registerDataSource_emptyOddrn_rollsBackTokenInsert_no400Orphan` — POST /api/datasources with `oddrn=''`; assert HTTP 400 (BadUserRequestException); assert `SELECT COUNT(*) FROM token` is unchanged (the empty-ODDRN check throws inside the transaction, so even the unconditional token INSERT rolls back).
+
+  A regression removing `@ReactiveTransactional` from `create`, or splitting it into
+  separately-committed writes, inverts both tests.
+batch: 2026-05-21-ZB
+feature_id: F-008

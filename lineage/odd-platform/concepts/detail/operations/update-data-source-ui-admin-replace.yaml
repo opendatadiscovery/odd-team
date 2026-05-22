@@ -1,0 +1,243 @@
+name: Update Data Source (UI admin path — full-form REPLACE)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-08
+description: |-
+  NEW OPERATION, batch 2026-05-21ZB — surfaced at primary source by
+  the updateDataSource method-level sidecar. PUT
+  /api/datasources/{data_source_id} is the UI-admin "edit data source"
+  action on the Management → Datasources tab. It is the missing
+  third UI-admin DataSource write operation — the registry already
+  carried `register-data-source` (POST) and `regenerate-data-source-token`
+  (PUT .../token); this is the UPDATE operation.
+
+  THE OPERATION — what PUT /api/datasources/{id} does:
+
+    The controller handler (DataSourceController.java:38-45) is a
+    4-line reactive proxy: unwrap the Mono<DataSourceUpdateFormData>
+    body, flatMap into dataSourceService.update(id, form), map to
+    ResponseEntity.ok (HTTP 200). All behaviour lives in
+    DataSourceServiceImpl.update (DataSourceServiceImpl.java:68-83,
+    @ReactiveTransactional):
+      (1) load the existing row via dataSourceRepository.getDto(id);
+      (2) switchIfEmpty → NotFoundException → HTTP 404 when the row is
+          absent OR soft-deleted (getDto filters deleted_at IS NULL);
+      (3) IF namespace_name is non-empty, namespaceService.getOrCreate
+          resolves OR creates the namespace (the NAMESPACE_CREATE
+          side-door — see the namespace-create-side-doors invariant);
+      (4) apply the form to the existing pojo via the MapStruct
+          @MappingTarget mapper DataSourceMapper.applyToPojo
+          (DataSourceMapper.java:49-56);
+      (5) persist the single-row UPDATE;
+      (6) refresh the FTS search vectors (updateChangedDataSourceVector
+          + updateChangedNamespaceVector | clearNamespaceVector).
+    All 6 steps commit/roll back inside ONE @ReactiveTransactional
+    boundary.
+
+  AUTHORIZATION: path-gated by DATA_SOURCE_UPDATE Permission
+  (MANAGEMENT tier) at SecurityConstants.java:118-120. NO @PreAuthorize
+  on the handler, NO programmatic permission check in the service —
+  the gate is 100% declarative. Under auth.type=DISABLED the endpoint
+  is fully open (DisabledSecurityConfiguration permitAll, no
+  principal). S2S X-API-Key grants ADMIN, satisfying DATA_SOURCE_UPDATE
+  unconditionally.
+
+  THE LOAD-BEARING CONTRACT — REPLACE not MERGE:
+
+    `update` is a full-form REPLACE of the 3 mutable fields (name,
+    description, namespace_name), NOT a field-wise MERGE. An omitted
+    PUT-body field deserialises to null and is written as null onto
+    the existing row (MapStruct default SET_TO_NULL; MapperConfig sets
+    no nullValuePropertyMappingStrategy). A partial body to rename a
+    source SILENTLY WIPES the description and detaches the namespace.
+    This is captured at the dedicated invariant
+    `datasource-update-replace-not-merge-mapstruct-set-to-null` — that
+    invariant is the operator hazard; THIS operation entry is the
+    catalogue placement.
+
+  KEY FACTS:
+    - 404-on-missing is a CLEAN fail-fast — the endpoint NEVER
+      silently no-ops on a never-existed or soft-deleted id. This is
+      the SAME guard DataEntityServiceImpl.createMetadata uses and the
+      one DataEntityServiceImpl.upsertDescription deliberately omits
+      (the F-004 counter-case).
+    - The token is NOT in DataSourceUpdateFormData — this endpoint
+      never touches the token; rotation is the separate
+      regenerateDataSourceToken endpoint.
+    - Renaming to a `name` already held by another LIVE data source
+      raises SQLSTATE 23505 → HTTP 400 UniqueConstraintException (the
+      data_source_name partial-unique index).
+    - The endpoint emits NO Activity Event — the edit is invisible to
+      the Activity Feed (the data_source-mutation audit gap).
+    - Concurrent PUTs to the same id are last-writer-wins with NO
+      conflict detection (no optimistic-lock version column on
+      data_source) — a lost-update window.
+    - Returns HTTP 200 (controller line 44) but openapi.yaml:482
+      declares 201 — the codebase-wide 200-vs-201 drift class.
+
+  DISTINCT FROM the S2S ingestion path
+  (IngestionController.createDataSourceEntity, POST /ingestion/datasources):
+  the UI update is full-form REPLACE; the S2S path is UPSERT-by-ODDRN
+  partial-merge of name + description only. See the
+  datasource-ui-admin-disjoint-from-s2s-five-vertex-triangulation
+  invariant for the 5-vertex architectural picture.
+nodes:
+  - odd-platform java DataSourceController controller-method:updateDataSource
+contributors:
+  - |-
+    updateDataSource batch ZB (PRIMARY SOURCE):
+    concepts.operations[update — PUT /api/datasources/{data_source_id}
+    — full-form REPLACE of name/description/namespace_name on an
+    existing live data source] +
+    concepts.invariants[the endpoint never creates a row; REPLACE-not-MERGE;
+    one @ReactiveTransactional boundary; token never touched;
+    path-based DATA_SOURCE_UPDATE gate] +
+    downstream_side_effects[UPDATE data_source; conditional INSERT
+    namespace; UPDATE search_entrypoint x2; page-render; NO Activity
+    Event] +
+    implicit_adrs.[0] (full-form REPLACE) + implicit_adrs.[1]
+    (404 fail-fast)
+evidence:
+  - updateDataSource.md:concepts.operations.update
+  - updateDataSource.md:concepts.invariants (REPLACE; 404-on-missing; @ReactiveTransactional; DATA_SOURCE_UPDATE)
+  - updateDataSource.md:implicit_adrs.[0,1] (full-form REPLACE; 404 fail-fast anti-silent-write guard)
+  - updateDataSource.md:downstream_side_effects (UPDATE data_source + conditional namespace INSERT + 2 FTS writes + NO Activity Event)
+  - updateDataSource.md:security.authorization_assertions (PUT /api/datasources/{data_source_id} requires DATA_SOURCE_UPDATE — SecurityConstants.java:118-120)
+  - |-
+    Cross-references invariant datasource-update-replace-not-merge-mapstruct-set-to-null
+    (the operator-hazard companion — the REPLACE silently nulls
+    omitted fields)
+  - |-
+    Cross-references invariant datasource-ui-admin-disjoint-from-s2s-five-vertex-triangulation-batch-w
+    (the 5-vertex architectural picture — UI update is vertex 4's
+    REPLACE semantic)
+  - |-
+    Cross-references entity datasource-form-dto-create-update-narrow-mutable-surface
+    (consumes DataSourceUpdateFormData — 3 optional fields)
+axes_present:
+  - controllers
+nodes_count: 1
+contributors_count: 1
+security_aggregate:
+  overall: MEDIUM
+  auth_modes_relevant:
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
+    - DISABLED
+    - S2S
+  ingestion_filter_relevance: NO
+  authorization_consistency:
+    verdict: CONSISTENT
+    detail: |-
+      PUT /api/datasources/{data_source_id} is path-gated by
+      DATA_SOURCE_UPDATE (MANAGEMENT tier) at SecurityConstants.java:118-120.
+      NO @PreAuthorize, NO programmatic check — the gate is 100%
+      declarative, consistent with the platform's path-based RBAC
+      pattern. The DISABLED-mode all-open behaviour is the known
+      platform-wide bypass, not an endpoint-specific gap.
+  owner_scoping:
+    verdict: N/A
+    detail: |-
+      data_source rows are not owner-scoped; the endpoint updates by
+      id with no current-user-owner predicate. DATA_SOURCE_UPDATE is
+      a MANAGEMENT-tier permission, not entity-scoped — a holder can
+      update ANY data source.
+  strengths:
+    - |-
+      Clean 404 fail-fast on a missing/soft-deleted id — the endpoint
+      never silently no-ops (the anti-silent-write guard; cf. the
+      F-004 upsertDescription counter-case)
+    - |-
+      The whole update runs in one @ReactiveTransactional boundary —
+      getDto + namespace get-or-create + UPDATE + 2 FTS writes commit
+      or roll back together
+  weaknesses:
+    - |-
+      DISABLED auth.type makes this destructive edit endpoint fully
+      open — a misconfigured production deployment lets any caller
+      rename/blank any data source (updateDataSource.md
+      security.known_security_gaps — HIGH under DISABLED)
+    - |-
+      namespace_name get-or-create side-effect — an operator with
+      DATA_SOURCE_UPDATE but NOT NAMESPACE_CREATE can create a
+      namespace by editing a data source with an unknown
+      namespace_name (LOW-MEDIUM; the cross-pillar getOrCreate
+      side-door)
+    - |-
+      No Activity Event on the UPDATE — a malicious or mistaken edit
+      (e.g. renaming a source to impersonate another) leaves no audit
+      trail (MEDIUM)
+  cross_file_inconsistencies: []
+  contributing_files:
+    - updateDataSource.md
+  evidence:
+    - updateDataSource.md:security.authorization_assertions
+    - updateDataSource.md:security.known_security_gaps (DISABLED-open; namespace side-door; no Activity Event)
+performance_aggregate:
+  overall: HIGH
+  hot_paths:
+    - |-
+      updateDataSource worst case 4 sequential DB calls inside the
+      @ReactiveTransactional boundary — getDto (1 SELECT, 2 LEFT
+      JOINs), namespaceService.getOrCreate (1 SELECT + conditional 1
+      INSERT), the UPDATE, then 2 FTS vector writes. Not a
+      high-frequency endpoint (operator-initiated edits) — updateDataSource.md
+      performance.hot_paths
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: Single-row per request — no bulk-update surface on the UI side.
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: |-
+      Stateless handler — instances scale horizontally. No FOR UPDATE
+      row lock in the UI update path (distinct from the ingestion
+      path's getIdByOddrnForUpdate) — concurrent edits to the same id
+      are last-writer-wins with NO conflict detection (a lost-update
+      window; no optimistic-lock version column on data_source).
+  strengths:
+    - Reactive Mono — non-blocking; one R2DBC connection held for the @ReactiveTransactional duration
+    - Small fixed-shape payload (3-field DTO + the DataSource response)
+  weaknesses:
+    - |-
+      No optimistic-lock version column on data_source — concurrent
+      operator edits silently lose the earlier write (a
+      correctness-under-concurrency gap, not a throughput gap) —
+      updateDataSource.md performance.known_performance_gaps LOW
+  cross_file_inconsistencies: []
+  contributing_files:
+    - updateDataSource.md
+  evidence:
+    - updateDataSource.md:performance.hot_paths
+    - updateDataSource.md:performance.scaling_characteristics + known_performance_gaps
+notes: |-
+  This operation closes the UI-admin DataSource write trio: the
+  registry already carried register-data-source (POST) and
+  regenerate-data-source-token (PUT .../token); update-data-source
+  (PUT /api/datasources/{id}) was missing. The deleteDataSource
+  operation is the fourth UI-admin write — captured at
+  delete-data-source-ui-admin-guarded-soft-delete (NEW THIS BATCH).
+
+  Cross-cutting connections:
+    - Pairs with the dedicated invariant
+      datasource-update-replace-not-merge-mapstruct-set-to-null
+      (the REPLACE-not-MERGE operator hazard)
+    - Pairs with datasource-ui-admin-disjoint-from-s2s-five-vertex-triangulation-batch-w
+      (the architectural picture — UI update REPLACE vs S2S
+      partial-merge)
+    - Pairs with namespace-create-side-doors-cross-pillar-4-sister-services-batch-w-closure
+      (DATA_SOURCE_UPDATE implicitly grants NAMESPACE_CREATE via
+      DataSourceServiceImpl.update line 75)
+    - Pairs with openapi-status-code-drift-batch-w-extension-to-7-controllers
+      (PUT returns 200; openapi.yaml:482 declares 201)
+    - Pairs with audit-log-presence-asymmetry-2-tier-audit-story
+      (the UPDATE emits no Activity Event)
+    - Pairs with register-data-source + regenerate-data-source-token
+      + delete-data-source-ui-admin-guarded-soft-delete (the 4 UI-admin
+      DataSource write operations)
+
+  One DOC-NNN candidate: document the editable field-set (name,
+  description, namespace_name only — NOT oddrn, NOT token), the
+  REPLACE semantic, and the 404-on-missing behaviour on the
+  /features/management Datasources tab.

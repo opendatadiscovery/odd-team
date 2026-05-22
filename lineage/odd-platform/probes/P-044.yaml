@@ -1,0 +1,82 @@
+---
+probe_id: P-044
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DataSourceController__controller-method__updateDataSource
+emitted_at: 2026-05-21T00:00:00Z
+status: pending-stress-protocol
+feature_id: null  # P-08:F-NN-Datasources-tab not yet carved into an F-NNN
+test_class: security
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category D — authorization gate): PUT /api/datasources/{id}
+  carries a SecurityRule pairing the path with DATA_SOURCE_UPDATE
+  (SecurityConstants.java:118-120). What does the endpoint return for
+  (a) an authenticated user WITHOUT DATA_SOURCE_UPDATE, (b) an authenticated
+  user WITH DATA_SOURCE_UPDATE, (c) an unauthenticated caller, and (d) any
+  caller when auth.type=DISABLED?
+
+  Static trace hypothesis: under LOGIN_FORM, the path-based ReactiveAuthorizationManager
+  rejects (a) with 403 and admits (b); (c) is rejected at the SecurityWebFilterChain
+  with 401 before the controller. Under DISABLED, DisabledSecurityConfiguration
+  sets all paths permitAll and the platform binds no principal — the RBAC
+  manager has no permission set to evaluate, so (d) the mutating PUT is
+  expected to be FULLY OPEN (this is the documented dev-only DISABLED stance
+  and the REFACTOR-185 DISABLED-bypass cluster shape). This probe PINS the
+  4-cell auth outcome for the update endpoint specifically; the DISABLED cell
+  is the operator-hazard cell (LSN-001 / LSN-002 failure shape: a production
+  deployment left on DISABLED exposes destructive datasource edits).
+---
+arrange:
+  - kind: docker-compose-up
+    compose_profile: odd-minimal
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, name, oddrn, description, created_at, updated_at)
+      VALUES (7300, 'p044-target', '//p044/src/target', 'd', NOW(), NOW())
+  - kind: note
+    text: |
+      Run the act/observe block FOUR times, once per scenario, restarting the
+      stack with the stated auth.type each time:
+        S1 auth.type=LOGIN_FORM, session for a user whose Policy grants NO
+           DATA_SOURCE_UPDATE permission.
+        S2 auth.type=LOGIN_FORM, session for a user whose Policy grants
+           DATA_SOURCE_UPDATE.
+        S3 auth.type=LOGIN_FORM, NO session cookie / NO credentials.
+        S4 auth.type=DISABLED, no principal.
+act:
+  - kind: rest
+    method: PUT
+    path: /api/datasources/7300
+    body: '{"name":"p044-attempted-rename","description":"changed"}'
+    capture_as: resp
+observe:
+  - kind: sql
+    query: "SELECT name FROM data_source WHERE id = 7300"
+    capture_as: row_after
+assert:
+  - "S1: resp.status == 403  AND row_after.name == 'p044-target'   # no-permission user blocked, row untouched"
+  - "S2: resp.status == 200  AND row_after.name == 'p044-attempted-rename'  # permitted user succeeds"
+  - "S3: resp.status == 401  AND row_after.name == 'p044-target'   # unauthenticated blocked pre-controller"
+  - "S4: resp.status == 200  AND row_after.name == 'p044-attempted-rename'  # DISABLED: fully open (operator hazard)"
+cleanup:
+  - kind: sql
+    query: "DELETE FROM data_source WHERE id IN (7300)"
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DataSourceController__controller-method__updateDataSource
+    - odd-platform__java__DataSourceController__controller-class__DataSourceController
+  retrospectives: [LSN-001, LSN-002]
+realism_caveats: |
+  The probe needs a seeded Policy + user for S1/S2 — the exact seeding path
+  depends on the policy-engine test fixtures under odd-platform-api/src/test/
+  resources/policy/. The S4 DISABLED cell assumes DisabledSecurityConfiguration
+  permitAll is in effect; if a future config change adds a synthetic anonymous
+  principal, S4's outcome could shift to 403 — re-verify against the active
+  DisabledSecurityConfiguration. OAUTH2 / LDAP modes are not separately probed:
+  they share the same SecurityWebFilterChain + RBAC manager path as LOGIN_FORM
+  for `/api/datasources/**` (only the authentication front-end differs); S1/S2/S3
+  outcomes are expected identical across LOGIN_FORM / OAUTH2 / LDAP.

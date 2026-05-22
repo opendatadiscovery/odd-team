@@ -28,8 +28,7 @@ description: |-
       Side-door grants: TERM_CREATE / TERM_UPDATE implicitly grant
       NAMESPACE_CREATE.
 
-    Service 2 — DataSourceServiceImpl (batch W primary source, NEW
-    THIS BATCH):
+    Service 2 — DataSourceServiceImpl (batch W primary source):
       DataSourceServiceImpl.create (line 52) at line 57 calls
       `if (StringUtils.isNotEmpty(form.getNamespaceName())) {
        namespaceService.getOrCreate(form.getNamespaceName())... }`.
@@ -40,8 +39,7 @@ description: |-
       Side-door grants: DATA_SOURCE_CREATE / DATA_SOURCE_UPDATE
       implicitly grant NAMESPACE_CREATE.
 
-    Service 3 — CollectorServiceImpl (batch W primary source, NEW
-    THIS BATCH):
+    Service 3 — CollectorServiceImpl (batch W primary source):
       CollectorServiceImpl.create (CollectorServiceImpl.java:37-48)
       at line 43 — invokes namespaceService.getOrCreate when
       CollectorFormData.namespaceName is non-empty.
@@ -63,24 +61,38 @@ description: |-
       Side-door grants: DATA_ENTITY_GROUP_CREATE /
       DATA_ENTITY_GROUP_UPDATE implicitly grant NAMESPACE_CREATE.
 
+  STRENGTHENED batch 2026-05-21ZB — the registerDataSource and
+  updateDataSource METHOD-level sidecars CONFIRM Service 2's
+  side-door at METHOD-scoped primary source. The batch-W finding for
+  DataSourceServiceImpl was a CLASS-node corroboration; the two
+  method sidecars deepen it:
+    - registerDataSource.md traces DataSourceServiceImpl.java:56-57
+      (`if (StringUtils.isNotEmpty(form.getNamespaceName()))` →
+      `namespaceService.getOrCreate`) → NamespaceServiceImpl.java:37-40
+      (`getByName(name).switchIfEmpty(createByName(name))` — creates
+      if absent) and frames the bypass as a MEDIUM
+      bugs_limitations_corner_cases entry + a security.known_security_gaps
+      entry. The contract reason is structural: DataSourceFormData
+      offers ONLY name-based namespace selection (no namespace_id
+      field, components.yaml:1303-1315), so the create-on-miss is
+      unavoidable. Probe P-039 pins the register-path bypass —
+      'a principal with DATA_SOURCE_CREATE but NOT NAMESPACE_CREATE
+      creates a brand-new namespace via the namespace_name field'.
+    - updateDataSource.md traces the SAME pattern at
+      DataSourceServiceImpl.java:74-75 under the DATA_SOURCE_UPDATE
+      gate — confirming the side-door on the UPDATE path, not only
+      create.
+  This is method-scoped primary-source confirmation; it does NOT
+  widen the 4-service enumeration (the class node already named
+  DataSourceServiceImpl) — it raises confidence from class-node
+  corroboration to method-level file:line + a dedicated probe.
+
   THE FRONT-DOOR — NamespaceController (batch W primary source):
 
     NamespaceController.createNamespace (POST /api/namespaces) is
     the canonical 'dedicated' creation endpoint, gated by
     NAMESPACE_CREATE at SecurityConstants.java:98-102. This is the
     FRONT-DOOR; the four side-doors above bypass this gate entirely.
-
-    NamespaceController batch W confirms the front-door:
-    concepts.invariants.[1] — 'Authorization is enforced ONLY at
-    the /api/namespaces[...] path; the side-door creation path via
-    namespaceService.getOrCreate(name) exposed through 4 OTHER
-    services (TermServiceImpl, DataSourceServiceImpl,
-    CollectorServiceImpl, DataEntityGroupServiceImpl) bypasses
-    NAMESPACE_CREATE entirely.'
-
-    The controller-class sidecar itself explicitly enumerates the
-    side-door pattern at the front-door's defence — making the
-    pattern visible from BOTH sides of the architecture.
 
   THE COMPLETE BYPASS PICTURE — what a permission audit must consider:
 
@@ -95,8 +107,7 @@ description: |-
     NAMESPACE_CREATE. An operator authoring an RBAC policy that
     'gives data-engineering team TERM_CREATE on namespace=X' EXPECTS
     the team can only author terms inside namespace X. The reality:
-    the team can also create new namespaces called 'finance' or
-    'compliance' or whatever they want — without holding
+    the team can also create new namespaces — without holding
     NAMESPACE_CREATE.
 
   THE COMPOUND WITH CROSS-NAMESPACE-TERM-POLLUTION (cross-link):
@@ -104,18 +115,7 @@ description: |-
     Combined with the f-002-cross-namespace-term-pollution-ui-surface
     invariant (which captures the symmetric bug on the UI tier —
     Dictionary tab renders all namespaces), the namespace side-door
-    AMPLIFIES the cross-namespace pollution:
-      - A user with TERM_CREATE on namespace X creates a NEW
-        namespace Y via the side-door.
-      - The new namespace Y is visible to every other user via the
-        Dictionary tab.
-      - Terms created in namespace Y inherit the user's
-        TERM_CREATE-on-namespace-X scope (the resource extractor
-        is namespace-scoped); the user can author terms in their
-        OWN newly-minted namespace.
-      - The new namespace appears alongside operator-curated
-        namespaces; no UI distinction marks it as user-side-door
-        creation.
+    AMPLIFIES the cross-namespace pollution.
 
   THE COMPOUND WITH PERMISSION-BYPASS-VIA-OWNER-AUTO-CREATE (cross-link):
 
@@ -128,11 +128,6 @@ description: |-
       Class B (owner auto-create at the binding controller):
               OwnerController.createOwner side-door (REFACTOR-222
               batch H).
-
-    Both classes share the architectural principle: the dedicated
-    *_CREATE permission is bypassable via a parent endpoint whose
-    own permission gates a different concept (binding, linking,
-    grouping) but whose side-effect creates the dedicated entity.
 
   THE OUTSTANDING ENUMERATION — *_CREATE permissions yet to
   verify (cross-pillar audit follow-up):
@@ -180,6 +175,8 @@ nodes:
   - odd-platform java service service:TermServiceImpl
   - odd-platform java service service:DataEntityGroupServiceImpl
   - odd-platform java service service:NamespaceServiceImpl
+  - odd-platform java DataSourceController controller-method:registerDataSource
+  - odd-platform java DataSourceController controller-method:updateDataSource
 
 contributors:
   - |-
@@ -211,6 +208,20 @@ contributors:
     NamespaceServiceImpl batch W (CORROBORATING — the FRONT-DOOR
     service that the side-doors bypass; line 73-90 cascade-guard
     + line 92-97 dual FTS-vector update)
+  - |-
+    STRENGTHENS — registerDataSource.md + updateDataSource.md
+    (batch ZB — Service 2 confirmed at METHOD-scoped primary source).
+    registerDataSource.md traces DataSourceServiceImpl.java:56-57 →
+    NamespaceServiceImpl.java:37-40 (getByName.switchIfEmpty(createByName))
+    and frames the bypass as a MEDIUM bugs_limitations_corner_cases
+    entry + a security.known_security_gaps entry; probe P-039 pins
+    the register-path bypass. updateDataSource.md confirms the SAME
+    side-door at DataSourceServiceImpl.java:74-75 under the
+    DATA_SOURCE_UPDATE gate — confirming the bypass on the UPDATE
+    path as well as create. The contract reason is structural —
+    DataSourceFormData offers no namespace_id field, only name-based
+    selection (components.yaml:1303-1315). Method-scoped confirmation;
+    does NOT widen the 4-service enumeration.
 
 evidence:
   - |-
@@ -238,6 +249,18 @@ evidence:
     — NamespaceService.getOrCreate(name) — invoked from create/update
     when CollectorFormData.namespace_name is non-empty
   - |-
+    STRENGTHENS — batch ZB DataSource method sidecars:
+    registerDataSource.md:bugs_limitations_corner_cases.[0] MEDIUM
+    (Implicit namespace creation bypasses NAMESPACE_CREATE) —
+    evidence: DataSourceServiceImpl.java:56-57 +
+    NamespaceServiceImpl.java:37-40 + SecurityConstants.java:116-117 +
+    registerDataSource.md:security.known_security_gaps +
+    registerDataSource.md:stress_findings.request_inputs[namespace_name]
+    (DRIFT_INPUT_NAME_VS_IMPLEMENTATION) + probe P-039 +
+    updateDataSource.md:security.known_security_gaps (namespace_name
+    get-or-create side-effect — DATA_SOURCE_UPDATE implicitly grants
+    NAMESPACE_CREATE — DataSourceServiceImpl.java:74-76)
+  - |-
     Cross-references master invariant
     namespace-create-tag-create-side-doors-via-termcontroller-unguarded-paths
     (the existing TermController-only framing; THIS invariant
@@ -257,6 +280,11 @@ evidence:
     Cross-references concept f-002-cross-namespace-term-pollution-ui-surface-confirmed-dictionary-tab-renders-all-namespaces
     (the COMPOUND class — namespace side-door amplifies the
     cross-namespace pollution)
+  - |-
+    Cross-references entity datasource-form-dto-create-update-narrow-mutable-surface
+    (the DataSourceFormData / DataSourceUpdateFormData name-only
+    namespace_name field is the structural enabler of the side-door —
+    NEW batch ZB)
 
 axes_present:
   - controllers
@@ -268,7 +296,8 @@ cross_batch_refs:
   - batch-H (OwnerController side-door — REFACTOR-222 family — sibling architectural class)
   - batch-K (TermServiceImpl batch K — TAG_CREATE-via-upsertTags initial finding)
   - batch-U (TermController + TermServiceImpl — NAMESPACE_CREATE + TAG_CREATE side-door initial enumeration)
-  - batch-W (NamespaceController + DataSourceController + CollectorController + Term/DataEntityGroup confirmation — 4-service closure, THIS INVARIANT)
+  - batch-W (NamespaceController + DataSourceController + CollectorController + Term/DataEntityGroup confirmation — 4-service closure)
+  - batch-ZB (registerDataSource + updateDataSource — Service 2 confirmed at method-scoped primary source + probe P-039)
 
 severity: MEDIUM
 severity_dim: security
@@ -303,12 +332,7 @@ mitigations_unimplemented:
     permissions GRANT IMPLICIT NAMESPACE_CREATE: TERM_CREATE /
     TERM_UPDATE / DATA_SOURCE_CREATE / DATA_SOURCE_UPDATE /
     COLLECTOR_CREATE / COLLECTOR_UPDATE / DATA_ENTITY_GROUP_CREATE /
-    DATA_ENTITY_GROUP_UPDATE. To prevent operator-side namespace
-    creation, the recommended RBAC policy structure narrows these
-    permissions to existing-namespace-only via the resource
-    extractor.' But the resource extractor mechanism doesn't
-    currently support 'existing-only' — so the documentation
-    needs the architectural fix to land first.
+    DATA_ENTITY_GROUP_UPDATE.'
   - |-
     Add a regression test for the 4-service side-door:
       For each of the 4 services × 2 endpoints (8 test cases):
@@ -319,6 +343,8 @@ mitigations_unimplemented:
         (c) Assert the namespace IS created and the parent IS
             attached (pins the current state).
         (d) After fix, the assertion changes to: request 403s.
+    Probe P-039 (batch ZB) is the DataSource-create cell of this
+    8-cell matrix.
   - |-
     Build-time scanner: enumerate every service-tier method that
     invokes namespaceService.getOrCreate / tagService.getOrCreateTagsByName /
@@ -334,19 +360,20 @@ notes: |-
   closes the picture at 4 sister services + the NamespaceController
   front-door's explicit enumeration.
 
+  STRENGTHENED batch 2026-05-21ZB — the registerDataSource and
+  updateDataSource method sidecars confirm Service 2's side-door at
+  method-scoped primary source (DataSourceServiceImpl.java:56-57 on
+  create, 74-75 on update). The contract reason is now explicit:
+  DataSourceFormData and DataSourceUpdateFormData offer ONLY
+  name-based namespace selection (no namespace_id field) — the
+  create-on-miss is STRUCTURALLY unavoidable given the DTO shape.
+  Probe P-039 pins the DataSource-create cell of the 8-cell
+  regression matrix. This is a confidence-raising re-verification,
+  not an enumeration widening.
+
   The architectural picture's load-bearing observation: the
   service-tier `getOrCreate` is the LOAD-BEARING side-door. Every
-  call site invoking it is a Permission-bypass point. The 4 sister
-  services represent the 4 currently-known bypass points; a build-time
-  scanner would close the cross-pillar audit.
-
-  The pattern's CONSEQUENCE for operator-side RBAC policy authoring:
-  the Permissions doc page (WebFetched 2026-05-20) does NOT name
-  the side-door pattern. Operators reading the page see 11
-  Management-tier permissions enumerated independently; they DO
-  NOT see that 8 of them implicitly grant NAMESPACE_CREATE. The
-  doc-side framing is additively-mistaken — the actual permission
-  graph is more permissive than the page suggests.
+  call site invoking it is a Permission-bypass point.
 
   Cross-cutting connections:
     - STRENGTHENS the master invariant
@@ -355,20 +382,20 @@ notes: |-
       adds 3 more sister services + the NamespaceController
       front-door's explicit enumeration
     - Pairs with getpopulartaglist-open-read-plus-side-door-compose-to-write-read-directory-bypass
-      (THIS BATCH sibling — the TAG_CREATE pattern at 4
-      side-doors)
+      (the TAG_CREATE pattern at 4 side-doors)
     - Pairs with permission-bypass-via-owner-auto-create-side-door-write-path
-      (the OWNER_CREATE side-door at OwnerController batch H —
-      sibling architectural class but expressed at the controller
-      tier)
+      (the OWNER_CREATE side-door at OwnerController batch H)
     - Pairs with f-002-cross-namespace-term-pollution-ui-surface-confirmed-dictionary-tab-renders-all-namespaces
       (the COMPOUND class — namespace side-door amplifies the
-      cross-namespace term pollution; the term created in a
-      newly-minted namespace is visible to every Dictionary tab user)
+      cross-namespace term pollution)
     - Pairs with audit-log-presence-asymmetry-2-tier-audit-story
-      (the namespace side-door produces no Activity event — neither
-      the new namespace nor the relationship between the caller and
-      the new namespace surfaces in the audit feed)
+      (the namespace side-door produces no Activity event)
+    - Pairs with entity datasource-form-dto-create-update-narrow-mutable-surface
+      (the name-only namespace_name field is the structural enabler —
+      NEW batch ZB)
+    - Pairs with operations register-data-source +
+      update-data-source-ui-admin-replace (the two operations whose
+      service paths carry the side-door)
 
   Three DOC-NNN candidates:
     (a) /configuration-and-deployment/enable-security/authorization/permissions

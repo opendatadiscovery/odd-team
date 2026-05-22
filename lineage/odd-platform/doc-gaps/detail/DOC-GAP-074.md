@@ -76,3 +76,26 @@ Batch Z's `odd-platform__openapi__spec__odd-platform-public-api.md` sidecar prov
 - **Cross-reference additions**: DOC-GAP-099 META (this finding is the COVERAGE-GAP failure shape's primary source) + DOC-GAP-242 NEW (the no-security-model failure shape; sibling spec-authoring-quality) + DOC-GAP-244 NEW (the coverage-gap failure shape; sibling spec-vs-doc-hub gap).
 
 - **Severity stays MEDIUM** — the 9+-endpoint enumeration is more comprehensive than batch P's 5-instance framing but doesn't change the operational severity (impact: SDK clients with strict `isCreated()` checks fail on POST endpoints; clients with `2xx` checks succeed). The cluster-wide PR is bounded; the closeable-in-one-PR property holds at the larger scope. Coherence: strengthens DOC-GAP-074 with spec-axis primary source + 4 NEW endpoint-level instances (DataSource × 2 + Collector × 2 + Tag × 2 + QueryExample × 1 — at openapi.yaml:372, 400, 454, 482, 558, 586, 2156-2157, 2797-2799) + the directional-fix framing. No conflicts with existing batch-E/P framing.
+
+## Batch ZB append
+
+#### Batch 2026-05-21-ZB STRENGTHENS — the DataSource `registerDataSource` + `updateDataSource` instances (batch Z added them from the SPEC axis) now have the CONTROLLER-METHOD primary source confirming the implementation side returns HTTP 200
+
+Batch Z enumerated `DataSource registerDataSource` (openapi.yaml:454) and `DataSource updateDataSource` (openapi.yaml:482) as 2 of the 9+ instances of the platform-wide 201-vs-200 drift class — but from the OpenAPI-SPEC axis only (the spec declares `'201'`). Batch ZB's `registerDataSource` and `updateDataSource` controller-method sidecars supply the IMPLEMENTATION-axis primary source: both confirm the controller hard-codes `ResponseEntity::ok` (HTTP 200), closing the spec-side ↔ impl-side triangulation for the two DataSource instances at commit 80637ed.
+
+- **NEW surfaced_by (batch ZB)**:
+  - `odd-platform__java__DataSourceController__controller-method__registerDataSource.md:docs_link_semantic.doc_drift_findings.[2]` — verbatim: "The OpenAPI spec declares `'201' The resource has been successfully created` for operationId registerDataSource (openapi.yaml:454) but the controller returns HTTP 200 (DataSourceController.java:35) — a spec-vs-implementation contract drift; clients generated from the spec assert the wrong status."
+  - `registerDataSource.md:bugs_limitations_corner_cases.[1]` ("201-vs-200 status drift", severity LOW-MEDIUM per sidecar) + `:stress_findings.name_behavior_pairs.[0]` (drift: `DRIFT_NAME_VS_BEHAVIOR` — promise "Register a data source and return 201 Created", implementation `ResponseEntity::ok` = HTTP 200; "confirmed via P-038").
+  - `odd-platform__java__DataSourceController__controller-method__updateDataSource.md:bugs_limitations_corner_cases.[4]` — verbatim: "The OpenAPI contract declares response 201 for this PUT (openapi.yaml:482 `'201': The resource has been successfully updated`) but the controller hard-codes `ResponseEntity.ok()` (200) at DataSourceController.java:44 — a client checking for 201 per the spec will mis-detect success."
+
+- **NEW evidence (batch ZB)** — controller-method file:line primary source:
+  - `DataSourceController.java:35` — `registerDataSource` body: `dataSourceFormData.flatMap(dataSourceService::create).map(ResponseEntity::ok)` — `ResponseEntity::ok` is HTTP 200 (vs `openapi.yaml:453-455` declared `'201'`).
+  - `DataSourceController.java:44` — `updateDataSource` body: `.map(ResponseEntity::ok)` — HTTP 200 (vs `openapi.yaml:481-487` declared `'201'`).
+  - These confirm exactly the DIRECTIONAL split DOC-GAP-074's batch-P framing already named: the POST `registerDataSource` is the **impl-wrong / spec-right** direction (the canonical 201 is right for POST-create; the impl should return 201); the PUT `updateDataSource` is the **spec-wrong / impl-right** direction (the spec's 201 on a PUT is anomalous; the canonical 200 the impl returns is correct). The two DataSource instances are one per direction — a clean illustration of the cluster's two-direction fix.
+  - Probe P-038 (registerDataSource sidecar) pins the runtime 200-vs-201 assertion.
+
+- **Coherence (LSN-018 Rule 6 pre-emit)**: no cross-registry contradiction — the 201-vs-200 drift is consistent across the spec axis (batch Z), the controller-method axis (this batch ZB), and the existing batch-E/P controller-method instances on Owner/Role/Policy. Same polarity throughout; no CONTRADICTS, no SUPERSEDES. DOC-GAP-099 META (the OpenAPI-authoring-quality META cluster) remains the parent.
+
+- **Severity stays MEDIUM** — the controller-method confirmation does not change the operational severity; it converts the two DataSource instances from spec-axis-only to fully-triangulated (spec + impl). The directional-fix recommendation in the batch-Z append is unchanged and now has the impl-side file:line anchors for the DataSource vertex.
+
+- **Cross-reference additions**: DOC-GAP-009 (the `developer-guides/api-reference` hub omits the DataSource operations — the 201-vs-200 drift on `registerDataSource`/`updateDataSource` is invisible in the per-feature API reference too) + DOC-GAP-099 META (parent OpenAPI-authoring-quality cluster).

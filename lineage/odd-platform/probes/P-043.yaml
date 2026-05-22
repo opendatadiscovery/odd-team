@@ -1,0 +1,80 @@
+---
+probe_id: P-043
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DataSourceController__controller-method__updateDataSource
+emitted_at: 2026-05-21T00:00:00Z
+status: pending-stress-protocol
+feature_id: null  # P-08:F-NN-Datasources-tab not yet carved into an F-NNN
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category B — name vs behaviour: does `update` REPLACE or
+  MERGE?): when PUT /api/datasources/{id} supplies a partial body that OMITS
+  the `description` field (and omits `namespace_name`), does the existing
+  description survive (MERGE semantics) or is it nulled (REPLACE semantics)?
+
+  Static trace hypothesis: DataSourceMapper.applyToPojo is a MapStruct
+  @MappingTarget method (DataSourceMapper.java:49) under MapperConfig
+  (MapperConfig.java:7-11) which sets NO nullValuePropertyMappingStrategy.
+  MapStruct's default for an unspecified strategy is SET_TO_NULL — so a null
+  source property is WRITTEN as null onto the @MappingTarget pojo. An omitted
+  JSON field deserialises to a null Java field on DataSourceUpdateFormData
+  (3 optional fields: name, description, namespace_name — components.yaml:1317-1325,
+  no `required` block). Therefore a PUT body of {"name":"keep-this"} (description
+  omitted) is expected to NULL the existing description. This probe PINS the
+  REPLACE-not-MERGE contract: the update endpoint is full-form-REPLACE, an
+  operator must resend every field they want to keep. Expect description == NULL
+  after the partial PUT; if description survives, MapStruct is applying
+  IGNORE-on-null and the static trace is wrong.
+---
+arrange:
+  - kind: docker-compose-up
+    compose_profile: odd-minimal
+  - kind: env
+    description: auth.type=DISABLED so the request reaches the controller.
+  - kind: sql
+    query: |
+      INSERT INTO namespace (id, name, created_at, updated_at)
+      VALUES (4300, 'p043-ns', NOW(), NOW())
+  - kind: sql
+    query: |
+      -- a fully-populated live data source: name + description + namespace
+      INSERT INTO data_source (id, name, oddrn, description, namespace_id, created_at, updated_at)
+      VALUES (7200, 'p043-original-name', '//p043/src/full', 'original-description', 4300, NOW(), NOW())
+act:
+  - kind: rest
+    method: PUT
+    path: /api/datasources/7200
+    body: '{"name":"p043-renamed-only"}'
+    capture_as: resp_partial_put
+observe:
+  - kind: sql
+    query: |
+      SELECT name, description, namespace_id FROM data_source WHERE id = 7200
+    capture_as: row_7200_after
+assert:
+  - "resp_partial_put.status == 200"
+  - "row_7200_after.name == 'p043-renamed-only'    # the supplied field is written"
+  - "row_7200_after.description is None            # REPLACE hypothesis: omitted field nulled"
+  - "row_7200_after.namespace_id is None           # namespace_name omitted -> applyToPojo sets namespace_id null (DataSourceMapper.java:55, namespace==null branch)"
+cleanup:
+  - kind: sql
+    query: "DELETE FROM data_source WHERE id IN (7200)"
+  - kind: sql
+    query: "DELETE FROM namespace WHERE id IN (4300)"
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DataSourceController__controller-method__updateDataSource
+  retrospectives: [LSN-019]
+realism_caveats: |
+  The probe pins the field-nulling contract for `description` and `namespace_id`.
+  It does NOT verify the cross-path drift (a subsequent collector ingestion
+  re-writing name+description) — that is the REFACTOR-423 scenario the class
+  sidecar already owns. If row_7200_after.description survives non-null, the
+  global MapperConfig has been changed to IGNORE-on-null or DataSourceMapper
+  was given a per-method nullValuePropertyMappingStrategy — re-read
+  DataSourceMapper.java:49 and MapperConfig.java.

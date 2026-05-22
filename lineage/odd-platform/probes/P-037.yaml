@@ -1,0 +1,100 @@
+---
+probe_id: P-037
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DataSourceController__controller-method__getDataSourceList
+emitted_at: 2026-05-21T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category A — the `size` tunable / Category F — `size`
+  parameter unbounded): the OpenAPI SizeParam (components.yaml:4222-4229) is
+  `type: integer, format: int32, required: true` with NO `minimum` and NO
+  `maximum`. The controller getDataSourceList (DataSourceController.java:22-24)
+  passes `size` straight to dataSourceService.list -> ReactiveDataSourceRepositoryImpl
+  .listDto(page, size, nameQuery), which feeds it to
+  jooqQueryHelper.paginate(homogeneousQuery, (page-1)*size, size) -> SQL
+  `LIMIT <size> OFFSET <(page-1)*size>`. There is no Math.min clamp at any layer.
+  Hypotheses to pin: (a) size=2147483647 (Integer.MAX_VALUE) is accepted and
+  emits `LIMIT 2147483647` — the server attempts to materialise the entire
+  data_source table + 2 LEFT JOINs into memory in one response, no truncation,
+  no 400; (b) size=0 emits `LIMIT 0` -> empty items[] with the real total;
+  (c) size=-1 emits a negative LIMIT — pin whether Postgres rejects it (SQL
+  error -> 500) or jOOQ/the driver coerces it. (d) page=0 emits OFFSET = -size
+  (negative offset) — pin the failure mode.
+---
+arrange:
+  - kind: docker-compose-up
+    compose_file: odd-minimal
+  - kind: sql
+    query: |
+      INSERT INTO token (id, value, created_at, updated_at)
+      SELECT 9000 + i, 'p037token' || lpad(i::text, 31, '0'), NOW(), NOW()
+      FROM generate_series(1, 5) AS i
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, name, oddrn, description, token_id, created_at, updated_at)
+      SELECT 9000 + i, 'p037-ds-' || i, '//p037/ds' || i, 'd', 9000 + i, NOW(), NOW()
+      FROM generate_series(1, 5) AS i
+act:
+  - kind: rest
+    method: GET
+    path: /api/datasources?page=1&size=2147483647
+    auth: login-form-authenticated-read-only-user
+    capture_as: max_size_response
+  - kind: rest
+    method: GET
+    path: /api/datasources?page=1&size=0
+    auth: login-form-authenticated-read-only-user
+    capture_as: zero_size_response
+  - kind: rest
+    method: GET
+    path: /api/datasources?page=1&size=-1
+    auth: login-form-authenticated-read-only-user
+    capture_as: negative_size_response
+  - kind: rest
+    method: GET
+    path: /api/datasources?page=0&size=10
+    auth: login-form-authenticated-read-only-user
+    capture_as: zero_page_response
+observe:
+  - kind: extract
+    expr: "max_size_response.status"
+    capture_as: max_size_status
+  - kind: extract
+    expr: "zero_size_response.status"
+    capture_as: zero_size_status
+  - kind: extract
+    expr: "negative_size_response.status"
+    capture_as: negative_size_status
+  - kind: extract
+    expr: "zero_page_response.status"
+    capture_as: zero_page_status
+assert:
+  - "max_size_status == 200  # no upper clamp — hypothesis: full-table scan accepted"
+  - "len(max_size_response.items) == 5  # all rows returned, no truncation"
+  - "zero_size_status == 200 and len(zero_size_response.items) == 0  # LIMIT 0"
+  - "negative_size_status in (400, 500)  # pin which: SQL error vs handled"
+  - "zero_page_status in (400, 500)  # OFFSET -10 — pin the failure mode"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DataSourceController__controller-method__getDataSourceList
+    - odd-platform__java__repository__reactive__repository__ReactiveDataSourceRepositoryImpl
+  retrospectives: [LSN-019]
+realism_caveats: |
+  The probe pins boundary behaviour of the unbounded `size` parameter. If
+  max_size_status is 200 with all rows, the endpoint has no DoS guard — a caller
+  can request the whole catalog in one query (the contract advertises no max).
+  This is LOW severity for typical catalogs (<500 sources) but the absence of a
+  clamp is a documentable fact. The probe seeds only 5 rows; it does NOT measure
+  latency / memory at a 100k-row catalog — a performance variant under
+  stack_profile odd-load would be needed to characterise the actual DoS surface.
+  The negative-size and zero-page asserts use `in (400, 500)` because the exact
+  status is genuinely not statically determinable (depends on R2DBC driver
+  coercion of a negative LIMIT/OFFSET) — that is the probe's job to resolve.

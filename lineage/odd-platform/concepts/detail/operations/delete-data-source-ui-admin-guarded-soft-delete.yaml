@@ -1,0 +1,255 @@
+name: Delete Data Source (UI admin path — guarded soft-delete, blocks on live children)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-08
+description: |-
+  NEW OPERATION, batch 2026-05-21ZB — surfaced at primary source by
+  the deleteDataSource method-level sidecar. DELETE
+  /api/datasources/{data_source_id} is the UI-admin "remove data
+  source" action on the Management → Datasources tab — the fourth
+  and final UI-admin DataSource write operation (register + update +
+  regenerate-token were the prior three).
+
+  THE OPERATION — what DELETE /api/datasources/{id} does:
+
+    The controller handler (DataSourceController.java:47-51) is a
+    4-line proxy: delegate to dataSourceService.delete(id), map to
+    `204 No Content`. Despite the name "delete", the operation is a
+    GUARDED SOFT-DELETE that BLOCKS on live child data entities.
+    DataSourceServiceImpl.delete (DataSourceServiceImpl.java:85-96,
+    @ReactiveTransactional):
+      (1) calls dataEntityRepository.existsNonDeletedByDataSourceId(id)
+          — `SELECT EXISTS(SELECT 1 FROM data_entity WHERE
+          data_source_id = ? AND deleted_at IS NULL)`;
+      (2) IF any non-soft-deleted data_entity references the data
+          source, throws CascadeDeleteException → HTTP 400 — the data
+          source is NOT deleted;
+      (3) IF no live children exist, dataSourceRepository.delete(id)
+          runs the inherited soft-delete `UPDATE data_source SET
+          deleted_at = NOW() WHERE id = ? AND deleted_at IS NULL`.
+
+  AUTHORIZATION: path-gated by DATA_SOURCE_DELETE Permission
+  (MANAGEMENT tier) at SecurityConstants.java:121-123. NO @PreAuthorize
+  on the handler, NO programmatic check — the gate is 100%
+  declarative. Under auth.type=DISABLED the endpoint is fully open.
+  S2S X-API-Key grants ADMIN, satisfying DATA_SOURCE_DELETE
+  unconditionally. DATA_SOURCE_DELETE is MANAGEMENT-tier, not
+  entity-scoped — a holder can delete ANY data source.
+
+  THE TWO LOAD-BEARING CHARACTERISTICS:
+
+    (a) THE CASCADE-GUARD makes an actively-ingested data source
+        EFFECTIVELY UNDELETABLE. `data_entity` rows are created by the
+        collector and re-created on its next ingest tick. An operator
+        who soft-deletes all entities and then deletes the source
+        RACES the collector: if the collector re-ingests between the
+        two steps, the next delete 400s again. The only reliable
+        delete path is to STOP THE COLLECTOR FIRST — which no doc page
+        mentions. The cascade-guard is a SERVICE-tier business rule,
+        not a schema constraint (data_entity_fk_data_source has no
+        ON DELETE clause). Pinned by probe P-047.
+
+    (b) THE DELETE IS AN INCOMPLETE SOFT-DELETE — it orphans the
+        `token` row and leaves the FTS search_entrypoint vector
+        uncleared. This is captured at the dedicated invariant
+        `datasource-delete-incomplete-cleanup-orphan-token-uncleared-fts`.
+
+  KEY FACTS:
+    - The delete is a SOFT-delete (`deleted_at = NOW()`) — there is NO
+      `DELETE FROM data_source` anywhere in the source tree.
+    - The delete does NOT cascade — soft-deleting the parent leaves
+      child data_entity rows' data_source_id pointing at the
+      soft-deleted parent.
+    - The delete emits NO Activity Event — an operator auditing "who
+      deleted which data source and when" has no audit trail; the
+      only signal is the row's deleted_at timestamp, which carries no
+      actor.
+    - There is no method to recover a soft-deleted data source
+      (cross-link to the ReactiveDataSourceRepositoryImpl sidecar).
+    - The 400 CascadeDeleteException body carries the message 'Data
+      source cannot be deleted: there are still data entities
+      attached' — a minor existence-disclosure to a caller already
+      holding DATA_SOURCE_DELETE.
+    - Returns 204 on success (consistent with the OpenAPI-declared
+      `204` for DELETE — unlike POST/PUT which exhibit the 200-vs-201
+      drift).
+
+  DISTINCT FROM the S2S ingestion path — there is no S2S
+  data-source-delete; the only collector-driven lifecycle on a data
+  source is register/update via IngestionController.createDataSourceEntity.
+nodes:
+  - odd-platform java DataSourceController controller-method:deleteDataSource
+contributors:
+  - |-
+    deleteDataSource batch ZB (PRIMARY SOURCE):
+    concepts.operations[delete — DELETE /api/datasources/{data_source_id}
+    — guarded soft-delete; 204 on success, 400 if live data_entity
+    children exist] +
+    concepts.invariants[the delete is a SOFT-delete; the delete is
+    GUARDED; the delete does NOT cascade to children; path-based
+    DATA_SOURCE_DELETE gate] +
+    implicit_adrs.[0] (GUARDED soft-delete enforced at the SERVICE
+    tier, not the schema tier) + implicit_adrs.[1] (soft-delete is
+    the platform-wide convention) +
+    downstream_side_effects[soft-delete data_source; read data_entity
+    for the cascade-guard; ORPHANS the token row; does NOT clear the
+    FTS vector] +
+    bugs_limitations_corner_cases[an actively-ingested data source is
+    effectively undeletable — MEDIUM]
+evidence:
+  - deleteDataSource.md:concepts.operations.delete
+  - deleteDataSource.md:concepts.invariants (soft-delete; cascade-guard; no FK cascade; declarative DATA_SOURCE_DELETE)
+  - deleteDataSource.md:implicit_adrs.[0,1] (service-tier guarded soft-delete; platform-wide soft-delete convention)
+  - |-
+    deleteDataSource.md:bugs_limitations_corner_cases — an
+    actively-ingested data source is effectively undeletable —
+    evidence: DataSourceServiceImpl.java:88-95 +
+    ReactiveDataEntityRepositoryImpl.java:158-163 — pinned by P-047
+  - deleteDataSource.md:security.authorization_assertions (DELETE /api/datasources/{id} requires DATA_SOURCE_DELETE — SecurityConstants.java:121-123)
+  - |-
+    Cross-references invariant datasource-delete-incomplete-cleanup-orphan-token-uncleared-fts
+    (the incomplete-cleanup operator hazard — orphan token + stale FTS)
+  - |-
+    Cross-references invariant cascade-on-delete-application-tier-guarded-across-n-referent-classes-batch-w
+    (the cascade-guard is one instance of the application-tier
+    cascade-guard pattern)
+  - |-
+    Cross-references operation register-data-source + update-data-source-ui-admin-replace
+    + regenerate-data-source-token (the 4 UI-admin DataSource write
+    operations)
+axes_present:
+  - controllers
+nodes_count: 1
+contributors_count: 1
+security_aggregate:
+  overall: MEDIUM
+  auth_modes_relevant:
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
+    - DISABLED
+    - S2S
+  ingestion_filter_relevance: NO
+  authorization_consistency:
+    verdict: CONSISTENT
+    detail: |-
+      DELETE /api/datasources/{data_source_id} is path-gated by
+      DATA_SOURCE_DELETE (MANAGEMENT tier) at SecurityConstants.java:121-123.
+      NO @PreAuthorize, NO programmatic check — the gate is 100%
+      declarative, consistent with the platform's path-based RBAC.
+      A service-bypassing caller invoking dataSourceRepository.delete(id)
+      directly skips both the auth gate AND the cascade-guard.
+  owner_scoping:
+    verdict: N/A
+    detail: |-
+      The delete operates by data_source.id with no owner filter.
+      DATA_SOURCE_DELETE is MANAGEMENT-tier (not entity-scoped) — a
+      holder can delete ANY data source, not only ones they own.
+  strengths:
+    - |-
+      The cascade-guard prevents accidental destruction of an
+      actively-ingested data source — a live data_entity child blocks
+      the delete with HTTP 400, no mutation (deleteDataSource.md
+      implicit_adrs.[0])
+    - |-
+      Soft-delete (not hard-delete) — the data_source row, the token,
+      and the entities persist; consistent with the platform-wide
+      soft-delete convention
+  weaknesses:
+    - |-
+      The orphan plaintext token left behind is a stale-secret-at-rest
+      — the deleted data source's token row is never removed (token
+      table has no deleted_at, no GC path) — MEDIUM
+    - |-
+      No audit trail of the delete — DataSourceServiceImpl emits no
+      Activity Event; an operator cannot determine who deleted a data
+      source — MEDIUM
+    - |-
+      DISABLED auth.type makes the delete fully open — a misconfigured
+      production deployment lets any caller delete any data source
+      whose children are soft-deleted
+    - |-
+      MANAGEMENT-tier permission grants delete of ANY data source —
+      DATA_SOURCE_DELETE is not entity-scoped; a holder can delete
+      every data source in the catalog — LOW
+  cross_file_inconsistencies: []
+  contributing_files:
+    - deleteDataSource.md
+  evidence:
+    - deleteDataSource.md:security.authorization_assertions
+    - deleteDataSource.md:security.known_security_gaps (orphan token; no audit trail; MANAGEMENT-tier non-entity-scoped)
+performance_aggregate:
+  overall: HIGH
+  hot_paths:
+    - |-
+      Not a hot path — delete is an operator-initiated, low-frequency
+      administrative action. Per call it issues two SQL statements:
+      one SELECT EXISTS against data_entity and one UPDATE against
+      data_source (deleteDataSource.md performance.hot_paths)
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: Single-item delete per call — there is no bulk-delete endpoint on this controller.
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: |-
+      Stateless handler — scales horizontally. The
+      existsNonDeletedByDataSourceId EXISTS query is index-assisted if
+      data_entity.data_source_id is indexed; the UPDATE targets a
+      single row by primary key. The delete does NOT take the
+      getIdByOddrnForUpdate row lock, so it does NOT serialise against
+      concurrent collector ingestion of the same data source — the
+      cascade-guard/concurrent-ingest interleave can leave a
+      soft-deleted data_source with a live child entity.
+  strengths:
+    - Two-statement operation — bounded cost per call; empty Mono<Void> response, no payload buffering
+  weaknesses:
+    - |-
+      Orphan token rows accumulate without bound across register/delete
+      cycles — a slow table-growth leak (deleteDataSource.md
+      performance.known_performance_gaps LOW)
+    - |-
+      The delete does not acquire the FOR UPDATE lock the ingestion
+      path uses — a delete and a concurrent collector ingest of the
+      same ODDRN can interleave (the cascade-guard race; probe P-047
+      establishes the static precondition only)
+  cross_file_inconsistencies: []
+  contributing_files:
+    - deleteDataSource.md
+  evidence:
+    - deleteDataSource.md:performance.hot_paths
+    - deleteDataSource.md:performance.scaling_characteristics + known_performance_gaps
+notes: |-
+  This operation completes the 4-endpoint UI-admin DataSource write
+  surface in the registry: register-data-source (POST),
+  update-data-source-ui-admin-replace (PUT, NEW THIS BATCH),
+  regenerate-data-source-token (PUT .../token), and
+  delete-data-source-ui-admin-guarded-soft-delete (DELETE, THIS
+  ENTRY).
+
+  The load-bearing operator-facing fact: "Delete" does NOT remove the
+  data source — it soft-deletes it, blocks if the source is actively
+  ingested, and leaves the token + FTS vector + historical entities
+  in the database. An operator clicking Delete on an actively-ingested
+  source gets HTTP 400, not a deletion; the doc page gives no hint of
+  the precondition or the stop-the-collector-first workaround.
+
+  Cross-cutting connections:
+    - Pairs with the dedicated invariant
+      datasource-delete-incomplete-cleanup-orphan-token-uncleared-fts
+      (the incomplete-cleanup operator hazard)
+    - Pairs with cascade-on-delete-application-tier-guarded-across-n-referent-classes-batch-w
+      (the cascade-guard is one instance of the cross-pillar
+      application-tier cascade-guard pattern)
+    - Pairs with three-soft-delete-mechanisms-across-the-repository-layer
+      (data_source uses the deleted_at soft-delete mechanism)
+    - Pairs with audit-log-presence-asymmetry-2-tier-audit-story
+      (the delete emits no Activity Event)
+    - Pairs with register-data-source + update-data-source-ui-admin-replace
+      + regenerate-data-source-token (the 4 UI-admin DataSource writes)
+
+  Two DOC-NNN candidates: (a) document on /features/management that
+  deleting a data source is BLOCKED while it has live ingested data
+  entities, and that the reliable path is to stop the collector
+  first; (b) document that the delete is a soft-delete leaving the
+  ingested data and the token in the database.

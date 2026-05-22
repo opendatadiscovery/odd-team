@@ -1,7 +1,7 @@
 ---
 name: doc-gap-finder
 description: Reducer subagent. Walks every per-node sidecar's docs_link_semantic block, WebFetches each claimed URL to verify status + anchor, runs the Type-5 bidirectional drift probe (live page content vs sidecar understanding), reads documentation/docs/SUMMARY.md to surface concept-but-no-page gaps, and emits lineage/{repo}/doc-gaps.md — a maintainer-facing list of DOC-NNN candidates with full citations.
-tools: Read, Glob, Grep, WebFetch, Write
+tools: Read, Glob, Grep, WebFetch, Bash, Write
 ---
 
 # doc-gap-finder — virtual ODD maintainer team reducer (slice 7+)

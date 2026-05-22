@@ -9,3 +9,17 @@
   - **Proposed remedy**: At minimum, document on the new "Token Rotation" doc section that tokens are plaintext at rest and that operators must (a) restrict DB access, (b) encrypt-at-rest at the storage layer, (c) treat backups as credential-bearing. At maximum, redesign to BCrypt-at-rest, which would require extending ADR-CANDIDATE-017 (and breaks the rotation model: the new BCrypt'd token can no longer be RETURNed in plaintext to the operator).
   - **Severity rationale**: HIGH — credential plaintext at rest is one DB read away from total ingestion compromise.
   - **Suggested backlog grouping**: `Token rotation hardening`
+
+---
+
+## STRENGTHENS — Batch ZB (2026-05-21) — the DataSource token shares the SAME plaintext `token` table + plaintext `.equals` verification; the gap is platform-wide across both credential families
+
+**New surfaced_by**:
+- `odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken.md:security.known_security_gaps` (HIGH) — "Token is stored in plaintext in the `token` table — a DB read, replica, backup, or jOOQ statement log carries the credential in the clear. No hashing / encryption-at-rest at the application layer (confirmed by `IngestionDataEntitiesFilter.java:56-57` doing a literal `.equals` against the stored value)."
+- `odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken.md:concepts.invariants` — "The new token is RETURNED in the response body in plaintext (40 alphanumeric chars; showToken=true on the regenerate path) and stored likewise in plaintext in the `token` table — no hashing layer."
+
+**Why a STRENGTHEN, not a new entry**: the Collector token and the DataSource token are rows in the SAME `token` table; both are written by `ReactiveTokenRepositoryImpl` as raw `RandomStringUtils.randomAlphanumeric(40)` strings; both are verified by `IngestionDataEntitiesFilter.java:56-57`'s literal plaintext `.equals`. There is one storage shape and one verification shape. The plaintext-at-rest gap is one finding spanning both credential families — re-scope the title on triage to "ODD `token` table plaintext-at-rest (every token row)".
+
+**Severity unchanged: HIGH** — a DB read / backup / replica carries plaintext credentials for BOTH the Collector and the DataSource ingestion surfaces; a single `token`-table compromise escalates to platform-wide ingestion compromise across both.
+
+---

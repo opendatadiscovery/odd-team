@@ -1,0 +1,86 @@
+gap_id: TEST-GAP-907
+category: missing-unit
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DataSourceController controller-method:regenerateDataSourceToken"
+pillars_affected: [P-08]
+surfaced_by:
+  - "odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken.md:tests_coverage_semantic.uncovered_behaviours.[500 when the resolved data source has a null token: confirm RuntimeException(Token is null) maps to HTTP 500]"
+  - "odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken.md:tests_coverage_semantic.uncovered_behaviours.[404 on rotation of a non-existent data_source_id]"
+behaviour: |-
+  **MEDIUM — `PUT /api/datasources/{data_source_id}/token` has two unverified error edges:
+  (a) a non-existent `data_source_id` → 404 NotFoundException; (b) a data source whose
+  `token_id` resolves to a missing/deleted `token` row → an OPAQUE HTTP 500 with no
+  actionable message. The data-integrity edge (b) is the more interesting gap — the data
+  source cannot have its token rotated and the error does not say why.** Method-level
+  primary source from the batch-ZB `regenerateDataSourceToken` controller-method sidecar:
+
+  - **404 path**: `DataSourceServiceImpl.regenerateDataSourceToken` (line 101) applies
+    `.switchIfEmpty(Mono.error(new NotFoundException("Data source", id)))` — a non-existent
+    `data_source_id` returns a clean 404 via `ControllerAdvice` (ControllerAdvice.java:30-34).
+  - **500 path (the data-integrity edge)**: if the resolved data source's `token` is null
+    (a `data_source` row whose `token_id` points at a missing or deleted token), then
+    `tokenGenerator.regenerateToken(dto.token().tokenPojo())` first NPEs on `dto.token()`
+    being null OR `TokenGeneratorImpl.regenerate` throws `RuntimeException("Token is null")`
+    (TokenGeneratorImpl.java:45-47). Either way the operator gets an OPAQUE HTTP 500
+    "Internal Server Error" (the catch-all `ControllerAdvice` handler at lines 61-66) with
+    NO actionable message. `DataSourceServiceImpl.java:102` does `dto.token().tokenPojo()`
+    with NO null guard on `dto.token()`.
+
+  **Why MEDIUM**: the 404 path is a standard contract worth a regression pin. The 500 path
+  is a genuine unguarded data-integrity edge — a data source can be left structurally
+  un-rotatable and the operator gets no diagnostic. It is reachable: the platform's own
+  delete path leaves orphan tokens (TEST-GAP-905), and a data_source with a dangling
+  `token_id` is exactly the shape that triggers this 500. Neither edge is tested
+  (Glob-verified — no `DataSourceControllerTest`, no `DataSourceServiceImplTest`, no
+  `TokenGeneratorImplTest`). Not HIGH — the 500 is a degenerate-data edge, not a normal
+  operational path, and produces no data loss or security breach; but the opaque error is
+  an operator-experience defect worth pinning so a future maintainer adds a clear message.
+
+  **Test gap shape**: (a) a unit/integration test asserting `PUT /api/datasources/999999/token`
+  returns HTTP 404 (NotFoundException); (b) a UNIT test on `TokenGeneratorImpl.regenerateToken(null)`
+  asserting it throws `RuntimeException("Token is null")`, plus a service/integration test
+  seeding a `data_source` row whose `token_id` references no live token, then `PUT
+  /api/datasources/{id}/token` and asserting HTTP 500 with the (currently opaque) body —
+  PIN the current behaviour so a future maintainer who adds a clear 4xx + actionable
+  message sees the test invert.
+test_class: missing-unit
+criticality_rationale: |-
+  MEDIUM per Rule 3: the regenerateDataSourceToken sidecar rates the 500-on-null-token
+  uncovered behaviour MEDIUM (test_class unit) and the 404-on-missing-id MEDIUM, and
+  bugs_limitations_corner_cases rates the null-token 500 LOW. The aggregate is MEDIUM — the
+  500 is an unguarded data-integrity edge producing an opaque (not actionable) error, but
+  no data loss and no security breach; the 404 is a standard contract pin. The node's
+  CRITICAL/HIGH security_aggregate weaknesses (DISABLED bypass, destructive rotation) drive
+  the OTHER regenerateDataSourceToken gaps (TEST-GAP-898/899/900), not this error-edge gap.
+  pillars_affected len 1 (P-08) — no cross-pillar bump.
+test_files_existing:
+  - "NONE — no DataSourceControllerTest / DataSourceServiceImplTest / TokenGeneratorImplTest exists (Glob-verified this batch under odd-platform-api/src/test — TokenGeneratorImplTest absence confirmed; the regenerateToken/regenerate(null) branch at TokenGeneratorImpl.java:45-47 has zero coverage)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/TokenGeneratorImplTest.java"
+  name: "regenerateToken_nullTokenPojo_throwsRuntimeException_andRegenerateEndpoint404OnMissingId_500OnDanglingTokenId"
+evidence:
+  - "regenerateDataSourceToken sidecar says (tests_coverage_semantic.uncovered_behaviours): '500 when the resolved data source has a null token: confirm RuntimeException(Token is null) (TokenGeneratorImpl.java:45-47) maps to HTTP 500. This is an unguarded data-integrity edge — a data_source row with token_id pointing at a deleted/absent token. test_class: unit; criticality: MEDIUM.'"
+  - "regenerateDataSourceToken sidecar says (tests_coverage_semantic.uncovered_behaviours): '404 on rotation of a non-existent data_source_id: PUT /api/datasources/999999/token returns 404 NotFoundException. test_class: integration; criticality: MEDIUM; note: DataSourceServiceImpl.java:101 switchIfEmpty path.'"
+  - "regenerateDataSourceToken sidecar says (bugs_limitations_corner_cases): 'If the resolved data source token is null (a data_source row whose token_id points at a missing/deleted token), tokenGenerator.regenerateToken(dto.token().tokenPojo()) first NPEs on dto.token() being null OR TokenGeneratorImpl.regenerate throws RuntimeException(Token is null) (line 45-47). Either way the operator gets an opaque HTTP 500 Internal Server Error with no actionable message.' severity LOW"
+  - "regenerateDataSourceToken sidecar says (test_files): 'NO file named TokenGeneratorImplTest.* exists (verified by Glob this batch — **/TokenGenerator*Test*.java returns no files).'"
+  - "Verified at primary source via the sidecar: DataSourceServiceImpl.java:101 (switchIfEmpty NotFoundException) + DataSourceServiceImpl.java:102 (dto.token().tokenPojo() — no null guard) + TokenGeneratorImpl.java:45-47 (RuntimeException Token is null) + ControllerAdvice.java:30-34,61-66"
+  - "Verified this batch via Glob: no TokenGeneratorImplTest.java / DataSourceControllerTest.java / DataSourceServiceImplTest.java exists under odd-platform-api/src/test"
+cross_references:
+  - "TEST-GAP-095 (batch 2026-05-11 — the COLLECTOR-token service-layer test, which also proposes pinning the regenerate(null) RuntimeException branch at TokenGeneratorImpl.java:46 — the SAME shared TokenGeneratorImpl method. A TokenGeneratorImplTest authored for THIS gap also satisfies TEST-GAP-095's regenerate(null) sub-assertion)"
+  - "TEST-GAP-905 (this batch — deleteDataSource orphan-token; a data_source with a dangling token_id — the precondition for the 500 in THIS gap — is exactly the structural shape orphan-token accumulation produces)"
+  - "TEST-GAP-898 (this batch — the regenerateDataSourceToken binary-cutover; sibling on the same endpoint, the success path)"
+related_features: [F-008]
+related_pillar_features: ["P-08:F-NN-Datasources-tab"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `TokenGeneratorImplTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/` (this file does not exist — it also covers TEST-GAP-095's regenerate(null) sub-assertion for the collector path). Three test methods:
+  1. `regenerateToken_nullTokenPojo_throwsRuntimeExceptionTokenIsNull` — call `TokenGeneratorImpl.regenerateToken(null)`; assert it throws `RuntimeException` with message "Token is null". UNIT-level, no Spring context.
+  2. `regenerateDataSourceToken_nonExistentDataSourceId_returns404` — integration: PUT /api/datasources/999999/token; assert HTTP 404 (NotFoundException).
+  3. `regenerateDataSourceToken_dataSourceWithDanglingTokenId_returns500_pinsOpaqueErrorEdge` — integration: seed a `data_source` row whose `token_id` references no live `token` row; PUT /api/datasources/{id}/token; assert HTTP 500. PIN the current opaque-error behaviour.
+
+  Test #3 PINS the unguarded data-integrity edge. When a future maintainer adds a null
+  guard + a clear 4xx with an actionable message, test #3 inverts.
+batch: 2026-05-21-ZB
+feature_id: F-008

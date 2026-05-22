@@ -16,6 +16,14 @@ The rest of the workspace's quality bar is in CLAUDE.md (the "Principal Full-Sta
 
 ## Non-negotiable rules
 
+### Rule 0 — The operating stance (APPROACH.md §0 — non-negotiable)
+
+You enrich this node as a **reverse engineer at the Linus Torvalds bar** (APPROACH.md §0). All behaviour is derivable from the code: read this file and every file it reaches until you actually know — never hedge where you could trace or run it.
+
+**If this node is part of a user-facing surface** — a controller method behind a form, a UI route, a component — your understanding is not complete until you have traced to what the *user* sees and does: the screen, the form, the control, the labels. A backend node whose request DTO is populated by a UI form is half-understood until you have read that form (Rule 3 explicitly permits the neighbour walk). A request field's meaning is **what the UI control feeding it means** — never interpret a query parameter / DTO field from the backend name alone when a UI form produces it (this is exactly the `namespace_name` mis-read of `retrospectives/LSN-023`).
+
+"I enriched the controller; the UI was out of scope" is the junior's answer (§0.2) and is rejected. Shallow, lazy, or ignorant enrichment is a defect — never a smaller scope.
+
 ### Rule 1 — Live URLs only for documentation
 
 **Your only knowledge of the ODD documentation is from `WebFetch` results in this session. Do not infer documentation content from training data.**

@@ -1,0 +1,131 @@
+---
+probe_id: P-080
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__DataSourceItem.md
+emitted_at: 2026-05-22T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-031
+test_class: security
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category D, authorization gate): the DataSourceItem card
+  wraps the Edit control in `<WithPermissions permissionTo=DATA_SOURCE_UPDATE>`
+  and the Delete control in `<WithPermissions permissionTo=DATA_SOURCE_DELETE>`
+  (DataSourceItem.tsx:44,57). `WithPermissions` with children renders the child
+  only if `hasAccessTo(permissionTo)` and returns `null` otherwise
+  (WithPermissions.tsx:27-29). This probe verifies the actual rendered card for
+  a user who LACKS each permission.
+
+  Hypothesis: a user with neither DATA_SOURCE_UPDATE nor DATA_SOURCE_DELETE sees
+  the DataSourceItem card with NO Edit button and NO Delete button — the card
+  is read-only — while the name, ODDRN, description, namespace, and the token
+  block all still render (the token block has no WithPermissions wrap). The
+  controls are ABSENT from the DOM, not present-but-disabled. A user with only
+  DATA_SOURCE_UPDATE sees Edit but not Delete; a user with only
+  DATA_SOURCE_DELETE sees Delete but not Edit.
+---
+arrange:
+  - kind: docker-compose-up
+    note: odd-platform + Postgres via the local odd-minimal compose stack
+  - kind: env
+    auth_type: LOGIN_FORM
+    note: a real auth mode so the permission model is load-bearing (DISABLED would grant the open set and defeat the test)
+  - kind: sql
+    query: |
+      -- One data source to render a card for
+      INSERT INTO data_source (id, name, oddrn, description, active, deleted_at)
+      VALUES (8001, 'probe-ds-perms', '//probe/p080/perms', 'permission-gate target', true, NULL);
+  - kind: setup
+    step: provision-users
+    note: |
+      Create three login users via the platform's owner/policy admin surface:
+      (1) user 'p080-readonly' bound to a policy granting NEITHER
+          DATA_SOURCE_UPDATE nor DATA_SOURCE_DELETE;
+      (2) user 'p080-update-only' bound to a policy granting DATA_SOURCE_UPDATE only;
+      (3) user 'p080-delete-only' bound to a policy granting DATA_SOURCE_DELETE only.
+act:
+  - kind: dom-probe
+    step: login
+    as: p080-readonly
+  - kind: dom-probe
+    step: navigate
+    url: /management/datasources
+  - kind: dom-probe
+    step: snapshot
+    capture_as: card_readonly
+    note: locate the DataSourceItem card for 'probe-ds-perms'; record presence of Edit button, Delete button, token block, metadata rows
+  - kind: dom-probe
+    step: login
+    as: p080-update-only
+  - kind: dom-probe
+    step: navigate
+    url: /management/datasources
+  - kind: dom-probe
+    step: snapshot
+    capture_as: card_update_only
+  - kind: dom-probe
+    step: login
+    as: p080-delete-only
+  - kind: dom-probe
+    step: navigate
+    url: /management/datasources
+  - kind: dom-probe
+    step: snapshot
+    capture_as: card_delete_only
+observe:
+  - kind: capture
+    name: readonly_edit_present
+    from: "card_readonly — boolean: is an Edit button present in the 'probe-ds-perms' card"
+  - kind: capture
+    name: readonly_delete_present
+    from: "card_readonly — boolean: is a Delete button present in the card"
+  - kind: capture
+    name: readonly_card_rendered
+    from: "card_readonly — boolean: is the card itself present with name 'probe-ds-perms' and the ODDRN row"
+  - kind: capture
+    name: readonly_token_block_rendered
+    from: "card_readonly — boolean: is the Token row / DataSourceItemToken present (the source has a token)"
+  - kind: capture
+    name: update_only_edit_present
+    from: "card_update_only — boolean: Edit button present"
+  - kind: capture
+    name: update_only_delete_present
+    from: "card_update_only — boolean: Delete button present"
+  - kind: capture
+    name: delete_only_edit_present
+    from: "card_delete_only — boolean: Edit button present"
+  - kind: capture
+    name: delete_only_delete_present
+    from: "card_delete_only — boolean: Delete button present"
+assert:
+  - "readonly_edit_present == false  # WithPermissions returns null for DATA_SOURCE_UPDATE-less user"
+  - "readonly_delete_present == false  # WithPermissions returns null for DATA_SOURCE_DELETE-less user"
+  - "readonly_card_rendered == true  # the card itself is not gated"
+  - "readonly_token_block_rendered == true  # token block has no WithPermissions wrap — token value visible to read-only user"
+  - "update_only_edit_present == true"
+  - "update_only_delete_present == false"
+  - "delete_only_edit_present == false"
+  - "delete_only_delete_present == true"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__DataSourceItem
+    - odd-platform__java__DataSourceController__controller-method__deleteDataSource
+    - odd-platform__java__DataSourceController__controller-method__updateDataSource
+  retrospectives: [LSN-023]
+realism_caveats: |
+  The probe pins the UI-side gating only. It does NOT verify the SERVER-side
+  enforcement of DATA_SOURCE_UPDATE / DATA_SOURCE_DELETE — a user who crafts the
+  PUT/DELETE directly bypasses the hidden control but is still rejected
+  server-side; that boundary is the deleteDataSource / updateDataSource
+  sidecars' concern. The `readonly_token_block_rendered == true` assertion
+  doubles as the evidence for the sidecar's known_security_gap finding (token
+  VALUE is visible to any Datasources-route viewer regardless of permission) —
+  if the threat model intends otherwise, this assertion passing IS the bug.
+  The probe assumes the platform's owner/policy admin surface can mint the
+  three users; if policy provisioning cannot be scripted, the probe-runner may
+  need to seed the policy_to_permission rows directly via SQL.

@@ -1,0 +1,83 @@
+---
+probe_id: P-087
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__NamespaceAutocomplete
+emitted_at: 2026-05-22T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-031
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category F / freeSolo input alignment): the combo-box is
+  `freeSolo` (NamespaceAutocomplete.tsx:150) and `handleOptionChange` accepts a
+  raw string typed + Enter, mapping it straight to `{ name: newValue }` and
+  emitting `newField?.name` to the form field (lines 124-127). No `.trim()`,
+  no max-length, no character allowlist is applied UI-side. The parent
+  DataSourceForm puts NO validation rule on the `namespaceName` Controller
+  (DataSourceForm.tsx:124-129 — unlike `name`/`oddrn` which carry
+  `rules={{ required, validate: trim }}`). Hypothesis: a namespace name that is
+  whitespace-only, very long, or contains control characters reaches the
+  backend `namespaceService.getOrCreate` and is persisted verbatim as a
+  namespace row — the UI imposes no shape on namespace names entered via the
+  create affordance.
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: env
+    description: "No namespaces pre-seeded; the typed names must all miss."
+act:
+  - kind: dom-probe
+    description: |
+      Playwright against the local UI. For each pathological input, open the
+      Add-datasource form, fill name + ODDRN with valid values, type the
+      pathological string into the Namespace combo-box, press Enter to take the
+      freeSolo path, and submit.
+    inputs:
+      - "'   '            # whitespace-only"
+      - "'x'.repeat(2000) # 2000-char name"
+      - "'pay\\u0000ments' # embedded NUL"
+      - "'<script>alert(1)</script>' # HTML payload"
+    steps:
+      - "open Add-datasource form"
+      - "fill #name with 'probe-ds-<n>', fill ODDRN with '//probe/ds/<n>'"
+      - "type the pathological string into #namespace-name-search, press Enter"
+      - "click Save"
+      - "page.waitForResponse(r => r.url().includes('/api/datasources') && r.request().method() === 'POST')"
+    capture_as: register_responses
+observe:
+  - kind: capture
+    description: "POST /api/datasources request body namespace_name field per input."
+    capture_as: sent_namespace_names
+  - kind: sql
+    query: "SELECT id, name, length(name) AS len FROM namespace ORDER BY id"
+    capture_as: persisted_namespaces
+assert:
+  - >
+    # Whitespace-only: backend StringUtils.isNotEmpty('   ') is TRUE (not blank-
+    # trimmed), so getOrCreate runs and a whitespace-named namespace row is
+    # persisted. Confirm whether the UI sent it at all or emptied it.
+    sent_namespace_names[0] == '   ' || sent_namespace_names[0] == ''
+  - >
+    # 2000-char name: confirm the failure mode — DB column length error (500)
+    # or successful persist of an oversized namespace name.
+    register_responses[1].status == 200 || register_responses[1].status == 500
+  - "persisted_namespaces.every(n => n.len <= 2000)  # observe actual column cap"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__NamespaceAutocomplete
+    - odd-platform__java__DataSourceController__controller-method__registerDataSource
+  retrospectives: [LSN-019, LSN-023]
+realism_caveats: |
+  This probe verifies the UI imposes no namespace-name shape, then observes
+  what the backend does with each pathological value — it does not assert a
+  "correct" outcome because the correct outcome is a product decision (should
+  whitespace namespace names be allowed?). The HTML-payload input is NOT an
+  XSS probe of the namespace render path; MUI renders option text as a React
+  child (auto-escaped). The probe's value is documenting that the
+  select-or-create affordance has no client-side input contract, so namespace
+  hygiene rests entirely on the backend and the DB schema.

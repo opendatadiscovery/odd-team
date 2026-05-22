@@ -1,0 +1,85 @@
+---
+probe_id: P-084
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__DataSourceItemToken.md
+emitted_at: 2026-05-22T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-031
+test_class: security
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (auth_gates Q3): for a signed-in user WITHOUT the
+  DATA_SOURCE_TOKEN_REGENERATE permission, is the "Regenerate" affordance fully
+  ABSENT from the data-source token control (not merely disabled / greyed out),
+  while a user WITH the permission sees it?
+  Hypothesis from the code-walk (DataSourceItemToken.tsx:35-50, WithPermissions.tsx:27-29):
+  the Regenerate ConfirmationDialog+Button is wrapped in
+  <WithPermissions permissionTo={Permission.DATA_SOURCE_TOKEN_REGENERATE}>, which
+  renders `null` when usePermissions().hasAccessTo is false. Therefore a
+  non-holder, viewing a masked-token row, sees the masked '******'+last6 string
+  and NO button at all in that branch — not a disabled button. A holder sees the
+  Regenerate button. The non-holder can still SEE the masked token (the masked
+  value is in GET /api/datasources for every authenticated user — getDataSourceList
+  backend sidecar). Verified across LOGIN_FORM and OAUTH2.
+---
+arrange:
+  - kind: docker-compose-up
+    note: odd-platform stack — run once with auth.type=LOGIN_FORM, repeat with auth.type=OAUTH2
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name, namespace_id, connection_url, created_at, updated_at)
+      VALUES (8401, '//probe-source/p-084/ds', 'p084_datasource', NULL, NULL, NOW(), NOW());
+  - kind: sql
+    query: |
+      INSERT INTO token (id, name, value, created_at, updated_at)
+      VALUES (8401, 'p084_token', 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCColdTok', NOW(), NOW());
+  - kind: sql
+    query: "UPDATE data_source SET token_id = 8401 WHERE id = 8401;"
+  - kind: env
+    note: |
+      create two principals — USER_WITH holding a policy that grants
+      DATA_SOURCE_TOKEN_REGENERATE, and USER_WITHOUT holding a read-only policy
+      that does NOT grant it (no MANAGEMENT-tier permission).
+act:
+  - kind: dom-probe
+    description: |
+      sign in as USER_WITHOUT; navigate to /management/datasources; locate the
+      p084 row's token control; capture the rendered token string and enumerate
+      every interactive element (button/link) inside the token control
+    capture_as: without_permission_view
+  - kind: dom-probe
+    description: |
+      sign out, sign in as USER_WITH; navigate to /management/datasources;
+      locate the p084 row's token control; enumerate its interactive elements
+    capture_as: with_permission_view
+observe:
+  - kind: dom-capture
+    description: without_permission_view.token_string, without_permission_view.buttons[]
+    capture_as: without_observed
+  - kind: dom-capture
+    description: with_permission_view.buttons[]
+    capture_as: with_observed
+assert:
+  - "without_observed.token_string startswith '******'  # non-holder still sees the masked token"
+  - "'Regenerate' not in without_observed.buttons  # affordance ABSENT, not disabled"
+  - "without_observed.buttons does not contain a disabled 'Regenerate'  # truly absent — WithPermissions renders null"
+  - "'Regenerate' in with_observed.buttons  # holder sees the Regenerate button"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__DataSourceItemToken
+    - odd-platform__java__DataSourceController__controller-method__getDataSourceList
+  retrospectives: [LSN-023]
+realism_caveats: |
+  The probe pins the UI render gate only. It deliberately does NOT test that a
+  crafted PUT /api/datasources/8401/token from USER_WITHOUT is rejected — that
+  backend-boundary assertion is P-052's job (the regenerateDataSourceToken
+  sidecar's RBAC matrix). The DISABLED auth mode is intentionally excluded here:
+  under DISABLED there is no signed-in user and the WithPermissionsProvider's
+  DISABLED behaviour lives outside the DataSourceItemToken file (recorded as a
+  REFERENCE in the sidecar's auth_gates) — a probe for the DISABLED render path
+  belongs in the WithPermissionsProvider node's enrichment.

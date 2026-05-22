@@ -23,3 +23,10 @@ Every target the `panel-adversary` expert has spot-checked, across all runs. The
 | 2026-05-21 | SearchServiceImpl.getFacets/getFilterOptions — faceted-search filter enumeration | capability |
 | 2026-05-21 | helpers.ts bytesToKb/bytesToMb — file-size unit conversion (SI vs binary) | random-walk |
 | 2026-05-21 | TokenGeneratorImpl.regenerateToken — token rotation in-place row mutation / no audit | boundary |
+| 2026-05-22 | AttachmentServiceImpl.getUploadOptions/uploadFileChunk — attachment.max-file-size enforcement | negative-space |
+| 2026-05-22 | ActivityController.getActivity — `size` parameter boundary on the activity feed | boundary |
+| 2026-05-22 | GenAIController.genAiQuestion — RBAC gate on POST /api/genai/ask | capability |
+| 2026-05-22 | NamespaceServiceImpl.delete — delete of a namespace with attached resources | random-walk |
+| 2026-05-22 | DataEntityRunController.getRuns — per-entity test/job runs list | capability |
+| 2026-05-22 | V0_0_79__data_deprecation.sql — data-entity status migration / activity-row purge | negative-space |
+| 2026-05-22 | AlertActionResolverImpl.toHalt — per-entity alert-halting suppression semantics | boundary |

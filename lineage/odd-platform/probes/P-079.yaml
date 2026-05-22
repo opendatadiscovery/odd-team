@@ -1,0 +1,94 @@
+---
+probe_id: P-079
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__DataSourceItem.md
+emitted_at: 2026-05-22T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-031
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category E, resource boundary / replay-safety): the
+  DataSourceItem Delete path dispatches `deleteDataSource` via
+  ConfirmationDialog. ConfirmationDialog.onClose sets `isLoading=true`
+  (ConfirmationDialog.tsx:27) before invoking the action; the DialogWrapper is
+  expected to use `isLoading` to disable the confirm button while the DELETE is
+  in flight. This probe checks whether that in-flight disable is RELIABLE: can
+  a fast double-click on the confirm button dispatch `deleteDataSource` twice
+  and issue two DELETE requests for the same data_source id?
+
+  Hypothesis: the in-flight `isLoading` disable prevents a second dispatch, so
+  a double-click yields exactly ONE DELETE request. The backend soft-delete is
+  idempotent regardless (`deleted_at IS NULL` guard, per the deleteDataSource
+  sidecar) so even two requests cause no data corruption — but a second
+  request that returns 204-on-already-deleted (or 404) could surface a
+  confusing second toast. The probe records the actual request count and the
+  toast outcome.
+---
+arrange:
+  - kind: docker-compose-up
+    note: odd-platform + Postgres via the local odd-minimal compose stack
+  - kind: env
+    auth_type: DISABLED
+    note: DISABLED so the headless browser reaches the Delete control with DATA_SOURCE_DELETE granted
+  - kind: sql
+    query: |
+      -- An empty data source so the delete reaches 204 (no cascade block in the way)
+      INSERT INTO data_source (id, name, oddrn, description, active, deleted_at)
+      VALUES (7901, 'probe-ds-dblclick', '//probe/p079/dblclick', 'double-click target', true, NULL);
+act:
+  - kind: dom-probe
+    step: navigate
+    url: /management/datasources
+  - kind: dom-probe
+    step: click
+    target: "DataSourceItem card for 'probe-ds-dblclick' -> Delete button"
+  - kind: dom-probe
+    step: double-click
+    target: "ConfirmationDialog confirm action button (text 'Delete', buttonType 'main-lg')"
+    note: two clicks as fast as the harness allows, before the first DELETE response settles
+    capture_as: double_click_issued
+  - kind: dom-probe
+    step: wait
+    for: "all in-flight network requests to settle (3s timeout)"
+  - kind: dom-probe
+    step: snapshot
+    capture_as: after_double_click
+observe:
+  - kind: capture
+    name: delete_request_count
+    from: "count of DELETE /api/datasources/7901 requests observed on the network during the act phase"
+  - kind: capture
+    name: toast_count
+    from: "after_double_click — number of distinct AppToast elements rendered (react-hot-toast dedupes by id = response.url, so a second identical request would not add a second error toast, but a 204 + a 404 would differ)"
+  - kind: capture
+    name: dialog_still_open
+    from: "after_double_click — boolean: is the ConfirmationDialog still mounted"
+  - kind: capture
+    name: row_count_after
+    from: "SQL: SELECT count(*) FROM data_source WHERE id = 7901 AND deleted_at IS NOT NULL"
+assert:
+  - "delete_request_count == 1  # HYPOTHESIS: in-flight isLoading disable blocks the second dispatch"
+  - "row_count_after == 1  # the source is soft-deleted exactly once regardless"
+  - "dialog_still_open == false  # the dialog closes after the (single) successful delete"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__DataSourceItem
+    - odd-platform__java__DataSourceController__controller-method__deleteDataSource
+  retrospectives: [LSN-019, LSN-023]
+realism_caveats: |
+  If `delete_request_count` comes back as 2, the in-flight disable is NOT
+  reliable and a double-click double-dispatches — harmless at the data layer
+  (idempotent soft-delete) but a sign the confirm button needs an explicit
+  disabled-while-pending guard. The probe depends on the harness being able to
+  fire two clicks inside the DELETE round-trip window; on a fast local stack
+  the round-trip may be too quick to interleave, in which case the probe
+  cannot disprove the hypothesis and should be re-run with a network-throttle
+  or a backend artificial delay. The probe does NOT cover two SEPARATE browser
+  sessions deleting the same source concurrently — that is a backend-layer
+  concern already addressed by the deleteDataSource sidecar's resource_boundaries.

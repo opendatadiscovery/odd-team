@@ -5,7 +5,7 @@ date: 2026-05-22
 domain: methodology / Layer-4 feature extraction
 severity: high
 gates_informed: [feedback_reverse_engineering_paradigm.md, feedback_product_owner_lens.md, feedback_linus_torvalds_engineering_bar.md, feedback_record_guidance_immediately.md]
-status: closed
+status: open
 ---
 
 # LSN-023: Feature ontology built for a UI product with the UI absent — the operating bar was never written down
@@ -32,6 +32,8 @@ Both are real. The first does not excuse the second: writing the bar down does n
 ## Rule that emerged
 
 `APPROACH.md` section 0 — "The operating stance — non-negotiable" — placed ahead of all mechanics: reverse engineering; the two named identities (Linus Torvalds / senior product owner); the junior's "you never asked me" forbidden; the user-facing surface as the primary object of analysis. Enforced by rules 17-19 (the stance is non-negotiable; the UI interaction layer is a mandatory substrate axis and a UI-incomplete feature is incomplete; UX patterns are ADR candidates), by section 6 Step 3 (the UI axis is mandatory, never triaged away), and by stance clauses written into the `file-analyser` / `feature-flow-builder` / `feature-reflector` / `adr-archaeologist` contracts. Auto-memory: `feedback_reverse_engineering_paradigm`, `feedback_product_owner_lens`, the extended `feedback_linus_torvalds_engineering_bar`, `feedback_record_guidance_immediately`.
+
+**Closure condition.** This LSN stays `open` until the fix reaches the artefacts — the `ui-interaction` substrate axis added, every feature flow re-threaded through its UI surface (F-031 first), and the wrong REFACTOR-584 / DOC-GAP-262 findings superseded. The 2026-05-22 meta-review panel correctly caught that the original `status: closed` was premature: a closed LSN whose named wrong artefact (`F-031.yaml`'s `permission_side_door` facet) is still committed violates target condition 2 ("every closed LSN carries closure-evidence"). The case-law *rule* landed (APPROACH §0 + rules 17-19 + the agent contracts, merged); the *application* had not, so `closed` was wrong.
 
 ## Forcing question
 

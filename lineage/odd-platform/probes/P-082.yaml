@@ -1,0 +1,101 @@
+---
+probe_id: P-082
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__DataSourceItemToken.md
+emitted_at: 2026-05-22T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-031
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question: does clicking the "Regenerate" button on a data-source row's
+  token control open a confirmation dialog that MUST be confirmed before the
+  destructive PUT /api/datasources/{id}/token fires — and does cancelling/closing
+  the dialog dispatch nothing? Secondary question (resource_boundaries Q1): can a
+  fast operator close the dialog and re-open+re-confirm it before the store
+  settles, issuing TWO destructive rotations?
+  Hypothesis from the code-walk (DataSourceItemToken.tsx:35-50, ConfirmationDialog.tsx:24-79):
+  (a) the Regenerate button is the ConfirmationDialog's open-trigger — a single
+  click only OPENS the dialog, it does NOT call regenerateDataSourceToken;
+  (b) confirming (the dialog's main-lg button) calls onConfirm → dispatches the
+  thunk → exactly one PUT; (c) cancelling/closing without confirming fires zero
+  network calls; (d) the dialog's isLoading spinner blocks a second confirm
+  WITHIN one open instance, but nothing blocks close+reopen — so a fast
+  double-cycle CAN issue two rotations, and the operator who copied the first
+  response's token then holds an already-invalidated value.
+---
+arrange:
+  - kind: docker-compose-up
+    note: odd-platform stack with auth.type=LOGIN_FORM
+  - kind: sql
+    query: |
+      -- a registered data source with a token, so the Datasources tab has a row
+      INSERT INTO data_source (id, oddrn, name, namespace_id, connection_url, created_at, updated_at)
+      VALUES (8201, '//probe-source/p-082/ds', 'p082_datasource', NULL, NULL, NOW(), NOW());
+  - kind: sql
+    query: |
+      INSERT INTO token (id, name, value, created_at, updated_at)
+      VALUES (8201, 'p082_token', 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAoldTok', NOW(), NOW());
+  - kind: sql
+    query: "UPDATE data_source SET token_id = 8201 WHERE id = 8201;"
+  - kind: env
+    note: sign in as a user holding DATA_SOURCE_TOKEN_REGENERATE (default ADMIN policy)
+act:
+  - kind: dom-probe
+    description: navigate to /management/datasources, locate the p082_datasource row
+    capture_as: row_handle
+  - kind: dom-probe
+    description: |
+      single-click the "Regenerate" button in the row's token control; do NOT
+      confirm yet. Record whether any PUT /api/datasources/* request was issued.
+    capture_as: network_after_button_click
+  - kind: dom-probe
+    description: |
+      assert a confirmation dialog is now visible; capture its body text
+    capture_as: dialog_body_text
+  - kind: dom-probe
+    description: close the dialog WITHOUT confirming (Escape / backdrop / close icon)
+    capture_as: network_after_cancel
+  - kind: dom-probe
+    description: |
+      re-open the dialog (click Regenerate again) and click the confirm button;
+      capture the PUT request count and the response body
+    capture_as: regen_response_1
+  - kind: dom-probe
+    description: |
+      immediately (before any list refetch) re-open the dialog and confirm a
+      SECOND time; capture the PUT count and the second response body
+    capture_as: regen_response_2
+observe:
+  - kind: http-capture
+    description: count of PUT /api/datasources/8201/token requests across the whole run
+    capture_as: total_put_count
+  - kind: sql
+    query: "SELECT value FROM token WHERE id = 8201;"
+    capture_as: final_token_value
+assert:
+  - "network_after_button_click.put_count == 0  # a bare click only opens the dialog"
+  - "dialog_body_text contains 'p082_datasource'  # dialog names the datasource"
+  - "network_after_cancel.put_count == 0  # cancelling fires no rotation"
+  - "regen_response_1.put_count == 1  # one confirm => one PUT"
+  - "regen_response_1.body.token.value != 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAoldTok'"
+  - "regen_response_2.body.token.value != regen_response_1.body.token.value  # second rotation invalidates the first"
+  - "total_put_count == 2  # close+reopen is NOT blocked — two destructive rotations"
+  - "final_token_value == regen_response_2.body.token.value  # last-write-wins; response_1's token is now dead"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__DataSourceItemToken
+    - odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken
+  retrospectives: [LSN-023, LSN-019]
+realism_caveats: |
+  The probe pins the confirm-dialog barrier and the double-rotation gap. If
+  assertion `total_put_count == 2` FAILS (only one PUT), the UI has a de-bounce
+  or pending-guard the file-analyser missed — re-read DataSourceItemToken.tsx /
+  ConfirmationDialog.tsx. The probe does NOT verify ingestion lockout (the old
+  token going 401) — that is P-051's job on the backend side. It also does not
+  cover the OAUTH2/LDAP/DISABLED auth modes (P-084 covers permission gating).

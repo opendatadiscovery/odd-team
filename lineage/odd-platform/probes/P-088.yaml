@@ -1,0 +1,92 @@
+---
+probe_id: P-088
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__NamespaceAutocomplete
+emitted_at: 2026-05-22T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-031
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category E / resource boundary — useEffect + debounce
+  ordering): on mount-open, the effect at NamespaceAutocomplete.tsx:106-111
+  fires for the `autocompleteOpen` transition AND re-fires on every `searchText`
+  change; `handleSearch` is a 500ms-debounced callback whose closure is
+  rebuilt whenever `searchText` changes (dep array line 59). The component
+  manages `loading` from TWO places: the effect's `setLoading(autocompleteOpen)`
+  (line 107) and the debounced fetch's `setLoading(false)` in `.then()`
+  (line 56). Hypothesis: rapid typing produces an interleaving where a later
+  keystroke's debounced fetch resolves BEFORE an earlier one, so `options`
+  ends up holding results for a stale query — and because `getFilterOptions`
+  reads the CURRENT `searchText` against the STALE `options` (line 81), the
+  "Create new custom namespace" suggestion can flicker on/off incorrectly
+  while a fetch is in flight. This probe pins the in-flight-race observable.
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: sql
+    query: |
+      INSERT INTO namespace (id, name, created_at, updated_at) VALUES
+        (1, 'ab',  NOW(), NOW()),
+        (2, 'abc', NOW(), NOW());
+  - kind: env
+    description: |
+      The local UI is run behind a configurable-latency proxy (e.g. toxiproxy)
+      so the GET /api/namespaces response for query 'ab' is delayed 1200ms and
+      the response for query 'abc' is delayed 100ms — forcing out-of-order
+      resolution of two debounced fetches.
+act:
+  - kind: dom-probe
+    description: |
+      Playwright. Open the Add-datasource form, focus the Namespace combo-box,
+      type 'ab' then within 100ms append 'c' (so 'abc' is the final input).
+      Two debounced fetches fire: one for 'ab' (slow, 1200ms) and, after the
+      next debounce window, one for 'abc' (fast, 100ms). Capture the listbox
+      state and the loading spinner at three checkpoints: T+200ms, T+400ms,
+      T+1500ms.
+    steps:
+      - "open Add-datasource form"
+      - "page.locator('#namespace-name-search').type('ab', { delay: 0 })"
+      - "page.waitForTimeout(80)"
+      - "page.locator('#namespace-name-search').type('c', { delay: 0 })"
+      - "snapshot listbox + spinner at +200ms, +400ms, +1500ms"
+    capture_as: timeline_snapshots
+observe:
+  - kind: dom-capture
+    description: "Per checkpoint: option row texts, whether the create-suggestion row is present, spinner visible y/n."
+    capture_as: checkpoint_states
+assert:
+  - >
+    # Final settled state (T+1500ms): input is 'abc', namespace 'abc' exists,
+    # so NO create-suggestion row should be shown.
+    checkpoint_states['+1500ms'].option_rows.every(t => !t.includes('Create new custom namespace'))
+  - >
+    # Race observable: if the slow 'ab' fetch resolves last, it overwrites
+    # `options` with ['ab','abc'] AFTER the fast 'abc' fetch already set them;
+    # the create-suggestion logic then runs current searchText 'abc' against
+    # those options — 'abc' IS present so no create row. The visible defect is
+    # transient option-list churn / spinner state, captured at +200/+400ms.
+    checkpoint_states['+1500ms'].option_rows.length == 2
+  - >
+    # The loading spinner must NOT be stuck on after both fetches resolve.
+    checkpoint_states['+1500ms'].spinner_visible == false
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__NamespaceAutocomplete
+  retrospectives: [LSN-017, LSN-019, LSN-023]
+realism_caveats: |
+  The component has no fetch-cancellation / request-sequence guard (no
+  AbortController, no "ignore stale response" flag in the `.then()`), so
+  out-of-order resolution is structurally possible. Whether it is OBSERVABLE
+  to a user depends on real network jitter and human typing cadence; the
+  injected 1200ms/100ms split is an amplified worst case. The probe documents
+  reachability of the stale-options window, not its real-world frequency. It
+  does NOT cover the `.unwrap()` rejection path — if `searchNamespace` rejects,
+  the `.then()` never runs and `loading` is left true (a separate stuck-spinner
+  question; see the sidecar's resource_boundaries finding, not separately
+  probed in P-086..P-089).

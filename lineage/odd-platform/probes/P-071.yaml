@@ -1,0 +1,93 @@
+---
+probe_id: P-071
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__DataSourcesList.md
+emitted_at: 2026-05-22T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-031
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category F — request-input naming alignment, and Category B
+  — name-behavior pair): the search box on the Management -> Datasources screen
+  is placeholdered 'Search datasource' (DataSourcesList.tsx:83), which an
+  operator reads as a substring search over the datasource name. The typed
+  value flows verbatim as the backend `query` parameter, which the backend
+  filters with DATA_SOURCE.NAME.startsWithIgnoreCase(query) — a name PREFIX
+  match. Hypothesis: typing a fragment that appears in the MIDDLE of a
+  datasource name but is NOT a prefix of it (e.g. 'flake' for
+  'my-snowflake-dev') returns an EMPTY card list and the 'No information to
+  display' placeholder, even though the datasource exists — confirming the
+  'Search datasource' label over-promises. Typing the actual NAME PREFIX
+  ('my-snow') returns the card.
+---
+arrange:
+  - kind: docker-compose-up
+    note: local odd-platform stack (odd-minimal profile), auth.type=DISABLED
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, name, oddrn, description, created_at) VALUES
+        (7101, 'my-snowflake-dev', '//p071-source/datasource/7101', 'probe P-071', NOW()),
+        (7102, 'analytics-prod-warehouse', '//p071-source/datasource/7102', 'probe P-071', NOW());
+act:
+  - kind: dom-probe
+    note: Playwright (local, headless) against the running UI
+    steps:
+      - navigate: /management/datasources
+      - wait_for_selector: "input[placeholder='Search datasource']"
+      # leg A — a mid-name substring that is NOT a prefix
+      - type_into: { selector: "input[placeholder='Search datasource']", text: "flake" }
+      - wait: 800ms   # past the 500ms debounce
+      - wait_for_network_idle: true
+      - capture_as: substring_card_count
+        expression: "count of datasource cards rendered"
+      - capture_as: substring_empty_placeholder_visible
+        expression: "is the 'No information to display' placeholder visible"
+      - capture_as: substring_header_count
+        expression: "the numeric value shown in the 'N datasources overall' header"
+      # leg B — the actual name prefix
+      - clear: "input[placeholder='Search datasource']"
+      - type_into: { selector: "input[placeholder='Search datasource']", text: "my-snow" }
+      - wait: 800ms
+      - wait_for_network_idle: true
+      - capture_as: prefix_card_count
+        expression: "count of datasource cards rendered"
+      - capture_as: prefix_first_name
+        expression: "text of the first card's name heading"
+observe:
+  - kind: rest
+    method: GET
+    path: /api/datasources?page=1&size=30&query=flake
+    capture_as: api_substring_response
+  - kind: rest
+    method: GET
+    path: /api/datasources?page=1&size=30&query=my-snow
+    capture_as: api_prefix_response
+assert:
+  - "substring_card_count == 0  # 'flake' matches no NAME PREFIX -> empty list, drift confirmed"
+  - "substring_empty_placeholder_visible == true"
+  - "api_substring_response.items.length == 0  # backend prefix match returns nothing for a mid-name fragment"
+  - "prefix_card_count == 1  # 'my-snow' IS a prefix -> the card appears"
+  - "prefix_first_name == 'my-snowflake-dev'"
+  - "api_prefix_response.items.length == 1"
+  # the compounding UI bug: header count is frozen at the pre-search total (P-072), not '0'
+  - "substring_header_count == 2  # frozen pre-search total, NOT 0 -> operator gets no 0-results signal"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__DataSourcesList
+    - odd-platform__java__DataSourceController__controller-method__getDataSourceList
+  retrospectives: [LSN-020, LSN-023]
+realism_caveats: |
+  This probe pins the operator-visible end of the REFACTOR-425 prefix/substring
+  drift. If `substring_card_count` is non-zero, the backend query is NOT a pure
+  prefix match at this commit and the sidecar's Category F drift claim must be
+  re-traced. The final assertion (substring_header_count == 2) couples this
+  probe to P-072 (the frozen-count bug); if P-072's hypothesis is wrong the
+  header would instead read 0 and this assertion should be relaxed. The probe
+  does not verify the empty-page COUNT divergence (the backend containsIgnoreCase
+  count path) — that is the backend's P-036.

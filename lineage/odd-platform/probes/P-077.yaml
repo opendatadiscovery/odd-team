@@ -1,0 +1,74 @@
+---
+probe_id: P-077
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__DataSourceForm.md
+emitted_at: 2026-05-22T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-031
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (resource_boundaries — double-submit): the DataSourceForm Save
+  button's only `disabled` condition is `!isValid` (form validity); it is NOT
+  disabled by the `isLoading` status selector. Hypothesis: a fast double-click
+  on Save — before the first registerDataSource dispatch resolves — fires TWO
+  POST /api/datasources requests. The backend's data_source ODDRN partial-unique
+  index serialises them, so the SECOND POST gets HTTP 400 and only ONE
+  data_source row is created — but the operator sees a confusing error toast
+  for an action that actually succeeded. The probe confirms (a) two POSTs are
+  emitted and (b) exactly one data_source row results.
+---
+arrange:
+  - kind: docker-compose-up
+    note: odd-platform + Postgres, auth.type=DISABLED
+  - kind: env
+    note: |
+      Confirm no data_source with oddrn '//p077/double-click' exists before
+      the run.
+act:
+  - kind: dom-probe
+    note: |
+      Playwright with network interception on POST /api/datasources (record
+      every request to that path). Navigate to /management/datasources, click
+      "+ Add datasource". Fill Name='p077-double-click-ds', ODDRN=
+      '//p077/double-click'. Double-click the Save button with no delay between
+      clicks (two clicks within ~50ms, before the first response returns —
+      optionally throttle the network so the first dispatch is slow enough that
+      the second click lands while it is in flight).
+    capture_as: double_click_done
+observe:
+  - kind: network-capture
+    note: count of POST /api/datasources requests issued during double_click_done
+    capture_as: post_request_count
+  - kind: sql
+    query: |
+      SELECT count(*) AS n FROM data_source WHERE oddrn = '//p077/double-click'
+    capture_as: ds_row_count
+  - kind: dom-state
+    selector: "global toast / snackbar with error styling"
+    capture_as: error_toast_shown
+assert:
+  - "post_request_count >= 2  # the Save button is not isLoading-guarded — the double-click issued two POSTs"
+  - "ds_row_count == 1  # the backend ODDRN unique index serialised them — exactly one data source created"
+  - "error_toast_shown == true  # the losing POST's 400 surfaces as an error toast despite the create having succeeded"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__DataSourceForm
+    - odd-platform__java__DataSourceController__controller-method__registerDataSource
+  retrospectives: [LSN-023]
+realism_caveats: |
+  The double-click race is timing-sensitive: if the first dispatch resolves
+  before the second click lands, only one POST is issued and post_request_count
+  == 1 — that does NOT disprove the hypothesis, it means the race window was
+  missed. To make the probe deterministic, throttle the POST /api/datasources
+  response (Playwright route handler with a deliberate delay) so the second
+  click reliably lands while the first is in flight. The probe verifies the
+  CURRENT behaviour; the fix (disable Save while isLoading) would make
+  post_request_count == 1 deterministically and is the natural follow-up if
+  the maintainer wants to harden the form. The probe runs DISABLED-auth and
+  asserts only that an error-styled toast appeared, not its text.

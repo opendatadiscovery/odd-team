@@ -1,0 +1,102 @@
+---
+probe_id: P-083
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__DataSourceItemToken.md
+emitted_at: 2026-05-22T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-031
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question: after a successful token regeneration, what does the operator
+  see — and is the freshly-revealed plaintext token recoverable if they do not
+  copy it immediately?
+  Hypothesis from the code-walk (DataSourceItemToken.tsx:25-53, datasources.slice.ts:41-42,
+  DataSourceItem.tsx:110-121):
+  (a) the regeneration response carries the NEW token in plaintext; the slice
+  upserts it; the row re-renders; the useEffect recomputes isHidden=false because
+  the new value has no '******' prefix;
+  (b) the token control swaps from the "Regenerate" button to a "Copy" button;
+  (c) the parent DataSourceItem renders a warning banner "Save token in a secure
+  location. You will not be able to retrieve it again.";
+  (d) one-time-reveal: if the Datasources list is refetched (navigate away and
+  back, or trigger a re-fetch), the row re-loads the MASKED token form from
+  GET /api/datasources, isHidden recomputes to true, the plaintext is GONE, and
+  the control reverts to "Regenerate" — the operator who did not copy must
+  perform ANOTHER destructive rotation to obtain a usable token.
+---
+arrange:
+  - kind: docker-compose-up
+    note: odd-platform stack with auth.type=LOGIN_FORM
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name, namespace_id, connection_url, created_at, updated_at)
+      VALUES (8301, '//probe-source/p-083/ds', 'p083_datasource', NULL, NULL, NOW(), NOW());
+  - kind: sql
+    query: |
+      INSERT INTO token (id, name, value, created_at, updated_at)
+      VALUES (8301, 'p083_token', 'BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBoldTok', NOW(), NOW());
+  - kind: sql
+    query: "UPDATE data_source SET token_id = 8301 WHERE id = 8301;"
+  - kind: env
+    note: sign in as a user holding DATA_SOURCE_TOKEN_REGENERATE
+act:
+  - kind: dom-probe
+    description: |
+      navigate to /management/datasources; assert the p083 row's token control
+      shows a masked string (starts with '******') and a "Regenerate" button
+    capture_as: pre_state
+  - kind: dom-probe
+    description: click Regenerate, confirm the dialog, wait for the thunk to settle
+    capture_as: regen_settled
+  - kind: dom-probe
+    description: |
+      capture the token control's post-regeneration state: the rendered token
+      string, which button is shown (Regenerate vs Copy), and whether the
+      "Save token in a secure location..." warning banner is visible in the row
+    capture_as: post_regen_state
+  - kind: dom-probe
+    description: |
+      WITHOUT copying, navigate away (e.g. to /management/collectors) and back
+      to /management/datasources, forcing a fresh GET /api/datasources
+    capture_as: after_refetch_navigation
+  - kind: dom-probe
+    description: |
+      re-capture the p083 row's token control state after the list refetch
+    capture_as: post_refetch_state
+observe:
+  - kind: dom-capture
+    description: post_regen_state.token_string, post_regen_state.visible_button, post_regen_state.warning_visible
+    capture_as: post_regen_observed
+  - kind: dom-capture
+    description: post_refetch_state.token_string, post_refetch_state.visible_button
+    capture_as: post_refetch_observed
+assert:
+  - "pre_state.visible_button == 'Regenerate'"
+  - "pre_state.token_string startswith '******'"
+  - "post_regen_observed.token_string does not start with '******'  # plaintext now shown"
+  - "post_regen_observed.token_string.length == 40  # full plaintext token"
+  - "post_regen_observed.visible_button == 'Copy'  # control swapped to Copy"
+  - "post_regen_observed.warning_visible == true  # 'save it, cannot retrieve again' banner shown"
+  - "post_refetch_observed.token_string startswith '******'  # re-masked after refetch"
+  - "post_refetch_observed.visible_button == 'Regenerate'  # plaintext is GONE — one-time reveal"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__DataSourceItemToken
+    - odd-platform__java__DataSourceController__controller-method__getDataSourceList
+    - odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken
+  retrospectives: [LSN-023]
+realism_caveats: |
+  The probe pins the one-time-reveal model and the Regenerate→Copy swap. If
+  `post_refetch_observed.token_string` does NOT re-mask, either the list refetch
+  did not actually fire (the SPA served the row from cached redux state — adjust
+  the navigation to force a hard refetch) or the list endpoint is returning
+  plaintext (which would contradict the getDataSourceList backend sidecar and is
+  itself a finding). The probe does not measure HOW MANY render frames the
+  initial-isHidden=true assumption is visible for (bugs_limitations_corner_cases[5]);
+  that sub-frame flicker is below DOM-probe resolution.

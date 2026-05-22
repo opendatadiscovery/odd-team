@@ -1,0 +1,93 @@
+---
+probe_id: P-086
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__NamespaceAutocomplete
+emitted_at: 2026-05-22T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-031
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category B / name-behavior, Category F / props): the
+  NamespaceAutocomplete "Create new custom namespace «X»" suggestion row is
+  gated by `!options.some(option => option.name === params.inputValue)`
+  (NamespaceAutocomplete.tsx:81). The `searchNamespace` thunk fetches at most
+  `size: 30` namespaces (line 52). Hypothesis: when more than 30 namespaces
+  whose name CONTAINS the typed prefix exist, an exact-match namespace can fall
+  outside the fetched 30-row window, so `options` does not contain it, so the
+  no-match condition is TRUE, so the user is offered "Create new custom
+  namespace «exact-existing-name»" for a namespace that already exists.
+  Submitting it calls the backend `namespaceService.getOrCreate`, which
+  `getByName` resolves to the EXISTING row (no duplicate) — but the UI has
+  mislabelled an existing namespace as creatable. This probe pins whether the
+  30-row cap can hide an exact match behind the create affordance.
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: sql
+    query: |
+      -- 60 namespaces all sharing the 'payments' prefix; the exact-match
+      -- target 'payments' is created LAST so it is least likely to land in
+      -- the first 30 rows of an unordered / name-ordered fetch.
+      INSERT INTO namespace (id, name, created_at, updated_at)
+      SELECT i, 'payments-team-' || i, NOW(), NOW()
+      FROM generate_series(1, 59) AS i;
+      INSERT INTO namespace (id, name, created_at, updated_at)
+      VALUES (60, 'payments', NOW(), NOW());
+act:
+  - kind: dom-probe
+    description: |
+      Headless-browser (Playwright) against the local odd-platform UI.
+      Navigate to /management/datasources, click "+ Add datasource", focus the
+      Namespace combo-box, type "payments" (exact name of namespace id=60),
+      wait out the 500ms debounce + the fetch.
+    steps:
+      - "page.goto('/management/datasources')"
+      - "page.getByRole('button', { name: '+ Add datasource' }).click()"
+      - "page.locator('#namespace-name-search').fill('payments')"
+      - "page.waitForResponse(r => r.url().includes('/api/namespaces') && r.status() === 200)"
+      - "page.waitForTimeout(700)"
+    capture_as: dropdown_options
+  - kind: rest
+    method: GET
+    path: /api/namespaces?page=1&size=30&query=payments
+    capture_as: fetched_window
+observe:
+  - kind: dom-capture
+    description: "Text of every rendered <li> option row in the open listbox."
+    capture_as: option_row_texts
+  - kind: sql
+    query: "SELECT id, name FROM namespace WHERE name = 'payments'"
+    capture_as: exact_match_row
+assert:
+  - "exact_match_row.length == 1  # the namespace genuinely exists"
+  - "fetched_window.items.length == 30  # the size=30 cap is hit"
+  - >
+    # DRIFT hypothesis: if the exact 'payments' row is NOT in the fetched 30,
+    # the create-suggestion row is shown for an already-existing namespace.
+    (fetched_window.items.some(n => n.name == 'payments'))
+    == (option_row_texts.every(t => !t.includes('Create new custom namespace')))
+  - >
+    # If the assertion above shows the create row IS offered while 'payments'
+    # exists, the UI mislabels an existing namespace as creatable.
+    option_row_texts.some(t => t.includes('payments'))
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__NamespaceAutocomplete
+    - odd-platform__java__DataSourceController__controller-method__registerDataSource
+  retrospectives: [LSN-019, LSN-023]
+realism_caveats: |
+  The drift is benign for data integrity — the backend `getByName` resolves the
+  existing row, so no duplicate namespace is created. The defect is purely a
+  UI-label one: the user is told they will "Create new" a namespace that
+  already exists. The probe does NOT measure how often real deployments exceed
+  30 prefix-sharing namespaces; it only proves the mislabel is reachable. If
+  the backend `getNamespaceList` applies a name-ascending ORDER BY, the exact
+  short name 'payments' sorts before 'payments-team-*' and the window includes
+  it — in that case the assertion FAILS and the 30-cap is not exploitable for
+  this input shape; re-run with the exact-match name created so it sorts last.

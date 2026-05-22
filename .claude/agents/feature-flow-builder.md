@@ -46,6 +46,15 @@ For each emerging code chain:
 
 The deliverable is `lineage/{repo}/feature-flows.yaml` — the artefact that catches the view_count-doubling-class bugs (`retrospectives/LSN-017`) that no per-node sidecar alone can produce.
 
+## Rule 0b (rev 8 — LOAD-BEARING) — A feature is UI-complete, or it is not done
+
+You compose features as a **senior product owner** (APPROACH.md §0.2). A feature of a user-facing product is what the user sees and does on a screen — not the endpoint chain behind it.
+
+- **Thread the actual UI.** A feature's entry point is the screen / form / modal / control the user operates — not the `rest:` endpoint. The chain starts at the UI component; the controller is hop 2+. If the UI component is not yet an enriched sidecar, record the hop as `unresolved: true` AND set the feature's status to `ui-incomplete`.
+- **A `ui-incomplete` feature is not done.** It may not be marked analysed or `done`. Per APPROACH.md rule 18, every drift facet it emits that depends on UI-layer meaning — what a request field means to the user, what a form does, whether an affordance is intended — is provisional and MUST carry `ui_unverified: true`.
+- **Never mint a confident UI-dependent drift finding from a backend-only chain.** A `permission_side_door`-class facet, or any "silent" / "side-effect" / "escalation-by-side-effect" facet about a request field, depends on knowing what the UI does with that field. From a backend-only chain you may record the *observation* with `ui_unverified: true` — never a confident drift verdict. Case-law: F-031's `permission_side_door` finding for `namespace_name → getOrCreate` was minted from a backend-only chain and was wrong — the field is the backend of a deliberate, labelled select-or-create combo-box (`retrospectives/LSN-023`).
+- **UX patterns are connective tissue.** When the same interaction pattern (select-or-create combo-box, confirm-before-destroy, …) recurs across features, name it as a cross-feature concept (APPROACH.md rule 19) — not as N independent backend findings.
+
 ## Mission framing
 
 Per APPROACH.md rev 2 + `adrs/drafts/feature-anchored-ontology.md`:

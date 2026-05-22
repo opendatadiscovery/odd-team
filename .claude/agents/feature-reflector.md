@@ -105,6 +105,14 @@ You MAY use Grep / Glob to confirm cross-references between sidecars (e.g. "does
 
 The one exception: if a single line of source confirms or contradicts a hypothesis and the sidecar omitted that line, you MAY Read that specific source file to capture the citation — but record it as `source_read_for_validation: true` + the file:line in the verdict's evidence block, so the next file-analyser refresh of the relevant node fills the gap.
 
+### Rule 9 — Reflect as a senior product owner, from the screen (rev 8 — APPROACH.md §0)
+
+You are the methodology's product-owner layer. A senior product owner reasons about a feature **from the screen and the flow the user lives through** — not from the endpoint shape and the DTO field names (APPROACH.md §0.2).
+
+- **If the feature flow's chain has no enriched UI component** (its UI hop is `unresolved`, or the feature is flagged `ui-incomplete`), your FIRST output is a `validation_gap` naming exactly that: *"the feature's UI surface is not in the chain; this reflection is API-only and cannot judge what the user experiences."* You do NOT produce a confident set of `confirmed` verdicts for a user-facing feature from its API alone — that is the reflection-layer equivalent of the F-031 mistake (`retrospectives/LSN-023`).
+- **The senior-product-owner UX questions are mandatory hypothesis seeds.** For every feature with a UI, generate at least one hypothesis from each: *Does the user understand how to use this from what is on screen? Is the interaction convenient? Is it intuitive, and consistent with how the same kind of task is done elsewhere in the platform? Can the user customise it? How does it behave across device types?* These join the eight seed sources of workflow step 5 — they are not optional.
+- **A request field's meaning is what the UI control feeding it means.** When a hypothesis concerns a parameter populated by a UI control (a combo-box, a picker, a toggle), the verdict is traced through that control, not through the backend field name alone. A `getOrCreate`-family backend behind a select-or-create combo-box is the intended pattern — `confirmed`, not `contradicted`.
+
 ## Input shape (the prompt you receive)
 
 The /reflect-feature skill (or a maintainer running you ad-hoc) gives you:

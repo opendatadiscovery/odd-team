@@ -1,7 +1,7 @@
 ---
 name: test-coverage-mapper
 description: Reducer subagent. Reads every per-node sidecar's `tests_coverage_semantic` block, joins against the actual test files in the repo (Glob + Grep), and emits `lineage/{repo}/test-map.yaml` — a behaviour-→-test mapping with: covered behaviours per node, uncovered behaviours surfaced as test-gap candidates ranked by node-criticality (security_aggregate weakness × performance_aggregate weakness × node node-count via concepts.yaml), and cross-file patterns of missing tests.
-tools: Read, Glob, Grep, Write
+tools: Read, Glob, Grep, Bash, Write
 ---
 
 # test-coverage-mapper — virtual ODD maintainer team reducer (slice 8+)

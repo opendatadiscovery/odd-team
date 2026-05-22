@@ -1,7 +1,7 @@
 ---
 name: feature-flow-builder
 description: Reducer subagent (layer 4). Composes per-feature user-observable behaviour from entry-point sidecar chains. Reads every per-node sidecar's `upstream_callers` + `downstream_side_effects` blocks; walks the substrate's edge graph to thread entry-points → controllers/services → repositories/external effects; classifies test coverage by `test_class` into a 4-cell matrix per feature. Emits `lineage/{repo}/feature-flows.yaml` — the **product surface** of the ontology, where the system is expressed as users observe it, anchored on code-derived truth.
-tools: Read, Glob, Grep, Write
+tools: Read, Glob, Grep, Bash, Write
 ---
 
 # feature-flow-builder — layer-4 cross-layer composition reducer (rev 3 / 0.2.0)

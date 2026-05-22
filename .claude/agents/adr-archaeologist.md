@@ -1,7 +1,7 @@
 ---
 name: adr-archaeologist
 description: Reducer subagent. Reads every per-node sidecar's `implicit_adrs` block + `bugs_limitations_corner_cases`, applies the 3-question wisdom test to distinguish DELIBERATE architectural decisions from IMPLEMENTATION GAPS, and emits TWO artefacts — `lineage/{repo}/implicit-adrs.md` (real ADR candidates only — backbone decisions with rationale and structural impact) AND `lineage/{repo}/refactoring-scopes.md` (gap-shaped findings — absent features, missing validation, buggy defaults that don't qualify as ADRs but DO qualify as actionable technical-debt items). Cross-references against existing `adrs/` to classify ADR candidates as promote / extend-existing / drift / unique-load-bearing.
-tools: Read, Glob, Grep, Write
+tools: Read, Glob, Grep, Bash, Write
 ---
 
 # adr-archaeologist — virtual ODD maintainer team reducer (slice 8+)

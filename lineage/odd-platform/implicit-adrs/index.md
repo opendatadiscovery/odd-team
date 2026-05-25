@@ -1505,3 +1505,104 @@ Each failed ≥2 of the 3 wisdom-test questions — the absence/issue has no sta
 
 **Severity**: LOW | **Classification**: promote | **Pillars**: [P-04] | **Batch**: ZC
 **Full detail**: `lineage/odd-platform/implicit-adrs/detail/ADR-CANDIDATE-208.md`
+
+---
+artefact: implicit-adrs-batch-append
+batch_id: ZD
+generated_at: "2026-05-25T13:30:00Z"
+generated_at_commit: 4ec2b20
+prompt_version: "adr-archaeologist/0.2.0"
+sidecars_consumed: 5
+new_sidecar_files:
+  - understanding/odd-platform__java__IdentityController__controller-class__IdentityController.md
+  - understanding/odd-platform__java__PermissionController__controller-class__PermissionController.md
+  - understanding/odd-platform__java__RoleController__controller-class__RoleController.md
+  - understanding/odd-platform__java__PolicyController__controller-class__PolicyController.md
+  - understanding/odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+batch_ZD_summary: { added_adrs: 3, strengthened_adrs: 6, wisdom_test_passes: 3, wisdom_test_reclassifications: 14 }
+new_adr_ids: [ADR-CANDIDATE-209, ADR-CANDIDATE-210, ADR-CANDIDATE-211]
+strengthened_adr_ids: [ADR-CANDIDATE-001, ADR-CANDIDATE-002, ADR-CANDIDATE-003, ADR-CANDIDATE-029, ADR-CANDIDATE-051, ADR-CANDIDATE-189]
+new_adrs_by_severity: { HIGH: 2, MEDIUM: 1, LOW: 0 }
+coherence_check: { strengthens: 6, supersedes: 0, conflicts_surfaced: 0 }
+---
+
+# Implicit ADRs — batch ZD append (odd-platform — 2026-05-25)
+
+Directed RBAC + Integration class-level batch on `feature/ontology-finalize-2026-05-25`. Five new class-level sidecars enrich the **RBAC + Identity + Integration controller surface**: the four RBAC-related class-level sidecars (`PolicyController`, `RoleController`, `PermissionController`, `IdentityController`) and the Integration Wizard surface (`IntegrationController`). All five are class-level reads that PRIMARY-SOURCE architectural commitments which prior batches surfaced only at the controller-method scope.
+
+**Wisdom-test outcome on 5 sidecars**:
+- 3 new ADR candidates emit (PASS):
+  - **ADR-CANDIDATE-209** (HIGH, promote — IntegrationController-class) — **Integration Wizard registry is classpath-loaded, boot-constructed, read-only, plugin-extensible via `classpath*:META-INF/wizard/*.yaml`.** Four architectural commitments at the type-system level (read-only interface + multi-jar classpath glob + @Bean single construction + explicit fail-fast messaging). Defines the documentation-overlay deployment model.
+  - **ADR-CANDIDATE-210** (HIGH, unique-load-bearing — IdentityController-class) — **`IdentityController.whoami` returns a synthetic `dummyOwner` (literal "admin" + `Permission.values()`) on empty SecurityContext — defence-in-depth-via-permissive-fallback / dev-mode-fully-unlocked-by-design.** The centerpiece DISABLED-mode behaviour for the identity exposure surface. Three intent anchors: the deliberate `.switchIfEmpty(Mono.just(...))` shape, the dynamic `Permission.values()` enumeration, the universal absence of `@PreAuthorize`. ADR is the IDENTITY-LAYER FACET of ADR-CANDIDATE-029 (DISABLED-as-default).
+  - **ADR-CANDIDATE-211** (MEDIUM, promote — PermissionController-class) — **Permission read surface is intentionally SPLIT: contextual reads on `PermissionController`; non-contextual MANAGEMENT reads via the `Identity.permissions` payload from `IdentityServiceImpl.whoami`.** Three-layer mirror (enum `hasContext` / SPI two-method interface / response-delivery split). Sibling of ADR-CANDIDATE-051 (the discriminator).
+- 14 wisdom-test reclassifications to refactoring-scopes (no-audit-log / status-code-drift / `installed: false` constant / 204-on-missing / case-insensitive collision / boot-fail-fast / `platform_url` placeholder / DISABLED anonymous leak / read-side authorization gap / Cache-Control absence / dynamic Permission.values() expansion / auth-mode-probe / IllegalArgumentException → 500 / lost-update + orphan-binding races).
+- 6 existing ADR candidates strengthened by additional `surfaced_by` evidence: ADR-CANDIDATE-001 (controllers-as-delegates → 23-sidecar), ADR-CANDIDATE-002 (centralised SECURITY_RULES → 23-sidecar), ADR-CANDIDATE-003 (read-collaborative GET → 17-sidecar), ADR-CANDIDATE-029 (DISABLED-as-default → 2-sidecar with IDENTITY-LAYER FACET), ADR-CANDIDATE-051 (PolicyTypeDto.hasContext discriminator → 2-sidecar), ADR-CANDIDATE-189 (OpenAPI spec source-of-truth → controller-side 23-sidecar mirror confirmed).
+
+---
+
+## ADR-CANDIDATE-209 — Integration Wizard registry is classpath-loaded, boot-constructed, read-only, and plugin-extensible via `classpath*:META-INF/wizard/*.yaml`
+
+**Classification**: promote
+**Severity**: HIGH
+**Surfaced by**:
+- `odd-platform__java__IntegrationController__controller-class__IntegrationController.md:implicit_adrs.[0]` (read-only classpath registry; @Bean single construction)
+- `odd-platform__java__IntegrationController__controller-class__IntegrationController.md:implicit_adrs.[2]` (`classpath*:` multi-jar glob — load-bearing prefix)
+- `odd-platform__java__IntegrationController__controller-class__IntegrationController.md:implicit_adrs.[4]` (boot fail-fast on malformed YAML)
+- **Decision statement**: The Integration Wizard surface — `GET /api/integrations` + `GET /api/integrations/{integration_id}` — is backed by a read-only registry constructed once at application boot from a multi-jar classpath scan (`classpath*:META-INF/wizard/*.yaml`). Four architectural commitments: classpath-loaded (not DB-stored); boot-constructed (read-only interface); plugin-extensible via `classpath*:` multi-jar glob; fail-fast on malformed YAML.
+- **Wisdom test**: PASS. Deliberate structural design (4 type-system-level commitments cross-validate each other); structural impact (entire documentation-extension model); alternative implementations (DB-backed wizards, admin API) would be structural changes.
+- **Existing ADR**: none. Composes with ADR-CANDIDATE-018 (fail-fast at boot — 5th surface) and ADR-CANDIDATE-001 (thin-delegate controllers — IntegrationController is a 28-line proxy).
+- **Co-surfaced gaps**: REFACTOR-611 (`installed: false` dead constant), REFACTOR-612 (204 on unknown id), REFACTOR-613 (case-insensitive collision), REFACTOR-614 (boot fail-fast crashes platform), REFACTOR-615 (placeholder URL in copy-paste snippets), REFACTOR-616 (DISABLED anonymous leak of `platform_url`), REFACTOR-619 (wizard surface undocumented).
+- **Proposed action**: Promote to `adrs/drafts/integration-wizard-classpath-registry.md` (new ADR).
+
+**Full detail**: `detail/ADR-CANDIDATE-209.md`
+
+---
+
+## ADR-CANDIDATE-210 — `IdentityController.whoami` returns a synthetic `dummyOwner` (literal `admin` + `Permission.values()`) on empty SecurityContext — defence-in-depth-via-permissive-fallback / dev-mode-fully-unlocked-by-design
+
+**Classification**: unique-load-bearing
+**Severity**: HIGH
+**Surfaced by**:
+- `odd-platform__java__IdentityController__controller-class__IdentityController.md:implicit_adrs.[0]` (`.switchIfEmpty(Mono.just(...))` deliberate construction — IdentityController.java:27)
+- `odd-platform__java__IdentityController__controller-class__IdentityController.md:implicit_adrs.[1]` (universal absence of `@PreAuthorize` — whoami is the SOURCE of authorization)
+- `odd-platform__java__IdentityController__controller-class__IdentityController.md:implicit_adrs.[2]` (`Arrays.asList(Permission.values())` — dynamic blast-radius)
+- **Decision statement**: When SecurityContext is empty (load-bearing under `auth.type=DISABLED`), the controller returns 200 OK with a `dummyOwner` whose identity is literal `"admin"` and whose permissions are `Permission.values()` (ALL 70+ enum values, dynamically expanding as the Permission enum grows). The SPA mounts as admin, the toolbar shows "admin", every `WithPermissionsProvider`-gated UI control unlocks.
+- **Wisdom test**: PASS. Three intent anchors (the .switchIfEmpty Mono.just shape over Mono.error, the dynamic Permission.values() over a curated subset, the universal @PreAuthorize absence); structural impact (centerpiece DISABLED-mode behaviour); alternative (return 401, restrict to subset) would be a structural change to the operator-onboarding model.
+- **Existing ADR**: none directly. Composes with ADR-CANDIDATE-029 (DISABLED-as-default — this is the IDENTITY-LAYER FACET) and ADR-CANDIDATE-002 (centralised SECURITY_RULES — the absence-of-rule on whoami IS deliberate, not gap).
+- **Co-surfaced gaps**: REFACTOR-185 STRENGTHENED (DISABLED bypasses SECURITY_RULES — the request-routing FACET), REFACTOR-606 (Permission.values() dynamic expansion blast-radius), REFACTOR-607 (whoami auth-mode probe surface), REFACTOR-608 (no audit log on whoami), REFACTOR-062 STRENGTHENED (no Cache-Control: no-store on identity body).
+- **Proposed action**: Promote to `adrs/drafts/whoami-empty-context-permissive-fallback.md` (new ADR).
+
+**Full detail**: `detail/ADR-CANDIDATE-210.md`
+
+---
+
+## ADR-CANDIDATE-211 — Permission read surface is intentionally SPLIT: contextual reads on `PermissionController`; non-contextual MANAGEMENT reads via the `Identity.permissions` payload from `IdentityServiceImpl.whoami`
+
+**Classification**: promote
+**Severity**: MEDIUM
+**Surfaced by**:
+- `odd-platform__java__PermissionController__controller-class__PermissionController.md:implicit_adrs.[2]` (single-method controller class is the deliberate shape; the other half lives on Identity)
+- `odd-platform__java__PermissionController__controller-class__PermissionController.md:concepts.invariants.[file-naming-vs-surface mismatch]` (file is named PermissionController but owns ONLY the contextual half)
+- **Decision statement**: Permission read surface is partitioned by the resource type's contextual-vs-global character. Contextual reads (DATA_ENTITY/TERM/QUERY_EXAMPLE) flow through `PermissionController.getResourcePermissions`; non-contextual MANAGEMENT reads flow through `IdentityServiceImpl.whoami` → `Identity.permissions` → UI's `getGlobalPermissions` selector. The split is mirrored at three layers: enum (`PolicyTypeDto.hasContext`), SPI (`PermissionService` two-method interface), delivery (controller vs Identity payload).
+- **Wisdom test**: PASS (MEDIUM confidence on intentionality; HIGH on structural impact). Cross-layer consistency (enum / SPI / delivery) favours the ADR reading over the gap reading; the UI consumer chain is consistent with the split.
+- **Existing ADR**: composes with ADR-CANDIDATE-051 (`PolicyTypeDto.hasContext` is the LOAD-BEARING primitive enabling THIS split) and ADR-CANDIDATE-003 (both paths share the read-collaborative posture).
+- **Co-surfaced gaps**: REFACTOR-609 (PermissionController has no @Slf4j — silent privilege-enumeration), REFACTOR-610 (IllegalArgumentException → HTTP 500 not 400), REFACTOR-194 STRENGTHENED (LOOKUP_TABLE doc/code mismatch — same split-shaped drift).
+- **Proposed action**: Promote to `adrs/drafts/permission-read-surface-split.md` (new ADR).
+
+**Full detail**: `detail/ADR-CANDIDATE-211.md`
+
+---
+
+## Strengthened ADR candidates (this batch — see strengthen-batch-ZD detail files)
+
+- **ADR-CANDIDATE-001** strengthened to **23-sidecar** support (was 18 after batch X-TAGGING). Five new class-level confirmations: IdentityController, PermissionController, RoleController, PolicyController, IntegrationController. The strongest single pattern in the catalog continues to hold across every controller-class inspected. See `detail/ADR-CANDIDATE-001-strengthen-batch-ZD.md`.
+
+- **ADR-CANDIDATE-002** strengthened to **23-sidecar** support (was 18 after batch X-TAGGING). Five new class-level confirmations across positive-registration (Role + Policy mutations) AND negative-fall-through (Identity / Permission / Policy reads / Integration reads). See `detail/ADR-CANDIDATE-002-strengthen-batch-ZD.md`.
+
+- **ADR-CANDIDATE-003** strengthened to **17-sidecar** support (was 13 after batch M). Four new read-surfaces join the family: PermissionController class-level, PolicyController three read endpoints (the META-LAYER blast radius — RBAC management read surface itself), IntegrationController two read endpoints (NEW axis), IdentityController whoami (the META-read / SOURCE of authorization). See `detail/ADR-CANDIDATE-003-strengthen-batch-ZD.md`.
+
+- **ADR-CANDIDATE-029** strengthened to **2-sidecar** support (was 1). IdentityController-class enrichment is the IDENTITY-LAYER FACET — the centerpiece consequence of DISABLED-as-default. See `detail/ADR-CANDIDATE-029-strengthen-batch-ZD.md`.
+
+- **ADR-CANDIDATE-051** strengthened to **2-sidecar** support (was 1). PermissionController class-level confirmation of the enum-field discriminator. See `detail/ADR-CANDIDATE-051-strengthen-batch-ZD.md`.
+
+- **ADR-CANDIDATE-189** strengthened with **5 new controller-side mirror confirmations**. Controller-side 23-sidecar count cross-validates the spec-side primary source. See `detail/ADR-CANDIDATE-189-strengthen-batch-ZD.md`.

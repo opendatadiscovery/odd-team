@@ -1961,3 +1961,113 @@ are appended to the existing detail/ shards.
 **Full detail**: `detail/DOC-GAP-272.md`
 
 ---
+## DOC-GAP-273 — `IdentityController.whoami` emits NO `Cache-Control: no-store` on identity-bearing response — under DISABLED no security chain runs → no default Spring headers → response cache-eligible by HTTP/1.1 heuristics on the platform's most user-specific endpoint
+
+**Severity**: MEDIUM
+**Category**: drift (security-header caveat undocumented; latent shared-intermediate-cache leakage class)
+**Surfaced by**: `IdentityController` controller-class sidecar (batch ZD) — `bugs_limitations_corner_cases.[1]` + `security.known_security_gaps.[1]` + `stress_findings.resource_boundaries.[cache].q[3]` (PROBE P-124)
+**Live URL**: `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/disabled-authentication` (WebFetched 2026-05-25 status 200 per sibling sidecar — silent on cache-control behaviour)
+**Cross-refs**: DOC-GAP-082 META + DOC-GAP-187 + DOC-GAP-037 + REFACTOR-185 + LSN-001/002 class
+**Full detail**: `detail/DOC-GAP-273.md`
+
+---
+
+## DOC-GAP-274 — `GET /api/identity/whoami` is the platform's auth-mode-probe surface — anonymous response shape differs per `auth.type` (200+admin-dummy / 302-login / 302-oauth2-provider-disclosing / 401-LDAP-realm-disclosing); composed with `/api/appInfo` (DOC-GAP-037) gives full deployment fingerprint in 2 anonymous requests
+
+**Severity**: MEDIUM
+**Category**: drift (security-relevant operator-visible behaviour undocumented across all four auth-mode-specific live pages; recon-step-1 in DOC-GAP-082 META kill chain)
+**Surfaced by**: `IdentityController` controller-class sidecar (batch ZD) — `docs_link_semantic.doc_drift_findings.[3]` + `security.data_exposure.[1]` + `stress_findings.auth_gates.q[1]`
+**Live URL**: `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication` + four sub-pages (WebFetched 2026-05-25 status 200 — all silent on whoami fingerprint surface)
+**Cross-refs**: DOC-GAP-082 META + DOC-GAP-037 + DOC-GAP-187 + DOC-GAP-273 + REFACTOR-185 + LSN-001/002 class
+**Full detail**: `detail/DOC-GAP-274.md`
+
+---
+
+## DOC-GAP-275 — `DELETE /api/roles/{role_id}` cascade-block contract `"Role is attached to a owner"` undocumented + grammar quirk ("a owner" should be "an owner") surfaces verbatim to API consumers
+
+**Severity**: MEDIUM
+**Category**: drift (cascade-delete contract undocumented; cosmetic grammar quirk in operator-visible error message; sibling of DOC-GAP-073's "Policy is attached to a role" pattern)
+**Surfaced by**: `RoleController` controller-class sidecar (batch ZD) — `docs_link_semantic.doc_drift_findings.[E]` + `security.data_exposure.[3]` + `bugs_limitations_corner_cases`
+**Live URL**: `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/roles` (WebFetched 2026-05-25 status 200 — silent on cascade-delete contract)
+**Cross-refs**: DOC-GAP-073 + DOC-GAP-072 + DOC-GAP-181 + DOC-GAP-083 META + REFACTOR-217 + LSN-001/002 class
+**Full detail**: `detail/DOC-GAP-275.md`
+
+---
+
+## DOC-GAP-276 — `GET /api/roles` (and symmetric `GET /api/policies`) executes a server-side PRINCIPAL-AWARE FORK — ADMIN gets paginated full catalog; non-ADMIN gets own attached roles, page/size IGNORED, hasNext=false hardcoded — pagination contract silently differs per caller; UI paginators / third-party SDKs are silently broken for non-ADMIN
+
+**Severity**: MEDIUM
+**Category**: drift (silent per-caller behaviour divergence on uniformly-typed endpoint; DRIFT_NAME_VS_BEHAVIOR per Category F taxonomy)
+**Surfaced by**: `RoleController` controller-class sidecar (batch ZD) — `docs_link_semantic.doc_drift_findings.[D]` + `stress_findings.name_behavior_pairs.[getRolesList]` + sibling `PolicyController` batch-E + batch-I findings
+**Live URL**: `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/roles` + `.../policies` (WebFetched 2026-05-25 status 200 — both silent on principal-aware fork)
+**Cross-refs**: DOC-GAP-072 + DOC-GAP-073 + DOC-GAP-076 + DOC-GAP-082 META + DOC-GAP-187 + REFACTOR-185 + LSN-001/002 class
+**Full detail**: `detail/DOC-GAP-276.md`
+
+---
+
+## DOC-GAP-277 — `IntegrationPreview.installed: boolean` REQUIRED in OpenAPI contract but HARDCODED `false` on every response by `IntegrationMapper.java:27, 30` — UI's "Integrated" badge in `IntegrationPreviewItem.tsx:44-51` will NEVER show; field is either never-implemented feature OR contract violation; live api-reference page silent on dead-field state
+
+**Severity**: MEDIUM
+**Category**: drift (API contract claims meaningful field; runtime always returns constant; UI behaviour deletion-mode-shaped; live doc silent)
+**Surfaced by**: `IntegrationController` controller-class sidecar (batch ZD) — `doc_drift_findings.[3]` + `bugs_limitations_corner_cases.[0]`
+**Live URL**: `https://docs.opendatadiscovery.org/developer-guides/api-reference/integrations` (WebFetched 2026-05-25 status 200 — lists `{id, name, description, installed}` without warning)
+**Cross-refs**: DOC-GAP-009 + DOC-GAP-098 + DOC-GAP-099 META + REFACTOR-024 family + LSN-001/002 class
+**Full detail**: `detail/DOC-GAP-277.md`
+
+---
+
+## DOC-GAP-278 — `GET /api/integrations/{unknown-id}` returns HTTP 204 No Content (NOT 404) — `Mono.empty.map(ResponseEntity::ok)` produces 204 via Spring WebFlux default; OpenAPI declares only 200; no 404 contracted; contradicts platform-wide GET-by-id NotFoundException convention; live api-reference page omits status codes entirely
+
+**Severity**: MEDIUM
+**Category**: drift (HTTP status-code semantic disagrees with platform-wide convention; OpenAPI contract silent on 4xx; live doc omits status codes; operator-visible ambiguity)
+**Surfaced by**: `IntegrationController` controller-class sidecar (batch ZD) — `bugs_limitations_corner_cases.[1]` + `docs_link_semantic.doc_drift_findings.[1]`
+**Live URL**: `https://docs.opendatadiscovery.org/developer-guides/api-reference/integrations` (WebFetched 2026-05-25 status 200 — silent on response codes)
+**Cross-refs**: DOC-GAP-009 + DOC-GAP-018 + DOC-GAP-098 + DOC-GAP-099 META + DOC-GAP-277 + DOC-GAP-280 + LSN-001/002 class
+**Full detail**: `detail/DOC-GAP-278.md`
+
+---
+
+## DOC-GAP-279 — Integration Wizard snippets render literal placeholder `http://your.odd.platform` under default config — `application.yml:209` commented out + `@Value("${odd.platform-base-url:http://your.odd.platform}")` default → operators copy-pasting wizard snippets point collectors at non-existent host; under DISABLED + non-default override, internal hostname leaks anonymously
+
+**Severity**: MEDIUM
+**Category**: drift (configuration default produces operator-visible placeholder in copy-paste output; live doc names fallback exists but doesn't surface default-state caveat; operator-trap on wizard's primary affordance)
+**Surfaced by**: `IntegrationController` controller-class sidecar (batch ZD) — `doc_drift_findings.[3]` + `bugs_limitations_corner_cases.[2]` + `implicit_adrs.[platform_url-single-parameter]` + `stress_findings.tunables.[odd.platform-base-url]`
+**Live URL**: `https://docs.opendatadiscovery.org/integrations/integrations/integration-wizard` (WebFetched 2026-05-25 status 200 — names fallback but doesn't warn about default state)
+**Cross-refs**: DOC-GAP-036 + DOC-GAP-082 META + DOC-GAP-280 + DOC-GAP-281 + DOC-GAP-226 + LSN-001/002 class
+**Full detail**: `detail/DOC-GAP-279.md`
+
+---
+
+## DOC-GAP-280 — Integration Wizard registry uses case-insensitive id collision that SILENTLY MERGES wizard YAMLs (last-load-wins) — `IntegrationRegistryFactory.java:32-37` `Comparator.comparing(String::toLowerCase)` + `(o1, o2) -> o2`; load order non-deterministic across `classpath*:` scanning; vendor + overlay collisions silently resolve
+
+**Severity**: LOW
+**Category**: drift (silent platform behaviour for wizard authors; load-order-dependent merge semantic undocumented)
+**Surfaced by**: `IntegrationController` controller-class sidecar (batch ZD) — `doc_drift_findings.[4]` + `bugs_limitations_corner_cases.[3]` + `implicit_adrs.[plugin-extensible]`
+**Live URL**: `https://docs.opendatadiscovery.org/integrations/integrations/integration-wizard` (WebFetched 2026-05-25 status 200 — silent on case-insensitive uniqueness constraint)
+**Cross-refs**: DOC-GAP-281 + DOC-GAP-279 + DOC-GAP-277 + DOC-GAP-278 + LSN-001/002 class
+**Full detail**: `detail/DOC-GAP-280.md`
+
+---
+
+## DOC-GAP-281 — Integration Wizard registry FAILS BOOT on a single corrupt YAML — `IntegrationRegistryFactory.readManifest:53-61` catches IOException, rethrows IllegalStateException → application context construction fails; no skip-broken-continue; bundled deployment ships zero wizards (dormant); activates with overlays; live wizard doc page silent on boot-failure mode
+
+**Severity**: LOW
+**Category**: drift (boot-time failure mode on wizard-overlay composition undocumented; intentional fail-fast architecture but undisclosed to overlay-authors)
+**Surfaced by**: `IntegrationController` controller-class sidecar (batch ZD) — `bugs_limitations_corner_cases.[4]` + `implicit_adrs.[fail-fast-on-malformed-wizard-yaml]`
+**Live URL**: `https://docs.opendatadiscovery.org/integrations/integrations/integration-wizard` (WebFetched 2026-05-25 status 200 — silent on boot-failure mode)
+**Cross-refs**: DOC-GAP-280 + DOC-GAP-279 + DOC-GAP-277 + DOC-GAP-278 + DOC-GAP-226 + LSN-001/002 class
+**Full detail**: `detail/DOC-GAP-281.md`
+
+---
+
+## Batch ZD STRENGTHENS-only appends (no new IDs minted)
+
+The following existing entries received STRENGTHENS appends in their detail files based on batch-ZD primary-source evidence:
+
+- **DOC-GAP-082 META** (DISABLED-bypasses-RBAC; was 33-sidecar in batch ZA) → **NOW 35-sidecar** across **9 tiers** (NEW 9th tier: read-side anonymous-disclosure surfaces); batch-ZD primary-sources the IDENTITY-LAYER FACET (IdentityController controller-class) AND the INTEGRATION-WIZARD READ surface (IntegrationController controller-class). Complete anonymous-fingerprint kill chain now anchored: `/api/appInfo` + `/api/identity/whoami` + `/api/integrations` in three requests.
+- **DOC-GAP-083 META** (no-audit-log on RBAC mutations; was 15+-sidecar in batch Y) → **NOW 17-sidecar evidence cluster** across 7 tiers and 6 pillars; batch ZD adds controller-CLASS-tier dimension (vs prior controller-METHOD-tier) AND the IDENTITY-LAYER read-side audit silence (the platform's most-user-specific endpoint is forensically silent).
+- **DOC-GAP-072** (Roles live doc page omits role-creation API surface) → controller-class-layer PRIMARY SOURCE; 6 doc-drift findings (A-F) on the single Roles live page; 5th-layer triangulation (controller-method + service + repository + UI + class).
+- **DOC-GAP-073** (Policies live doc page omits POLICY_CREATE permission etc.) → controller-class-layer PRIMARY SOURCE; 6 doc-drift findings (A-F) on the single Policies live page; 6th-layer triangulation.
+- **DOC-GAP-074** (class-wide 201-vs-200 status-code drift) → cluster grows from 4-instance to 6-controller × 2-operations = 12-endpoint pattern with PRIMARY SOURCE at controller-class layer; single-PR spec-side fix closes entire cluster.
+- **DOC-GAP-076** (PermissionController read-side discovery endpoint undocumented) → controller-class-layer PRIMARY SOURCE; class-name vs actual-surface mismatch surfaced + MANAGEMENT-rejection-as-architectural-decision + single-method-class-shape-deliberate-intent.
+- **DOC-GAP-187** (UI-vs-API asymmetry under DISABLED — operator-trap class) → IDENTITY-LAYER FACET PRIMARY SOURCE adjusts the FRAMING: prior batch-Q framing was "UI looks LOCKED-DOWN under DISABLED" (empty permissions hide buttons); batch-ZD primary-source reading at `IdentityController.java:30-33` shows `Permission.values()` (full 70+) — the UI under DISABLED looks **FULLY UNLOCKED** (admin) rather than locked-down. The OPERATOR-IMPACT direction is reversed but the META composition stays valid. Maintainer triage note added in DOC-GAP-187's detail file flagging the cross-batch dissonance for prose revision.

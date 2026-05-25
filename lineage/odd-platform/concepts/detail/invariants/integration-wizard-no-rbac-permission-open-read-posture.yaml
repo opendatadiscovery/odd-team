@@ -1,0 +1,139 @@
+name: |-
+  Integration Wizard endpoints have NO RBAC permission (open-read across all auth modes including anonymous-under-DISABLED)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-09
+- P-10
+description: |-
+  **NEW INVARIANT, batch 2026-05-25-ZD** — neither
+  `SecurityConstants.SECURITY_RULES` (`SecurityConstants.java:98+`)
+  nor `PolicyPermissionDto` defines an `INTEGRATION_*` permission
+  for either of the two `IntegrationController` endpoints
+  (`GET /api/integrations` + `GET /api/integrations/{id}`).
+  Grep `INTEGRATION` against `PolicyPermissionDto.java` returns
+  zero matches; the SecurityRules path-matcher has no
+  `/api/integrations` entry. Both endpoints fall through to
+  `AuthorizationCustomizer.customize`'s catch-all
+  `pathMatchers("/**").authenticated()` (AuthorizationCustomizer.java:29-30)
+  under LOGIN_FORM / OAUTH2 / LDAP, and to
+  `.anyExchange().permitAll()` under DISABLED.
+
+  ## The posture is INTENTIONAL
+
+  Per `implicit_adrs.[1]` in the batch-ZD sidecar, the open-read
+  posture is the architectural commitment: wizard manifests are
+  NOT operator-sensitive — they are shipped artefacts authored by
+  integration authors for copy-paste collector configuration. The
+  decision is consistent with the parallel pattern in the
+  codebase: every WRITE-shaped Management controller (Tag,
+  Namespace, Term, Role, Policy, Owner, DataSource, Collector)
+  has explicit `SECURITY_RULES` entries; pure-READ controllers
+  (Integration, AppInfo) have none. The absence IS the convention.
+
+  ## What it MEANS in practice
+
+  Under LOGIN_FORM / OAUTH2 / LDAP:
+    - Any authenticated user (any role, any owner association,
+      no specific permission) reads the full wizard registry
+      including content blocks, code snippets, and the
+      substituted `platform_url` value.
+
+  Under DISABLED:
+    - Any network-reachable HTTP caller — including unauthenticated
+      attackers on the same network — reads the full wizard
+      registry. This is the FOURTH (after AppInfo, the public
+      Integration wizards, and the OpenAPI spec) anonymous-readable
+      surface under the DISABLED default deployment posture.
+
+  ## Config-disclosure consequence
+
+  When `odd.platform-base-url` is set to a non-default value (a
+  typical deployment pattern), the wizard endpoints expose that
+  URL through the rendered code-snippet `static_value` fields.
+  If the value is an INTERNAL hostname
+  (`http://odd-platform.internal:8080`) — which is the typical
+  pattern when the platform serves the internal network — the
+  hostname LEAKS via the anonymous-readable wizard surface
+  under DISABLED.
+
+  ## Live doc drift
+
+  - `/integrations/integrations/integration-wizard` (WebFetched
+    2026-05-25, status 200): does NOT mention auth posture; does
+    NOT mention DISABLED anonymous access; does NOT name the
+    absence of an INTEGRATION_* permission.
+  - `/configuration-and-deployment/enable-security/authorization/permissions`
+    (WebFetched 2026-05-25, status 200): explicitly lists 5
+    permission categories (DataEntity / Term / QueryExample /
+    LookupTable / Management) — none reference integrations.
+
+  Operators reading the docs cannot derive that the wizard surface
+  is open-read.
+
+  ## Severity
+
+  LOW for the intentional posture (wizard manifests are not
+  secrets); MEDIUM for the documentation gap (the doc page is
+  silent on the intent + the DISABLED reachability + the
+  `platform_url` substitution exposure).
+
+  ## Mitigation candidates
+
+  - **Doc**: add a single admonition on the wizard live page
+    naming the open-read posture explicitly. "Any authenticated
+    user can read every wizard manifest. Under
+    `auth.type=DISABLED`, any network caller can read
+    anonymously. Wizard manifests are not secrets."
+
+  - **Code (optional)**: introduce an `INTEGRATION_READ` permission
+    if operators want to gate wizard reads — would close the
+    posture but break the dev-ergonomic copy-paste affordance
+    that the wizard is designed for. Not recommended.
+
+  - **Config**: document the `platform_url` configuration
+    explicitly + warn that the value is anonymously readable
+    under DISABLED. Pairs with the
+    `static-argument-mapping-context-platform-url-substitution`
+    entity concept.
+axes_present:
+- controllers
+nodes:
+- odd-platform java IntegrationController controller-class:IntegrationController
+contributors:
+- 'IntegrationController.md (batch ZD class-level sidecar):
+  invariants.[0] + implicit_adrs.[1] + bugs_limitations_corner_cases.[5,6]
+  + docs_link_semantic.doc_drift_findings.[0]'
+evidence:
+- 'SecurityConstants.java:98+ — no /api/integrations entry in
+  SECURITY_RULES'
+- 'Grep `INTEGRATION` in PolicyPermissionDto.java — zero matches'
+- 'AuthorizationCustomizer.java:29-30 — the catch-all
+  `pathMatchers("/**").authenticated()`'
+- 'DisabledAuthSecurityConfiguration.java:13-18 —
+  `.anyExchange().permitAll()` under DISABLED'
+- 'IntegrationController.java:1-28 — no @PreAuthorize, no
+  programmatic permission check'
+- WebFetch 2026-05-25 status 200 against the wizard live page +
+  the permissions live page (both silent on integration auth)
+related_features:
+- F-001
+- F-006
+related_pillar_features:
+- P-09
+- P-10
+related_concepts:
+- 'operation:list-integrations-wizard-registry'
+- 'invariant:refactor-185-disabled-mode-bypass-batch-t-19-sidecar (the
+  DISABLED-anonymous-reach this concept is a part of)'
+- 'entitie:static-argument-mapping-context-platform-url-substitution
+  (the config the wizard surface exposes)'
+notes: |-
+  NEW invariant captured in batch 2026-05-25-ZD. The open-read
+  posture is INTENTIONAL but UNDOCUMENTED — the architectural
+  consistency (every read-only controller is open; every
+  write-only controller is gated) is internally coherent but
+  not surfaced to operators.
+
+  DOC-NNN candidate: a single admonition on the wizard live page
+  + a cross-link to the security page's DISABLED caveat.

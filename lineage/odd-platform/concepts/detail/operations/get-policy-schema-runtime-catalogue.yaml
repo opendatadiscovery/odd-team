@@ -1,0 +1,119 @@
+name: Get Policy Schema (runtime JSON-Schema catalogue)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-09
+description: |-
+  **NEW OPERATION, batch 2026-05-25-ZD** — `GET /api/policies/schema`
+  serves the live JSON-Schema document that the platform's
+  PolicyJSONValidator uses to validate inbound policy bodies on
+  CREATE + UPDATE. The endpoint is the runtime catalogue — a single
+  HTTP read that delivers the platform's current policy-document
+  shape contract to any authenticated UI consumer.
+
+  ## Path
+  `GET /api/policies/schema`
+  (PolicyController.java:59-63, operationId `getPolicySchema`)
+
+  ## Authorization
+
+  NO `SECURITY_RULES` entry — falls through to
+  `pathMatchers("/**").authenticated()`. Under DISABLED, anonymously
+  reachable (per the wider DISABLED-anonymous facet of REFACTOR-185).
+  The intentional posture: the policy schema is the platform's
+  authoring contract, not a secret.
+
+  ## Implementation chain
+
+  `PolicyController.getPolicySchema(exchange)`
+    → `policyService.getPolicySchema()`
+      → loads `schema/policy_schema.json` from the classpath
+        (the same schema PolicyJSONValidator validates against)
+      → returns the raw String content
+    → `ResponseEntity::ok` wrapping the String
+
+  Response shape: `Content-Type: application/json` + the
+  JSON-Schema document body (V201909-draft schema describing the
+  policy document model).
+
+  ## UI consumer
+
+  The UI consumes the schema in the policy-form mount
+  (`PolicyDetails.tsx` per batch-Q sidecar — fires
+  `useGetPolicySchema` once on mount of the create/edit dialog).
+  The schema feeds `AppJSONEditor` which provides
+  JSON-Schema-driven form rendering + client-side validation for
+  policy authoring. The endpoint multiplier per UI session is 1
+  per policy-form open (mount-time, no polling).
+
+  ## Why "runtime catalogue"
+
+  The schema is THE authority for the policy document shape AND
+  changes over time as the codebase evolves (adding a new
+  resource_type, a new permission, a new condition operator
+  requires regenerating the bundled schema). Serving it at
+  runtime (rather than embedding it in the SPA bundle) keeps the
+  UI in lockstep with the backend's validator — there is NO
+  drift window. A backend rebuild ships a new schema; the UI's
+  next policy-form-mount fetches the new shape; the UI's
+  client-side validation matches the server-side validator
+  exactly.
+
+  ## Performance characteristics
+
+  - Single classpath read per call; no DB query
+  - Stateless reactive — instances scale horizontally
+  - The schema is bounded in size (typical JSON-Schema documents
+    are small — < 10KB for the policy schema)
+  - No caching at the controller; the classpath read is fast but
+    not zero-cost (every UI mount of the policy form fires one
+    call)
+
+  ## Live doc drift
+
+  The live `/authorization/policies` page (WebFetched 2026-05-25,
+  status 200) describes the policy DOCUMENT shape but does NOT
+  mention the runtime catalogue endpoint. An operator writing a
+  third-party policy-authoring tool would not know the schema is
+  served at `/api/policies/schema` — they would reverse-engineer
+  the shape from the docs page rather than fetching the authoritative
+  source.
+
+  ## Severity
+
+  LOW. The endpoint is structurally sound; the doc gap is the
+  only finding. DOC-NNN candidate: a single line on the
+  /authorization/policies page naming the runtime endpoint.
+axes_present:
+- controllers
+nodes:
+- odd-platform java PolicyController controller-class:PolicyController
+contributors:
+- 'PolicyController.md (batch ZD class-level sidecar):
+  understanding + concepts.operations.[5] + downstream_side_effects'
+evidence:
+- 'PolicyController.java:59-63 (the endpoint)'
+- 'PolicyServiceImpl.getPolicySchema (classpath read)'
+- 'schema/policy_schema.json (the served document — same schema
+  PolicyJSONValidator validates against)'
+- 'PolicyDetails.tsx (batch-Q UI consumer; useGetPolicySchema
+  fires on policy-form mount)'
+- WebFetch 2026-05-25 status 200 against /authorization/policies
+related_features:
+- F-001
+- F-006
+related_pillar_features:
+- P-09
+related_concepts:
+- 'entitie:policy-authorization (the entity this operation
+  documents the schema for)'
+- 'operation:create-policy (the consuming operation that uses
+  the schema for validation)'
+- 'invariant:rbac-read-endpoints-no-securityrule-authenticated-only-fall-through'
+notes: |-
+  NEW operation captured in batch 2026-05-25-ZD. The endpoint
+  closes the spec→runtime feedback loop for policy authoring —
+  every UI policy form mount fetches the authoritative shape.
+  The doc gap is the only finding; the endpoint shape is
+  internally consistent with the rest of the platform's
+  read-collaborative posture.

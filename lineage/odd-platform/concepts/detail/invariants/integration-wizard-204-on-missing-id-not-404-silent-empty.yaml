@@ -1,0 +1,133 @@
+name: |-
+  Integration getIntegration({unknown-id}) returns 204 No Content, NOT 404
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-10
+description: |-
+  **NEW INVARIANT, batch 2026-05-25-ZD** — `GET /api/integrations/{id}`
+  on an unknown id returns `204 No Content` rather than `404 Not Found`.
+  The OpenAPI spec (openapi.yaml:75-81) declares only `200` as a
+  response — no `404` is contracted. Operators cannot distinguish
+  "wizard exists but has empty body" (currently impossible — the
+  empty-state is non-existent) from "wizard does not exist".
+
+  ## Mechanism
+
+  Trace:
+
+    IntegrationController.getIntegration(id, exchange)
+        (IntegrationController.java:19-22)
+      → integrationService.get(id)
+        (IntegrationServiceImpl.java:20-23)
+      → integrationRegistry.get(id)
+        (ResourceFilesIntegrationRegistry.java:15-17)
+        — returns Mono.justOrEmpty(registry.get(id))
+
+  When the id is not in the registry's TreeMap,
+  `registry.get(id)` returns null; `Mono.justOrEmpty(null)`
+  returns `Mono.empty`; the upstream `.map(integration ->
+  integrationMapper.map(integration, ...))` is short-circuited
+  (the `.map` does not execute on an empty Mono); the controller's
+  `.map(ResponseEntity::ok)` is similarly short-circuited; the
+  return value is `Mono.empty`.
+
+  Spring WebFlux's reactive controller-return semantics translate
+  `Mono.empty` to `204 No Content` rather than 404. The path
+  lacks any `switchIfEmpty(Mono.error(new NotFoundException(...)))`
+  that would convert the empty state to a typed exception.
+
+  ## Compare to sibling endpoints
+
+  Most other GET-by-id endpoints in this codebase use a
+  switchIfEmpty error chain to surface 404:
+
+    - `MetadataFieldServiceImpl.get` (`:30-34`) throws
+      `NotFoundException("Metadata field with id %d hasn't been
+      found", id)` via `switchIfEmpty`
+    - `DataEntityServiceImpl.getDimensions` similarly throws
+      `NotFoundException` on missing entity
+    - `TermServiceImpl.getTermDetailsDto` similarly throws
+
+  The Integration get path is the OUTLIER — it omits the
+  switchIfEmpty error path. Whether this is INTENTIONAL (the
+  wizard registry is reasonably-stable + the empty-state is
+  rare + a 204 is "good enough" because the UI handles it) or
+  AN OVERSIGHT (the maintainer who wrote the registry forgot
+  the switchIfEmpty pattern that sibling services use) is
+  unknowable from source-comment evidence.
+
+  ## Severity
+
+  MEDIUM. Functional impact:
+    - The UI's `useIntegration({integrationId})` React Query hook
+      receives 204 with no body; the destructured `data` field is
+      `undefined`; the detail page renders an empty layout (or
+      crashes if the page assumes data is defined). The exact UI
+      behaviour is not pinned by a test.
+    - Direct REST API consumers reading the OpenAPI spec (which
+      declares only 200) get a 204 response their generated
+      client code does NOT explicitly handle — silent contract
+      mismatch.
+    - SDK generators auto-generating response handlers for the
+      sole 200 response treat 204 as an error in some libraries.
+
+  ## Fix surface
+
+  Two coherent paths:
+
+    (A) Add `switchIfEmpty(Mono.error(new NotFoundException(
+        "Integration with id '%s' hasn't been found".formatted(id))))`
+        to `IntegrationServiceImpl.get` between the
+        `integrationRegistry.get(id)` and the `.map(...)`. Aligns
+        with sibling service-tier patterns. Surfaces as HTTP 404
+        with code `USR002` via ControllerAdvice. One-line change.
+
+    (B) Update the OpenAPI spec (openapi.yaml:75-81) to declare
+        both `200` and `204` (or both `200` and `404`) as valid
+        responses. Aligns the contract to the implementation
+        reality. Requires SDK regeneration for downstream
+        consumers.
+
+  Path (A) is more consistent with the codebase. Path (B) is
+  faster to apply but locks in the 204 contract for SDK
+  consumers.
+
+  ## Live doc drift
+
+  The live API-reference page
+  (`/developer-guides/api-reference/integrations` WebFetched
+  2026-05-25, status 200) does NOT document either the 204-on-missing
+  behaviour or the 404-not-emitted behaviour — the page omits
+  response schemas, HTTP status codes, and authentication
+  requirements entirely.
+axes_present:
+- controllers
+nodes:
+- odd-platform java IntegrationController controller-class:IntegrationController
+contributors:
+- 'IntegrationController.md (batch ZD class-level sidecar):
+  bugs_limitations_corner_cases.[1] + stress_findings.name_behavior_pairs.[1]
+  + docs_link_semantic.doc_drift_findings.[1]'
+evidence:
+- 'IntegrationController.java:19-22 (controller method body — no
+  switchIfEmpty)'
+- 'IntegrationServiceImpl.java:20-23 (service method — no switchIfEmpty)'
+- 'ResourceFilesIntegrationRegistry.java:15-17 (the empty-emitting
+  `Mono.justOrEmpty(registry.get(id))` site)'
+- 'openapi.yaml:75-81 (spec declares only 200 — no 404)'
+- 'Comparison: MetadataFieldServiceImpl.get:30-34 (sibling pattern with
+  switchIfEmpty + NotFoundException)'
+related_features:
+- F-001
+related_pillar_features:
+- P-10
+related_concepts:
+- 'operation:list-integrations-wizard-registry'
+- 'entitie:integration-wizard-manifest-classpath-meta-inf-yaml'
+notes: |-
+  NEW invariant captured in batch 2026-05-25-ZD. Smallest fix is
+  path (A) — a one-line change that aligns the wizard get
+  path with the sibling service-tier conventions. DOC-NNN
+  candidate either way to ensure the operator-visible behaviour
+  is documented on the live API reference.

@@ -99,3 +99,25 @@ Batch Z enumerated `DataSource registerDataSource` (openapi.yaml:454) and `DataS
 - **Severity stays MEDIUM** — the controller-method confirmation does not change the operational severity; it converts the two DataSource instances from spec-axis-only to fully-triangulated (spec + impl). The directional-fix recommendation in the batch-Z append is unchanged and now has the impl-side file:line anchors for the DataSource vertex.
 
 - **Cross-reference additions**: DOC-GAP-009 (the `developer-guides/api-reference` hub omits the DataSource operations — the 201-vs-200 drift on `registerDataSource`/`updateDataSource` is invisible in the per-feature API reference too) + DOC-GAP-099 META (parent OpenAPI-authoring-quality cluster).
+
+#### Batch 2026-05-25-ZD STRENGTHENS — class-wide 201-vs-200 status-code drift cluster grows to 6-endpoint pattern with PRIMARY SOURCE at controller-class layer
+
+Batch ZD adds the RoleController + PolicyController controller-class sidecars as PRIMARY SOURCE for the 201-vs-200 drift cluster — confirming the pattern at the enclosing-class scope:
+
+- **`RoleController`** (NEW batch ZD) — per sidecar `bugs_limitations_corner_cases.[0]` (MEDIUM): "Status-code drift on POST /api/roles AND PUT /api/roles/{role_id} — code returns 200, OpenAPI spec declares 201. Two of the four endpoints disagree with the spec. ... The DELETE endpoint at line 49 correctly returns 204 matching spec; the GET endpoint at line 33 correctly returns 200 matching spec." Verbatim: `RoleController.java:24` (POST returns 200), `:33` (GET returns 200 — consistent), `:42` (PUT returns 200), `:49` (DELETE returns 204 — consistent) + `openapi.yaml:3611` (GET 200 — consistent), `:3629` (POST 201 — DRIFT), `:3656` (PUT 201 — DRIFT), `:3676` (DELETE 204 — consistent).
+- **`PolicyController`** (NEW batch ZD) — per sidecar `docs_link_semantic.doc_drift_findings.[A]`: same drift on POST /api/policies AND PUT /api/policies/{id}. Verbatim: `PolicyController.java:24` returns 200; `:49` returns 200; `openapi.yaml:3528` declares 201 for POST; `:3566` declares 201 for PUT.
+
+The class-wide drift cluster now spans **6 controllers × 2 operations each = 12 endpoint instances**:
+
+| Controller | POST status | PUT status | Spec POST | Spec PUT | Source |
+|---|---|---|---|---|---|
+| Owner | 200 | 200 | 201 | 201 | DOC-GAP-074 + DOC-GAP-184 |
+| Role | 200 | 200 | 201 | 201 | **NEW batch ZD** |
+| Policy | 200 | 200 | 201 | 201 | **NEW batch ZD** |
+| Term | 200 | 200 | 201 | 201 | DOC-GAP-209 |
+| QueryExample | 200 | 200 | 201 | 201 | DOC-GAP-216 |
+| Tag | 200 | — | 201 | — | (per batch E TagController sidecar) |
+
+The pattern is now **platform-wide** — every CREATE endpoint returns 200, every spec declares 201. The single-PR spec-side fix (change all `'201'` declarations to `'200'` on Create operations) closes the entire cluster on one file. The class-level confirmation in batch ZD (controller-class layer) anchors the cluster as a verified-uniform-deviation rather than per-endpoint typos.
+
+The doc-side action remains as in DOC-GAP-074's original proposal: spec-side authoring change on `opendatadiscovery-specification/openapi.yaml` to align declarations to runtime; doc-side API-reference page updates to surface the actual 200 status code; meta-acknowledgement on the api-reference hub for contract conformance posture. Severity stays MEDIUM — the typed-client failure mode is generator-dependent but uniform across the cluster; the fix is a single-file change closing 12+ endpoint instances at once.

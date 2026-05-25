@@ -1,0 +1,141 @@
+---
+probe_id: P-121
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__PolicyController__controller-class__PolicyController.md
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-006
+test_class: integration
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category E + Category B, batch-ZD PolicyController
+  controller-tier interrogation): PolicyController.updatePolicy
+  (PolicyController.java:43-50) is a thin .flatMap delegation to
+  policyService.update(policyId, formData) — no @ReactiveTransactional
+  bracket lives on the controller method either; the only transactional
+  surface available is the service tier, which (per batch-S
+  PolicyServiceImpl sidecar primary-source) carries NO annotation on
+  update (PolicyServiceImpl.java:71-81). Two concurrent PUTs against the
+  same policy_id with different bodies are reproduced from outside
+  through the controller endpoint /api/policies/{id} via clients A and B.
+  Hypothesis (carried from batch S lost-update bug): both PUTs succeed,
+  the second-written wins, the first-written change is silently lost
+  with NO 4xx error returned to the loser, NO @Version optimistic-lock
+  pre-condition, NO ETag header, NO server-side log line warning. This
+  probe pins the CONTROLLER-VISIBLE behaviour of the bug (batch S pinned
+  the SERVICE-tier behaviour). The probe is wired from the HTTP surface
+  outward so a future fix (controller-side @ReactiveTransactional, OR
+  service-side annotation, OR row-version column + If-Match header
+  protocol) can be regression-tested at the same boundary the operator
+  hits.
+
+  PASS = the bug ships as described (controller does NOT defend against
+  the race; the operator is exposed). FAIL = the bug has been silently
+  patched at a later commit (re-read PolicyController.java and
+  PolicyServiceImpl.java to locate the fix and update the sidecar's
+  invariants block).
+---
+arrange:
+  - kind: docker-compose-up
+    services: [postgres, odd-platform-api]
+  - kind: sql
+    query: |
+      -- ensure the seeded Administrator policy exists; ensure no test residue
+      DELETE FROM role_to_policy WHERE policy_id IN (SELECT id FROM policy WHERE name LIKE 'p121-%');
+      DELETE FROM policy WHERE name LIKE 'p121-%';
+  - kind: rest
+    method: POST
+    path: /api/policies
+    body: |
+      {
+        "name": "p121-race-target",
+        "policy": "{\"statements\":[{\"resource\":{\"type\":\"DATA_ENTITY\"},\"permissions\":[\"DATA_ENTITY_VIEW\"]}]}"
+      }
+    capture_as: created_policy
+  - kind: noop
+    description: "Snapshot the created_policy.id for the two-writer race"
+act:
+  - kind: rest-concurrent
+    description: "Issue two PUTs against the same policy_id with different bodies; record server-receive-order if available, otherwise sleep(0) staggered"
+    requests:
+      - id: client_A
+        method: PUT
+        path: "/api/policies/{created_policy.id}"
+        body: |
+          {
+            "name": "p121-race-target",
+            "policy": "{\"statements\":[{\"resource\":{\"type\":\"DATA_ENTITY\"},\"permissions\":[\"DATA_ENTITY_VIEW\",\"DATA_ENTITY_EDIT\"]}]}"
+          }
+        capture_as: response_A
+      - id: client_B
+        method: PUT
+        path: "/api/policies/{created_policy.id}"
+        body: |
+          {
+            "name": "p121-race-target",
+            "policy": "{\"statements\":[{\"resource\":{\"type\":\"TERM\"},\"permissions\":[\"TERM_VIEW\"]}]}"
+          }
+        capture_as: response_B
+  - kind: rest
+    method: GET
+    path: "/api/policies/{created_policy.id}"
+    capture_as: final_state
+observe:
+  - kind: capture
+    name: response_A_status
+    value: "response_A.status"
+  - kind: capture
+    name: response_B_status
+    value: "response_B.status"
+  - kind: capture
+    name: final_policy_text
+    value: "final_state.body.policy"
+  - kind: sql
+    query: |
+      SELECT name, policy, updated_at FROM policy WHERE id = {created_policy.id}
+    capture_as: final_db_row
+assert:
+  - "response_A_status == 200  # controller returns 200 not 201 — spec drift documented in sidecar"
+  - "response_B_status == 200  # both writes succeed, no 409 Conflict raised"
+  - "final_policy_text == response_A.body.policy OR final_policy_text == response_B.body.policy  # last-writer-wins"
+  - "NOT(final_policy_text contains both DATA_ENTITY_EDIT AND TERM_VIEW)  # the lost-update is the loser's change is GONE"
+  - "(response_A.body.policy != final_policy_text) IMPLIES no error header / no warning log line surfaces  # silent loss"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM role_to_policy WHERE policy_id IN (SELECT id FROM policy WHERE name LIKE 'p121-%');
+      DELETE FROM policy WHERE name LIKE 'p121-%';
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__PolicyController__controller-class__PolicyController
+    - odd-platform__java__service__service__PolicyServiceImpl
+  retrospectives:
+    - LSN-019
+  features:
+    - F-006
+  drift_classes:
+    - lost_update_race
+    - service_tier_at_reactive_transactional_asymmetry_role_yes_policy_no
+realism_caveats: |
+  The probe pins the controller-tier-observable manifestation of the
+  batch-S service-tier lost-update finding. Limitations: (a) two concurrent
+  PUTs are issued from a SINGLE test client — true concurrency depends on
+  the test harness's ability to overlap the requests at the WebFlux
+  event-loop level; a single-threaded test driver may serialize them
+  unobservably. Mitigation: issue both requests in parallel using
+  CompletableFuture.allOf or its equivalent in the probe harness, and
+  include a millisecond-resolution server-receive-timestamp capture
+  through application-logging if available. (b) Even with annotated
+  @ReactiveTransactional, the lost-update would not be CLOSED without
+  SELECT...FOR UPDATE or a row-version column — the probe asserts the
+  current bug shape, not the full set of fix-completeness criteria;
+  follow-up probes should pin the fix surfaces independently. (c) The
+  probe DOES NOT verify the orphan-binding-on-delete race (the
+  isPolicyAttachedToRole-then-delete window at PolicyServiceImpl.java:89-93)
+  because that requires THREE concurrent clients (one delete, one role
+  bind, one read) — a separate probe should pin that surface (carry-over
+  candidate from batch S bugs_limitations_corner_cases[5]).

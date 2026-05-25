@@ -1,0 +1,198 @@
+---
+probe_id: P-126
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: null  # to-be-anchored at F-NNN level by feature-flow-builder; sidecar lists P-08 / P-09 / P-10 pillar anchors
+test_class: integration
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category B + F, batch-ZD IntegrationController controller-class
+  interrogation): IntegrationController.getIntegration({unknown-id}) — does the
+  implementation return 204 No Content (current static-inferred trace via
+  Mono.justOrEmpty + .map + ResponseEntity::ok producing Mono.empty), 404
+  (with a switchIfEmpty + NotFoundException), or something else? AND: what is
+  the response body and content-type for the unknown-id case?
+
+  Hypothesis from the static trace: the reactive chain
+    Mono.justOrEmpty(registry.get(unknown)) → .map(integration -> mapper.map(...)) → .map(ResponseEntity::ok)
+  collapses to Mono.empty on the missing id; Spring WebFlux's reactive
+  controller-return semantics translate Mono.empty to `204 No Content` with no
+  body and no content-type header. The OpenAPI declares only `200` (no `404`,
+  no `204`); the live API-reference doc page (WebFetched 2026-05-25) does not
+  specify the missing-id behaviour. SDK generators auto-generating handlers
+  for the `200`-only contract may misinterpret 204 as an unexpected response
+  or, worse, as a successful empty-payload result.
+
+  Secondary pins:
+  (a) installed=false constant (the dead-field claim from IntegrationMapper:27, 30);
+  (b) platform_url default-placeholder substitution (operator-confusion vector);
+  (c) case-insensitive lookup (registry comparator behaviour);
+  (d) baseline list endpoint response shape with one overlay-added wizard.
+
+  PASS = unknown_status == 204 + known_status == 200 + known_uppercase_status == 200
+  + installed=false on both list and detail + platform_url substituted as the
+  default placeholder. FAIL on any of these surfaces a regression in either
+  the controller's reactive chain, the mapper's installed-constant mapping,
+  the StaticArgumentMappingContext substitution, or the TreeMap's
+  case-insensitive comparator.
+---
+arrange:
+  - kind: docker-compose-up
+    config: |
+      auth.type: DISABLED
+      # default deployment posture; avoids needing a login flow to probe the wizard surface
+      # leave odd.platform-base-url commented out — should resolve to http://your.odd.platform
+  - kind: classpath-overlay
+    description: "Place ONE wizard manifest on the classpath at META-INF/wizard/snowflake.yaml"
+    path: META-INF/wizard/snowflake.yaml
+    content: |
+      id: snowflake
+      name: Snowflake
+      description: Snowflake collector wizard for ODD Platform
+      blocks:
+        - title: Configuration
+          content: Sample configuration block.
+          snippets:
+            - template: |
+                platform_host: {{platform_url}}
+                type: snowflake
+              arguments:
+                - parameter: platform_url
+                  name: Platform URL
+                  type: STRING
+                  static: true
+  - kind: wait-for-http
+    url: http://localhost:8080/actuator/health
+    timeout_seconds: 60
+act:
+  - kind: rest
+    method: GET
+    path: /api/integrations
+    capture_as: list_response
+    description: "Sanity check — registry contains the overlay-added Snowflake wizard"
+  - kind: rest
+    method: GET
+    path: /api/integrations/snowflake
+    capture_as: known_id_response
+    description: "Known-id probe — expect 200 with full Integration payload, platform_url substituted"
+  - kind: rest
+    method: GET
+    path: /api/integrations/SNOWFLAKE
+    capture_as: known_id_uppercase_response
+    description: "Case-insensitivity probe — confirm TreeMap comparator matches case-folded variants"
+  - kind: rest
+    method: GET
+    path: /api/integrations/nonexistent-wizard-id-xyz
+    capture_as: unknown_id_response
+    description: "The load-bearing probe — what does the platform return for an id not in the registry?"
+observe:
+  - kind: capture
+    name: list_status
+    value: "list_response.status"
+  - kind: capture
+    name: list_body
+    value: "list_response.body"
+  - kind: capture
+    name: known_status
+    value: "known_id_response.status"
+  - kind: capture
+    name: known_body
+    value: "known_id_response.body"
+  - kind: capture
+    name: known_uppercase_status
+    value: "known_id_uppercase_response.status"
+  - kind: capture
+    name: known_uppercase_body
+    value: "known_id_uppercase_response.body"
+  - kind: capture
+    name: unknown_status
+    value: "unknown_id_response.status"
+  - kind: capture
+    name: unknown_body
+    value: "unknown_id_response.body"
+  - kind: capture
+    name: unknown_content_type
+    value: "unknown_id_response.headers['content-type']"
+  - kind: capture
+    name: unknown_content_length
+    value: "unknown_id_response.headers['content-length']"
+assert:
+  - "list_status == 200  # baseline — list endpoint returns 200 when registry non-empty"
+  - "list_body.items.length >= 1  # the overlay-added Snowflake wizard is visible"
+  - "list_body.items[0].id == 'snowflake'  # the registered id is the lowercase form"
+  - "list_body.items[0].installed == false  # the hardcoded constant per IntegrationMapper.java:30"
+  - "known_status == 200  # known-id returns 200"
+  - "known_body.id == 'snowflake'  # response carries the integration id"
+  - "known_body.installed == false  # the hardcoded constant per IntegrationMapper.java:27"
+  - "known_body.contentBlocks[0].codeSnippets[0].arguments[0].staticValue == 'http://your.odd.platform'  # platform_url substitution with default placeholder"
+  - "known_uppercase_status == 200  # case-insensitive lookup hits the registry"
+  - "known_uppercase_body.id == 'snowflake'  # the registered id (lower-case) wins regardless of caller case"
+  - "unknown_status == 204  # HYPOTHESIS — unknown-id returns 204 No Content (NOT 404)"
+  - "unknown_body == null OR unknown_body == ''  # 204 carries no body"
+  - "unknown_content_length == '0' OR unknown_content_length == None  # 204 has zero content"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__IntegrationController__controller-class__IntegrationController
+  retrospectives: []
+  features:
+    - P-08  # Management & Administration (Integration Wizard tab)
+    - P-09  # Security & Access Control (NO INTEGRATION_* permission — open-read posture)
+    - P-10  # Integrations & Ingestion (wizard registry)
+  drift_classes:
+    - silent_204_on_missing_id_undocumented
+    - installed_field_constant_false_dead
+    - platform_url_default_placeholder_leaks_to_copy_paste
+realism_caveats: |
+  This probe verifies:
+  (a) the unknown-id 204 hypothesis (the load-bearing claim);
+  (b) the installed=false constant (the dead-field claim);
+  (c) the platform_url default-placeholder substitution (the operator-confusion vector);
+  (d) the case-insensitive lookup (the registry comparator behaviour).
+
+  This probe does NOT verify:
+  (a) DISABLED-mode anonymous reachability vs LOGIN_FORM/OAUTH2/LDAP authentication
+      requirements — a separate auth-mode-matrix probe is needed for the open-read
+      posture (under DISABLED the probe runs as anonymous; under the other three modes
+      a separate authenticated client + a no-INTEGRATION_*-permission user would
+      assert open-read is honoured);
+  (b) the case-collision merge behaviour (`Snowflake` + `snowflake` in two
+      separate overlay jars) — would require a multi-overlay test rig with
+      jar-order control;
+  (c) the boot-time fail-fast on malformed YAML — would require a malformed
+      manifest fixture and a boot-failure capture;
+  (d) the `installed: false` UI-side rendering consequences (no 'Integrated' badge
+      shown for any integration) — would require a Playwright probe against the
+      rendered Integration page;
+  (e) the operator-side `odd.platform-base-url` override case — a follow-up
+      probe with the property explicitly set would confirm the substitution
+      flows the configured value through end-to-end (including the
+      DISABLED-mode anonymous leak of an internal hostname).
+
+  If assertion `unknown_status == 204` FAILS with `404`, the static trace was
+  wrong: an upstream layer (Spring's default 404-on-Mono.empty handler? or a
+  ResponseStatusException-throwing global handler not visible in the controller
+  code) is converting Mono.empty to 404. If FAILS with `200`-with-empty-body,
+  Spring is honoring the .map(ResponseEntity::ok) but returning empty payload —
+  another distinct possibility worth pinning.
+
+  If assertion `known_uppercase_status == 200` FAILS, the TreeMap's
+  case-insensitive comparator is NOT being honoured at lookup time (would
+  imply a bug in how the comparator is applied to `Map.get`).
+
+  If assertion `known_body.contentBlocks[0].codeSnippets[0].arguments[0].staticValue
+  == 'http://your.odd.platform'` FAILS, either (a) the platform_url substitution
+  is broken end-to-end (regression in IntegrationMapper or
+  StaticArgumentMappingContext), or (b) `odd.platform-base-url` has been
+  set in the test environment (probe-rig bug — the arrange step must keep the
+  property unset).
+
+  If `installed == false` ever returns `true` for any integration, the dead-field
+  claim is wrong and a (presumably recent) feature commit has added installed-state
+  detection; the sidecar's invariant needs updating.

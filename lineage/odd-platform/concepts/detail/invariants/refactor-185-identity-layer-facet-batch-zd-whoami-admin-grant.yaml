@@ -1,0 +1,201 @@
+name: |-
+  REFACTOR-185 IDENTITY-LAYER FACET — under DISABLED, /api/identity/whoami returns admin-with-all-permissions to anonymous callers (batch ZD)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-09
+description: |-
+  **NEW INVARIANT, batch 2026-05-25-ZD** — the IDENTITY-LAYER FACET of
+  REFACTOR-185. Distinct from the existing 27-sidecar pattern (which
+  covers API-mutation-surface and UI-mutation-button-hiding under
+  DISABLED), this facet captures the identity-exposure surface — the
+  one endpoint that tells the caller WHO THEY ARE and what they can do.
+
+  ## The mechanism
+
+  Under `auth.type=DISABLED`, `DisabledAuthSecurityConfiguration.java:11-19`
+  wires NO `ServerSecurityContextRepository`; the SecurityContext is
+  empty for every request. `IdentityController.whoami` (lines 24-28)
+  delegates to `IdentityServiceImpl.whoami()` which chains
+  `authIdentityProvider.getCurrentUser().flatMap(getAssociatedOwner)`
+  (IdentityServiceImpl.java:30-52). The empty SecurityContext makes
+  `getCurrentUser` emit empty; the outer Mono short-circuits; the
+  controller fires:
+
+      .switchIfEmpty(Mono.just(new ResponseEntity<>(
+          dummyOwner(), HttpStatus.OK)))
+
+  `dummyOwner()` (IdentityController.java:30-33) constructs an
+  `AssociatedOwner` with `identity.username = "admin"` (literal,
+  lowercase, line 32) AND `identity.permissions =
+  Arrays.asList(Permission.values())` — i.e. ALL 70+ Permission enum
+  values defined at `components.yaml:158-235`.
+
+  ## The blast radius
+
+  An anonymous network caller hitting `GET /api/identity/whoami`
+  under default deployment receives 200 OK claiming they are the
+  "admin" user with every permission. The UI's
+  `WithPermissionsProvider` (PermissionProvider.tsx:17-32) consumes
+  this response and unlocks EVERY Permission-gated UI control across
+  the SPA. The dummy permissions list is `Permission.values()` —
+  dynamically expanded as the enum grows. ANY new Permission added
+  to `components.yaml` automatically enters the under-DISABLED admin
+  grant without code review of IdentityController.
+
+  ## Distinct from the master REFACTOR-185 facets
+
+  The existing 27-sidecar pattern covers:
+    (1) DISABLED facet — `.anyExchange().permitAll()` on
+        mutation endpoints; UI surface
+    (2) LOGIN_FORM facet — `.authenticated() + getAuthorities(true)`;
+        every authenticated user is ADMIN
+    (3) AUTH-MODE-ORTHOGONAL facet — `/ingestion/**` WHITELIST_PATHS
+        + exact-POST-only filter matcher
+
+  This IDENTITY-LAYER facet is a FOURTH structurally-distinct
+  mechanism. Where (1) makes mutation endpoints reachable, the
+  IDENTITY-LAYER facet ANSWERS to the caller's identity question
+  with a positive admin-grant CLAIM. The caller doesn't have to
+  guess that they have admin permissions — the platform's
+  authoritative identity surface tells them so.
+
+  An anonymous attacker probing /api/identity/whoami learns FOUR
+  things in one request:
+    (a) The platform's auth mode (200 vs 302 vs 401)
+    (b) Under DISABLED, that they "are" the admin user
+    (c) The full set of Permissions the platform defines (the
+        attack surface, leaked at API enumeration cost zero)
+    (d) The username collision space (literal "admin" lowercase
+        may collide with a real LOGIN_FORM/LDAP "admin" user)
+
+  ## Defence-in-depth absence
+
+  The invariant 'switchIfEmpty fallback is UNREACHABLE under
+  LOGIN_FORM / OAUTH2 / LDAP' is the load-bearing security
+  boundary. NO test asserts the invariant. NO regression guard
+  exists. If a future SecurityConfiguration change broke
+  SecurityContext propagation under any of the three authenticated
+  modes, EVERY user would silently downgrade to receiving
+  dummyOwner admin-with-all-permissions — with NO 401/403
+  surfacing the failure. Under LOGIN_FORM, the regression is
+  doubly invisible because LoginFormSecurityConfiguration ALREADY
+  hard-codes every user as ADMIN with every authority; the dummy
+  is also admin; the response shape is identical.
+
+  ## Observability absence
+
+  - No `@PreAuthorize` on the controller (line 23; no annotation)
+  - No `Cache-Control: no-store` header on the identity-bearing
+    response (line 26 uses bare `ResponseEntity::ok`)
+  - `@Slf4j` is DECLARED at line 19 but the body emits ZERO log
+    statements. Under DISABLED + default deployment, every
+    anonymous probe of the identity-exposure surface is invisible
+    in application logs.
+  - The `ServerWebExchange exchange` parameter is RECEIVED at line
+    24 but UNUSED — `exchange.getRequest().getRemoteAddress()` /
+    `getHeaders()` / `getCookies()` are all available for audit
+    instrumentation; the body discards them.
+
+  ## Documentation drift
+
+  The live `authentication` / `authentication/disabled-authentication`
+  / `authorization` doc pages (WebFetched 2026-05-25, status 200,
+  all three) are SILENT on:
+    - The whoami endpoint's existence
+    - The under-DISABLED admin-fallback identity claim
+    - The UI's permission-gate model collapse under DISABLED
+    - The fact that an anonymous caller can probe a documented
+      endpoint to determine auth mode + receive an admin identity
+
+  The disabled-authentication page's warning 'DO NOT use this
+  method in your production environment!' is the only generic
+  indicator; the specific identity-surface consequence is absent.
+
+  ## Severity
+
+  HIGH — the IDENTITY-LAYER FACET combines with the existing 27
+  facets to produce the WORST-CASE attack chain: anonymous caller
+  confirms DISABLED + receives admin identity + walks the API
+  surface as admin + walks the SPA as admin (every UI control
+  unlocked by the all-permissions claim). The blast radius
+  compounds; the existing facets are the channels; this facet is
+  the AUTHORITATIVE SAY-SO that makes the channels usable.
+axes_present:
+- controllers
+- ui_components
+nodes:
+- odd-platform java IdentityController controller-class:IdentityController
+- odd-platform java service service:AuthIdentityProviderImpl
+contributors:
+- 'IdentityController.md (batch ZD class-level sidecar): understanding +
+  bugs_limitations_corner_cases.[0] + security.known_security_gaps.[0,1,2,3]
+  + implicit_adrs.[0,2] (the switchIfEmpty fallback IS the design decision;
+  Permission.values() literal IS the dynamic blast-radius commitment)'
+evidence:
+- 'IdentityController.java:25-33 (the chain + the dummy fallback)'
+- 'DisabledAuthSecurityConfiguration.java:11-19 (the empty-SecurityContext
+  condition under DISABLED — wires no ServerSecurityContextRepository)'
+- 'components.yaml:158-235 (the 70+ Permission enum values that constitute
+  the dummy grant blast radius)'
+- 'AuthIdentityProviderImpl.java:24-35 (the principal-resolution primitive
+  whose empty-Mono propagation triggers switchIfEmpty)'
+- 'PermissionProvider.tsx:17-32 (the UI WithPermissionsProvider that
+  consumes the whoami response to gate every Permission-gated control)'
+- 'profile.selectors.ts:17-20 (getGlobalPermissions returns the
+  all-permissions list under DISABLED)'
+- 'WebFetch 2026-05-25 status 200 against `authentication`,
+  `disabled-authentication`, and `authorization` doc pages — all three
+  SILENT on the under-DISABLED identity exposure'
+related_features:
+- F-006
+related_pillar_features:
+- P-09
+related_concepts:
+- 'invariant:refactor-185-disabled-mode-bypass-batch-t-19-sidecar (master REFACTOR-185 — this is the 4th structurally distinct facet)'
+- 'invariant:ui-vs-api-asymmetry-under-disabled-ui-hides-mutation-buttons-backend-accepts-anonymous (the UI side of the same posture; under DISABLED the UI tells the operator a different story than the API + whoami)'
+- 'invariant:login-form-admin-for-every-user-rbac-inert (the LOGIN_FORM-side admin-for-everyone parallel)'
+- 'operation:resolve-current-principal-and-associated-owner (the service-level chokepoint this controller calls)'
+notes: |-
+  NEW invariant captured in batch 2026-05-25-ZD. The IdentityController
+  sidecar describes itself as the "17th sidecar" in the 16-sidecar
+  REFACTOR-185 triangulation; this concept is the catalog anchor for
+  that claim.
+
+  Mitigation candidates (additive on top of the master invariant's):
+
+    (1) Replace `switchIfEmpty(Mono.just(dummyOwner))` with
+        `switchIfEmpty(Mono.error(new AuthenticationException(...)))`
+        and let the controller return 401. Under DISABLED, the SPA's
+        App.tsx onMount fetchIdentity().catch(() => {}) silently
+        ignores the 401; the user lands on a blank SPA. This is
+        the fail-fast path; trade-off is that the SPA needs an
+        unauthenticated-landing UX (login form / disabled banner).
+
+    (2) Restrict dummyOwner to a curated minimum-permission set
+        rather than `Permission.values()`. Under DISABLED, the
+        SPA mounts, the toolbar shows "admin", but the
+        WithPermissionsProvider gates correctly because the
+        permission list is sparse. The dev iteration ergonomic
+        survives without the maximum-permissive blast radius.
+
+    (3) Emit `Cache-Control: no-store` + audit log on every
+        whoami invocation; route the unused `ServerWebExchange`
+        through `exchange.getRequest().getRemoteAddress()` into
+        an audit-trail INSERT.
+
+    (4) Doc-side: admonition on every relevant authentication
+        and authorization page naming the under-DISABLED admin
+        fallback. The disabled-authentication page is the
+        canonical home; the authentication landing page should
+        cross-link; the authorization page should warn that
+        the UI permission framework is INERT under DISABLED.
+
+  Cross-references:
+    - LSN-001 + LSN-002: case-law precedents showing
+      operator-discipline-as-mitigation is consistently insufficient.
+      The IDENTITY-LAYER facet is the AUTHORITATIVE positive
+      identity-claim that compounds the bypass.
+    - The defence-in-depth gap (LOGIN_FORM dummy-vs-admin shape
+      collision) is the single most important regression-target
+      to harden via a security-class integration test.

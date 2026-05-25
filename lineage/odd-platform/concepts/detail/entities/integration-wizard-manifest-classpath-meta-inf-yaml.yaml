@@ -1,0 +1,133 @@
+name: Integration Wizard Manifest (classpath META-INF/wizard/*.yaml)
+canonical_in_docs: true
+canonical_candidate: false
+pillar_affinity:
+- P-10
+description: |-
+  **NEW ENTITY, batch 2026-05-25-ZD** — the wizard manifest is a
+  YAML file on the application classpath at
+  `META-INF/wizard/*.yaml`. Each manifest describes ONE integration
+  surface (Snowflake, Postgres, etc.) and provides:
+
+    - `id` (String) — the wizard identifier (used as the path-param
+      on `GET /api/integrations/{id}`)
+    - `name` (String) — display name
+    - `description` (String) — short description
+    - `content_blocks` (List) — ordered sections, each with
+      `{title, content, code_snippets[]}`
+    - `code_snippets` (per block) — parameterised templates with
+      `{template, arguments[]}`
+    - `arguments` (per snippet) — `{parameter, name, type:
+      enum<INTEGER|STRING|BOOLEAN|FLOAT>, static_value}`; `static_value`
+      is the substitution point for `platform_url` (only registered
+      static parameter; see related concept)
+
+  ## Lifecycle
+
+  Manifests are loaded ONCE at boot by
+  `IntegrationRegistryFactory.createResourceFilesIntegrationRegistry`
+  (`IntegrationRegistryFactory.java:26-40`). Spring's
+  `PathMatchingResourcePatternResolver` scans
+  `classpath*:META-INF/wizard/*.yaml` — the `classpath*:` prefix
+  is the multi-jar variant, scanning ALL jars on the classpath.
+  Manifests live OUTSIDE this repo by design: vendor jars, docker
+  image overlays, or operator-supplied classpath additions
+  contribute them. A default-checkout build of
+  `<odd-platform-repo>` has ZERO wizard manifests (Glob across the
+  entire repo returns no `META-INF/wizard/` directory).
+
+  ## Deserialisation
+
+  Each YAML file is parsed via Jackson's YAMLFactory through
+  `IntegrationDeserializer` — a custom Jackson
+  `StdDeserializer<IntegrationOverviewDto>` that walks the JSON
+  tree and constructs an `IntegrationOverviewDto(preview, contentBlocks)`.
+
+  ## Storage
+
+  The registry is a `TreeMap<String, IntegrationOverviewDto>` keyed
+  by `id` with case-insensitive ordering
+  (`Comparator.comparing(String::toLowerCase)`). The map is built
+  at boot and IS IMMUTABLE at runtime — there is no admin API to
+  add/remove wizards.
+
+  ## Read-only by type
+  `IntegrationRegistry` interface (`IntegrationRegistry.java:8-12`)
+  exposes only `get(String id)` and `list()` — no `add`,
+  `remove`, `update`, or `replace` methods exist. The
+  immutable-at-runtime commitment is encoded in the type system,
+  not just by convention.
+
+  ## Failure modes
+
+  - **Single corrupt manifest aborts boot**:
+    `IntegrationRegistryFactory.readManifest` (`:53-61`) catches
+    IOException and rethrows as
+    `IllegalStateException("Couldn't read wizard manifest: %s")`.
+    A single malformed YAML in ANY classpath overlay takes the
+    entire application context construction down. No skip-broken
+    semantics.
+
+  - **Case-insensitive id collision silently merges (last-wins)**:
+    two manifests with same-lowercased ids (e.g. `Snowflake` +
+    `snowflake`) collapse into ONE entry. The merge function
+    `(o1, o2) -> o2` (`IntegrationRegistryFactory.java:35`) picks
+    the later-loaded one. Load order is jar-dependent and
+    non-deterministic across deployments.
+
+  ## Audiences
+
+  - Integration authors / custom-collector developers (who
+    AUTHOR manifests as YAML files contributed via classpath
+    overlays)
+  - Platform operators (who CONSUME manifests through the
+    Management → Integrations UI)
+  - Custom platform packagers (who ASSEMBLE a deployable image
+    by combining the platform repo with vendor jars carrying
+    wizard manifests)
+axes_present:
+- backend
+nodes:
+- odd-platform java IntegrationController controller-class:IntegrationController
+contributors:
+- 'IntegrationController.md (batch ZD class-level sidecar): understanding +
+  concepts.entities + implicit_adrs.[0,2,4] + bugs_limitations_corner_cases.[3,4]'
+evidence:
+- 'IntegrationRegistryFactory.java:24-61 (the boot-time scan + TreeMap
+  construction + readManifest + merge function)'
+- 'IntegrationDeserializer.java:21-89 (the custom Jackson StdDeserializer)'
+- 'IntegrationOverviewDto.java:8-10 (the internal record)'
+- 'IntegrationContentBlockDto.java:5 (content-block tuple)'
+- 'IntegrationCodeSnippetDto / IntegrationCodeSnippetArgumentDto (snippet
+  argument schema)'
+- 'components.yaml:11-92 (the OpenAPI shape: IntegrationCodeSnippetArgument,
+  IntegrationCodeSnippet, IntegrationContentBlock, IntegrationPreview,
+  IntegrationPreviewList, Integration)'
+- WebFetch 2026-05-25 status 200 against
+  `/integrations/integrations/integration-wizard` (the canonical doc page)
+related_features:
+- F-001
+related_pillar_features:
+- P-10
+related_concepts:
+- 'operation:list-integrations-wizard-registry (the consuming HTTP operation)'
+- 'entitie:static-argument-mapping-context-platform-url-substitution (the
+  substitution context the mapper applies to manifest code-snippet
+  arguments)'
+- 'invariant:integration-wizard-boot-fail-fast-on-malformed-yaml'
+- 'invariant:integration-wizard-case-insensitive-id-collision-last-wins'
+notes: |-
+  NEW entity captured in batch 2026-05-25-ZD. The wizard manifest
+  is the platform's plugin-author extension surface — operators
+  contribute wizard manifests by overlay; the platform serves them
+  through the IntegrationController surface.
+
+  The live wizard doc page describes the SHAPE of a manifest but
+  not the lifecycle (boot-time load, fail-fast on malformed YAML,
+  case-insensitive id collision). DOC-NNN candidates for each.
+
+  The manifest entity is structurally adjacent to but distinct
+  from the platform's data-content entities (DataEntity, Owner,
+  Tag, etc.): manifests are SHIPPED ARTEFACTS, not USER-EDITED
+  PLATFORM STATE. The architectural decision (`IntegrationRegistry`
+  is read-only by type) encodes the commitment.

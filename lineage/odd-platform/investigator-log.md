@@ -2362,3 +2362,54 @@ DataSourceController is now class+method complete. High-value fully-dark control
 - **High-value fully-dark controller surfaces remaining** (un-enriched method count, post-ZC): `ReferenceDataController` (16), `QueryExampleController` (12), `OwnerAssociationRequestController` (7 — class enriched), `DataQualityController` (5 methods un-enriched), `NamespaceController` (5 methods un-enriched), `DataQualityRunsController` (5).
 - **UI dark surfaces remaining** — the DataQuality batch demonstrated that UI-axis batches surface DIFFERENT classes of finding (route auth, latent UI crash, filter-name drift) than backend batches. Candidate UI batches: `LookupTables` (the gated counter-example to `/data-quality` — would close the auth-posture wisdom-test by showing both poles in one ontology view); the OwnerAssociations / DEGLineage / DatasetStructure jotai-using feature areas (each gets +1 verdict on ADR-CANDIDATE-207's pattern-evidence count).
 - **Cross-cutting REFACTOR sprint candidates**: (1) the **UI test-pillar activation** (TEST-GAP-927 META — the whole odd-platform-ui has 7 test files; activating React Testing Library on the 5 ZC sidecars would be a coherent introduction batch); (2) the **read-collaborative posture documentation** (ADR-003 now has 14 sidecars and 1st frontend-route-layer evidence — promote to a real `adrs/` ADR + document the posture in `docs/architecture` so DOC-GAP-263 is resolved by docs alone rather than per-feature); (3) the **autocomplete debounce + pagination** family (REFACTOR-597/598/602 — same `MultipleFilterItemAutocomplete` component, shared fix).
+
+---
+
+## Batch ZD — 2026-05-25 (RBAC + Integration controllers)
+
+**Sprint**: feature/ontology-finalize-2026-05-25 (sprint-close window — last day of the 2026-05-19 → 2026-05-25 ontology sprint).
+
+**Sidecars added** (5/5): IdentityController + PermissionController + RoleController + PolicyController + IntegrationController — every uncovered RBAC/integration controller class-level node closed in one batch.
+
+### Phase 1 — file-analyser results
+| Node | Wall clock | Headline finding |
+|---|---|---|
+| IdentityController | ~12 min | DISABLED mode returns `username=admin` + ALL 70+ Permission enum values to ANONYMOUS callers — IDENTITY-LAYER FACET of REFACTOR-185 (17th sidecar); P-122/123/124 probes emitted |
+| PermissionController | ~22 min | Class is the smallest in the package (single-method `getResourcePermissions`) — confirms batch-P PHANTOM (no getPolicyPermissions); MANAGEMENT enum spec-vs-runtime asymmetric rejection; P-125 emitted |
+| RoleController | ~30 min | F-006 audit-silence pattern → 7-sidecar; status-code drift on 2/4 endpoints (POST + PUT return 200 vs spec 201); ADMIN/non-ADMIN principal-fork content drift on GET /api/roles; P-127 emitted |
+| PolicyController | ~13 min | 9th corroborating sidecar in cross-batch RBAC audit-silence pattern; class-wide read-side auth gap on getPolicyDetails/getPolicyList/getPolicySchema; P-121 emitted |
+| IntegrationController | ~24 min | NO RBAC permission for /api/integrations + DISABLED-mode anonymous reachability + `installed:false` hardcoded dead-field + `platform_url` substitution leak; P-126 emitted |
+
+### Phase 2 — reducer deltas
+- **concept-merger**: +14 new concepts (3 operations / 2 entities / 9 invariants) + 3 extended (controllers-as-pass-through-delegates → 11-sidecar; no-audit-log-on-rbac-mutations → 8-tier; 200-vs-201-status-code-drift → 13-endpoint); 0 supersedes.
+- **adr-archaeologist**: +3 new ADR candidates (ADR-CANDIDATE-209 wizard registry HIGH, ADR-CANDIDATE-210 whoami dummyOwner HIGH IDENTITY-LAYER FACET of ADR-CANDIDATE-029, ADR-CANDIDATE-211 permission read-surface split MEDIUM) + 6 strengthened (-001 controllers-as-delegates → 23-sidecar; -002 SECURITY_RULES → 23-sidecar; -003 read-collaborative GET → 17-sidecar; -029 DISABLED-as-default; -051 PolicyTypeDto discriminator; -189 OpenAPI spec source-of-truth); +14 new scopes (REFACTOR-606..619: 4 HIGH / 7 MEDIUM / 3 LOW) + 7 strengthened (including REFACTOR-185 → **24-sidecar — strongest single triangulation in catalog**, REFACTOR-188 → 6-sidecar grid SCHEMA-ROOTED).
+- **doc-gap-finder**: +9 new DOC-GAPs (273-281; 0 HIGH / 7 MEDIUM / 2 LOW) + 7 strengthens (DOC-GAP-082 META → 35-sidecar across 9 tiers — complete anonymous-fingerprint kill chain anchored; DOC-GAP-083 META → 17-sidecar / 7 tiers / 6 pillars); **1 framing-reversal conflict surfaced** (DOC-GAP-187 prior batch-Q UI tier said "UI looks LOCKED-DOWN under DISABLED" — controller-class primary source REVERSES the direction: UI looks FULLY UNLOCKED admin under DISABLED; META composition intact, prose flagged for maintainer triage).
+- **test-coverage-mapper**: +18 new TEST-GAPs (928-945) — 5 CRITICAL (928/929/932/934/941) + 7 HIGH + 5 MEDIUM + 1 LOW; 12 strengthens; 6 double-jeopardy with doc-gaps.
+- **feature-flow-builder**: +1 new feature (F-033 Integration Wizard P-08:F-008) + 2 extended (F-006 +3 contributing nodes; F-011 +1); REFACTOR-185 cluster 21 → 24-sidecar; 31 drift facets added (11+8+12); no 4-cell matrix transitions.
+
+### Phase 3 — pipeline state
+- YAML safe-fix: `ok: 1538, fixed: 0` — no new YAML breakage this batch.
+- Rebuild indexes: concepts (464) / test-map (942) / feature-flows (33).
+- Coherence sweep: 90509 generic back-link-missing candidates (regex-noise baseline); per-reducer coherence reported 1 real conflict (DOC-GAP-187 framing-reversal, already triage-flagged).
+- Markdown-index appends merged (implicit-adrs + refactoring-scopes + doc-gaps).
+
+### Cumulative state after ZD
+- Direct enrichment: 169 → **174/395 (44.1%)**
+- Effective coverage: 324 → **333/395 (84.3%)**
+- Features discovered: 32 → **33**
+- Stress-verified pct: 87.4% → **88.8%**
+- All 11 pillars still anchored; 33rd feature minted from this batch's IntegrationController surface.
+
+### Headline architectural signals
+1. **REFACTOR-185 → 24-sidecar**: the DISABLED-mode bypass is now the strongest single triangulation in the catalog. Each ZD sidecar added a new facet (identity / permission / role / policy / integration / wizard / info-disclosure / open-read).
+2. **F-006 audit-silence → 11-sidecar at controller-class tier**: every RBAC mutation controller forensically confirmed silent at line:1-N. The pattern is SCHEMA-ROOTED (V0_0_48 NOT NULL FK on activity table).
+3. **REFACTOR-188 → 6-sidecar grid**: the full Policy × Role × controller × service × repository mutation grid is now triangulated at all 6 cells.
+4. **F-033 Integration Wizard minted**: new P-08:F-008 pillar feature anchored on IntegrationController; 12 drift facets enumerated.
+5. **Framing-reversal conflict (DOC-GAP-187)**: cross-batch dissonance correctly surfaced — batch-Q UI-tier framing inverted by ZD's IdentityController primary source.
+
+### Follow-ups
+- Pre-existing baseline: 90509 coherence-sweep generic back-link-missing candidates (regex-noise; non-blocking; pattern visible across previous batch sweeps too).
+- Markdown-index frontmatter drift: implicit-adrs / refactoring-scopes / doc-gaps index.md frontmatter total counts have been stale since batch H (only batches H/ABCDEFGH summary keys present). Rev-7.1 graph-search dedup queries detail/ directly so this drift does not affect reducer correctness; frontmatter remains a vanity counter. Out-of-scope for sprint close.
+- Pre-existing quarantined YAML: 5 entries (TEST-GAP-363/687 + 3 concept invariants) — present from before ZD; no new breakage from this batch.
+- 5 "sidecars referencing nodes NOT in substrate" + 5 "feature-flow chains referencing obsolete IDs" — pre-existing substrate-staleness, candidate for full re-scan after sprint close.
+

@@ -3721,3 +3721,258 @@ The 14 scopes split as: **2 HIGH** (the latent-crash + the LSN-020 Title drift),
 
 **Severity**: LOW (consolidated) | **Category**: code-hygiene / polish / multi-facet | **Pillar**: P-04 | **Batch**: ZC
 **Full detail**: `lineage/odd-platform/refactoring-scopes/detail/REFACTOR-605.md`
+
+---
+artefact: refactoring-scopes-batch-append
+batch_id: ZD
+generated_at: "2026-05-25T13:30:00Z"
+generated_at_commit: 4ec2b20
+prompt_version: "adr-archaeologist/0.2.0"
+sidecars_consumed: 5
+new_sidecar_files:
+  - understanding/odd-platform__java__IdentityController__controller-class__IdentityController.md
+  - understanding/odd-platform__java__PermissionController__controller-class__PermissionController.md
+  - understanding/odd-platform__java__RoleController__controller-class__RoleController.md
+  - understanding/odd-platform__java__PolicyController__controller-class__PolicyController.md
+  - understanding/odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+batch_ZD_summary: { added_scopes: 14, strengthened_scopes: 7, sidecars_consumed: 5, wisdom_test_reclassifications: 14 }
+new_refactor_ids: [REFACTOR-606, REFACTOR-607, REFACTOR-608, REFACTOR-609, REFACTOR-610, REFACTOR-611, REFACTOR-612, REFACTOR-613, REFACTOR-614, REFACTOR-615, REFACTOR-616, REFACTOR-617, REFACTOR-618, REFACTOR-619]
+strengthened_refactor_ids: [REFACTOR-062, REFACTOR-185, REFACTOR-188, REFACTOR-266, REFACTOR-267, REFACTOR-269, REFACTOR-545]
+new_scopes_by_severity: { HIGH: 4, MEDIUM: 7, LOW: 3 }
+coherence_check: { strengthens: 7, supersedes: 0, conflicts_surfaced: 0 }
+---
+
+# Refactoring scopes — batch ZD append (odd-platform — 2026-05-25)
+
+Directed RBAC + Identity + Integration class-level batch on `feature/ontology-finalize-2026-05-25`. Five new class-level sidecars enrich the **RBAC + Identity + Integration controller surface**: four RBAC-related class-level sidecars (`PolicyController`, `RoleController`, `PermissionController`, `IdentityController`) and the Integration Wizard surface (`IntegrationController`).
+
+**Wisdom-test outcome on 5 sidecars**: 3 ADR candidates emit (PASS — see `implicit-adrs/index-batch-ZD-append.md`); **14 wisdom-test reclassifications land here**.
+
+**Cross-cutting findings (batch ZD)**:
+- **(a) DISABLED-mode blast radius**: REFACTOR-185 strengthened to **15-sidecar triangulation** (was 11 after batch F) — all four batch-ZD sidecars confirm at class level. The IdentityController-class enrichment adds the IDENTITY-LAYER FACET (anonymous callers BECOME admin at SPA level under DISABLED, per the dummyOwner construction); the IntegrationController-class enrichment adds the INFORMATION-DISCLOSURE FACET (`platform_url` leak).
+- **(b) RBAC mutation stack forensic silence**: REFACTOR-188 strengthened with Policy + Role controller-class confirmations. The full RBAC mutation stack is now confirmed forensically silent across BOTH halves (Policy + Role) × THREE vertical tiers (controller + service + repository) = SIX-SIDECAR vertical/horizontal grid. The fix is SCHEMA-ROOTED (V0_0_48 NOT NULL data_entity_id FK).
+- **(c) Non-admin pagination-ignored asymmetry**: REFACTOR-269 now confirmed at controller-tier for both Policy + Role list endpoints — silent contract asymmetry by user role.
+- **(d) PolicyController lost-update + orphan-binding races**: REFACTOR-266 + REFACTOR-267 promoted to controller-tier primary source — the HTTP-boundary observability is now confirmed for both races.
+- **(e) Status-code drift cluster**: REFACTOR-545 strengthened with Policy + Role class-level confirmations — every Create + Update in the RBAC management half (6 endpoints) returns 200 against spec's 201.
+- **(f) Identity-bearing response no-Cache-Control**: REFACTOR-062 strengthened to identity-surface as well as token-rotation — recurring cross-cutting pattern.
+
+**Suggested sprint groupings**:
+- **"GenAI hardening sprint"** — REFACTOR-606 (Permission.values() dynamic expansion checkpoint, ahead of GenAI's permission-model expansion).
+- **"Authorization audit batch"** — REFACTOR-607 (whoami auth-mode probe doc); REFACTOR-608 (whoami audit silence); REFACTOR-609 (PermissionController audit silence); REFACTOR-617 (PolicyController read-side authorization gap — META-LAYER confidentiality exposure).
+- **"ControllerAdvice exception-mapping batch"** — REFACTOR-610 (PermissionServiceImpl missing-extractor) + REFACTOR-618 (PolicyJSONValidator IllegalArgumentException) — one-line fix benefits both.
+- **"Integration Wizard UX completion sprint"** — REFACTOR-611 (`installed: false` dead constant), REFACTOR-612 (204-on-missing-id), REFACTOR-613 (case-insensitive collision), REFACTOR-614 (boot fail-fast), REFACTOR-615 (`platform_url` placeholder), REFACTOR-616 (DISABLED anonymous leak), REFACTOR-619 (doc-side completion) — six co-surfaced gaps + the integrating doc-side fix.
+- **"DISABLED-mode hardening / docs batch"** — REFACTOR-185, REFACTOR-068, REFACTOR-607, REFACTOR-616 — all DISABLED-mode anonymous-disclosure surfaces; doc-side fix.
+
+---
+
+## REFACTOR-606 — `IdentityController.dummyOwner` uses `Arrays.asList(Permission.values())` — every new Permission auto-enters the DISABLED admin grant without code review
+
+**Severity**: HIGH
+**Category**: dynamic-blast-radius / missing-curated-allowlist
+**Surfaced by**: IdentityController.md:bugs_limitations_corner_cases.[0] + concepts.invariants.[4]
+**Statement**: `IdentityController.java:32` (`Arrays.asList(Permission.values())`) dynamically expands the under-DISABLED admin grant whenever a new Permission enum value is added to `components.yaml:158-235`. No authoring checkpoint exists.
+**Existing-ADR**: ADR-CANDIDATE-210 (NEW this batch) anchors the maintainer's intent ("DISABLED-mode admin should always be maximally-permissive"); REFACTOR-606 is the missing-checkpoint gap.
+**Proposed remedy**: Unit test asserting Permission enum contents against snapshot — addition triggers test failure, forcing explicit review. Alternative: curated `DISABLED_MODE_ADMIN_PERMISSIONS` constant.
+**Severity rationale**: HIGH — compounds with REFACTOR-185; every new Permission widens blast radius monotonically.
+**Suggested grouping**: GenAI hardening sprint.
+**Full detail**: `detail/REFACTOR-606.md`
+
+---
+
+## REFACTOR-607 — `GET /api/identity/whoami` is the canonical auth-mode probe surface — anonymous response shape discriminates DISABLED/LOGIN_FORM/OAUTH2/LDAP; not documented as such
+
+**Severity**: MEDIUM
+**Category**: enumeration-vector / undocumented-probe-surface
+**Surfaced by**: IdentityController.md:docs_link_semantic.doc_drift_findings.[3] + security.data_exposure.[1]
+**Statement**: An anonymous GET to /api/identity/whoami returns a different response shape per auth.type — an attacker can determine the platform's auth mode with a single anonymous request.
+**Existing-ADR**: ADR-CANDIDATE-024 (AppInfoController introspection-by-design) anchors deliberate auth-mode exposure for `/api/appInfo`; whoami's parallel is UNINTENTIONAL.
+**Proposed remedy**: Doc-side enumeration on `/disabled-authentication` page; optional rate-limit code-side.
+**Severity rationale**: MEDIUM — third anonymous-discoverable auth-mode signal (with REFACTOR-068 + REFACTOR-185); doc-side fix is cheap.
+**Suggested grouping**: Authorization audit batch.
+**Full detail**: `detail/REFACTOR-607.md`
+
+---
+
+## REFACTOR-608 — `IdentityController.whoami` emits zero application log lines — anonymous probes of the identity surface invisible in application logs
+
+**Severity**: HIGH
+**Category**: missing-audit / observability
+**Surfaced by**: IdentityController.md:bugs_limitations_corner_cases.[2]
+**Statement**: `IdentityController.java:19` declares `@Slf4j` but emits no log calls; `IdentityServiceImpl.java:30-52` also silent. Under DISABLED + default deployment, every anonymous probe of the identity-exposure surface is invisible in logs.
+**Existing-ADR**: REFACTOR-097 (cross-cutting no audit logging infrastructure) is the codebase-wide root cause.
+**Proposed remedy**: `log.info("whoami invoked: principal={}, remoteAddr={}", principal, exchange.getRequest().getRemoteAddress())` from IdentityServiceImpl; under DISABLED log `principal=ANONYMOUS_DUMMY_FALLBACK`.
+**Severity rationale**: HIGH — combined with REFACTOR-185 + REFACTOR-606 + REFACTOR-607, the under-DISABLED admin grant is COMPLETELY undetectable from logs.
+**Suggested grouping**: Authorization audit batch.
+**Full detail**: `detail/REFACTOR-608.md`
+
+---
+
+## REFACTOR-609 — `PermissionController` has NO `@Slf4j` / Logger / `log.*` call — privilege-enumeration surface silent
+
+**Severity**: MEDIUM
+**Category**: missing-audit / observability
+**Surfaced by**: PermissionController.md:bugs_limitations_corner_cases.[3] + concepts.invariants.[no-observability]
+**Statement**: `PermissionController.java:1-27` has zero observability. Authenticated callers iterating resource ids to enumerate elevated permissions leave no controller-tier trace.
+**Existing-ADR**: REFACTOR-097 cross-cutting.
+**Proposed remedy**: Add `@Slf4j`; `log.debug` per invocation with `(principal, resourceType, resourceId, returnedPermissionCount)`.
+**Severity rationale**: MEDIUM — privilege-enumeration is bounded to caller's own permissions per ADR-CANDIDATE-003; forensic gap not escalation gap.
+**Suggested grouping**: Authorization audit batch.
+**Full detail**: `detail/REFACTOR-609.md`
+
+---
+
+## REFACTOR-610 — `PermissionServiceImpl.getExtractor` throws `IllegalArgumentException` on missing extractor → ControllerAdvice catch-all → HTTP 500 (not 400)
+
+**Severity**: MEDIUM
+**Category**: error-mapping
+**Surfaced by**: PermissionController.md:bugs_limitations_corner_cases.[7]
+**Statement**: PermissionServiceImpl.java:47-48 throws `IllegalArgumentException("No extractor for resource type %s")`; ControllerAdvice has no `@ExceptionHandler(IllegalArgumentException.class)`; catch-all surfaces 500 SYS001 instead of 400 with the specific extractor name.
+**Existing-ADR**: none. Same root cause as REFACTOR-618 (PolicyJSONValidator); one-line ControllerAdvice fix benefits both.
+**Proposed remedy**: Add `@ExceptionHandler(IllegalArgumentException.class)` mapping to 400 USR001 with the message verbatim.
+**Severity rationale**: MEDIUM — developer-experience degradation; one-line fix.
+**Suggested grouping**: ControllerAdvice exception-mapping batch (compose with REFACTOR-618).
+**Full detail**: `detail/REFACTOR-610.md`
+
+---
+
+## REFACTOR-611 — `IntegrationMapper` hardcodes `installed: false` on every Integration / IntegrationPreview response — structurally dead OpenAPI required field; UI "Integrated" badge never renders
+
+**Severity**: MEDIUM
+**Category**: dead-code / contract-violation
+**Surfaced by**: IntegrationController.md:bugs_limitations_corner_cases.[0]
+**Statement**: `IntegrationMapper.java:27, 30` (`@Mapping(target = "installed", constant = "false")`); `components.yaml:64-70` declares `installed` REQUIRED; `IntegrationPreviewItem.tsx:44-51` conditionally renders an 'Integrated' badge on `{installed && (...)}` — dead branch.
+**Existing-ADR**: none. The platform should EITHER mark `installed` optional OR detect actually-installed integrations.
+**Proposed remedy**: Two paths — (a) detect actually-installed integrations via `DataSourceRepository` / Collector list cross-reference; (b) mark `installed` optional in spec, remove UI dead branch.
+**Severity rationale**: MEDIUM — every Integration card shows the badge slot but never renders.
+**Suggested grouping**: Integration Wizard UX completion sprint.
+**Full detail**: `detail/REFACTOR-611.md`
+
+---
+
+## REFACTOR-612 — `GET /api/integrations/{integration_id}` returns 204 No Content (not 404) on unknown id; undocumented in the OpenAPI contract
+
+**Severity**: MEDIUM
+**Category**: status-code-semantics / contract-typo
+**Surfaced by**: IntegrationController.md:bugs_limitations_corner_cases.[1]
+**Statement**: `ResourceFilesIntegrationRegistry.java:15-17` `Mono.justOrEmpty(registry.get(id))` returns `Mono.empty` on miss; Spring WebFlux translates to 204; OpenAPI declares only 200 at openapi.yaml:75-81.
+**Existing-ADR**: none. Codebase-wide convention is `NotFoundException` → 404 USR002.
+**Proposed remedy**: Add `.switchIfEmpty(Mono.error(new NotFoundException(...)))` in IntegrationServiceImpl.get; update openapi.yaml to declare 404.
+**Severity rationale**: MEDIUM — affects SDK clients, invisible to UI.
+**Suggested grouping**: Integration Wizard UX completion sprint.
+**Full detail**: `detail/REFACTOR-612.md`
+
+---
+
+## REFACTOR-613 — Wizard registry case-insensitive id collision silently merges (last-load-wins) — operator-overlay merge semantics undocumented
+
+**Severity**: LOW
+**Category**: silent-merge / undocumented-behaviour
+**Surfaced by**: IntegrationController.md:bugs_limitations_corner_cases.[3]
+**Statement**: `IntegrationRegistryFactory.java:32-37` TreeMap with case-insensitive comparator + last-wins merge. Two YAMLs with `Snowflake` + `snowflake` ids silently collapse based on jar load order.
+**Existing-ADR**: ADR-CANDIDATE-209 anchors plugin-extensibility commitment; this is the load-order non-determinism price.
+**Proposed remedy**: WARN log on collision; alternatively throw IllegalStateException (strictly stronger fail-fast).
+**Severity rationale**: LOW — requires authoring case-divergent ids; observable only by the wizard author.
+**Suggested grouping**: Integration Wizard UX completion sprint.
+**Full detail**: `detail/REFACTOR-613.md`
+
+---
+
+## REFACTOR-614 — Wizard boot fail-fast on malformed YAML — single corrupt overlay manifest aborts platform startup with no skip-and-continue
+
+**Severity**: LOW
+**Category**: missing-graceful-degradation / boot-fragility
+**Surfaced by**: IntegrationController.md:bugs_limitations_corner_cases.[4]
+**Statement**: `IntegrationRegistryFactory.java:48-50, 56-60` rethrows IOException as IllegalStateException; single corrupt YAML aborts boot.
+**Existing-ADR**: ADR-CANDIDATE-209 anchors deliberate fail-fast commitment.
+**Proposed remedy**: Replace re-throw with WARN log + Optional.empty(); alternatively add `-Dodd.platform.wizard.tolerate-malformed=true` opt-in switch.
+**Severity rationale**: LOW — operator-induced; fail-fast is documented intent per ADR.
+**Suggested grouping**: Integration Wizard UX completion sprint.
+**Full detail**: `detail/REFACTOR-614.md`
+
+---
+
+## REFACTOR-615 — Default `odd.platform-base-url=http://your.odd.platform` placeholder rendered into copy-pasted wizard snippets on a default deployment
+
+**Severity**: LOW
+**Category**: buggy-default / placeholder-leak
+**Surfaced by**: IntegrationController.md:bugs_limitations_corner_cases.[2]
+**Statement**: `application.yml:209` commented; `StaticArgumentMappingContext.java:16` `@Value default` resolves to literal placeholder `http://your.odd.platform`; rendered into every `platform_url` static snippet.
+**Existing-ADR**: none.
+**Proposed remedy**: Boot WARN log when value matches placeholder; doc-side `odd.platform-base-url` setup guidance.
+**Severity rationale**: LOW — placeholder is recognisable.
+**Suggested grouping**: Integration Wizard UX completion sprint.
+**Full detail**: `detail/REFACTOR-615.md`
+
+---
+
+## REFACTOR-616 — Under `auth.type=DISABLED`, the wizard registry (including operator-configured `platform_url`) is anonymously readable; an internal hostname configuration leaks to any network caller
+
+**Severity**: MEDIUM
+**Category**: info-disclosure / DISABLED-mode-blast-radius
+**Surfaced by**: IntegrationController.md:bugs_limitations_corner_cases.[6]
+**Statement**: Under DISABLED, `GET /api/integrations` returns every wizard manifest including substituted `platform_url`; if operators set `odd.platform-base-url` to internal hostname, the URL leaks anonymously.
+**Existing-ADR**: ADR-CANDIDATE-029 anchors DISABLED-as-default trade-off; REFACTOR-616 is the specific wizard-surface consequence.
+**Proposed remedy**: Doc-side `disabled-authentication` page expansion; optional IntegrationFilter parallel to IngestionDataEntitiesFilter.
+**Severity rationale**: MEDIUM — anonymous-discoverable internal URL recovery for production deployments where the property is set.
+**Suggested grouping**: DISABLED-mode hardening / docs batch.
+**Full detail**: `detail/REFACTOR-616.md`
+
+---
+
+## REFACTOR-617 — `GET /api/policies/{id}` + `GET /api/policies` + `GET /api/policies/schema` have NO SECURITY_RULES entry — confidentiality exposure of the RBAC system's own configuration to any authenticated user
+
+**Severity**: HIGH
+**Category**: missing-auth / confidentiality-exposure / meta-layer-blast-radius
+**Surfaced by**: PolicyController.md:bugs_limitations_corner_cases.[3] + [7]
+**Statement**: Three Policy read endpoints have no SECURITY_RULES entry; any authenticated user can enumerate every policy by id and read MANAGEMENT/ALL statements — useful reconnaissance for credential-theft escalation.
+**Existing-ADR**: ADR-CANDIDATE-003 (read-collaborative GET) anchors the architectural posture; REFACTOR-617 is the META-LAYER instance — most sensitive read in the catalog.
+**Proposed remedy**: Maintainer triage between (a) keep posture + doc-side expansion of `/authorization/policies` page, OR (b) add `POLICY_READ` permission + register SECURITY_RULES.
+**Severity rationale**: HIGH — RBAC system's own configuration is the most-sensitive read; observable today; under DISABLED + REFACTOR-185, anonymous-reachable.
+**Suggested grouping**: Authorization audit batch.
+**Full detail**: `detail/REFACTOR-617.md`
+
+---
+
+## REFACTOR-618 — `PolicyJSONValidator` throws `IllegalArgumentException("Policy is not valid: ...")` on schema failure → ControllerAdvice catch-all → HTTP 500 (`Internal Server Error`) instead of HTTP 400 with the validator's actual error message
+
+**Severity**: HIGH
+**Category**: error-mapping
+**Surfaced by**: PolicyController.md:bugs_limitations_corner_cases.[2]
+**Statement**: `PolicyJSONValidator.java:28-32` throws IllegalArgumentException; ControllerAdvice catch-all surfaces 500 SYS001; operators see no diagnostic clue at HTTP layer.
+**Existing-ADR**: none. Same root cause as REFACTOR-610; one-line ControllerAdvice fix benefits both.
+**Proposed remedy**: Add `@ExceptionHandler(IllegalArgumentException.class)` mapping to 400 USR001 with message verbatim.
+**Severity rationale**: HIGH — degraded operator experience on policy authoring; operators must read logs to fix malformed input.
+**Suggested grouping**: ControllerAdvice exception-mapping batch (compose with REFACTOR-610).
+**Full detail**: `detail/REFACTOR-618.md`
+
+---
+
+## REFACTOR-619 — Integration Wizard surface — auth posture, default-empty state, case-insensitive contract, status-code semantics, `installed: false` constant, `platform_url` placeholder — undocumented across all live doc pages
+
+**Severity**: MEDIUM
+**Category**: doc-code-drift / missing-operator-guidance
+**Surfaced by**: IntegrationController.md:docs_link_semantic.doc_drift_findings.[0..4] (5 separate drift findings)
+**Statement**: Five separate doc-side gaps form an INTEGRATED gap at the wizard surface — auth posture, 204-on-missing, installed:false, platform_url placeholder, case-insensitive contract; operators cannot get any of this from docs alone.
+**Existing-ADR**: ADR-CANDIDATE-209 (NEW this batch) anchors architectural commitments; this scope is the doc-side completion.
+**Proposed remedy**: Coordinated DOC-NNN sprint updating four live pages.
+**Severity rationale**: MEDIUM — doc-side completion for shipped feature.
+**Suggested grouping**: Integration Wizard UX completion sprint / Integration Wizard doc completion.
+**Full detail**: `detail/REFACTOR-619.md`
+
+---
+
+## Strengthened refactoring scopes (this batch — see strengthen-batch-ZD detail files)
+
+- **REFACTOR-062** strengthened with IdentityController identity-bearing whoami response — cross-cutting no-cache-control-on-sensitive-response pattern recurring. See `detail/REFACTOR-062-strengthen-batch-ZD.md`.
+
+- **REFACTOR-185** strengthened to **15-sidecar triangulation** (was 11 after batch F). Four batch-ZD class-level confirmations: Policy + Role mutations bypassed under DISABLED; IdentityController IDENTITY-LAYER FACET (anonymous becomes admin); IntegrationController INFORMATION-DISCLOSURE FACET (platform_url leak). The strongest single triangulation in the catalog. See `detail/REFACTOR-185-strengthen-batch-ZD.md`.
+
+- **REFACTOR-188** strengthened with Policy + Role controller-class-level confirmations. The full RBAC mutation stack is confirmed forensically silent across BOTH halves × THREE vertical tiers = 6-sidecar grid. Fix is SCHEMA-ROOTED (V0_0_48 NOT NULL FK). See `detail/REFACTOR-188-strengthen-batch-ZD.md`.
+
+- **REFACTOR-266** promoted to controller-tier primary source — lost-update race on PUT /api/policies/{id} now confirmed at the HTTP boundary; asymmetry with sibling Role updates exposed. See `detail/REFACTOR-266-strengthen-batch-ZD.md`.
+
+- **REFACTOR-267** promoted to controller-tier confirmation — orphan-binding race on DELETE /api/policies/{id} observable at HTTP boundary; compounds with REFACTOR-617 (read-side access to soft-deleted policies). See `detail/REFACTOR-267-strengthen-batch-ZD.md`.
+
+- **REFACTOR-269** strengthened with Policy + Role controller-tier confirmations. Non-admin pagination-ignored asymmetry is a CLASS-WIDE convention in PolicyService + RoleService. See `detail/REFACTOR-269-strengthen-batch-ZD.md`.
+
+- **REFACTOR-545** strengthened with Policy + Role class-level enumeration of 200-vs-201 drift. Cluster table now spans 13+ controllers; every Create+Update in the RBAC management half (6 endpoints) returns 200 against spec's 201. See `detail/REFACTOR-545-strengthen-batch-ZD.md`.

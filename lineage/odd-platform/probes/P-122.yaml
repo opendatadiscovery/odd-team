@@ -1,0 +1,113 @@
+---
+probe_id: P-122
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__IdentityController__controller-class__IdentityController.md
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: security
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question: under `auth.type=DISABLED`, `DisabledAuthSecurityConfiguration` wires NO
+  `ServerSecurityContextRepository` (DisabledAuthSecurityConfiguration.java:11-19), so
+  `ReactiveSecurityContextHolder.getContext()` emits empty inside
+  `AuthIdentityProviderImpl.getCurrentUser` (line 25). The downstream chain
+  `IdentityServiceImpl.whoami → authIdentityProvider.getCurrentUser().flatMap(...)` collapses
+  to `Mono.empty()` (IdentityServiceImpl.java:30-33). `IdentityController.whoami`
+  then fires `.switchIfEmpty(Mono.just(new ResponseEntity<>(dummyOwner(), HttpStatus.OK)))`
+  (IdentityController.java:27) producing a fallback `AssociatedOwner` with
+  `identity.username = "admin"` and `identity.permissions = Arrays.asList(Permission.values())`
+  (IdentityController.java:30-33). The hypothesis: a totally unauthenticated network
+  caller (no cookie, no token, no header) hitting `GET /api/identity/whoami` under
+  default deployment receives a 200 OK body containing a hardcoded admin identity AND
+  every Permission enum value the platform defines (70+ permissions). The UI consumes
+  this exact response (App.tsx:48 dispatches fetchIdentity once-on-mount) to populate
+  `WithPermissionsProvider` — every UI control gated by `Permission.X` therefore
+  evaluates `isAllowedTo: true` for an anonymous caller. This is the IDENTITY-LAYER
+  FACET of REFACTOR-185 (DISABLED bypasses authorization): the user-identity exposure
+  surface explicitly REMOVES the only remaining guardrail (empty principal → empty
+  response) by substituting an all-permissions admin identity. The probe asserts:
+  (a) the response is 200; (b) `identity.username == "admin"`; (c)
+  `identity.permissions.length` equals the Permission enum value-count
+  (currently 70+, verified against components.yaml:158-235); (d) the permissions
+  list contains every Permission enum string the OpenAPI spec defines. Secondary
+  hypothesis: there is NO `Cache-Control: no-store` header on the response, so an
+  intermediate cache (NGINX, browser, CDN) could serve a stale admin-identity body
+  to a later authenticated caller hitting the same URL.
+---
+arrange:
+  - kind: docker-compose-up
+    config: |
+      auth.type: DISABLED
+      auth.ingestion.filter.enabled: false
+      # default deployment posture per application.yml:32-48
+  - kind: env
+    POSTGRES_USERNAME: odd
+    POSTGRES_PASSWORD: odd
+    POSTGRES_DB: odd
+act:
+  - kind: rest
+    method: GET
+    path: /api/identity/whoami
+    headers: {}  # no cookie, no bearer, no header — fully anonymous
+    capture_as: anon_response
+    capture_headers_as: anon_response_headers
+  - kind: rest
+    method: GET
+    path: /api/identity/whoami
+    headers:
+      Cookie: "SESSION=invalid-session-id"  # invalid session — under DISABLED no validation
+    capture_as: invalid_session_response
+observe:
+  - kind: read-file
+    path: odd-platform-specification/components.yaml
+    extract: |
+      yq '.components.schemas.Permission.enum | length' components.yaml
+    capture_as: permission_enum_count
+assert:
+  - "anon_response.status == 200"
+  - "anon_response.body.identity.username == 'admin'"
+  - "anon_response.body.identity.permissions.length == permission_enum_count"
+  - "anon_response.body.identity.permissions contains 'POLICY_CREATE'"
+  - "anon_response.body.identity.permissions contains 'ROLE_CREATE'"
+  - "anon_response.body.identity.permissions contains 'OWNER_CREATE'"
+  - "anon_response.body.identity.permissions contains 'DATA_SOURCE_TOKEN_REGENERATE'"
+  - "anon_response.body.identity.permissions contains 'COLLECTOR_TOKEN_REGENERATE'"
+  - "anon_response.body.identity.permissions contains 'DATA_ENTITY_STATUS_UPDATE'"
+  - "anon_response.body.owner == null  # no Owner under empty SecurityContext (no USER_OWNER_MAPPING lookup ran)"
+  - "anon_response.body.associationRequest == null"
+  - "anon_response_headers['Cache-Control'] does NOT contain 'no-store'  # SECONDARY: response is cacheable"
+  - "invalid_session_response.status == 200  # confirms 'invalid session' is indistinguishable from 'no session' under DISABLED"
+  - "invalid_session_response.body.identity.username == 'admin'"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__IdentityController__controller-class__IdentityController
+    - odd-platform__java__DisabledAuthSecurityConfiguration__config-key-consumer__auth_type@L10
+    - odd-platform__java__service__service__AuthIdentityProviderImpl
+  retrospectives: []
+  refactoring_scopes:
+    - REFACTOR-185  # DISABLED-mode bypasses every SECURITY_RULES — this is the 17th-sidecar identity-layer facet
+realism_caveats: |
+  The probe pins the most-load-bearing security hypothesis: under DISABLED + default
+  deployment, an anonymous caller is told they are "admin" with every permission, and
+  the UI permission-gate framework will believe it. The probe does NOT cover:
+  (a) the LOGIN_FORM / OAUTH2 / LDAP authenticated paths (where the
+  switchIfEmpty fallback should never fire because the SecurityContext is populated
+  — but a separate probe should assert that the `dummyOwner()` fallback is
+  UNREACHABLE under those modes, ruling out a defence-in-depth regression where a
+  ContextLost reactor bug would deliver admin identity to a logged-in non-admin user);
+  (b) whether the UI actually RENDERS the admin shortcut paths (DataQuality dashboard,
+  Management → Roles/Policies/Owners) under DISABLED — those routes do not all carry
+  WithPermissionsProvider wrappers, so the operator-visible effect at the UI surface
+  needs a parallel UI probe;
+  (c) the cache-header secondary assertion — even if Cache-Control is absent, real
+  deployments may inject `Cache-Control: no-store` at an NGINX layer; the probe
+  asserts the application emits no header, not that the wire response is uncached;
+  (d) whether the response body leaks the OAuth2 registration provider name when
+  fired against an OAUTH2-mode deployment (separate probe — read provider field on
+  Identity DTO if/when added to the schema).

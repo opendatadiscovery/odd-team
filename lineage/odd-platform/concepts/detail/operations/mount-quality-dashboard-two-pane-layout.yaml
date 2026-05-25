@@ -1,0 +1,145 @@
+name: Mount Quality Dashboard (two-pane layout with scoped jotai Provider)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-04
+description: |-
+  The page-mount operation for `/data-quality` — a pure-composition
+  React route entry that establishes the dashboard's page skeleton in
+  three steps: (1) wrap the entire subtree in a fresh
+  `DataQualityAtomProvider` (a nested jotai `<Provider>`), giving the
+  dashboard's filter atoms a lifetime bounded by the page mount;
+  (2) render a sticky left `Sidebar` (`<DataQualityFilters/>` — the
+  writer side of the shared atom); (3) render a flex-grow `Content`
+  pane (`<DataQualityContent/>` — the reader side + dashboard data
+  fetch). NEW operation, batch ZC (2026-05-22).
+
+  The operation issues no data fetch, holds no state, and renders no
+  data of its own. Its evidence-of-intent is the deliberate
+  `<DataQualityAtomProvider>` wrapper at DataQuality.tsx:8 — a no-op
+  pass-through whose only reason to exist is to name and localise the
+  atom scope. The wrapper is byte-identical to
+  `OwnerAssociationsAtomProvider`, `DEGLineageAtomProvider`,
+  `DatasetStructureAtomProvider` — the consistently-applied per-feature-
+  store convention (see `jotai-feature-scoped-store` entity).
+
+  The route is lazy-loaded + code-split (`App.tsx:39`, `React.lazy`),
+  mounted under the app-wide `AppSuspenseWrapper`, and — unlike the
+  sibling `/lookup-tables` route — is NOT wrapped in any permission
+  guard, so any authenticated user who can reach the app shell renders
+  this page (see `ui-route-no-permission-guard-data-quality-vs-lookup-tables-contrast`
+  invariant).
+vocabulary_status: codebase-anchored
+axes_present:
+  - react_components
+  - ui_routes
+nodes:
+  - odd-platform ts react-component component:DataQuality
+contributors:
+  - |-
+    DataQuality (route-entry component) batch ZC:
+      operations[mount-data-quality-page, establish-filter-atom-scope,
+      compose-two-pane-layout];
+      invariants[stateless pure-composition, jotai Provider wraps both children so
+      sidebar and content share one atom scope, sticky-sidebar layout
+      (position:sticky, align-self:flex-start, max-width 15rem), default-export
+      required for React.lazy];
+      implicit_adrs[each entry-level route page that has its own scoped client state
+      mounts a private jotai Provider, primary navigation pages are lazy-loaded and
+      code-split, two-pane sticky-sidebar is a shared cross-feature layout primitive]
+evidence:
+  - DataQuality.md:concepts.operations (mount, establish-scope, compose-layout)
+  - DataQuality.md:concepts.invariants (stateless, jotai scope, sticky layout, default export)
+  - DataQuality.md:implicit_adrs.[0] (private jotai Provider per scoped-state page)
+  - DataQuality.md:implicit_adrs.[1] (lazy-loaded + code-split uniform convention)
+  - DataQuality.md:implicit_adrs.[2] (shared two-pane layout primitives)
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
+    - DISABLED
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: UNGATED
+    detail: |-
+      The route is mounted bare at App.tsx:73 with NO `WithPermissionsProvider`
+      wrapper — contrast the sibling `/lookup-tables` route at App.tsx:75-88
+      which IS wrapped and gates on LOOKUP_TABLE_* permissions. The 'Data Quality'
+      top-bar tab (ToolbarTabs.tsx:45-49) is rendered unconditionally with no
+      permission check. The mount operation imposes no gate; whoever can reach
+      the SPA shell renders the page.
+  owner_scoping:
+    verdict: N/A
+    detail: |-
+      Layout-only operation; no data fetched at this tier. The dashboard data
+      fetch (and any owner-scoping decision) lives in the child
+      DataQualityContent's `useGetDataQualityDashboard` call.
+  strengths:
+    - |-
+      Idempotent mount — re-entering /data-quality starts with a fresh atom
+      scope and the same skeleton; no side effects to compensate for on a
+      remount.
+  weaknesses:
+    - |-
+      No client-side permission guard on a sibling-route-contrasting bare
+      mount — see the dedicated invariant entry for the load-bearing observation.
+  cross_file_inconsistencies: []
+  contributing_files:
+    - DataQuality.md
+  evidence:
+    - DataQuality.md:security.known_security_gaps.[0]
+    - DataQuality.md:bugs_limitations_corner_cases.[0]
+performance_aggregate:
+  overall: HIGH
+  hot_paths:
+    - |-
+      DataQuality.tsx is on the render critical path the first time a user
+      navigates to /data-quality, but its own render cost is negligible —
+      a 4-element static JSX tree with no data, no computation, no effects
+      (DataQuality.tsx:7-18). The real per-render cost lives in the
+      DataQualityContent child (the dashboard fetch + three DonutChart SVG
+      renders + per-category result rows).
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: |-
+      One mount per page-open; no batching, no streaming.
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: |-
+      Stateless pure-composition — no instance state, no shared mutable state.
+      Each mount creates an independent jotai Provider scope.
+  strengths:
+    - |-
+      Code-split — the /data-quality JS chunk (this component + the dashboard
+      subtree + the jotai store + the charts) is NOT in the initial bundle;
+      downloads on first navigation, with AppLoadingPage shown during fetch.
+    - |-
+      Independent atom scope per mount means two browser tabs each get their
+      own store; no cross-tab interference.
+  weaknesses:
+    - |-
+      A broken or slow /data-quality lazy chunk shows the global AppLoadingPage
+      fallback with no timeout and no error boundary at this node — if the
+      dynamic import() fails (chunk 404 after a redeploy that changed chunk
+      hashes, or a network drop), the user sees the loading page indefinitely
+      or an uncaught error, with no retry affordance. Severity LOW; generic
+      consequence of the app-wide lazy pattern.
+  cross_file_inconsistencies: []
+  contributing_files:
+    - DataQuality.md
+  evidence:
+    - DataQuality.md:performance.resource_allocation (code-split chunk)
+    - DataQuality.md:bugs_limitations_corner_cases.[1] (no error boundary on lazy chunk)
+related_features:
+  - F-032
+related_pillar_features:
+  - "P-04:F-002"
+notes: |-
+  This is the OPERATION tier; the corresponding state ENTITY is
+  Data Quality Dashboard. The operation's distinct contribution to the
+  catalog is that the page-mount establishes THREE invariants the
+  dashboard depends on (atom scope, layout shape, lazy-load) — each
+  recorded under its own concept or implicit_adrs entry.
+maintainer_curated: false

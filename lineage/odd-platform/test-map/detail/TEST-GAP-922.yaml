@@ -1,0 +1,60 @@
+gap_id: TEST-GAP-922
+category: missing-unit
+criticality: MEDIUM
+node_ids:
+  - "odd-platform ts react-component component:DataQualityFilters"
+pillars_affected: [P-04]
+surfaced_by:
+  - "odd-platform__ts__react-component__component__DataQualityFilters.md:tests_coverage_semantic.uncovered_behaviours.[2] (filterKey wiring — assert each of the 10 (side × dimension) slots passes the correct key)"
+  - "odd-platform__ts__react-component__component__DataQualityFilters.md:bugs_limitations_corner_cases.[6] (The de*/unprefixed key split is the only thing separating tables-side from tests-side filters, and a swapped filterKey prop would mis-route a filter with no compile error — severity LOW)"
+behaviour: |-
+  **MEDIUM — `DataQualityFilters` instantiates each of the 5 sub-filter components TWICE (one per side), passing a distinct `filterKey` prop typed `keyof DataQualityRunsApiGetDataQualityTestsRunsRequest` (`DataQualityFilters.tsx:70-89`). A copy-paste swap (e.g. `<TitleFilter filterKey='titleIds'/>` placed in the TABLES block where it should be `deTitleIds`) routes the operator's selection to the WRONG side. Both `titleIds` and `deTitleIds` are valid members of the union type — TypeScript compiles cleanly. No test pins the 10 (side × dimension) wiring.**
+
+  **The wiring** (statically certain):
+  - Tables block (`DataQualityFilters.tsx:70-74`):
+    - `<NamespaceFilter filterKey='deNamespaceIds' />`
+    - `<DatasourceFilter filterKey='deDatasourceIds' />`
+    - `<OwnerFilter filterKey='deOwnerIds' />`
+    - `<TitleFilter filterKey='deTitleIds' />`
+    - `<TagFilter filterKey='deTagIds' />`
+  - Tests block (`DataQualityFilters.tsx:85-89`):
+    - `<NamespaceFilter filterKey='namespaceIds' />`
+    - `<DatasourceFilter filterKey='datasourceIds' />`
+    - `<OwnerFilter filterKey='ownerIds' />`
+    - `<TitleFilter filterKey='titleIds' />`
+    - `<TagFilter filterKey='tagIds' />`
+
+  **What can silently break**:
+  - Swap two keys within the same block: a maintainer copy-pastes and accidentally writes `<NamespaceFilter filterKey='deDatasourceIds'/>` in the tables block. The Namespace autocomplete now writes its selections to `formFiltersAtom.deDatasourceIds`. The dashboard then filters by datasource where the operator selected a namespace. Compiles cleanly because both are valid request keys.
+  - Swap a key across blocks: a maintainer puts `<TitleFilter filterKey='titleIds'/>` in the tables block (should be `deTitleIds`). The operator selects a tables-side filter that mutes the TESTS ring instead of the TABLES rings. Compiles cleanly.
+  - Both classes of swap are operator-visible (the dashboard reacts wrongly) but the operator may not realise the cause — the result is "the filter doesn't seem to do what I expected".
+
+  **No test pins this**: the entire DataQuality subtree has zero tests.
+
+  **Test gap shape**: unit test using React Testing Library to render `<DataQualityFilters>` and assert each of the 10 rendered filter component instances has the EXPECTED `filterKey` prop. Either snapshot-test or explicit assertion on each of the 10 slots.
+test_class: missing-unit
+criticality_rationale: |-
+  Sidecar self-classifies MEDIUM (DataQualityFilters.md:tests_coverage_semantic.uncovered_behaviours.[2]) and corner case LOW. Bumped to MEDIUM because the wiring is a cross-pillar contract (P-04 dashboard semantics depend on it) AND the bug class is invisible to TypeScript. Single-pillar; MEDIUM stands.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-ui/src/components/DataQuality/DataQualityFilters/__tests__/filterKeyWiring.test.tsx"
+  name: "tenSideTimesDimensionFilterSlots_eachHasCorrectFilterKeyProp_pinsCopyPasteSwapBugClass"
+evidence:
+  - "DataQualityFilters.md says (tests_coverage_semantic.uncovered_behaviours.[2]): 'filterKey wiring — assert each of the 10 (side × dimension) slots passes the correct key (NamespaceFilter gets deNamespaceIds in the tables block and namespaceIds in the tests block, etc.). a copy-paste swap of two filterKey props would route a filter to the wrong backend parameter with no compile error — both are valid keys of the same union type.' test_class: unit; criticality: MEDIUM"
+  - "DataQualityFilters.md says (bugs_limitations_corner_cases.[6]): 'The de*/unprefixed key split is the only thing separating tables-side from tests-side filters, and a swapped filterKey prop would mis-route a filter with no compile error. Both deTitleIds and titleIds are valid members of keyof DataQualityRunsApiGetDataQualityTestsRunsRequest, so <TitleFilter filterKey=\"titleIds\" /> placed in the tables block (DataQualityFilters.tsx:73 expects deTitleIds) would type-check and silently filter the wrong side. No test guards the wiring.' severity: LOW"
+  - "Verified at primary source via sidecar: DataQualityFilters.tsx:70-89 (the 10 prop assignments) + DataQualityStore.ts:5-22 (both prefixed and unprefixed keys in the same type) + NamespaceFilter.tsx:10-12 (the filterKey prop typing)"
+cross_references:
+  - "F-032 (P-04:F-002 Catalog-wide Data Quality Dashboard)"
+  - "TEST-GAP-920 (this batch — clearAtoms isolation — together with TEST-GAP-922, the two pin both WRITE separation (this gap) AND CLEAR separation (TEST-GAP-920) of the tables-side / tests-side filter block independence)"
+related_features: [F-032]
+related_pillar_features: ["P-04:F-002"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `filterKeyWiringTest` under `odd-platform-ui/src/components/DataQuality/DataQualityFilters/__tests__/`. Two pinning methods:
+  (a) `tenFilterSlotsHaveCorrectFilterKeyProp_pinsWiring`: render <DataQualityFilters/> inside <DataQualityAtomProvider>; use Testing Library or component mocks to capture each of the 10 sub-filter instances; assert each one's filterKey prop matches the expected wiring (NamespaceFilter in the tables block → 'deNamespaceIds'; NamespaceFilter in the tests block → 'namespaceIds'; etc., for all 5 dimensions × 2 sides).
+  (b) `eachFilterChip_writesToTheCorrectFilterKey`: render <DataQualityFilters/>; programmatically select a chip in the tables-side NamespaceFilter; assert `formFiltersAtom.deNamespaceIds` (NOT `namespaceIds`) has the chip. Mirror for the tests-side. Cover all 5 dimensions.
+
+  Add a `// REGRESSION-PIN — DataQualityFilters.tsx:70-89 — the 10 (side × dimension) slots are the only thing separating tables-side from tests-side filters. The TypeScript union type accepts EITHER prefix on EITHER side. A copy-paste swap would mis-route silently. If you add a 6th sub-filter or change a key naming convention, both blocks must be updated together AND this test must continue to pass.` block.
+batch: 2026-05-22-ZC
+feature_id: F-032

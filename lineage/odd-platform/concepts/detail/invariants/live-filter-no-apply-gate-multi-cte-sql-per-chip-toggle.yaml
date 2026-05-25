@@ -1,0 +1,182 @@
+name: Live-filter (no Apply gate) — multi-CTE SQL runs on every chip toggle
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-04
+description: |-
+  The Data Quality Dashboard has NO 'Apply Filters' button, NO debounce,
+  and NO batch gate between operator selection and dashboard re-query.
+  Every single filter chip toggle triggers a full multi-CTE multi-join
+  `getDataQualityTestsRuns` SQL run. An operator building a multi-chip
+  filter slice fires one multi-CTE multi-join backend query PER chip,
+  not one on an "Apply" click. NEW invariant, batch ZC (2026-05-22).
+
+  The trigger chain:
+    1. User clicks a chip → DataQualityFilters writes formFiltersAtom
+       (DataQualityStore.ts:11-22 via useFilter at hooks/index.ts:22-37).
+    2. filtersAtom (derived) recomputes synchronously
+       (DataQualityStore.ts:32-42).
+    3. New filtersAtom value produces a new react-query queryKey in
+       useGetDataQualityDashboard (dataQuality.ts:74-82).
+    4. react-query fires GET /api/dataqatests/runs with the new params.
+    5. Backend executes the three-query zip
+       (DataQualityRunsServiceImpl.java:36-39).
+
+  No step debounces. No step batches. Filling out a five-chip filter
+  produces five backend dashboard fetches in close succession; react-
+  query dedupes only IDENTICAL queryKeys, not the gradual key
+  progression as chips accumulate.
+
+  Triangulated across THREE contributing sidecars (DataQualityStore,
+  DataQualityContent, DataQualityFilters) — the same MEDIUM-severity
+  gap recorded from three angles, no disagreement.
+
+  Severity MEDIUM: the dashboard SQL is the multi-CTE multi-join
+  `getLatestDataQualityRunsResults / getLatestTablesHealth /
+  getMonitoredTables` zip (`ReactiveDataQualityRunsRepositoryImpl`,
+  beyond UI sidecar 1-hop budget) — not a free query. For an operator
+  building a slice of 8 chips across 2 sides, backend load is 8 full
+  dashboard executions where 1 would suffice with an Apply gate.
+
+  Suggested fix options:
+    (a) "Apply filters" button: classical, operator-explicit, lowest
+        risk. Cost: extra click for every filter change; some operators
+        will assume the button is unnecessary and miss it.
+    (b) Debounce the filter-to-fetch path (e.g. 500ms): no UX change,
+        most edits coalesce; latency-cost at the trailing edge of an
+        edit burst. The codebase already has a `broken-debouncer-pattern-
+        recreated-on-every-render-loses-rate-limit-semantics` invariant
+        warning about a common debounce-implementation pitfall — the fix
+        must be implemented carefully.
+    (c) Both: an Apply button for explicit batches AND a debounce for
+        rapid-correction scenarios.
+
+  vocabulary_status: codebase-anchored. The pattern is a UI-implementation
+  choice; the live dashboard.md does not document interaction model and
+  is silent on this behaviour.
+vocabulary_status: codebase-anchored
+axes_present:
+  - react_components
+  - jotai_stores
+nodes:
+  - odd-platform ts react-component component:DataQualityFilters
+  - odd-platform ts react-component component:DataQualityContent
+  - odd-platform ts jotai-store store:DataQualityStore
+contributors:
+  - |-
+    DataQualityFilters (filter sidebar) batch ZC:
+      performance.known_performance_gaps[no debounce / no Apply gate between filter
+      selection and dashboard re-query — the full getDataQualityTestsRuns
+      multi-CTE multi-join SQL runs on every single filter change];
+      performance.hot_paths[every selection/deselection in any filter mutates
+      formFiltersAtom which re-derives filtersAtom and triggers a new
+      getDataQualityTestsRuns request]
+  - |-
+    DataQualityContent (dashboard body) batch ZC:
+      performance.hot_paths[the component issues exactly one
+      GET /api/dataqatests/runs per /data-quality mount and a refetch on filter
+      change / window-focus per react-query defaults]
+  - |-
+    DataQualityStore (jotai filter store) batch ZC:
+      performance.known_performance_gaps[every single filter chip toggle triggers
+      a full dashboard re-fetch (no debounce / batch-apply) — formFiltersAtom write
+      → filtersAtom re-derive → new react-query queryKey → network request — severity
+      MEDIUM]
+evidence:
+  - DataQualityFilters.md:performance.known_performance_gaps.[1]
+  - DataQualityFilters.md:performance.hot_paths.[1]
+  - DataQualityContent.md:performance.hot_paths.[0]
+  - DataQualityStore.md:performance.known_performance_gaps.[0]
+security_aggregate:
+  overall: HIGH
+  auth_modes_relevant: []
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: N/A
+    detail: |-
+      Performance invariant — not an authorization concept.
+  owner_scoping:
+    verdict: N/A
+    detail: |-
+      Performance invariant — not data-scoped.
+  strengths: []
+  weaknesses:
+    - |-
+      An authenticated operator can trivially drive heavy backend load
+      by sweeping filter selections (e.g. cycling through all owners
+      one at a time). Not a denial-of-service vector at typical
+      catalog scale, but operator-driven load amplification.
+      Severity LOW; same shape as many ungated read paths.
+  cross_file_inconsistencies: []
+  contributing_files:
+    - DataQualityFilters.md
+    - DataQualityContent.md
+    - DataQualityStore.md
+  evidence: []
+performance_aggregate:
+  overall: LOW
+  hot_paths:
+    - |-
+      One backend dashboard fetch per filter chip toggle — the multi-CTE
+      multi-join getDataQualityTestsRuns SQL is the per-toggle cost.
+    - |-
+      The autocomplete search input has the same shape — one list-API
+      request per keystroke, no debounce (captured separately under the
+      dashboard-filter-panel entity's performance weaknesses).
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: |-
+      One fetch per state transition; no batching, no coalescing. react-
+      query dedupes identical concurrent keys but not the gradual
+      progression of distinct queryKeys as chips accumulate.
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: |-
+      Stateless per-request — backend can scale horizontally to handle
+      the load. The concern is backend cost amplification per active
+      user, not request handling.
+  strengths:
+    - |-
+      Immediate visual feedback — every filter selection produces a
+      result instantly (modulo network latency), no lag from an explicit
+      Apply step. The UX is "live", which some operators prefer.
+  weaknesses:
+    - |-
+      The full multi-CTE multi-join SQL runs on every single filter
+      change; backend cost amplifies linearly with chip toggles for a
+      single operator's slice-building session.
+    - |-
+      No "Apply" affordance means an operator who clears and re-selects
+      five chips fires 10 backend queries (5 clears, 5 new selections).
+  cross_file_inconsistencies:
+    - |-
+      The no-debounce-on-filter-re-query finding is recorded from THREE
+      angles — DataQualityStore (derived atom updates synchronously on
+      every source write), DataQualityContent (no debounce around
+      useGetDataQualityDashboard), DataQualityFilters (no Apply gate).
+      Consistent across the batch, not a disagreement — three sidecars
+      triangulate the same MEDIUM-severity gap.
+  contributing_files:
+    - DataQualityFilters.md
+    - DataQualityContent.md
+    - DataQualityStore.md
+  evidence:
+    - DataQualityStore.md:performance.known_performance_gaps.[0]
+    - DataQualityFilters.md:performance.known_performance_gaps.[1]
+    - DataQualityContent.md:performance.hot_paths.[0]
+related_features:
+  - F-032
+related_pillar_features:
+  - "P-04:F-002"
+notes: |-
+  The fix is one of (a) Apply button, (b) debounce, (c) both. Each has
+  a different operator-visible cost; (a) is the most explicit, (b) is
+  the most transparent, (c) is the most defensive. A maintainer
+  triaging this should consider the typical operator slice-building
+  workflow on the dashboard before choosing.
+
+  Same pattern exists at the autocomplete level (one list request per
+  keystroke), recorded under the `dashboard-filter-panel` performance
+  weaknesses. Both pattern instances together describe the dashboard's
+  full request-amplification surface.
+maintainer_curated: false

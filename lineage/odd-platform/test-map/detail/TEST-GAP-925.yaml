@@ -1,0 +1,64 @@
+gap_id: TEST-GAP-925
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform ts react-component component:DataQualityFilters"
+pillars_affected: [P-04]
+surfaced_by:
+  - "odd-platform__ts__react-component__component__DataQualityFilters.md:bugs_limitations_corner_cases.[5] (URL-sync round-trip is lossy on hand-edited query strings and silently swallows malformed JSON — severity LOW)"
+behaviour: |-
+  **MEDIUM — the URL→atom mount-sync effect at `DataQualityFilters.tsx:31-39` does `JSON.parse(value)` on each query-param value with NO try/catch. A user who hand-edits or shares a malformed URL like `/data-quality?namespaceIds=foo` (not valid JSON) causes `JSON.parse` to THROW inside the React effect; React surfaces this as an UNCAUGHT render-time error and the dashboard fails to render. Additionally there is NO schema validation on the parsed shape — a param parsed to a non-array, or to an object missing `id`, flows straight into `formFiltersAtom` and may cause downstream renders to malfunction.**
+
+  **The mount-sync effect** (`DataQualityFilters.tsx:28-43`):
+  ```
+  useEffect(() => {
+    const newFilters = { ...formFilters };
+    for (const [key, value] of searchParams) {
+      if (key in newFilters) {
+        newFilters[key] = JSON.parse(value);  // UNGUARDED
+      }
+    }
+    setFormFilters(newFilters);
+  }, [searchParams]);
+  ```
+
+  **Three failure scenarios**:
+  1. **Malformed JSON**: `?namespaceIds=foo` → `JSON.parse('foo')` throws SyntaxError → effect crashes → React surfaces uncaught error → dashboard fails to render.
+  2. **Wrong shape (string not array)**: `?namespaceIds="hello"` → parses to `"hello"` → `formFiltersAtom.namespaceIds = "hello"` → derived `filtersAtom`'s `value.map(({id}) => id)` (`DataQualityStore.ts:37`) throws TypeError because string has no `.map` callback expecting `{id}`.
+  3. **Wrong shape (objects missing `id`)**: `?namespaceIds=[{}]` → parses to `[{}]` → `filtersAtom` projects to `[undefined]` → backend receives `namespaceIds=` with no value or with `undefined` → backend may 400, may silently return unfiltered, may crash.
+
+  **What the operator sees**: depending on the malformation, EITHER the dashboard blanks (scenario 1 uncaught throw) OR renders but filters return wrong results (scenarios 2-3). All three are operator-confusing; none surfaces a friendly error message.
+
+  **Why this is operator-visible despite low base severity**: shared URLs are a primary use case (TEST-GAP-913 pins the happy-path round-trip). When the SHARED URL is broken (clipboard truncation, manual edit, link-shortener mangling, character-encoding double-decoding), the receiving operator sees a blank dashboard with no signal what happened. Sidecar self-rates LOW (`bugs_limitations_corner_cases.[5]`) — bumped to MEDIUM because the failure mode is operator-facing and discoverable through normal usage (paste a URL from a chat client that escaped a character wrong → dashboard blanks).
+
+  **No test pins this**.
+
+  **Test gap shape**: three negative-path unit/integration tests covering each of the three malformation scenarios above. Each test mounts at the bad URL; asserts EITHER (a) the dashboard renders gracefully with a "URL filter could not be parsed" message (PROPOSED behaviour) OR (b) the dashboard surfaces a friendly error and clears the malformed filter, retaining a clean atom. Today both fail; pair the test with a FIX-REQUIRED note.
+test_class: missing-edge-case
+criticality_rationale: |-
+  Sidecar self-classifies LOW (DataQualityFilters.md:bugs_limitations_corner_cases.[5]). Bumped to MEDIUM because: (a) the failure surfaces during a primary use case (shared URLs); (b) the malformed-JSON scenario produces an uncaught throw that blanks the whole dashboard, not just a degraded experience; (c) it pairs with TEST-GAP-913's happy-path coverage so the dashboard's URL deeplink contract is testing both polarity sides. Single-pillar (P-04). MEDIUM stands.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-ui/src/components/DataQuality/__tests__/DataQualityFiltersMalformedUrl.test.tsx"
+  name: "malformedUrlQueryParams_doNotCrashDashboard_pinsGracefulFallback"
+evidence:
+  - "DataQualityFilters.md says (bugs_limitations_corner_cases.[5]): 'URL-sync round-trip is lossy on hand-edited query strings and silently swallows malformed JSON. The mount effect does JSON.parse(value) on each query-param value with no try/catch (DataQualityFilters.tsx:35). A user who hand-edits /data-quality?namespaceIds=foo (not valid JSON) causes JSON.parse to throw inside the effect; React surfaces this as an uncaught render-time error. Additionally the effect only copies a key if key in newFilters (DataQualityFilters.tsx:32), so an unknown query param is silently ignored — acceptable — but a malformed value for a KNOWN key crashes rather than degrading. There is no schema validation on the parsed shape (a param parsed to a non-array, or to objects missing id, flows straight into formFiltersAtom).' severity: LOW"
+  - "Verified at primary source via sidecar: DataQualityFilters.tsx:31-39 (the for...of over searchParams, the unguarded JSON.parse) + DataQualityStore.ts:32-42 (downstream filtersAtom expects array-of-{id})"
+cross_references:
+  - "F-032 (P-04:F-002 Catalog-wide Data Quality Dashboard)"
+  - "TEST-GAP-913 (this batch — happy-path URL round-trip; TEST-GAP-925 is the negative-path sister covering malformed inputs)"
+related_features: [F-032]
+related_pillar_features: ["P-04:F-002"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `DataQualityFiltersMalformedUrlTest` under `odd-platform-ui/src/components/DataQuality/__tests__/`. Use Vitest + React Testing Library + <MemoryRouter>. Three pinning methods (all EXPECTED TO FAIL — pin a FIX-REQUIRED for the unguarded JSON.parse):
+  (a) `malformedJsonParamValue_doesNotCrashDashboard_pinsGracefulFallback`: mount <App> at /data-quality?namespaceIds=foo (not valid JSON). Assert the dashboard RENDERS (e.g. with an empty filter state and an inline notice "URL filter could not be parsed"). EXPECTED TO FAIL — today the JSON.parse throws.
+  (b) `wrongShapeParamValue_doesNotCrashDownstreamDerivations`: mount at /data-quality?namespaceIds="hello" (parses to string, not array). Assert the dashboard renders AND no TypeError surfaces from filtersAtom's .map call.
+  (c) `arrayOfObjectsMissingIdField_doesNotCrash`: mount at /data-quality?namespaceIds=[{}] (parses to [{}], missing `id`). Assert the dashboard renders, the broken filter is silently dropped, and a notice is shown.
+
+  Add a `// FIX-REQUIRED — DataQualityFilters.tsx:31-39 — wrap JSON.parse in try/catch AND add a runtime shape guard (Array.isArray + every-element has-id-and-name). On parse failure or shape failure, drop the param, clear that filter key, and surface an inline notice. This test PINS the desired graceful-degradation behaviour and FAILS until the fix lands.` block.
+
+  Backlog this gap as a small fix-item (the unguarded JSON.parse is a 3-line wrap-in-try/catch).
+batch: 2026-05-22-ZC
+feature_id: F-032

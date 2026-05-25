@@ -1,0 +1,146 @@
+name: Single-fetch aggregate dashboard projection (one GET serves N visual blocks)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-04
+description: |-
+  The Data Quality Dashboard is a SINGLE-FETCH composition: one HTTP
+  GET /api/dataqatests/runs returns the `DataQualityResults` DTO that
+  serves all three breakdown rings (Table Health, Test Results
+  Breakdown, Monitored Tables) AND every per-test-category card AND
+  both status legends — five visual blocks plus N category cards, all
+  derived from the SAME atomic DTO. NEW invariant, batch ZC (2026-05-22).
+
+  The decision is operator-facing: every ring on the dashboard reflects
+  THE SAME filter application AT THE SAME instant. No partial-load
+  skew. An operator who sees "Table Health = 75% healthy" and "Test
+  Results Breakdown = 90% pass" knows both numbers describe the same
+  filter slice.
+
+  The backend operationalises the pattern by zipping three repository
+  queries server-side
+  (`DataQualityRunsServiceImpl.java:36-42`:
+  `.testResults(testsMapper.mapToDto(item.getT1()))
+  .tablesDashboard(tablesDashboardMapper.mapToDto(item.getT2().getT1(),
+  item.getT2().getT2()))`) into one `DataQualityResults` response. The
+  frontend (`DataQualityContent.tsx:24, 43-77`) derives all five visual
+  blocks from the one `data` source via memoised reductions; none of
+  the derivations fire an independent fetch.
+
+  The pattern is the OPPOSITE of a per-ring or per-category lazy-loading
+  design (which would have one endpoint per visual block, each
+  independently fetched). The trade-off the maintainer accepted:
+  larger single payload + more backend work per request, in exchange
+  for atomic snapshot semantics.
+
+  vocabulary_status: codebase-anchored. The pattern is an architectural
+  choice not named in the user-facing docs; the live dashboard.md
+  describes the three rings without commenting on how they're served.
+vocabulary_status: codebase-anchored
+axes_present:
+  - react_components
+  - sql_queries
+  - openapi_specs
+nodes:
+  - odd-platform ts react-component component:DataQualityContent
+contributors:
+  - |-
+    DataQualityContent (dashboard body) batch ZC:
+      implicit_adrs[the dashboard is a single-fetch projection — one
+      GET /api/dataqatests/runs call serves all three rings and every category card];
+      operations[aggregate-test-results-breakdown, project-table-health-to-donut,
+      project-monitored-tables-to-donut, render-category-cards — all derived from
+      one DTO];
+      entities[DataQualityResults — the single dashboard DTO];
+      performance.hot_paths[the backend resolves each fetch as THREE repository
+      queries zipped server-side]
+evidence:
+  - DataQualityContent.md:implicit_adrs.[0] (single-fetch projection — primary intent declaration)
+  - DataQualityContent.md:concepts.entities.[0] (DataQualityResults — the single dashboard DTO)
+  - DataQualityContent.md:concepts.operations (five derivations from one data source)
+  - DataQualityContent.md:performance.hot_paths.[0] (server-side three-query zip)
+security_aggregate:
+  overall: HIGH
+  auth_modes_relevant: []
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: N/A
+    detail: |-
+      Pattern invariant — the single-fetch shape does not gate; it composes.
+      The dashboard's actual authorization posture is captured under the
+      `aggregate-catalog-wide-data-quality` operation and the parent
+      Data Quality Dashboard entity.
+  owner_scoping:
+    verdict: N/A
+    detail: |-
+      Pattern invariant — not data-scoped.
+  strengths:
+    - |-
+      Atomic snapshot semantics — no partial-load skew across the rings.
+      An operator reading "Table Health = X" and "Test Results = Y" can
+      be sure both numbers describe the same filter state at the same
+      instant.
+  weaknesses:
+    - |-
+      A failed fetch fails the entire dashboard at once. No graceful
+      degradation where (say) Table Health renders and Test Results shows
+      an error — there is one fetch, success or fail. (The component
+      destructures only `data` and `isSuccess`, never `isError` — so the
+      operator sees three grey 'No data' donuts; see
+      `react-query-no-error-destructure-empty-state-masks-backend-failure`.)
+  cross_file_inconsistencies: []
+  contributing_files:
+    - DataQualityContent.md
+  evidence:
+    - DataQualityContent.md:implicit_adrs.[0]
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+    - |-
+      Single GET /api/dataqatests/runs per dashboard mount and per filter
+      change. Backend resolves as three repository queries zipped. Per-render
+      client cost is three useMemo reductions over testResults — cheap.
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: |-
+      One aggregate fetch per filter state; no per-ring lazy loading; no
+      per-category streaming. All visual blocks come from one DTO.
+  scaling_shape:
+    verdict: UNPAGINATED
+    detail: |-
+      The dashboard contract has no pagination (openapi.yaml:1973-2087 declares
+      no page/size params). The category set is small and backend-bounded
+      (~6), so this is not a scaling failure today, but the contract has no
+      pagination — adding a seventh anomaly-class category is a non-trivial
+      operator-facing UX change.
+  strengths:
+    - |-
+      Server-side fan-out (three queries zipped) reduces the round-trip
+      count to one — saves network latency vs three independent fetches.
+    - |-
+      Smaller per-block render cost — derivations are pure memoised
+      reductions over a small DTO, no async coordination needed.
+  weaknesses:
+    - |-
+      Larger single payload — the whole DTO must arrive before any block
+      renders. For an operator on a slow connection, the entire dashboard
+      stays in initialData (all zeros) until the fetch resolves; no
+      progressive disclosure of any one block.
+  cross_file_inconsistencies: []
+  contributing_files:
+    - DataQualityContent.md
+  evidence:
+    - DataQualityContent.md:performance.hot_paths.[0]
+    - DataQualityContent.md:performance.throughput_characteristics
+related_features:
+  - F-032
+related_pillar_features:
+  - "P-04:F-002"
+notes: |-
+  The pattern is a recognised dashboard-architecture trade-off. Most
+  operator-facing dashboards in mature monitoring tools (Grafana,
+  Datadog) use per-panel independent fetches with per-panel error
+  surfaces; ODD's choice is the simpler atomic-snapshot variant. The
+  trade-off is captured here so a future maintainer reading the
+  catalog understands WHY the dashboard is one endpoint, not many.
+maintainer_curated: false

@@ -1,0 +1,257 @@
+name: Data Quality Dashboard (catalog-wide aggregate quality view)
+canonical_in_docs: true
+canonical_candidate: false
+pillar_affinity:
+  - P-04
+description: |-
+  The standalone catalog-wide Data Quality dashboard mounted at the `/data-quality`
+  UI route — the GLOBAL aggregate quality view, DISTINCT from the per-dataset
+  "Test reports" tab (the F-022 / data-quality-test surface). NEW entity, batch ZC
+  (2026-05-22), the first concept-catalog contributor for pillar feature P-04:F-002.
+
+  The page is a two-pane composition: a sticky left filter sidebar
+  (DataQualityFilters) and a content pane (DataQualityContent) that renders three
+  DonutChart breakdown rings — Table Health, Test Results Breakdown, Monitored
+  Tables — plus one per-test-category result row (TestCategoryResults). The whole
+  subtree is wrapped in a dedicated jotai `<Provider>` (DataQualityAtomProvider)
+  so the dashboard's filter atoms are scoped per page mount.
+
+  The single backend contract behind the entire page is
+  GET /api/dataqatests/runs (operationId getDataQualityTestsRuns), served by
+  DataQualityRunsController and returning the DataQualityResults DTO
+  (`testResults[]` per-category run-status counts + `tablesDashboard` table-health
+  and monitored-tables aggregates). One aggregate fetch serves all three rings and
+  every category card — a single atomic snapshot, no partial-load skew. The
+  backend zips three repository queries (getLatestDataQualityRunsResults /
+  getLatestTablesHealth / getMonitoredTables) into one response DTO.
+
+  vocabulary_status: codebase-anchored + doc-side-covered. The live
+  https://docs.opendatadiscovery.org/features/data-quality/dashboard sub-page
+  (WebFetched 2026-05-22 status 200) names the `/data-quality` route verbatim as
+  "the catalog's cross-entity quality view" and describes the three breakdown
+  rings; the pillar landing https://docs.opendatadiscovery.org/features/data-quality
+  (same date, status 200) distinguishes the top-level "Data Quality" tab
+  (aggregate dashboard) from the per-entity "Test reports" tab.
+vocabulary_status: codebase-anchored, doc-side-covered
+axes_present:
+- react_components
+- jotai_stores
+- ui_routes
+nodes:
+- odd-platform ts react-component component:DataQuality
+- odd-platform ts react-component component:DataQualityContent
+- odd-platform ts react-component component:DataQualityFilters
+- odd-platform ts jotai-store store:DataQualityStore
+- odd-platform ts react-component component:TestCategoryResults
+contributors:
+- |-
+  DataQuality (route-entry component) batch ZC:
+    entities[DataQualityDashboard (the page) — DataQuality.tsx:7-18,
+    DataQualityAtomProvider — jotai Provider scope];
+    operations[mount-data-quality-page, establish-filter-atom-scope,
+    compose-two-pane-layout];
+    invariants[stateless pure-composition, jotai Provider wraps both children so
+    sidebar and content share one atom scope, sticky-sidebar layout, default-export
+    for React.lazy];
+    audiences[odd-platform-ui-end-user (any authenticated user), data-quality-engineer]
+- |-
+  DataQualityContent (dashboard body) batch ZC:
+    entities[DataQualityResults — the single dashboard DTO];
+    operations[fetch-aggregate-dashboard, aggregate-test-results-breakdown,
+    project-table-health-to-donut, project-monitored-tables-to-donut,
+    sort-categories-alphabetically, render-category-cards];
+    invariants[single-fetch projection — one GET /api/dataqatests/runs serves all
+    five visual blocks, empty-data guard, initialData makes data never-undefined]
+- |-
+  DataQualityFilters (filter sidebar) batch ZC:
+    operations[render-two-filter-blocks, sync-formFilters-from-url,
+    sync-url-from-formFilters]
+- |-
+  DataQualityStore (jotai filter store) batch ZC:
+    entities[FormFiltersAtom, FilterOption];
+    invariants[the /data-quality feature is jotai-based, diverging from the
+    redux + redux-thunk store the rest of odd-platform-ui uses]
+- |-
+  TestCategoryResults (per-category row) batch ZC:
+    operations[render-category-row];
+    entities[DataQualityCategoryResults — the per-category prop]
+evidence:
+- DataQuality.md:concepts.entities.[0] (DataQualityDashboard — the page DOM root)
+- DataQuality.md:understanding (the /data-quality route-entry component)
+- DataQualityContent.md:concepts.entities.[0] (DataQualityResults — the single dashboard DTO)
+- DataQualityContent.md:implicit_adrs.[0] (single-fetch projection — one GET serves all three rings)
+- DataQualityContent.md:understanding (the catalog-wide aggregate view, distinct from F-022)
+- DataQualityFilters.md:concepts.operations (the two-set filter sidebar)
+- DataQualityStore.md:concepts.entities (formFiltersAtom — the dashboard filter store)
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+  - LOGIN_FORM
+  - OAUTH2
+  - LDAP
+  - DISABLED
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: UNGATED
+    detail: |-
+      At the FRONTEND layer the /data-quality route is mounted bare at App.tsx:73
+      (`<Route path={dataQualityPath()} element={<DataQuality />} />`) with NO
+      WithPermissionsProvider wrapper — contrast the sibling /lookup-tables route
+      at App.tsx:75-88 which IS wrapped and gates on LOOKUP_TABLE_* permissions.
+      The 'Data Quality' top-bar tab (ToolbarTabs.tsx:45-49) is rendered
+      unconditionally with no permission check. Any authenticated user who reaches
+      the app shell renders the full catalog-wide aggregate quality view. The
+      BACKEND authorization posture of GET /api/dataqatests/runs is PROBE-NEEDED
+      (P-090) — not enrichable from the UI sidecars; the DataQualityRunsController
+      node is not yet enriched.
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      No principal-derived scope at the UI layer — the dashboard fetches and
+      renders catalog-wide aggregates (table-health counts, monitored/unmonitored
+      counts, per-category run-status counts across ALL datasets). The traced SQL
+      in ReactiveDataQualityRunsRepositoryImpl joins OWNERSHIP ONLY when the
+      operator supplies owner/title FILTER ids — it is a user-driven filter, NOT a
+      security scope; there is no current-user predicate in the dashboard query.
+      Consistent with ODD's read-collaborative posture (the DataQualityController
+      sidecar records the same for the four per-dataset DQ read endpoints), but
+      undocumented on every live Data Quality doc page.
+  strengths:
+  - |-
+    The dashboard exposes only GET reads — no mutation surface, no owner-scoped
+    write. The catalog-wide quality posture is read-collaborative by design.
+  - |-
+    Filter selections (including which owners/namespaces an operator filtered by)
+    are catalog metadata, not credentials — the URL-query leak (filter names
+    written verbatim to the address bar) is LOW-sensitivity.
+  weaknesses:
+  - |-
+    The /data-quality route has NO client-side permission guard (App.tsx:73, bare
+    <Route>) while the adjacent /lookup-tables route IS guarded — the DQ dashboard
+    is under-gated relative to its sibling. If the backend GET /api/dataqatests/runs
+    also lacks an authorization gate (P-090), the catalog-wide aggregate health of
+    every dataset is visible to every authenticated principal — and anonymously
+    reachable under auth.type=DISABLED (REFACTOR-185 family).
+  - |-
+    Every live Data Quality doc page (dashboard.md, data-quality.md) is SILENT on
+    access control / who can view the dashboard — the natural place to disclose
+    the 'visible to any authenticated user' posture, and it does not. DOC-GAP,
+    severity MEDIUM.
+  - |-
+    DataQualityContent destructures only { data, isSuccess } from the fetch hook —
+    never isError/error. A 4xx/5xx from the backend is presented to the operator
+    as three grey 'No data' donuts, indistinguishable from a genuinely empty
+    catalog — a real backend failure masquerades as 'no DQ tests ingested'.
+  cross_file_inconsistencies:
+  - |-
+    The five contributing sidecars (DataQuality, DataQualityContent,
+    DataQualityFilters, DataQualityStore, TestCategoryResults) AGREE on the
+    ungated-route observation — every one records App.tsx:73 as a bare route.
+    No contradiction across the batch. The single open question is the BACKEND
+    half (P-090), uniformly deferred by all five sidecars to the not-yet-enriched
+    DataQualityRunsController node.
+  contributing_files:
+  - DataQuality.md
+  - DataQualityContent.md
+  - DataQualityFilters.md
+  - DataQualityStore.md
+  - TestCategoryResults.md
+  evidence:
+  - DataQuality.md:security.known_security_gaps.[0] (ungated route — App.tsx:73 vs gated /lookup-tables)
+  - DataQualityContent.md:security.known_security_gaps.[0] (bare GET, no UI permission gate)
+  - DataQualityContent.md:bugs_limitations_corner_cases.[5] (no error UI — failed fetch looks like empty catalog)
+  - DataQualityFilters.md:security.known_security_gaps.[0] (filter names leaked into URL query string)
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+  - |-
+    GET /api/dataqatests/runs fires once per /data-quality mount and refetches on
+    every filter change / window-focus (react-query default staleTime 0) —
+    DataQualityContent.tsx:24
+  - |-
+    The backend resolves each fetch as THREE repository queries zipped server-side
+    (getLatestDataQualityRunsResults / getLatestTablesHealth / getMonitoredTables) —
+    DataQualityRunsServiceImpl.java:36-39
+  - |-
+    Every single filter chip toggle triggers a full dashboard re-query (no
+    debounce, no Apply gate) — an operator building a multi-chip filter slice
+    fires one multi-CTE-multi-join backend query per chip — DataQualityStore.ts:32-42
+    + DataQualityContent.tsx:23-24
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: |-
+      One aggregate fetch per filter state — no per-ring or per-category lazy
+      loading; all three rings + all category cards come from one DTO. No bulk /
+      batch variant. react-query dedupes concurrent identical-key requests.
+  scaling_shape:
+    verdict: UNPAGINATED
+    detail: |-
+      The dashboard endpoint declares no page/size params (openapi.yaml:1973-2087);
+      testResults is the full category set. Bounded in practice — the category
+      count is small and backend-bounded (~6) — so this is not a scaling failure,
+      but the contract has no pagination.
+  strengths:
+  - |-
+    Single atomic fetch — all three rings reflect the same filter application at
+    the same instant; no partial-load skew across the dashboard.
+  - |-
+    The /data-quality JS chunk (component subtree + jotai store + charts) is
+    code-split and lazy-loaded — not in the initial bundle; downloads on first
+    navigation to the route.
+  - |-
+    Client-side derivation cost is trivial — three useMemo reductions bounded by
+    ~6 categories x ~6 statuses; per-category TestCategoryResults render is O(6).
+  weaknesses:
+  - |-
+    No staleTime / gcTime configured on useGetDataQualityDashboard — react-query
+    default staleTime 0 means the dashboard re-runs all three backend queries on
+    every remount and every window-focus. A modest staleTime would cut redundant
+    fetches with no correctness loss (DQ aggregates do not change second-to-second).
+    Severity LOW.
+  - |-
+    No debounce / no Apply gate between filter selection and dashboard re-query —
+    the full multi-CTE multi-join getDataQualityTestsRuns SQL runs on every single
+    filter change. Severity MEDIUM.
+  - |-
+    The filter autocompletes have no debounce on the search input — one catalog
+    list-API request per keystroke; filling the 10-slot panel generates a request
+    burst. Severity MEDIUM.
+  cross_file_inconsistencies:
+  - |-
+    The no-debounce-on-filter-re-query finding is recorded from THREE angles —
+    DataQualityStore (the derived atom updates synchronously on every source
+    write), DataQualityContent (no debounce around useGetDataQualityDashboard),
+    and DataQualityFilters (no Apply gate). Consistent across the batch, not a
+    disagreement — three sidecars triangulate the same MEDIUM-severity gap.
+  contributing_files:
+  - DataQuality.md
+  - DataQualityContent.md
+  - DataQualityFilters.md
+  - DataQualityStore.md
+  - TestCategoryResults.md
+  evidence:
+  - DataQualityContent.md:performance.known_performance_gaps.[0] (no staleTime — refetch on focus)
+  - DataQualityContent.md:performance.hot_paths.[0] (one GET, three server-side queries)
+  - DataQualityFilters.md:performance.known_performance_gaps.[0-1] (no autocomplete debounce, no Apply gate)
+  - DataQualityStore.md:performance.known_performance_gaps.[0] (every chip toggle re-fetches the dashboard)
+related_features:
+  - F-022
+related_pillar_features:
+  - "P-04:F-002"
+notes: |-
+  The Data Quality Dashboard is the catalog-wide aggregate; F-022 (the
+  data-quality-test / dataset-test-report / dataset-sla concepts) is the
+  per-dataset drill-down on the dataset detail page's 'Test reports' tab. They
+  are DELIBERATELY kept as distinct concepts: the dashboard reads
+  GET /api/dataqatests/runs (DataQualityRunsController, DataQualityResults DTO);
+  the per-dataset surface reads GET /api/datasets/{id}/test_report
+  (DataQualityController, DataSetTestReport DTO). No code is shared between the
+  two surfaces; both consume the DataEntityRunStatus enum, which is its own
+  concept entry.
+
+  This is a CANONICAL entity — the live dashboard.md sub-page names the
+  `/data-quality` route and the three rings verbatim. The doc structure matches
+  the code (three DonutCharts, two filter ListContainers); the open doc gaps are
+  (a) access control silence and (b) the filter-panel interaction model
+  (URL deep-linking, two scoped Clear buttons) is undocumented.
+maintainer_curated: false

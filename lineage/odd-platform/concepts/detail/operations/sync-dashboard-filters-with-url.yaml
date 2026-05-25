@@ -1,0 +1,141 @@
+name: Sync dashboard filters with URL (bidirectional searchParams round-trip)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-04
+description: |-
+  The two-way URL ↔ jotai-atom synchronisation behind the Data Quality
+  Dashboard's filter panel. Two `useEffect` hooks at
+  `DataQualityFilters.tsx:28-54` form a bidirectional bridge: one hydrates
+  `formFiltersAtom` from React Router's `searchParams` on mount (and on
+  any `searchParams` change); the other writes `formFiltersAtom` back to
+  the query string with `{ replace: true }` on every `formFilters` change.
+  NEW operation, batch ZC (2026-05-22).
+
+  Wire format: each non-empty filter array is JSON-stringified into a
+  query-param value carrying the FULL FilterOption[] (id + name), not
+  just the id list — so `/data-quality?namespaceIds=%5B%7B%22id%22%3A1%2C%22name%22%3A%22prod%22%7D%5D`
+  carries both the filter id and the human-readable name (the name is
+  preserved across reloads so the autocomplete chip can render its label
+  without re-querying the list API for one id).
+
+  The intent is dashboard-view deep-linking: an operator can bookmark or
+  paste a `/data-quality?...` URL and land on the same filtered view;
+  `replace: true` avoids polluting browser history with every keystroke-
+  driven filter change. The operation is a UX contract — a filter panel
+  that only used jotai would lose state on reload.
+
+  Failure mode: the mount effect does `JSON.parse(value)` on each query-
+  param value with NO try/catch (DataQualityFilters.tsx:35). A user who
+  hand-edits `/data-quality?namespaceIds=foo` (not valid JSON) causes
+  `JSON.parse` to throw inside the effect; React surfaces this as an
+  uncaught render-time error. The effect also only copies a key if
+  `key in newFilters` (line 32), so an unknown query param is silently
+  ignored — acceptable — but a malformed value for a KNOWN key crashes
+  rather than degrading. There is no schema validation on the parsed
+  shape (a param parsed to a non-array, or to objects missing `id`,
+  flows straight into `formFiltersAtom`).
+
+  vocabulary_status: codebase-anchored. The live
+  https://docs.opendatadiscovery.org/features/data-quality/dashboard
+  (WebFetched 2026-05-22 status 200) does NOT document this URL round-trip
+  — operators cannot discover from the docs that the dashboard view is
+  deep-linkable / shareable. DOC-NNN follow-up.
+vocabulary_status: codebase-anchored
+axes_present:
+  - react_components
+nodes:
+  - odd-platform ts react-component component:DataQualityFilters
+contributors:
+  - |-
+    DataQualityFilters (filter sidebar) batch ZC:
+      operations[sync-formFilters-from-url, sync-url-from-formFilters];
+      invariants[URL ↔ atom sync uses JSON.stringify/parse of full FilterOption[]
+      (id+name, not just ids), only non-empty arrays written to URL];
+      implicit_adrs[filter selections are mirrored into the URL query string so
+      the dashboard view is deep-linkable and shareable; `replace: true` avoids
+      polluting browser history]
+evidence:
+  - DataQualityFilters.md:concepts.operations.[1-2] (the two sync directions)
+  - DataQualityFilters.md:concepts.invariants.[1-2] (JSON format, empty-drop)
+  - DataQualityFilters.md:implicit_adrs.[2] (the URL round-trip decision)
+  - DataQualityFilters.md:bugs_limitations_corner_cases.[5] (lossy round-trip, unguarded JSON.parse)
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant: []
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: N/A
+    detail: |-
+      Client-side URL state-sync; no auth surface.
+  owner_scoping:
+    verdict: N/A
+    detail: |-
+      Sync operation — passes through whatever the operator selected.
+  strengths:
+    - |-
+      Deep-linkable dashboard views support team collaboration use cases —
+      an operator can paste a `/data-quality?...` URL into a Slack channel
+      and a colleague lands on the same investigated slice.
+  weaknesses:
+    - |-
+      Filter NAMES (not just ids) written verbatim to the URL — visible in
+      browser history, server access logs, referer headers. Low-sensitivity
+      catalog metadata, not credentials, but worth disclosing on a future
+      docs refresh.
+    - |-
+      Unguarded `JSON.parse` on hand-edited / corrupt query-param values
+      crashes the panel mount-effect rather than degrading gracefully.
+      Severity LOW (an operator hand-editing the URL is the only realistic
+      trigger; a corrupt value supplied by a shared link from a trusted
+      colleague is unlikely).
+  cross_file_inconsistencies: []
+  contributing_files:
+    - DataQualityFilters.md
+  evidence:
+    - DataQualityFilters.md:security.known_security_gaps.[0] (filter names in URL)
+    - DataQualityFilters.md:bugs_limitations_corner_cases.[5] (JSON.parse crash on malformed query)
+performance_aggregate:
+  overall: HIGH
+  hot_paths:
+    - |-
+      `replace: true` setSearchParams on every filter selection — each chip
+      toggle writes the URL. Cheap (no history entry, just an address-bar
+      update) but it does mean a fast-typing operator generates one URL
+      update per chip. Bounded; not a perf concern.
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: |-
+      One sync per selection event; no batching.
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: |-
+      Client-only sync; no server resource consumption.
+  strengths:
+    - |-
+      `replace: true` flag means the navigate stack stays clean across rapid
+      filter edits — a user pressing Back after 30 filter toggles returns
+      to the page they came from, not to 30 stale filter states.
+    - |-
+      The mount-time sync hydrates state from the URL in one pass before the
+      first dashboard fetch fires (modulo the LSN-017 deeplink double-fire
+      captured under `aggregate-catalog-wide-data-quality`).
+  weaknesses: []
+  cross_file_inconsistencies: []
+  contributing_files:
+    - DataQualityFilters.md
+  evidence:
+    - DataQualityFilters.md:downstream_side_effects.[1] (the URL update side-effect)
+related_features:
+  - F-032
+related_pillar_features:
+  - "P-04:F-002"
+notes: |-
+  This is a generic UI pattern (URL as application state) instantiated on the
+  DQ Dashboard's filter panel. A future Lineage refactor or other multi-filter
+  page might reuse the same pattern — if so, this concept can be strengthened
+  rather than re-minted. Existing siblings include the
+  `url-as-source-of-truth-for-lineage-view-state` invariant (lineage-specific,
+  different mechanism — URL as the primary lineage view-state container vs.
+  this entry's URL-as-side-channel for jotai atom values).
+maintainer_curated: false

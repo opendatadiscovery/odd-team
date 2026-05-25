@@ -1,0 +1,91 @@
+---
+probe_id: P-100
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__DataQualityContent.md
+emitted_at: 2026-05-22T00:00:00Z
+status: pending-stress-protocol
+feature_id: null  # P-04:F-002 "Quality Dashboard" — not yet feature-flow-anchored as an F-NNN
+test_class: integration
+verified_against_commit: ede5d277
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category C, LSN-019 class): DataQualityContent.tsx:76 renders the
+  per-category test panels via
+    data.testResults.toSorted(({category:a},{category:b}) => a.localeCompare(b))
+  The category strings come verbatim from the backend (DataQualityCategoryResults.category,
+  components.yaml:3802-3813 — a free `type: string`, NOT an enum). Two hypotheses to pin:
+
+  (H1 — ordering is alphabetical, not severity/failure-count): the panels render in
+  Unicode-collation order of the category label. An operator scanning the dashboard for
+  "which test category is failing worst" sees the categories in label order
+  (Assertion Tests, Column Values Anomalies, Freshness Anomalies, Schema Changes,
+  Unknown category, Volume Anomalies) — the worst-failing category is wherever its name
+  sorts, not first. The live doc page /features/data-quality/dashboard lists the
+  categories in exactly this alphabetical order, so doc and code agree on ordering — but
+  neither states alphabetical is intentional vs incidental.
+
+  (H2 — localeCompare is locale-sensitive): String.prototype.localeCompare with no
+  explicit locale argument uses the runtime's default locale. In a browser this is the
+  user's navigator locale; category labels are ASCII-only today so ASCII-locale and
+  e.g. Turkish-locale collations agree for the six current labels — but a future
+  non-ASCII or accented category name (or a locale where digits/case sort differently)
+  would reorder the panels per-user. The probe pins whether the current six labels are
+  collation-stable across locales.
+---
+arrange:
+  - kind: docker-compose-up
+    compose_profile: odd-minimal
+  - kind: note
+    text: |
+      The DQ dashboard aggregate (GET /api/dataqatests/runs) derives test categories
+      from ingested DQ test results. Seed three DATA_QUALITY_TEST entities whose
+      category resolves (via the backend category mapper) to labels that exercise
+      collation edge cases. The exact seed SQL depends on how
+      DataQualityCategoryMapper derives the `category` string — probe-runner resolves
+      the mapper, then seeds test-result rows whose category labels are, in INSERT
+      order: "Volume Anomalies", "Assertion Tests", "Freshness Anomalies"
+      (deliberately NOT alphabetical insertion order).
+  - kind: sql
+    query: |
+      -- placeholder: probe-runner fills the DATA_ENTITY + DATA_QUALITY_TEST +
+      -- test-run seed rows once DataQualityCategoryMapper's category derivation is
+      -- traced. The seed MUST produce >=3 distinct categories in non-alpha insert order.
+act:
+  - kind: rest
+    method: GET
+    path: /api/dataqatests/runs
+    capture_as: dashboard_response
+observe:
+  - kind: capture
+    expression: dashboard_response.body.test_results.map(r => r.category)
+    capture_as: category_order_from_api
+  - kind: dom-probe
+    description: |
+      Render the /data-quality page headlessly (Playwright, local), read the rendered
+      order of the per-category panels (the <h4> title inside each
+      TestCategoryResultsWrapper).
+    capture_as: category_order_in_dom
+assert:
+  - "category_order_in_dom == category_order_from_api.slice().sort()  # H1: DOM order is the alpha sort of whatever the API returned"
+  - "category_order_in_dom != category_order_from_api  # confirms toSorted reorders vs API order (seed was non-alpha)"
+  - "category_order_in_dom == ['Assertion Tests','Freshness Anomalies','Volume Anomalies']  # exact alpha order of the 3 seeds"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__DataQualityContent
+    - odd-platform__ts__react-component__component__TestCategoryResults  # sibling — enriched this batch
+  retrospectives: [LSN-019]
+realism_caveats: |
+  This probe pins the ALPHABETICAL-ORDERING hypothesis (H1). It does NOT pin the
+  locale-sensitivity hypothesis (H2) — verifying H2 needs the headless browser run
+  under at least two navigator.language settings (e.g. 'en-US' and 'tr-TR') with at
+  least one accented/non-ASCII category label, which the current backend category
+  set does not produce. If a future release introduces non-ASCII category labels,
+  extend this probe with a per-locale DOM run. The probe also does NOT verify whether
+  alphabetical is the order an operator EXPECTS — that is a product-judgement question
+  (severity-order or failure-count-order would arguably serve the "find the worst
+  category" task better); it is recorded in the sidecar as a name-vs-behaviour caveat,
+  not a probe assertion.

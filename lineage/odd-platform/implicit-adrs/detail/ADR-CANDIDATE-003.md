@@ -57,3 +57,23 @@ The pattern now covers nearly every read surface in the platform: detail, lineag
 **Severity unchanged**: HIGH (security posture decision affecting every read endpoint in the platform).
 
 ---
+
+## STRENGTHENS — Batch ZC (the `/data-quality` route mount — the UI realisation of the read-collaborative posture at the standalone Data Quality Dashboard)
+
+**One new batch-ZC sidecar confirms the read-collaborative-GET posture at the UI-route layer of the standalone Data Quality Dashboard surface** (Pillar P-04:F-002, Feature F-032), extending the support count from 13 to 14. The `/data-quality` route at `App.tsx:73` mounts the dashboard as a bare `<Route path={dataQualityPath()} element={<DataQuality />} />` with **no `WithPermissionsProvider` wrapper** — in direct contrast to the immediately-adjacent `/lookup-tables` route at `App.tsx:75-88` which IS wrapped (gating on `LOOKUP_TABLE_CREATE | LOOKUP_TABLE_UPDATE | LOOKUP_TABLE_DELETE`). The 'Data Quality' top-bar tab (`ToolbarTabs.tsx:45-49`) is rendered unconditionally with no permission check. The deliberate-decision evidence is the **direct sibling-route contrast** (bare-mount vs `WithPermissionsProvider`-wrapped, three lines apart in the route registry) — the maintainer who wrapped `/lookup-tables` made a CONSCIOUS DIFFERENT CHOICE for `/data-quality` on the same screen.
+
+**Batch ZC new surfaced_by**:
+- `odd-platform__ts__react-component__component__DataQuality.md:implicit_adrs` (HIGH) + `:bugs_limitations_corner_cases.[0]` + `:security.authorization_assertions` + `:stress_findings.auth_gates` — all four sections converge on the same observation: the `/data-quality` route is ungated at the React layer; the contrast with `/lookup-tables` IS the intent anchor. The frontend route mount is the UI realisation of the read-collaborative posture on the catalog-wide DQ aggregate.
+- `odd-platform__ts__react-component__component__DataQualityContent.md:implicit_adrs.[1]` (MEDIUM) — explicitly framed: |-
+    "The dashboard is a read-only, owner-unscoped catalog-wide view — no per-component permission gate... The intent — consistent with ODD's read-collaborative catalog posture (ADR-CANDIDATE-003) — is that catalog-wide quality posture is visible to every authenticated user; the dashboard exposes no mutation and no owner-scoped data." — intent_anchor: `<Route path={dataQualityPath()} element={<DataQuality />} />` (`App.tsx:73` — the absence of the `WithPermissionsProvider` wrapper that `App.tsx:75-84` applies to the adjacent gated route is the deliberate contrast)
+
+**Architectural refinement**: The batch-ZC vertex is the **first frontend-route-layer primary source** in the read-collaborative family — every prior surface (alerts/activity/search/details/lineage/facets/attachments/directory/permissions/DEG-lineage/owner-anchored-lineage) anchored on a Java controller method. The dashboard's UI route mount is the architectural commitment expressed at the React layer: the SPA route registry deliberately uses `WithPermissionsProvider` SELECTIVELY (for resources that DO have a per-resource permission, e.g. lookup tables) and BARE for read-collaborative surfaces. The deliberate-decision evidence is unusually clean because the two adjacent route registrations (lines 73 and 75-88) are visible together — it is impossible to read the route registry without seeing the choice.
+
+**Blast-radius implication**: A user with zero permissions and zero ownership associations renders the FULL catalog-wide DQ aggregate — every table's health status, every category's pass/fail counts, every monitored/unmonitored count. Whether the backend `DataQualityRunsController` enforces owner scoping is the next layer of the question (probe P-090); the UI half of the answer is now pinned: the frontend imposes no gate.
+
+**New cross-link gaps**:
+- **REFACTOR-617 NEW**: "access control / who-can-see-the-dashboard" is silent on EVERY live Data Quality doc page (`dashboard.md` + `data-quality.md` + the pillar landing — all WebFetched 2026-05-22 status 200, all silent). The read-collaborative posture is INTENTIONAL but UNDOCUMENTED — same shape as REFACTOR-200 / REFACTOR-024 / REFACTOR-187. The DQ dashboard joins the list of read-collaborative surfaces whose live docs do not surface the blast radius.
+
+**Severity unchanged**: HIGH. Support count: **14 sidecars** (was 13 after batch M). The read-collaborative-GET posture is now anchored across nearly every read surface of the platform AND at the dashboard UI route layer.
+
+---

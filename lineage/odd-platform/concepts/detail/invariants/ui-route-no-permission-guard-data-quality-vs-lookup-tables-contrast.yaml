@@ -1,0 +1,155 @@
+name: UI route — /data-quality has no permission guard while sibling /lookup-tables does (the bare-route contrast)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-04
+description: |-
+  The `/data-quality` route is mounted at `App.tsx:73` as a bare
+  `<Route path={dataQualityPath()} element={<DataQuality />} />` with
+  NO `WithPermissionsProvider` wrapper. The IMMEDIATELY ADJACENT
+  `/lookup-tables` route at `App.tsx:75-88` IS wrapped in
+  `WithPermissionsProvider` with explicit `allowedPermissions`
+  (`LOOKUP_TABLE_CREATE | LOOKUP_TABLE_UPDATE | LOOKUP_TABLE_DELETE`).
+  The 'Data Quality' top-bar tab at `ToolbarTabs.tsx:45-49` is
+  rendered unconditionally with no permission check; the operator-
+  visible result is that any authenticated user reaches the dashboard
+  via the tab or by direct URL. NEW invariant, batch ZC (2026-05-22).
+
+  The two routes' contrast is what makes this a finding rather than
+  a noted absence: bare mount + lazy + `AppSuspenseWrapper` is the
+  universal pattern (11 of 12 primary routes use it); a wrapped
+  permission gate is the exception that lookup-tables applies. The
+  dashboard's missing wrapper is unexplained — there is NO comment,
+  exception, or convention in App.tsx defending the absence.
+
+  Whether this is a defect or the intended read-collaborative posture
+  cannot be settled from the frontend alone. The backend dashboard
+  endpoint `GET /api/dataqatests/runs` may or may not enforce its own
+  permission gate (PROBE-NEEDED, P-090; not enrichable from the UI
+  sidecars). If the backend ALSO has no gate, the catalog-wide
+  aggregate health of every dataset is visible to every authenticated
+  principal — and anonymously reachable under `auth.type=DISABLED`
+  (REFACTOR-185 family).
+
+  The pattern is consistent with ODD's broader read-collaborative
+  catalog posture (ADR-CANDIDATE-003; the related per-dataset
+  DataQualityController also has four ungated reads), but it is
+  UNDOCUMENTED on every live Data Quality doc page. Captured separately
+  in the `dq-dashboard-doc-silent-on-access-control` invariant.
+
+  vocabulary_status: codebase-anchored, doc-side-gap. The live
+  https://docs.opendatadiscovery.org/features/data-quality/dashboard
+  + https://docs.opendatadiscovery.org/features/data-quality
+  (WebFetched 2026-05-22 status 200) make NO statement about access
+  control or permissions on the dashboard.
+vocabulary_status: codebase-anchored, doc-side-gap
+axes_present:
+  - react_components
+  - ui_routes
+nodes:
+  - odd-platform ts react-component component:DataQuality
+  - odd-platform ts react-component component:DataQualityContent
+contributors:
+  - |-
+    DataQuality (route-entry component) batch ZC:
+      bugs_limitations_corner_cases[the /data-quality route has no client-side
+      permission guard — App.tsx:73 bare Route vs App.tsx:75-88 wrapped sibling];
+      security.known_security_gaps[the /data-quality route mounted with NO
+      WithPermissionsProvider — under DISABLED the catalog-wide aggregate is
+      anonymously reachable];
+      stress_findings.auth_gates[at the FRONTEND layer NOWHERE; whether a gate
+      exists at the BACKEND dashboard endpoint is PROBE-NEEDED, P-090]
+  - |-
+    DataQualityContent (dashboard body) batch ZC:
+      implicit_adrs[the dashboard is a read-only, owner-unscoped catalog-wide
+      view — no per-component permission gate];
+      security.authorization_assertions[the component declares no permission gate;
+      the /data-quality route is mounted WITHOUT a WithPermissionsProvider wrapper]
+evidence:
+  - DataQuality.md:bugs_limitations_corner_cases.[0] (primary contrast — bare /data-quality vs gated /lookup-tables)
+  - DataQuality.md:security.known_security_gaps.[0]
+  - DataQuality.md:stress_findings.auth_gates (the four-question audit; q3+q4 PROBE-NEEDED for backend)
+  - DataQualityContent.md:implicit_adrs.[1] (read-only owner-unscoped, bare route)
+  - DataQualityContent.md:security.authorization_assertions
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
+    - DISABLED
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: UNGATED
+    detail: |-
+      Frontend bare route, no WithPermissionsProvider, no conditional tab.
+      Backend posture PROBE-NEEDED at GET /api/dataqatests/runs
+      (DataQualityRunsController not yet enriched, P-090).
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      The dashboard renders catalog-wide aggregates with no current-user
+      predicate at the UI layer. Backend SQL joins OWNERSHIP only when the
+      operator supplies owner/title FILTER ids — user-driven filter, not
+      principal-derived scope.
+  strengths:
+    - |-
+      Read-only surface — no mutation, no owner-scoped write. The
+      catalog-wide quality posture is read-collaborative by design
+      (consistent with ADR-CANDIDATE-003).
+  weaknesses:
+    - |-
+      The sibling-route contrast (gated /lookup-tables vs bare /data-quality)
+      is the load-bearing evidence — the absence is UNEXPLAINED, not
+      defended, not documented. A future maintainer reading the route
+      registry cannot tell whether the bare mount is intentional or a
+      drift from a prior security-tightening PR.
+    - |-
+      Under auth.type=DISABLED, the dashboard is anonymously reachable —
+      catalog-wide DQ aggregate visible to any anonymous browser. Severity
+      depends on the operator's sensitivity classification of quality data.
+  cross_file_inconsistencies:
+    - |-
+      Both contributing sidecars AGREE — DataQuality and DataQualityContent
+      both record App.tsx:73 as a bare route with no WithPermissionsProvider.
+      Triangulated, not disputed.
+  contributing_files:
+    - DataQuality.md
+    - DataQualityContent.md
+  evidence:
+    - DataQuality.md:security.known_security_gaps.[0]
+    - DataQualityContent.md:security.authorization_assertions
+performance_aggregate:
+  overall: HIGH
+  hot_paths: []
+  throughput_shape:
+    verdict: N/A
+    detail: |-
+      Security-posture invariant — not a performance concept.
+  scaling_shape:
+    verdict: N/A
+    detail: |-
+      Security-posture invariant — not a scaling concept.
+  strengths: []
+  weaknesses: []
+  cross_file_inconsistencies: []
+  contributing_files:
+    - DataQuality.md
+    - DataQualityContent.md
+  evidence: []
+related_features:
+  - F-032
+related_pillar_features:
+  - "P-04:F-002"
+notes: |-
+  The maintainer's triage choice is whether to (a) gate the route (mirror
+  /lookup-tables's WithPermissionsProvider pattern), (b) document the
+  read-collaborative posture explicitly on the dashboard.md doc page, or
+  (c) both. The minimum-viable correction is (b) — document the posture
+  so an operator who lands on /data-quality knows that the visible data
+  reflects the platform's read-collaborative stance, not a missing gate.
+
+  The pattern of "bare UI route + backend possibly unscoped" is the
+  REFACTOR-024 family. The dashboard is a new instance of the family
+  (cross-owner read endpoints reachable without ownership association).
+maintainer_curated: false

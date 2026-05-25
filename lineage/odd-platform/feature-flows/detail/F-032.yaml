@@ -1,0 +1,957 @@
+feature_id: F-032
+pillar_id: P-04
+pillar_anchored_id: P-04:F-002
+pillar_anchored_feature_name: Quality Dashboard
+feature_name: |-
+  Catalog-wide Data Quality Dashboard — the /data-quality page (Table Health
+  / Monitored Tables / Test Results Breakdown rings + per-category result cards
+  + two-set filter sidebar)
+primary_drift_class: ungated_dashboard_route_no_permission_guard
+drift_class_summary:
+- ungated_dashboard_route_no_permission_guard
+- disabled_mode_anonymous_reach
+- out_of_enum_status_blanks_whole_dashboard
+- input_name_vs_implementation_title_filter
+- namespace_filter_datasource_inheritance_widening
+- breakdown_3_vs_6_status_doc_drift
+- table_health_label_doc_drift
+- per_mount_filter_reset_loses_operator_slice
+- failed_fetch_indistinguishable_from_empty_catalog
+- category_ordering_alphabetical_not_severity
+- ui_deeplink_double_fetch
+- no_debounce_dashboard_refetch_per_filter_change
+- autocomplete_no_debounce_request_burst
+- autocomplete_no_pagination_first_30_only
+- empty_state_undocumented
+cross_pillar_relationships:
+- pillar_id: P-10
+  kind: feeds_from
+  via: |-
+    The dashboard renders ALREADY-INGESTED data-quality test runs — ODD
+    performs no checks itself (the aggregator-only pillar invariant; live doc
+    features/data-quality 2026-05-22 status 200). DQ test results arrive via
+    P-10 Integrations & Ingestion (POST /ingestion/entities DataEntityList
+    items carrying the DataQualityTest entity-class + the per-run results).
+    F-032 is the catalog-wide READ surface for that ingested signal; the
+    GET /api/dataqatests/runs endpoint fans out to three repository queries
+    (getLatestDataQualityRunsResults / getLatestTablesHealth /
+    getMonitoredTables) zipped server-side into one DataQualityResults DTO.
+- pillar_id: P-07
+  kind: feeds
+  via: |-
+    A failing DQ test run is the same signal that drives Alerting (F-007
+    AlertManager Integration emits FAILED_DQ_TEST alerts via
+    AlertActionResolver). The dashboard's Test Results Breakdown ring and the
+    per-category FAILED tiles VISUALISE the aggregate of that signal; the
+    alert pillar REACTS to each individual failure. F-032 is a read/aggregate
+    surface, not an event surface — the relationship is sibling-consumers of
+    the same ingested DQ run data.
+- pillar_id: P-08
+  kind: shares_data_with
+  via: |-
+    The filter sidebar's five dimensions (Namespace, Datasource, Owner, Title,
+    Tag) are populated from the same catalog-metadata list APIs that back the
+    Management pillar's lifecycle features — useGetNamespaceList /
+    useGetDataSourceList / useGetOwnerList / useGetTitleList / useGetTagList.
+    The "Title" filter binds to OWNERSHIP.TITLE_ID (an ownership ROLE such as
+    "Data Steward"), the same TITLE table the Owner-association Management
+    surfaces operate on. The dashboard READS that metadata for filtering; it
+    does not mutate it.
+batch_origin: ZC
+created_in_batch: ZC
+discovered_from_entry_point: ui_route:/data-quality
+description: |-
+  The Catalog-wide Data Quality Dashboard is the standalone /data-quality SPA
+  page — the cross-entity aggregate quality view, DISTINCT from the per-dataset
+  "Test reports" tab (F-022, P-04:F-001). Where F-022 answers "how is THIS
+  dataset's quality", F-032 answers "how is the WHOLE catalog's quality": how
+  many tables are healthy, how many are monitored, how test runs break down by
+  status, and the per-test-category spread of run outcomes.
+
+  Five batch-ZC sidecars compose the feature:
+
+  - DataQuality.tsx (DataQuality.tsx:7-18) — the React route-entry component
+    registered for /data-quality at App.tsx:73. A 20-line pure-composition
+    component: it wraps the subtree in a feature-scoped jotai Provider
+    (DataQualityAtomProvider) and lays out a sticky filter Sidebar +
+    a scrolling Content pane. It is lazy-loaded / code-split (App.tsx:39) and
+    — unlike the sibling /lookup-tables route at App.tsx:75-88 — is mounted
+    with NO WithPermissionsProvider wrapper.
+  - DataQualityContent.tsx (DataQualityContent.tsx:22-147) — the dashboard
+    body. It reads the jotai derived filtersAtom and issues a SINGLE aggregate
+    fetch via useGetDataQualityDashboard(filterState) → GET /api/dataqatests/runs
+    (operationId getDataQualityTestsRuns), then projects the one
+    DataQualityResults DTO into three DonutChart rings (Table Health / Test
+    Results Breakdown / Monitored Tables) and one TestCategoryResults card per
+    backend test category, alphabetically sorted.
+  - DataQualityFilters.tsx (DataQualityFilters.tsx:56-91) — the sticky
+    left-sidebar filter panel. Two independent filter blocks ("Filters for
+    tables" / "Filters for tests"), each with the same five sub-filters
+    (Namespace, Datasource, Owner, Title, Tag), writing ten distinct keys into
+    the jotai formFiltersAtom. It owns the URL searchParams round-trip so the
+    filtered view is deep-linkable.
+  - DataQualityStore.ts (DataQualityStore.ts:1-66) — the jotai atom module:
+    formFiltersAtom (the 10-key source-of-truth selection), the derived
+    read-only filtersAtom (projects the selection into the dashboard-query
+    request shape), and two write-only clear atoms (one per side). Per-Provider
+    -mount scope — navigating away resets every filter.
+  - TestCategoryResults.tsx (TestCategoryResults.tsx:11-45) — the leaf
+    per-category result row: a category heading, a large total count, and a
+    fixed enum-ordered row of six per-run-status count tiles.
+
+  The single backend contract behind the whole page is GET /api/dataqatests/runs,
+  served by DataQualityRunsController → DataQualityRunsServiceImpl (which fans
+  out to three repository queries and zips them into one DataQualityResults
+  DTO). The DataQualityRunsController node is NOT yet enriched as a sidecar —
+  recorded as an unresolved REFERENCE; the chain's terminal DB-read side effect
+  and the backend authorization posture (probe P-090) resolve when that node is
+  walked.
+
+  The user-observable reality, per the five batch-ZC sidecars, surfaces 15
+  load-bearing drift facets. The headline cluster: (a) the /data-quality route
+  is mounted with NO client-side permission guard — any authenticated user (and,
+  under auth.type=DISABLED, any anonymous caller) opens the catalog-wide
+  aggregate health of every dataset; (b) a HIGH-severity latent crash —
+  DataQualityContent.tsx:47-48 indexes palette.runStatus[status].color, which
+  throws an uncaught TypeError and blanks the WHOLE dashboard if the backend
+  ever returns a run-status outside the six-value DataEntityRunStatus enum;
+  (c) the "Title" filter is the LSN-020 input-name-vs-implementation drift —
+  the bare label "Title" reads as "dataset name" but binds at the SQL layer to
+  OWNERSHIP.TITLE_ID, an ownership role; (d) the operator's filter slice does
+  NOT survive a navigate-away — the per-Provider-mount jotai store resets to
+  all-empty on every remount. Secondary: the live dashboard doc describes the
+  Test Results ring as 3 statuses where the code renders up to 6, and Table
+  Health as "success/failed/broken" where the UI shows "Healthy/Warning/Error";
+  a failed fetch is presented identically to an empty catalog (no error UI);
+  category cards are alphabetically ordered (worst-failing category not
+  surfaced first); and there is no debounce on either the per-filter dashboard
+  refetch or the autocomplete list queries.
+contributing_nodes:
+- odd-platform ts react-component component:DataQuality
+- odd-platform ts react-component component:DataQualityContent
+- odd-platform ts react-component component:DataQualityFilters
+- odd-platform ts jotai-store store:DataQualityStore
+- odd-platform ts react-component component:TestCategoryResults
+- odd-platform java DataQualityRunsController controller-class:DataQualityRunsController
+chain:
+- hop: 1
+  node: odd-platform ts react-component component:DataQuality
+  sidecar: odd-platform__ts__react-component__component__DataQuality.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    DataQuality.tsx:7-18 — the route-entry component. App.tsx:73 mounts it as
+    `<Route path={dataQualityPath()} element={<DataQuality />} />` (a BARE
+    route — no WithPermissionsProvider, contrast App.tsx:75-88 for
+    /lookup-tables). dataQualityPath() (dataQualityRoutes.ts:1-3) returns the
+    static string '/data-quality'. The component is lazy-loaded (App.tsx:39,
+    React.lazy) so the first navigation also triggers the chunk download. It
+    has NO useEffect and dispatches nothing — LSN-017 multiplicity check: no
+    double-dispatch surface at the route-entry node; exactly 1 mount per
+    navigation. It wraps the subtree in DataQualityAtomProvider (a fresh jotai
+    Provider) and renders <DataQualityFilters/> + <DataQualityContent/>.
+  unresolved: false
+  resolved_in_batch: ZC
+- hop: 2a
+  node: odd-platform ts react-component component:DataQualityFilters
+  sidecar: odd-platform__ts__react-component__component__DataQualityFilters.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    DataQuality.tsx:11 mounts <DataQualityFilters/> once inside the sticky
+    Sidebar. The panel renders two filter blocks (DataQualityFilters.tsx:56-91)
+    and is the sole WRITER of formFiltersAtom. It never fetches the dashboard
+    itself — it owns the URL searchParams round-trip (two useEffects,
+    DataQualityFilters.tsx:28-54). The autocomplete options come from the five
+    catalog list APIs (useGetNamespaceList etc.), one GET per keystroke (no
+    debounce).
+  unresolved: false
+  resolved_in_batch: ZC
+- hop: 2b
+  node: odd-platform ts jotai-store store:DataQualityStore
+  sidecar: odd-platform__ts__jotai-store__store__DataQualityStore.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    DataQualityStore.ts:11-22 — formFiltersAtom (10-key source-of-truth
+    selection, all-empty default). DataQualityStore.ts:32-42 — the derived
+    read-only filtersAtom projects the selection into the
+    DataQualityRunsApiGetDataQualityTestsRunsRequest shape (drops empty arrays,
+    maps each FilterOption[] to its id list). Two write-only clear atoms
+    (lines 44-66), one per side. Per-Provider-mount scope — the store resets
+    to all-empty when /data-quality unmounts (App.tsx:73 single non-wildcard
+    Route). DataQualityFilters writes the atom; DataQualityContent reads the
+    derived atom.
+  unresolved: false
+  resolved_in_batch: ZC
+- hop: 3
+  node: odd-platform ts react-component component:DataQualityContent
+  sidecar: odd-platform__ts__react-component__component__DataQualityContent.md
+  multiplicity_per_trigger: |-
+    1 on a plain /data-quality open; 2 on a URL-deeplinked open
+  evidence: |-
+    DataQuality.tsx:14 mounts <DataQualityContent/> once. DataQualityContent.tsx:23-24
+    reads the derived filtersAtom and calls useGetDataQualityDashboard(filterState).
+    react-query dedupes by queryKey so a PLAIN open yields 1 fetch. On a
+    DEEPLINK open (e.g. /data-quality?deNamespaceIds=[1]) DataQualityFilters'
+    mount useEffect (DataQualityFilters.tsx:28-43) sets formFiltersAtom from
+    searchParams AFTER the first render — the derived filtersAtom then
+    recomputes and a SECOND fetch fires with the URL filters. This is the
+    LSN-017 multiplicity class; probe P-101 pins the exact per-open count.
+  unresolved: false
+  resolved_in_batch: ZC
+- hop: 3-leaf
+  node: odd-platform ts react-component component:TestCategoryResults
+  sidecar: odd-platform__ts__react-component__component__TestCategoryResults.md
+  multiplicity_per_trigger: |-
+    N per dashboard render — N = number of test categories in the API
+    response, bounded at 6 (one per DataQualityCategory enum value)
+  evidence: |-
+    DataQualityContent.tsx:115-120 — `testResults.map(categoryResults =>
+    <TestCategoryResults key=... categoryResults=.../>)`; testResults is
+    data.testResults sorted alphabetically by category (DataQualityContent.tsx
+    :75-77). The backend DataQualityCategoryMapperImpl emits exactly one
+    DataQualityCategoryResults per DataQualityCategory enum value, so the map
+    yields at most 6 leaf rows. Each leaf renders a category heading, a total,
+    and an enum-ordered row of six per-run-status count tiles
+    (TestCategoryResults.tsx:11-45). Pure leaf — no fetch, no side effect
+    beyond the rendered DOM.
+  unresolved: false
+  resolved_in_batch: ZC
+- hop: 4
+  node: odd-platform java DataQualityRunsController controller-class:DataQualityRunsController
+  sidecar: |-
+    (backend controller — REFERENCE; not yet enriched as a sidecar. Owns
+    GET /api/dataqatests/runs and the backend authorization posture for the
+    dashboard endpoint — probe P-090.)
+  multiplicity_per_trigger: unresolved
+  evidence: |-
+    DataQualityContent.tsx:24 → dataQuality.ts:79 (dataQualityRunsApi
+    .getDataQualityTestsRuns(params)) → HTTP GET /api/dataqatests/runs
+    (openapi.yaml:1973-2087) → DataQualityRunsController.java:18-33 →
+    DataQualityRunsServiceImpl.getDataQualityTestsRuns, which fans out to
+    THREE repository queries (getLatestDataQualityRunsResults /
+    getLatestTablesHealth / getMonitoredTables —
+    DataQualityRunsServiceImpl.java:36-39) and zips them into one
+    DataQualityResults DTO. The controller node + ReactiveDataQualityRunsRepository
+    are NOT yet enriched — the terminal DB-read side effect and whether the
+    dashboard query owner-scopes its result (the read-collaborative-posture
+    question) resolve when that node is walked. Probe P-090 pins the backend
+    auth posture.
+  unresolved: true
+terminal_side_effect:
+  side_effect_class: page-render
+  description: |-
+    Mounting /data-quality renders the catalog-wide Data Quality dashboard:
+    a sticky two-pane shell, a five-dimension two-set filter sidebar, three
+    DonutChart rings (Table Health = healthy/warning/error table counts;
+    Test Results Breakdown = per-run-status test-run counts, up to 6 slices;
+    Monitored Tables = monitored/not-monitored table counts), two status
+    legends, and one TestCategoryResults card per backend test category
+    (bounded at 6). The data behind every visual block comes from ONE
+    aggregate fetch GET /api/dataqatests/runs — recorded as a secondary
+    external-call side effect on the chain. NO db-write, NO activity-emit:
+    the dashboard is a pure read surface (the filter selections write only
+    the in-memory jotai store + the browser URL query string).
+  evidence: |-
+    DataQuality.tsx:7-18 (the page shell) + DataQualityContent.tsx:79-145
+    (the three rings + legends + category cards) + TestCategoryResults.tsx
+    :27-45 (the per-category leaf row) + DataQualityContent.tsx:24 →
+    dataQuality.ts:79 (the single GET /api/dataqatests/runs) +
+    DataQualityFilters.tsx:46-54 (the URL query-string write).
+  cardinality_per_call: |-
+    1 page-render per /data-quality open: 3 DonutChart rings + N
+    TestCategoryResults cards (N <= 6) + 2 legends. Plus 1 external-call
+    (GET /api/dataqatests/runs) on a plain open, 2 on a URL-deeplinked open.
+amplification_factor: unresolved (1 partially-determined)
+amplification_factor_provenance: |-
+  STATIC-INFERRED, partially-determined. Per-hop multiplicity along the chain:
+  hop-1 DataQuality mount = 1 (no useEffect, no dispatch — LSN-017 check
+  clean); hop-2a/2b/3-leaf = 1; hop-3 DataQualityContent fetch =
+  1 on a PLAIN /data-quality open, 2 on a URL-deeplinked open (the mount
+  useEffect in DataQualityFilters sets formFiltersAtom from searchParams
+  AFTER the first render, re-firing the derived filtersAtom and a second
+  GET /api/dataqatests/runs). The product is therefore 1 for the common
+  plain-open path and 2 for the deeplink-open path. Probe P-101 pins the
+  exact per-open fetch count and whether React StrictMode double-mount adds
+  a further multiplier in dev. The hop-4 backend multiplicity (1 dashboard
+  GET fans out to 3 DB queries server-side) is recorded on the chain but is
+  a server-side fan-out, not a user-action amplification. Recorded as
+  `unresolved (1 partially-determined)` per Rule 3 rather than guessing a
+  single number — the deeplink-open double-fetch is a real second-order
+  amplification awaiting P-101.
+observed_vs_expected:
+  facets:
+  - facet: |-
+      The /data-quality route is mounted with NO client-side permission guard
+      — any authenticated user opens the catalog-wide aggregate quality view
+    observed: |-
+      App.tsx:73 mounts the route as a bare `<Route path={dataQualityPath()}
+      element={<DataQuality />} />`. The sibling /lookup-tables route directly
+      below (App.tsx:75-88) IS wrapped in WithPermissionsProvider with explicit
+      allowedPermissions (LOOKUP_TABLE_CREATE / UPDATE / DELETE). The
+      "Data Quality" top-bar tab is rendered unconditionally too —
+      ToolbarTabs.tsx:45-49 has no permission check and no conditional render.
+      Any authenticated user — including a minimum-privilege user with zero
+      Permissions and zero ownership associations — renders the FULL
+      /data-quality page and sees the catalog-wide aggregate health of every
+      dataset (table-health counts, monitored/unmonitored counts, per-category
+      test-run breakdown). There is NO comment, exception, or convention in
+      App.tsx or DataQuality.tsx defending the absence of a guard — it is an
+      unexplained absence. Whether the BACKEND dashboard endpoint
+      GET /api/dataqatests/runs also lacks a gate is the open half — the
+      DataQualityRunsController node is not yet enriched.
+    expected: |-
+      Either (a) the route is intentionally read-collaborative (consistent
+      with ODD's documented catalog posture — the DataQualityController
+      sidecar records the same silence for the per-dataset DQ reads) and the
+      live dashboard doc page DISCLOSES "visible to any authenticated user";
+      OR (b) the dashboard is gated by a permission like the /lookup-tables
+      sibling. The live dashboard.md and data-quality.md pages (WebFetched
+      2026-05-22, both status 200) make NO statement about access control —
+      the doc-side silence is the actionable item regardless of which posture
+      is intended.
+    drift_class: ungated_dashboard_route_no_permission_guard
+    provenance: |-
+      STATIC-INFERRED — primary-source in DataQuality.tsx sidecar (batch ZC)
+      bugs_limitations_corner_cases[0] + security.known_security_gaps[0] +
+      stress_findings.auth_gates, and DataQualityContent.tsx sidecar
+      implicit_adrs[1] + security.authorization_assertions. Evidence:
+      App.tsx:73 (bare route) vs App.tsx:75-88 (the gated sibling) +
+      ToolbarTabs.tsx:45-49 (unconditional tab) + WebFetch dashboard.md +
+      data-quality.md 2026-05-22 (both silent on access control). The
+      BACKEND half is PROBE-NEEDED — probe P-090. Severity: MEDIUM
+      (operator-facing surprise; the actionable fix is the doc-gap).
+  - facet: |-
+      Under auth.type=DISABLED the dashboard and its catalog-wide DQ
+      aggregate are anonymously reachable
+    observed: |-
+      Under auth.type=DISABLED the SPA shell renders with no authentication
+      and no principal; the /data-quality route — already ungated at the
+      React layer (App.tsx:73) — is reachable by any anonymous caller who can
+      reach the platform. The catalog-wide aggregate quality data
+      (per-category run-status counts + tables-health counts +
+      monitored-tables counts for every dataset) is exposed to anonymous
+      callers. This is the DISABLED-mode anonymous-reach pattern the
+      platform-wide meta-finding catalogues (DOC-GAP-082).
+    expected: |-
+      Either (a) the dashboard endpoint is gated even under DISABLED for the
+      catalog-wide aggregate; OR (b) the enable-security doc page warns that
+      auth.type=DISABLED leaves the catalog-wide quality dashboard
+      anonymously reachable on a network-exposed deployment. DISABLED is
+      doc-marked dev-only; the live dashboard doc is silent.
+    drift_class: disabled_mode_anonymous_reach
+    provenance: |-
+      STATIC-INFERRED — DataQualityContent.tsx sidecar (batch ZC)
+      security.data_exposure[1] ("Same aggregate → anonymous callers under
+      auth.type=DISABLED") + DataQuality.tsx sidecar security.auth_mode_relevance.
+      Evidence: App.tsx:73 (no permission wrapper) + the global DISABLED-mode
+      auth bypass (DisabledAuthSecurityConfiguration cross-sidecar reference).
+      Severity: MEDIUM under a misconfigured production DISABLED deployment.
+      Member of the platform-wide DISABLED-bypass cluster — cross-link to
+      DOC-GAP-082 + REFACTOR-185.
+  - facet: |-
+      A run-status outside the DataEntityRunStatus enum throws an uncaught
+      TypeError and blanks the WHOLE dashboard
+    observed: |-
+      DataQualityContent.tsx:47-48 builds the Test Results Breakdown slice
+      colours with `palette.runStatus[status].color ??
+      palette.dataQualityDashboard.unknown`. palette.runStatus is a
+      `Record<DataEntityRunStatus, ItemColors>` (interfaces.ts:55) — keyed by
+      exactly the SIX enum values SUCCESS/FAILED/SKIPPED/BROKEN/ABORTED/UNKNOWN.
+      If `status` is any other string — a 7th backend enum value not yet in
+      the generated frontend types, a stale generated-sources build, or
+      malformed data — `palette.runStatus[status]` is `undefined` and `.color`
+      throws a TypeError BEFORE the `??` is evaluated. The `??` was written to
+      guard a missing `.color` on a PRESENT entry, not a missing entry — so
+      it does not save this case. The error propagates out of the useMemo and
+      crashes the whole component tree: the operator sees a blank dashboard,
+      not a degraded one. The same risk does NOT apply to the Table Health or
+      Monitored Tables rings (they read fixed palette keys, not
+      status-indexed lookups).
+    expected: |-
+      Either (a) the lookup is `palette.runStatus[status]?.color ??
+      fallback` (optional chaining on the ENTRY, not the property), so an
+      out-of-enum status degrades to the unknown colour; OR (b) the component
+      filters `testResults` to known DataEntityRunStatus values before the
+      colour lookup; OR (c) an ErrorBoundary around the dashboard so a single
+      bad status does not blank the page. None exists — and nothing in the
+      test suite or the type system flags it before runtime.
+    drift_class: out_of_enum_status_blanks_whole_dashboard
+    provenance: |-
+      STATIC-INFERRED, statically certain from the type definition —
+      primary-source in DataQualityContent.tsx sidecar (batch ZC)
+      bugs_limitations_corner_cases[0] + concepts.invariants[4] +
+      stress_findings.tunables. Evidence: DataQualityContent.tsx:47-48 (the
+      unsafe indexed access) + interfaces.ts:55 (RunStatus =
+      Record<DataEntityRunStatus, ItemColors>) + components.yaml:1407-1415
+      (the 6-value enum). Severity: HIGH — a backend enum addition (or a
+      malformed status) takes the entire catalog-wide dashboard down with the
+      build green. The corresponding uncovered test behaviour is the
+      integration cell's highest-criticality entry.
+  - facet: |-
+      The "Title" filter binds to OWNERSHIP.TITLE_ID (ownership role), not to
+      dataset name — LSN-020 input-name-vs-implementation drift
+    observed: |-
+      The filter sidebar's "Title" sub-filter carries the bare i18n label
+      `t('Title')` (TitleFilter.tsx:29). Traced through filtersAtom →
+      getDataQualityTestsRuns → DataQualityRunsServiceImpl →
+      DataQualityTestFiltersMapper → ReactiveDataQualityRunsRepositoryImpl
+      .getConditionsForFilters, `titleIds` binds to `OWNERSHIP.TITLE_ID.in
+      (titleIds)` (ReactiveDataQualityRunsRepositoryImpl.java:301, 309).
+      OWNERSHIP.TITLE_ID references the TITLE table — the ownership ROLE
+      assigned alongside an owner (e.g. "Data Steward", "Owner"), a concept
+      distinct from a dataset's name. An operator who selects a value in the
+      "Title" filter expecting to narrow the dashboard to a named dataset
+      narrows it instead to datasets where someone holds that ownership title.
+      Partial mitigation: the "Title" autocomplete is populated by
+      useGetTitleList, which lists ownership titles, so a careful operator who
+      opens the dropdown sees role names and can infer the meaning — but the
+      bare label alone misleads. SECOND-ORDER: when BOTH Owner and Title are
+      selected the SQL puts them in ONE OWNERSHIP join joined by AND
+      (ReactiveDataQualityRunsRepositoryImpl.java:297-302) — the result is
+      entities where THAT owner holds THAT title, which can be a surprising
+      empty dashboard.
+    expected: |-
+      Either (a) a clearer label — "Ownership Title" / "Ownership Role" —
+      that names the bound concept; OR (b) if the intent were genuinely to
+      filter by dataset name, the entity name column (DATA_ENTITY's
+      internal/external name) is the available-but-unused candidate; OR
+      (c) the live dashboard doc explains what "Title" filters by. The live
+      dashboard.md page (WebFetched 2026-05-22, status 200) lists "Title" as
+      one of the five filter dimensions but explicitly does NOT explain what
+      it filters by.
+    drift_class: input_name_vs_implementation_title_filter
+    provenance: |-
+      STATIC-INFERRED with strong SQL evidence — primary-source in
+      DataQualityFilters.tsx sidecar (batch ZC) bugs_limitations_corner_cases[0]
+      + docs_link_semantic.doc_drift_findings[0] + stress_findings.request_inputs
+      (the Title filter Q3 DRIFT_INPUT_NAME_VS_IMPLEMENTATION). Evidence:
+      TitleFilter.tsx:29 (the label) + DataQualityFilters.tsx:73,88 (the
+      titleIds/deTitleIds keys) + ReactiveDataQualityRunsRepositoryImpl.java
+      :296-311 (the OWNERSHIP.TITLE_ID bind). Pinned by probe P-110.
+      Severity: HIGH — the same shape as LSN-020 (Activity Feed userIds →
+      OWNER_ID); the named input operates on a different entity than its name
+      promises, with no UI qualifier.
+  - facet: |-
+      The "Namespace" filter silently widens the match to datasource-inherited
+      namespaces
+    observed: |-
+      The "Namespace" sub-filter's `namespaceIds` / `deNamespaceIds` bind at
+      the SQL layer to `NAMESPACE.ID.in(namespaceIds)` matched against
+      `DATA_ENTITY.NAMESPACE_ID` OR `DATA_SOURCE.NAMESPACE_ID`
+      (ReactiveDataQualityRunsRepositoryImpl.java:288-293, the
+      `.or(NAMESPACE.ID.eq(DATA_SOURCE.NAMESPACE_ID))` clause). A namespace
+      selected in the filter therefore matches both entities directly
+      assigned to it AND entities whose datasource carries it — a wider
+      result set than the bare label "Namespace" implies. An operator
+      filtering by namespace X sees MORE entities in the rings than "entities
+      in namespace X": every entity whose datasource is in namespace X is
+      included even if the entity itself has no namespace or a different one.
+    expected: |-
+      Either (a) the SQL matches only the entity's own NAMESPACE_ID; OR
+      (b) the live dashboard doc discloses that the Namespace filter also
+      matches datasource-inherited namespaces. The live dashboard.md page
+      does not state the widening.
+    drift_class: namespace_filter_datasource_inheritance_widening
+    provenance: |-
+      STATIC-INFERRED — primary-source in DataQualityFilters.tsx sidecar
+      (batch ZC) docs_link_semantic.doc_drift_findings[1] +
+      stress_findings.request_inputs (the Namespace filter Q3
+      TRANSLATES_SILENTLY / DRIFT_INPUT_NAME_VS_IMPLEMENTATION). Evidence:
+      ReactiveDataQualityRunsRepositoryImpl.java:288-293. Severity: MEDIUM —
+      over-inclusion, not mis-binding (the strict-match column DATA_ENTITY
+      .NAMESPACE_ID IS in the OR; the drift is the added datasource clause).
+  - facet: |-
+      The Test Results Breakdown ring is documented as 3 statuses; the code
+      renders up to 6
+    observed: |-
+      The live dashboard.md page (WebFetched 2026-05-22, status 200)
+      describes the Test Results Breakdown ring as "the count of test runs
+      broken down by status (passed / failed / skipped)" — 3 statuses. The
+      component builds the breakdown slices dynamically from
+      DataEntityRunStatus, which has SIX values — SUCCESS, FAILED, SKIPPED,
+      BROKEN, ABORTED, UNKNOWN (components.yaml:1407-1415; iterated at
+      DataQualityContent.tsx:43-51, 83) — and the legend
+      (DataQualityContent.tsx:83-89) renders all six. The leaf
+      TestCategoryResults card likewise renders a tile for every one of the
+      six statuses (TestCategoryResults.tsx:21). An operator who sees a
+      BROKEN or ABORTED slice (in the ring) or tile (in a category card) has
+      no doc explaining it.
+    expected: |-
+      The live dashboard doc names all six DataEntityRunStatus values, or
+      states the breakdown is "by run status" without an incomplete
+      three-status enumeration.
+    drift_class: breakdown_3_vs_6_status_doc_drift
+    provenance: |-
+      STATIC-INFERRED — primary-source in DataQualityContent.tsx sidecar
+      (batch ZC) docs_link_semantic.doc_drift_findings[1] AND
+      TestCategoryResults.tsx sidecar docs_link_semantic.doc_drift_findings[0].
+      Evidence: WebFetch dashboard.md 2026-05-22 ("passed / failed / skipped")
+      vs DataQualityContent.tsx:43-51,83 + TestCategoryResults.tsx:21 +
+      components.yaml:1407-1415 (the 6-value enum). Severity: MEDIUM — the
+      three named statuses are a subset, so the doc is incomplete rather than
+      contradictory.
+  - facet: |-
+      Table Health ring labels disagree between doc and code
+    observed: |-
+      The live dashboard.md page describes Table Health as
+      "success / failed / broken". The component renders the slices labelled
+      Healthy / Warning / Error from `tablesDashboard.tablesHealth
+      .{healthyTables, warningTables, errorTables}` (DataQualityContent.tsx
+      :55-62; components.yaml:3772-3787). The DTO field set has no `failed`
+      or `broken` — it has `warning` and `error`. An operator reading the
+      docs looking for a "broken tables" count will not find that label on
+      the screen. Separately, the "Unknown" test-category label has a minor
+      casing mismatch — the doc lists "Unknown Category" (capital C); the
+      code renders the DataQualityCategory.UNKNOWN description "Unknown
+      category" (lowercase c) verbatim (TestCategoryResults.tsx:30,
+      DataQualityCategory.java:17).
+    expected: |-
+      The live dashboard doc uses the product's vocabulary —
+      Healthy / Warning / Error for the Table Health ring, "Unknown category"
+      (matching the rendered string) for the category label.
+    drift_class: table_health_label_doc_drift
+    provenance: |-
+      STATIC-INFERRED — primary-source in DataQualityContent.tsx sidecar
+      (batch ZC) docs_link_semantic.doc_drift_findings[0] AND
+      TestCategoryResults.tsx sidecar docs_link_semantic.doc_drift_findings[2].
+      Evidence: WebFetch dashboard.md 2026-05-22 ("success / failed / broken")
+      vs DataQualityContent.tsx:55-62 + components.yaml:3772-3787 +
+      TestCategoryResults.tsx:30 + DataQualityCategory.java:12-17. Severity:
+      MEDIUM (Table Health labels) / LOW (the casing mismatch).
+  - facet: |-
+      The operator's filter slice does NOT survive navigating away from
+      /data-quality and back
+    observed: |-
+      DataQuality.tsx wraps the dashboard in DataQualityAtomProvider — a
+      fresh jotai `<Provider>` per mount (DataQualityProvider.tsx:4-6). The
+      /data-quality route is a single non-wildcard `<Route>` (App.tsx:73);
+      React Router unmounts the element on navigation away, destroying the
+      Provider and its atom scope. The next mount starts a fresh
+      formFiltersAtom at the all-empty default (DataQualityStore.ts:11-22) —
+      the operator loses their filter slice with no warning. The ONLY
+      persistence channel is the URL search params written by
+      DataQualityFilters' second useEffect (DataQualityFilters.tsx:46-54);
+      whether those fully reconstruct the selection on remount is what probe
+      P-120 verifies. An operator who builds a multi-dimension filter slice,
+      clicks into a dataset, and clicks Back finds the dashboard
+      unfiltered unless they navigated via a bookmarked /data-quality?... URL.
+    expected: |-
+      Either (a) the filter selection survives a navigate-away within the
+      session (the URL round-trip should reconstruct it on Back — P-120
+      verifies whether it does); OR (b) the live dashboard doc states that
+      filters reset on navigate-away. The live dashboard.md page is silent on
+      the default state and on filter persistence.
+    drift_class: per_mount_filter_reset_loses_operator_slice
+    provenance: |-
+      STATIC-INFERRED — primary-source in DataQualityStore.ts sidecar
+      (batch ZC) bugs_limitations_corner_cases[1] + implicit_adrs[1] +
+      docs_link_semantic.doc_drift_findings[0], and DataQualityFilters.tsx
+      sidecar implicit_adrs[2]. Evidence: DataQualityStore.ts:11-22
+      (all-empty default) + DataQualityProvider.tsx:4-6 (fresh Provider per
+      mount) + App.tsx:39,73 (lazy + single Route) +
+      DataQualityFilters.tsx:46-54 (the URL-sync useEffect, the only
+      persistence channel). Pinned by probe P-120. Severity: MEDIUM —
+      operator-visible UX surprise.
+  - facet: |-
+      A failed dashboard fetch is presented identically to an empty catalog
+      — no error UI
+    observed: |-
+      DataQualityContent.tsx:24 destructures only `{ data, isSuccess }` from
+      useGetDataQualityDashboard — never `isError` / `error`. The hook
+      supplies `initialData` (an all-zero DataQualityResults — dataQuality.ts
+      :34-81). On a 4xx/5xx from GET /api/dataqatests/runs, react-query keeps
+      `data` at initialData (all zeros), `isSuccess` stays false,
+      `testResults` is `[]`, and the operator sees three grey "No data"
+      donuts (DonutChart's own zero-total path) with NO error message and
+      zero category cards. A real backend failure is presented as "your
+      catalog has no data quality tests". The route-entry node mounts no
+      error UI of its own either — DataQuality.tsx is pure layout.
+    expected: |-
+      Either (a) the component reads `isError` and renders an explicit error
+      state ("Could not load the quality dashboard — retry"); OR an
+      ErrorBoundary around the dashboard. None exists.
+    drift_class: failed_fetch_indistinguishable_from_empty_catalog
+    provenance: |-
+      STATIC-INFERRED — primary-source in DataQualityContent.tsx sidecar
+      (batch ZC) bugs_limitations_corner_cases[5] +
+      stress_findings.resource_boundaries, and DataQuality.tsx sidecar
+      bugs_limitations_corner_cases[2]. Evidence: DataQualityContent.tsx:24
+      (only data,isSuccess destructured; no isError) + dataQuality.ts:77-81
+      (useQuery with initialData, no error surface). Severity: MEDIUM.
+  - facet: |-
+      Category cards are alphabetically ordered — the worst-failing category
+      is not surfaced first
+    observed: |-
+      DataQualityContent.tsx:75-77 sorts `data.testResults` by
+      `category.localeCompare`. An operator opening /data-quality to find
+      "which category of tests is failing worst" must scan all panels; the
+      panel order conveys nothing about quality. The live dashboard.md page
+      lists the six categories in this same alphabetical order but never
+      STATES the order is alphabetical (vs severity / failure-count), so a
+      reader cannot tell the order is not meaningful. `localeCompare` is
+      also called with no explicit locale — runtime-locale-dependent; today
+      benign because all six category labels are ASCII, but a future
+      non-Latin category name would sort differently per user. The `toSorted`
+      runs OUTSIDE a useMemo so it re-sorts on every render.
+    expected: |-
+      Either (a) category cards ordered by failure count / severity so the
+      worst category surfaces first; OR (b) the live doc states the order is
+      alphabetical (informational, not meaningful). The doc is silent.
+    drift_class: category_ordering_alphabetical_not_severity
+    provenance: |-
+      STATIC-INFERRED — primary-source in DataQualityContent.tsx sidecar
+      (batch ZC) bugs_limitations_corner_cases[1,2] +
+      docs_link_semantic.doc_drift_findings[2] + stress_findings.orderings.
+      Evidence: DataQualityContent.tsx:75-77 (the toSorted(localeCompare),
+      outside useMemo) + DataQualityRunsServiceImpl.java:36-42 (backend
+      imposes no ordering). Pinned by probe P-100. Severity: MEDIUM (a UX
+      trade-off — alphabetical optimises "find a category by name", not
+      "find the worst category").
+  - facet: |-
+      A URL-deeplinked open of /data-quality fires the dashboard fetch twice
+    observed: |-
+      On a plain /data-quality open the dashboard fetch
+      (GET /api/dataqatests/runs) fires once — react-query dedupes by
+      queryKey. On a DEEPLINK open (e.g. /data-quality?deNamespaceIds=[1]),
+      DataQualityFilters' mount useEffect (DataQualityFilters.tsx:28-43) sets
+      formFiltersAtom from searchParams AFTER the first render; the derived
+      filtersAtom then recomputes and a SECOND fetch fires with the URL
+      filters. So an operator landing on a bookmarked/shared filtered
+      dashboard triggers two backend aggregate queries (each fanning out to
+      three DB queries server-side) for one page-open. This is the LSN-017
+      multiplicity class — the user perceives "one page-open" but the chain
+      issues two.
+    expected: |-
+      One fetch per page-open — the URL-derived filter state should be
+      established before the first fetch (e.g. by deriving the initial
+      filtersAtom synchronously from searchParams), not applied via a
+      post-render useEffect.
+    drift_class: ui_deeplink_double_fetch
+    provenance: |-
+      STATIC-INFERRED — primary-source in DataQualityContent.tsx sidecar
+      (batch ZC) upstream_callers[1] ("1 on plain open; 2 on open with a
+      filter pre-set in the URL"). Evidence: DataQualityContent.tsx:24
+      (useGetDataQualityDashboard once per render) +
+      DataQualityFilters.tsx:28-43 (the mount useEffect that sets
+      formFiltersAtom from searchParams after first render). Pinned by probe
+      P-101. Severity: LOW (a redundant backend query, not a correctness
+      bug) — but it is a measured second-order amplification feeding the
+      feature's amplification_factor.
+  - facet: |-
+      No debounce / no Apply gate — every single filter change re-queries
+      the whole dashboard
+    observed: |-
+      There is no separate Apply step. filtersAtom is a DERIVED atom that
+      recomputes from formFiltersAtom on every change (DataQualityStore.ts
+      :32-42), and DataQualityContent reads filtersAtom directly into
+      useGetDataQualityDashboard (DataQualityContent.tsx:23-24). Every filter
+      chip select/deselect immediately re-derives filtersAtom, produces a new
+      react-query queryKey, and fires a fresh GET /api/dataqatests/runs —
+      which fans out to three DB queries server-side. An operator building a
+      multi-chip filter slice fires one full backend dashboard query per chip
+      rather than one on an "Apply" action. Separately, the autocomplete
+      search input has no debounce either (DataQualityFilters' MultipleFilter
+      ItemAutocomplete calls setSearchText on every keystroke) — typing a
+      10-character name fires up to 10 list-API GETs; with 5 filters x 2
+      sides the panel generates a request burst.
+    expected: |-
+      Either (a) an Apply button gating the dashboard re-query; OR (b) a
+      debounce around the filtersAtom-driven refetch; AND a debounce on the
+      autocomplete search input. The codebase ships an unused per-key
+      `getFieldFilterAtom` (DataQualityStore.ts:24-30) — the focused-atom
+      tool that would also cut the whole-atom re-render of all ten filter
+      components.
+    drift_class: no_debounce_dashboard_refetch_per_filter_change
+    provenance: |-
+      STATIC-INFERRED — primary-source in DataQualityStore.ts sidecar
+      (batch ZC) performance.known_performance_gaps, DataQualityFilters.tsx
+      sidecar bugs_limitations_corner_cases[1] + performance.known_performance_gaps,
+      and DataQualityContent.tsx sidecar performance.known_performance_gaps.
+      Evidence: DataQualityStore.ts:32-42 + DataQualityContent.tsx:23-24
+      (no debounce around useGetDataQualityDashboard) +
+      MultipleFilterItemAutocomplete.tsx:57-66 + hooks/index.ts:11-17 (the
+      per-keystroke list query). The sibling facet
+      autocomplete_no_debounce_request_burst rolls up here. Pinned by probe
+      P-111. Severity: MEDIUM.
+  - facet: |-
+      Filter autocompletes fetch a fixed first 30 options and never paginate
+      — large catalogs are not fully filterable
+    observed: |-
+      DataQualityFilters' useFilter hook hard-codes the autocomplete
+      list-query at `{ page: 1, size: 30 }` (hooks/index.ts:13-16) with no
+      page-increment, no infinite-scroll, no "load more". For a dimension
+      with more than 30 values (a catalog with 200 owners, say), any value
+      not in the server's first-30 for a given search prefix cannot be
+      selected via that prefix — and nothing distinguishes a truncated list
+      from a complete one (no "showing 30 of N" indicator). The autocomplete
+      also de-dups options by NAME not id (MultipleFilterItemAutocomplete.tsx
+      :77-80), so two distinct entities sharing a name collide — selecting
+      one hides the other.
+    expected: |-
+      Either pagination / infinite-scroll on the filter autocompletes, or a
+      "showing first 30" truncation indicator. None exists.
+    drift_class: autocomplete_no_pagination_first_30_only
+    provenance: |-
+      STATIC-INFERRED — primary-source in DataQualityFilters.tsx sidecar
+      (batch ZC) bugs_limitations_corner_cases[3] + stress_findings.tunables
+      + stress_findings.orderings. Evidence: hooks/index.ts:13-16
+      (page:1,size:30 literal) + MultipleFilterItemAutocomplete.tsx:75-89.
+      Severity: MEDIUM — a usability ceiling on large catalogs, not a perf
+      failure.
+  - facet: |-
+      The empty-state (no ingested DQ tests) is undocumented
+    observed: |-
+      On a fresh install with no DQ tests ingested, opening /data-quality
+      shows three grey "No data" donuts (DonutChart's zero-total path,
+      DonutChart.tsx:94-95) and zero category cards (testResults is `[]`) —
+      an otherwise empty page with no explanatory copy. The live dashboard.md
+      page (WebFetched 2026-05-22, status 200) says NOTHING about what the
+      dashboard shows when no DQ data exists.
+    expected: |-
+      The live dashboard doc describes the empty state, or the dashboard
+      itself shows an explanatory empty-state message ("No data quality
+      tests have been ingested yet").
+    drift_class: empty_state_undocumented
+    provenance: |-
+      STATIC-INFERRED — primary-source in DataQualityContent.tsx sidecar
+      (batch ZC) docs_link_semantic.doc_drift_findings[3]. Evidence: WebFetch
+      dashboard.md 2026-05-22 (silent) + DonutChart.tsx:94-95 (the grey
+      "No data" slice). Severity: LOW — the silence is a doc-gap; the code's
+      behaviour is benign.
+  surfaced_by:
+  - 'DataQuality: odd-platform__ts__react-component__component__DataQuality.md (batch ZC)'
+  - 'DataQualityContent: odd-platform__ts__react-component__component__DataQualityContent.md (batch ZC)'
+  - 'DataQualityFilters: odd-platform__ts__react-component__component__DataQualityFilters.md (batch ZC)'
+  - 'DataQualityStore: odd-platform__ts__jotai-store__store__DataQualityStore.md (batch ZC)'
+  - 'TestCategoryResults: odd-platform__ts__react-component__component__TestCategoryResults.md (batch ZC)'
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+    - 'calcTestResultsBreakdown — correctly sums count per status across all categories and total (DataQualityContent.tsx:28-41)'
+    - 'tableHealthData / tableMonitoredTables — map the DTO sub-objects onto the correct fixed slices and colours (DataQualityContent.tsx:53-73)'
+    - 'filtersAtom projection — drops empty-array filter keys, maps each FilterOption[] to its id list; {} at zero filters (DataQualityStore.ts:32-42)'
+    - 'clearTableFiltersAtom / clearTestFiltersAtom — each empties only its own five keys, leaving the other side intact (DataQualityStore.ts:44-66)'
+    - 'filterKey wiring — each of the 10 (side x dimension) slots passes the correct prefixed/unprefixed key; a copy-paste swap would not compile-error (DataQualityFilters.tsx:70-89)'
+    - 'TestCategoryResults sortedResults — produces tiles in fixed DataEntityRunStatus enum order regardless of backend serialisation order (TestCategoryResults.tsx:19-25)'
+    - 'TestCategoryResults total / en-dash — total sums every count; a tile renders the en-dash for count 0 and the numeral for count > 0 (TestCategoryResults.tsx:14-17,39)'
+    - 'autocomplete optionsLoading — returns to false after the list query resolves, for the success AND error paths (MultipleFilterItemAutocomplete.tsx:91-104 stale-closure bug)'
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+    - 'Navigating to /data-quality renders the DataQuality component — route registration is correct (no Playwright/e2e test exercises the tab)'
+    - 'dashboard fetches exactly once on a plain /data-quality open and does not over-fetch on no-op filter churn (P-101 — the LSN-017 multiplicity)'
+    - 'URL-deeplinked open fires GET /api/dataqatests/runs TWICE — the mount useEffect re-derives filtersAtom after the first render (P-101)'
+    - 'the component renders without crashing when the API returns a status value outside the DataEntityRunStatus enum — palette.runStatus[status].color TypeError (HIGH criticality)'
+    - 'zero-data dashboard (no ingested DQ tests) renders three "No data" donuts and no category panels — not a blank page or an error'
+    - 'a failed dashboard fetch renders an explicit error state, NOT the all-zero initialData placeholder indistinguishable from an empty catalog'
+    - 'category panels render in alphabetical (localeCompare) order regardless of API order (P-100)'
+    - 'URL <-> formFilters bidirectional sync — open /data-quality?namespaceIds=[...] hydrates the panel; selecting a filter updates the query string with replace:true (DataQualityFilters.tsx:28-54)'
+    - 'the operator filter slice resets to all-empty on navigate-away-and-back; whether the URL search params fully reconstruct it on remount (P-120)'
+    - 'Title-filter scope — selecting a value in "Title" narrows the dashboard by ownership title (OWNERSHIP.TITLE_ID), not by dataset name (P-110)'
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+    - 'no debounce / no Apply gate — building a multi-chip filter slice fires one full GET /api/dataqatests/runs (3-query server fan-out) per chip change'
+    - 'autocomplete search input fires one list-API GET per keystroke, no debounce — filling the 10-slot panel generates a request burst (P-111)'
+    - 'whole-atom subscription — any single filter change re-renders all ten FilterItem components (the unused getFieldFilterAtom is the focused-atom fix)'
+    - 'no staleTime on useGetDataQualityDashboard — the dashboard refetches on every remount and window-focus (react-query default staleTime:0)'
+    - 'autocomplete fetches a fixed first 30 options and never paginates — a catalog with >30 namespaces/owners/tags is not fully filterable from one prefix'
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+    - 'the /data-quality route is reachable by ANY authenticated user — no WithPermissionsProvider, contrast the gated /lookup-tables sibling (App.tsx:73 vs 75-88)'
+    - 'is the catalog-wide GET /api/dataqatests/runs endpoint readable by a minimum-privilege user with no Permissions and no ownership, or backend-gated (P-090)'
+    - 'under auth.type=DISABLED the dashboard and its catalog-wide DQ aggregate are anonymously reachable — no test pins the DISABLED-mode posture'
+    - 'filter selections (including which owners/namespaces an operator filtered by, with their NAMES) are written verbatim into the browser URL query string'
+control_summary: |-
+  0 of 16 cells PROBED — feature MINTED this batch (ZC) from the 5
+  DataQuality* batch-ZC sidecars (DataQuality.tsx route entry,
+  DataQualityContent.tsx dashboard body, DataQualityFilters.tsx filter panel,
+  DataQualityStore.ts jotai store, TestCategoryResults.tsx leaf row). FIFTEEN
+  load-bearing drift facets, anchored on the standalone catalog-wide
+  /data-quality dashboard. The entire components/DataQuality/ subtree has
+  ZERO test coverage at every test_class — Glob `**/components/DataQuality/**`
+  (2026-05-22) returned 21 source files and zero test files; no
+  DataQualityContent.test.tsx, no DataQualityFilters test, no
+  DataQualityStore test, no TestCategoryResults test.
+
+  The HIGHEST-LEVERAGE probe candidates, all executable on the maintainer's
+  local workstation (a local docker-compose / Testcontainers ODD platform +
+  Postgres stack + Playwright for the headless-browser UI probes — NO cloud
+  infrastructure):
+
+  (a) out-of-enum-status crash pin (the HIGH-severity integration cell entry)
+      — mount DataQualityContent with a stubbed GET /api/dataqatests/runs
+      response carrying a 7th run-status value; assert the dashboard degrades
+      (one extra grey slice) rather than blanking with a TypeError. This is
+      the single most damaging latent bug — a backend enum addition takes the
+      whole catalog-wide dashboard down with the build green.
+
+  (b) backend authorization pin (P-090) — the frontend /data-quality route is
+      ungated (App.tsx:73). Probe whether GET /api/dataqatests/runs is
+      readable by a minimum-privilege user (no Permissions, no ownership) or
+      is backend-gated. Resolves the open half of the
+      ungated_dashboard_route facet — whether the catalog-wide aggregate is
+      genuinely exposed to every authenticated principal.
+
+  (c) Title-filter scope pin (P-110) — select a value in the "Title" filter
+      and assert the resulting GET /api/dataqatests/runs narrows the dashboard
+      by ownership title (OWNERSHIP.TITLE_ID), confirming the LSN-020
+      input-name-vs-implementation drift end-to-end.
+
+  (d) fetch-multiplicity pin (P-101) — count GET /api/dataqatests/runs fires
+      per /data-quality open (plain vs URL-deeplinked) and per filter change;
+      confirms the deeplink double-fetch and the per-chip no-debounce refetch.
+
+  (e) filter-persistence pin (P-120) — build a multi-dimension filter slice,
+      navigate to a dataset, click Back; assert whether the URL search params
+      reconstruct the selection or the per-Provider-mount jotai store resets
+      to all-empty.
+
+  Probe ids P-090, P-100, P-101, P-110, P-111, P-120 are authored as probe
+  skeletons by the 5 batch-ZC file-analyser sidecars
+  (lineage/odd-platform/probes/P-0NN.yaml). This feature is the
+  acceptance-target home for that probe set.
+
+  Cross-feature coherence: F-032 LIVES INSIDE pillar P-04 Data Quality as the
+  SECOND P-04 feature — the catalog-wide aggregate dashboard, sibling to
+  F-022 (P-04:F-001, Per-Dataset DQ Test Reports & SLA). The two are DISTINCT
+  surfaces of the same pillar: F-022 is the PER-ENTITY DQ drill-down (the
+  dataset-detail "Test reports" tab + the BI-embeddable SLA PNG/JSON);
+  F-032 is the CATALOG-WIDE aggregate (the standalone /data-quality page —
+  three breakdown rings + per-category cards). They share no UI code and hit
+  different endpoints (F-022: /api/datasets/{id}/dataqatests +
+  test_report + sla; F-032: /api/dataqatests/runs) — F-032 is recorded as a
+  sibling P-04 read surface, NOT a duplicate of F-022. The
+  ungated-route + DISABLED-anonymous-reach + read-collaborative posture
+  facets corroborate F-022's `cross_owner_dq_read_no_security_rule` +
+  `disabled_mode_anonymous_reach` facets — the SAME P-04 read-collaborative
+  posture applied to the aggregate dashboard rather than the per-dataset
+  reads. The breakdown_3_vs_6_status doc drift is the dashboard-side analog
+  of doc-drift patterns the platform-wide doc-gap cluster catalogues.
+related_refactoring_scopes:
+- REFACTOR-185 # DISABLED-mode bypass cluster — the /data-quality route is a further ungated surface anonymously reachable under auth.type=DISABLED
+related_test_gaps:
+- TEST-GAP-NNN (out-of-enum run-status crash — palette.runStatus[status].color blanks the whole dashboard; HIGH)
+- TEST-GAP-NNN (dashboard fetch multiplicity — plain open vs URL-deeplinked double-fetch vs per-chip no-debounce refetch — P-101)
+- TEST-GAP-NNN (Title-filter scope — narrows by OWNERSHIP.TITLE_ID not dataset name — P-110)
+- TEST-GAP-NNN (filter slice resets on navigate-away; URL-param reconstruction on remount — P-120)
+- TEST-GAP-NNN (failed fetch renders an error state, not the empty-catalog placeholder)
+- TEST-GAP-NNN (zero-data dashboard renders three "No data" donuts and no category cards, not a blank/error page)
+- TEST-GAP-NNN (filterKey wiring — 10 side x dimension slots, copy-paste swap not compile-caught)
+- TEST-GAP-NNN (category cards render in alphabetical localeCompare order regardless of API order — P-100)
+related_doc_gaps:
+- DOC-GAP-082 # META — auth.type=DISABLED bypasses the Authorization framework; /data-quality is a further ungated surface
+- DOC-GAP-NNN (features/data-quality/dashboard silent on access control — who can view the catalog-wide quality dashboard)
+- DOC-GAP-NNN (dashboard.md Test Results Breakdown documents 3 statuses; the code renders 6 — incomplete enum)
+- DOC-GAP-NNN (dashboard.md Table Health labels "success/failed/broken" vs the UI's "Healthy/Warning/Error"; "Unknown Category" vs "Unknown category" casing)
+- DOC-GAP-NNN (dashboard.md does not explain what the "Title" filter filters by — it binds to ownership role, not dataset name)
+- DOC-GAP-NNN (dashboard.md does not state the Namespace filter also matches datasource-inherited namespaces)
+- DOC-GAP-NNN (dashboard.md silent on the empty-state, the default filter state, the filter-resets-on-navigate-away behaviour, the URL-deeplink/shareable-filter capability, and the two per-side Clear buttons)
+related_concepts:
+- data-quality-dashboard
+- quality-dashboard-filters
+- jotai-feature-store
+- read-collaborative posture (REFACTOR-024 family — /data-quality dashboard reachable to any authenticated user)
+- input-name-vs-implementation drift (LSN-020 family — the "Title" filter binds to ownership role)
+- lazy-route-code-split
+related_retrospectives:
+- LSN-017 # cross-layer effects — the 5 batch-ZC sidecars only compose into the catalog-wide dashboard feature when threaded; the deeplink double-fetch is invisible to any per-node scan
+- LSN-020 # input-name-vs-implementation — the "Title" filter is a fresh instance of the userIds->OWNER_ID drift class, on the DQ dashboard
+- LSN-001 # permissive defaults hide operator error — DISABLED-mode anonymous reach of the catalog-wide quality aggregate
+related_features:
+- F-022 # Per-Dataset DQ Test Reports & SLA (P-04:F-001) — SIBLING P-04 read surface; F-022 is the PER-ENTITY DQ drill-down, F-032 is the CATALOG-WIDE aggregate dashboard. Distinct UI code, distinct endpoints, same pillar + same read-collaborative posture.
+- F-007 # AlertManager Integration (P-07) — a failing DQ test run is the same signal F-007 turns into a FAILED_DQ_TEST alert; F-032 visualises the aggregate, F-007 reacts to each failure.
+related_probes:
+- P-090
+- P-100
+- P-101
+- P-110
+- P-111
+- P-120
+probe_verifications: []
+maintainer_curated: false
+batch_origin_note: |-
+  2026-05-22 batch ZC — NEW pillar-anchored feature MINTED from the 5
+  DataQuality* batch-ZC sidecars (DataQuality.tsx route entry,
+  DataQualityContent.tsx dashboard body, DataQualityFilters.tsx filter panel,
+  DataQualityStore.ts jotai store, TestCategoryResults.tsx leaf result row).
+
+  Per Rule 0 evaluation against system-mission.md: the catalog-wide Data
+  Quality dashboard is a USER-OBSERVABLE Data Quality capability — an
+  operator opens /data-quality to read the cross-entity quality posture
+  (table health, monitored tables, test-results breakdown, per-category test
+  outcomes). It maps to pillar P-04 Data Quality. The pillar already has
+  F-022 (P-04:F-001, Per-Dataset DQ Test Reports & SLA) for the PER-ENTITY
+  surface; F-032 is the SECOND P-04 feature — the standalone catalog-wide
+  aggregate dashboard — minted as P-04:F-002 "Quality Dashboard". All 5
+  batch-ZC sidecars carry `related_pillar_features: ["P-04:F-002"]`,
+  confirming the pillar anchoring at the sidecar tier.
+
+  Per Rule 0b (UI-completeness): F-032's entry point IS the UI — the
+  /data-quality route + the screen the operator operates. The five
+  contributing sidecars ARE enriched UI components (route entry, body,
+  filter panel, jotai store, leaf row), so the feature is UI-complete on the
+  frontend; status is NOT ui-incomplete. The ONE unresolved hop is the
+  BACKEND DataQualityRunsController (hop 4) — recorded `unresolved: true`;
+  the backend authorization posture is correctly deferred to probe P-090,
+  not asserted. No UI-dependent drift facet is minted from a backend-only
+  chain — every facet here is anchored on an enriched UI sidecar.
+
+  Dedup (rev-7.1 semantic graph-search protocol, registry-search-spawn.md):
+  the graph query layer was WARM (3740 nodes, 31 Feature labels, embeddings
+  available). Ran `lineage-extractor graph-search odd-platform "Quality
+  Dashboard catalog-wide aggregate data quality dashboard /data-quality
+  route Table Health Monitored Tables Test Results Breakdown donut rings
+  per-category cards" --label Feature --k 8 --json`. Two hits: F-022
+  (score 0.710 — Per-dataset DQ test reports + SLA PNG) and F-026
+  (score 0.675 — Lookup Tables). F-022 is the closest match and is the
+  EXPLICITLY DISTINCT sibling — the per-dataset DQ surface, not the
+  catalog-wide dashboard; F-026 (Lookup Tables) is unrelated. NO existing
+  feature covers the standalone /data-quality aggregate dashboard. MINT
+  F-032 is therefore correct — graph-search conclusive, no grep fallback
+  needed.
+
+  F-032 is DISTINCT from F-022, not a duplicate: F-022 (P-04:F-001) is the
+  PER-ENTITY DQ drill-down — the dataset-detail "Test reports" tab + the
+  BI-embeddable SLA PNG/JSON badge, hitting /api/datasets/{id}/dataqatests +
+  test_report + sla. F-032 (P-04:F-002) is the CATALOG-WIDE aggregate — the
+  standalone /data-quality page, three breakdown rings + per-category cards,
+  hitting the single /api/dataqatests/runs endpoint. They share NO UI code
+  and hit different endpoints; F-032 is recorded as a sibling P-04 read
+  surface (see related_features + cross_pillar_relationships), the maintainer
+  -triage merge bar (>50% shared contributing_nodes + same user-observable
+  contract) is nowhere near met.
+
+  Rule 6 pre-emit coherence check (LSN-018): grepped the 4 other registries
+  (refactoring-scopes, implicit-adrs, test-map, doc-gaps) for the F-032
+  anchors (DataQuality / data-quality / dataqatests/runs /
+  DataQualityRunsController / palette.runStatus / OWNERSHIP.TITLE_ID).
+  STRENGTHENS: (1) DOC-GAP-082 — the 29-sidecar DISABLED-bypass
+  meta-finding; F-032's disabled_mode_anonymous_reach facet adds the
+  /data-quality route as a further ungated surface; back-link added
+  (related_doc_gaps: DOC-GAP-082); DOC-GAP-082 itself should gain F-032 in
+  its surfaced-by on the next doc-gaps index append. (2) F-022 — F-032's
+  ungated-route + read-collaborative-posture facets STRENGTHEN (same
+  polarity) F-022's `cross_owner_dq_read_no_security_rule` +
+  `disabled_mode_anonymous_reach` facets — both describe the P-04
+  read-collaborative posture; reciprocal back-link applied (F-032 carries
+  related_features: [F-022, ...]; F-022 must gain F-032 — see
+  cross_registry_backlink_mutations in batch-ZC-delta.yaml). (3) REFACTOR-185
+  — the DISABLED-mode-bypass cluster gains the /data-quality route.
+  SUPERSEDES: 0 — no registry artefact is contradicted; F-032 asserts new
+  facts about a previously-unwalked UI subtree. CONFLICTS: 0 — no
+  state/coherence-conflicts-batch-ZC.md needed.
+
+  Cross-references emit back-links to F-022 (sibling P-04 read surface) and
+  F-007 (the alerting pillar that reacts to the same DQ-failure signal the
+  dashboard aggregates). REFACTOR-185 (DISABLED-bypass cluster) and
+  DOC-GAP-082 (DISABLED-bypass meta-finding) cross-linked. LSN-017 spans all
+  5 batch-ZC sidecars — the catalog-wide dashboard feature only emerges when
+  the route entry + body + filter panel + jotai store + leaf row are threaded
+  together; LSN-020 is freshly instantiated by the "Title" filter drift;
+  LSN-001 by the DISABLED-mode anonymous reach.

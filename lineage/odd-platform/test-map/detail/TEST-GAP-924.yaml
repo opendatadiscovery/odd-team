@@ -1,0 +1,57 @@
+gap_id: TEST-GAP-924
+category: missing-performance
+criticality: MEDIUM
+node_ids:
+  - "odd-platform ts react-component component:DataQualityFilters"
+  - "odd-platform ts react-component component:DataQualityContent"
+pillars_affected: [P-04]
+surfaced_by:
+  - "odd-platform__ts__react-component__component__DataQualityFilters.md:bugs_limitations_corner_cases.[1] (MultipleFilterItemAutocomplete has no debounce on the search input — every keystroke triggers a list-API request — severity MEDIUM)"
+  - "odd-platform__ts__react-component__component__DataQualityFilters.md:performance.known_performance_gaps (no debounce on the autocomplete search input + no debounce between filter selection and dashboard re-query)"
+  - "odd-platform__ts__react-component__component__DataQualityFilters.md:stress_findings.probes_emitted.P-111"
+behaviour: |-
+  **MEDIUM — both the dashboard re-fetch AND the filter autocompletes fire ONE network request per micro-action with no debounce / batch-apply, generating request bursts on the operator's primary interaction surface.**
+
+  **Two distinct un-debounced surfaces** (statically certain):
+
+  1. **Autocomplete per-keystroke list-API**: `MultipleFilterItemAutocomplete.tsx:57-66` calls `setSearchText(query)` directly on every `'input'` event. `searchText` is passed straight into `useFilter`'s `useHook({ page: 1, size: 30, query: searchText })` (`hooks/index.ts:13-17`); `searchText` is the React-Query key (`namespace.ts:7`). Each character types a fresh GET. Typing "production" (10 chars) into the Namespace filter fires up to 10 calls to `/api/namespaces`. With 5 filters × 2 sides = 10 autocompletes, an operator filling out the panel can generate a substantial burst.
+     - React-Query dedupes IDENTICAL keys, not distinct prefixes — "p", "pr", "pro", ..., "production" are all distinct keys.
+
+  2. **Dashboard re-fetch per filter chip toggle**: every select/deselect mutates `formFiltersAtom`; `filtersAtom` re-derives; react-query sees a new key; new `GET /api/dataqatests/runs` fires (`DataQualityStore.ts:32-42` + `DataQualityContent.tsx:23-24`). No debounce, no "Apply" gate. An operator building a multi-chip filter slice fires one full backend dashboard query per chip rather than one on a deliberate "Apply" action. The dashboard query is multi-CTE multi-join SQL fanning to THREE repository queries server-side (`DataQualityRunsServiceImpl.java:36-39`).
+
+  **What the operator sees today**: typing into a filter shows a "results update as you type" UX (good); typing into the autocomplete fires a burst of API calls (less good); selecting 4 chips fires 4 full dashboard fetches (3 wasted).
+
+  **No test pins either**. A regression that ACCIDENTALLY adds a debounce delays UX (could be detected as a UX regression); a regression that REMOVES an existing debounce silently widens the burst.
+
+  **Test gap shape**: integration test using fake timers + spy on the relevant query functions. Two assertions: (a) typing 10 characters into a filter autocomplete fires the list-API ≤ 10 times (PINS the current state) — pair with a TODO comment requesting a debounce. (b) selecting N chips in succession fires the dashboard fetch N times (PINS the current state) — pair with TODO requesting an Apply-button or debounce.
+test_class: missing-performance
+criticality_rationale: |-
+  MEDIUM per Rule 3: sidecar self-classifies MEDIUM on both surfaces (DataQualityFilters.md:bugs_limitations_corner_cases.[1] + performance.known_performance_gaps). Performance / cost concern; no security or correctness. Single-pillar (P-04). MEDIUM stands.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-ui/src/components/DataQuality/__tests__/DataQualityNoDebounceRequestBurst.test.tsx"
+  name: "perKeystrokeAutocomplete_andPerChipDashboardRefetch_pinsCurrentNoDebounceBurst"
+evidence:
+  - "DataQualityFilters.md says (bugs_limitations_corner_cases.[1]): 'MultipleFilterItemAutocomplete has no debounce on the search input — every keystroke triggers a list-API request. The autocomplete's onInputChange calls setSearchText(query) directly (MultipleFilterItemAutocomplete.tsx:57-66); searchText is passed straight into useFilter's useHook({ page: 1, size: 30, query: searchText }) (hooks/index.ts:13-17), and searchText is the React-Query key (namespace.ts:7), so each character types a fresh GET to /api/namespaces (or datasources/owners/titles/tags). Typing a 10-character namespace name fires up to 10 list requests. There is no useDebounce, no minimum-character gate.' severity: MEDIUM"
+  - "DataQualityFilters.md says (performance.known_performance_gaps[0]): 'No debounce on the autocomplete search input — one list request per keystroke.' severity: MEDIUM"
+  - "DataQualityFilters.md says (performance.known_performance_gaps[1]): 'No debounce / no Apply gate between filter selection and dashboard re-query — the full getDataQualityTestsRuns (multi-CTE, multi-join SQL) runs on every single filter change.' severity: MEDIUM"
+  - "Verified at primary source via sidecar: MultipleFilterItemAutocomplete.tsx:57-66 + hooks/index.ts:11-17 + namespace.ts:6-9 + DataQualityStore.ts:32-42 + DataQualityContent.tsx:23-24"
+cross_references:
+  - "F-032 (P-04:F-002 Catalog-wide Data Quality Dashboard) — drift_class no_debounce_dashboard_refetch_per_filter_change + autocomplete_no_debounce_request_burst are enumerated in F-032.drift_class_summary"
+  - "TEST-GAP-916 (this batch — fetch multiplicity per single open / single filter change; TEST-GAP-924 measures the BURST class — multi-action perf cost)"
+  - "probe P-111 (lineage/odd-platform/probes/P-111.yaml — Does typing into a filter autocomplete fire one list-API request per keystroke?)"
+  - "REFACTOR-NNN (proposed): add useDebouncedCallback (existing in the codebase per TEST-GAP-640) to the autocomplete searchText AND/OR add an Apply gate to the dashboard query"
+related_features: [F-032]
+related_pillar_features: ["P-04:F-002"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `DataQualityNoDebounceRequestBurstTest` under `odd-platform-ui/src/components/DataQuality/__tests__/`. Use Vitest + React Testing Library + MSW with a request counter. Four pinning methods:
+  (a) `autocompleteTypingTenCharacters_fires10ListApiRequests_pinsNoDebounce`: open the Namespace autocomplete; programmatically type "production" one character at a time; assert the list-API call counter increments by 10. PINS the burst. Add TODO suggesting useDebouncedCallback.
+  (b) `selectFourFilterChipsInSuccession_fires4DashboardFetches_pinsNoApplyGate`: with the autocomplete pre-loaded; select 4 different chips one at a time; assert getDataQualityTestsRuns fires 4 times. PINS the per-chip refetch burst. Add TODO suggesting Apply-button.
+  (c) `autocompleteTypingTenCharacters_witHDebounceApplied_fires1ListApiRequest_EXPECTED_FAIL`: if a debounce fix lands, this test should PASS — it asserts the FIXED behaviour. Keep as @SkipUntil(debounce-applied).
+  (d) `selectFourChips_withApplyGate_fires1DashboardFetch_EXPECTED_FAIL`: same, for the Apply-button fix.
+
+  Add a `// REGRESSION-PIN — DataQualityFilters/MultipleFilterItemAutocomplete + DataQualityContent — the autocomplete fires one list-API request per keystroke; the dashboard fires one full multi-CTE SQL query per chip selection. The codebase ALREADY ships useDebouncedCallback (used by PolicyList per TEST-GAP-640). This test pins the CURRENT burst; the (c)/(d) methods are the FIXED state asserted when the fix lands.` block.
+batch: 2026-05-22-ZC
+feature_id: F-032

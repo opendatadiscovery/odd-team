@@ -1,0 +1,119 @@
+name: Category-row status-tile six-status backend guarantee — silent cross-tier coupling
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-04
+description: |-
+  `TestCategoryResults.sortedResults` (TestCategoryResults.tsx:19-25)
+  uses a `flatMap(f => (f ? [f] : []))` to drop statuses absent from
+  `results[]`. In production this drop branch is DEAD CODE because the
+  backend `DataQualityCategoryMapperImpl.addMissingStatuses`
+  (DataQualityCategoryMapperImpl.java:45-60) injects a zero-count
+  `DataQualityRunStatusCount` for every `DataEntityRunStatus` value
+  not already present — so every category's `results[]` always has all
+  six entries. The UI's correctness (stable horizontal tile alignment
+  across category rows) depends on this backend mapper invariant —
+  but the UI does NOT assert it, and the backend invariant is NOT
+  marked load-bearing for the UI. NEW invariant, batch ZC (2026-05-22).
+
+  The corner case the silent coupling produces:
+    If the backend `addMissingStatuses` regresses (a refactor drops
+    it, a new endpoint forgets to call it, a future caller passes a
+    partial categoryResults), category rows would show a varying
+    NUMBER of tiles — the dashboard's horizontal alignment breaks
+    silently (one row has 6 tiles, another has 4); no warning, no
+    test failure, just visual inconsistency.
+
+  The pattern is the classic "trust the upstream invariant without
+  asserting it" cross-tier coupling. Severity LOW today (no production
+  trigger), but it's a latent UI fragility AND an undocumented backend
+  responsibility. A backend maintainer refactoring the mapper has no
+  signal that the dashboard depends on the six-status guarantee.
+
+  The fix options:
+    (a) UI-side defence: change `flatMap(f => f ? [f] : [])` to
+        `map(f => f ?? {status: <enum-value>, count: 0})` — emit
+        zero-count placeholders for any missing status. Cost: a few
+        lines of code; the UI becomes resilient to a backend
+        regression at the price of duplicating the backend's
+        addMissingStatuses logic at the UI tier.
+    (b) Backend-side annotation: mark `addMissingStatuses` as
+        load-bearing for the dashboard UI (a comment, an integration
+        test). Cheap; preserves the single-source-of-truth at the
+        backend.
+    (c) Both: (a) for defence in depth + (b) for documentation.
+
+  vocabulary_status: codebase-anchored. The cross-tier coupling is an
+  architectural artefact not named in the user-facing docs.
+vocabulary_status: codebase-anchored
+axes_present:
+  - react_components
+nodes:
+  - odd-platform ts react-component component:TestCategoryResults
+contributors:
+  - |-
+    TestCategoryResults (per-category row) batch ZC:
+      bugs_limitations_corner_cases[the flatMap(f => (f ? [f] : [])) drop-branch
+      silently omits a status tile if results is missing that status — but in
+      production it is dead code, masking a contract dependency];
+      invariants[the component renders ONLY statuses present in results;
+      sortedResults is enum.map(find).flatMap(present-only)];
+      stress_findings.request_inputs[the prop sub-field results is NOT rendered
+      exhaustively — sortedResults keeps only statuses present in the array — a
+      consumer assuming every DataEntityRunStatus gets a tile is relying on the
+      backend's addMissingStatuses guarantee, not on this component]
+evidence:
+  - TestCategoryResults.md:bugs_limitations_corner_cases.[0] (primary cross-tier coupling)
+  - TestCategoryResults.md:concepts.invariants.[3] (present-only flatMap)
+  - TestCategoryResults.md:stress_findings.request_inputs.[0] (Q5 documents the coupling)
+security_aggregate:
+  overall: HIGH
+  auth_modes_relevant: []
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: N/A
+    detail: |-
+      Render-coupling invariant — not an authorization concept.
+  owner_scoping:
+    verdict: N/A
+    detail: |-
+      Render-coupling invariant — not data-scoped.
+  strengths: []
+  weaknesses: []
+  cross_file_inconsistencies: []
+  contributing_files:
+    - TestCategoryResults.md
+  evidence: []
+performance_aggregate:
+  overall: HIGH
+  hot_paths: []
+  throughput_shape:
+    verdict: N/A
+    detail: |-
+      Render-coupling invariant — not a performance concept.
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: |-
+      O(6) iteration per category — fixed by enum cardinality.
+  strengths:
+    - |-
+      The cross-tier coupling, while undocumented, is correct end-to-end
+      today — the backend mapper does honour the six-status invariant,
+      and the UI rendering is correct under that invariant.
+  weaknesses: []
+  cross_file_inconsistencies: []
+  contributing_files:
+    - TestCategoryResults.md
+  evidence: []
+related_features:
+  - F-032
+related_pillar_features:
+  - "P-04:F-002"
+notes: |-
+  Cross-tier coupling that requires either UI hardening or backend
+  documentation to be made safe under future refactors. The minimum-
+  viable fix is option (b) — a one-line comment at the backend mapper
+  + a one-line comment at the UI sortedResults — preserving the
+  current behaviour and naming the dependency. The hardening fix is
+  option (a) — defence in depth.
+maintainer_curated: false

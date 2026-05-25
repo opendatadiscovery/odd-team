@@ -1,0 +1,120 @@
+---
+probe_id: P-090
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__DataQuality.md
+emitted_at: 2026-05-22T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-002          # P-04:F-002 "Quality Dashboard" — forward-declared, this batch closes it
+test_class: security
+verified_against_commit: ede5d277
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category D): the /data-quality route is registered in
+  App.tsx:73 as `<Route path={dataQualityPath()} element={<DataQuality />} />`
+  with NO WithPermissionsProvider wrapper — unlike the sibling /lookup-tables
+  route (App.tsx:75-88) which IS wrapped in WithPermissionsProvider gating on
+  LOOKUP_TABLE_CREATE/UPDATE/DELETE. The ToolbarTabs "Data Quality" tab
+  (ToolbarTabs.tsx:45-49) is also rendered unconditionally — no permission
+  check around the tab entry. The component therefore appears reachable by
+  any authenticated user regardless of role/permission. But the dashboard
+  data is fetched from a backend endpoint (useGetDataQualityDashboard, called
+  in the DataQualityContent sibling). The question this probe pins: does the
+  BACKEND dashboard endpoint enforce any authorization, or is the catalog-wide
+  aggregate quality view (table-health counts, monitored/unmonitored counts,
+  test-results breakdown across ALL datasets) readable by every authenticated
+  user including a freshly-created READ_ONLY-equivalent user with zero
+  ownership associations? Hypothesis: no gate — the dashboard endpoint returns
+  200 with full aggregate data for any authenticated caller, mirroring the
+  cross-owner-read posture documented for DataQualityController's four read
+  endpoints (REFACTOR-024 family). If the hypothesis holds, the catalog-wide
+  data-quality posture leaks aggregate health of every dataset in the catalog
+  to every authenticated principal.
+---
+arrange:
+  - kind: docker-compose-up
+    note: odd-minimal stack with auth.type=LOGIN_FORM so role distinctions exist
+  - kind: sql
+    query: |
+      -- seed two datasets in distinct namespaces with DQ test runs so the
+      -- dashboard has non-empty table-health / monitored-table aggregates
+      INSERT INTO namespace (id, name, is_deleted)
+      VALUES (9001, 'p090-ns-a', false), (9002, 'p090-ns-b', false);
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, name, oddrn, namespace_id)
+      VALUES (9001, 'p090-src', '//p090/src', 9001);
+  - kind: sql
+    query: |
+      INSERT INTO data_entity (id, oddrn, external_name, internal_name,
+                               data_source_id, namespace_id, hollow, exclude_from_search)
+      VALUES (9101, '//p090/table-a', 'p090_table_a', NULL, 9001, 9001, false, false),
+             (9102, '//p090/test-a', 'p090_test_a',  NULL, 9001, 9001, false, false);
+  - kind: env
+    note: |
+      Create an admin user (default seeded admin) and a second LOGIN_FORM user
+      'p090-plain' with NO Policy granting any Permission and NO ownership
+      association to any owner. This is the minimum-privilege authenticated
+      principal.
+act:
+  - kind: rest
+    description: dashboard fetch as the admin user (control)
+    method: GET
+    path: /api/data_quality/dashboard
+    auth_as: admin
+    note: |
+      The exact dashboard endpoint path must be confirmed against the
+      DataQualityContent sibling's useGetDataQualityDashboard hook
+      (lib/hooks/api/dataQuality) + the generated API client. If the path
+      differs, probe-runner substitutes the resolved path; the assertion
+      logic is unchanged.
+    capture_as: dashboard_as_admin
+  - kind: rest
+    description: dashboard fetch as the minimum-privilege authenticated user
+    method: GET
+    path: /api/data_quality/dashboard
+    auth_as: p090-plain
+    capture_as: dashboard_as_plain
+  - kind: rest
+    description: dashboard fetch with no session cookie at all
+    method: GET
+    path: /api/data_quality/dashboard
+    auth_as: none
+    capture_as: dashboard_anonymous
+observe:
+  - kind: http-status
+    of: dashboard_as_admin
+    capture_as: status_admin
+  - kind: http-status
+    of: dashboard_as_plain
+    capture_as: status_plain
+  - kind: http-status
+    of: dashboard_anonymous
+    capture_as: status_anon
+assert:
+  - "status_admin == 200  # control — admin sees the dashboard"
+  - "status_plain == 200  # HYPOTHESIS: minimum-privilege user ALSO sees full catalog-wide aggregate (no gate)"
+  - "dashboard_as_plain.tablesDashboard.tablesHealth == dashboard_as_admin.tablesDashboard.tablesHealth  # plain user sees identical catalog-wide counts — confirms no owner-scoping"
+  - "status_anon == 401 OR status_anon == 403  # unauthenticated is rejected (global auth, not endpoint-specific)"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__DataQuality
+    - odd-platform__java__DataQualityController__controller-class__DataQualityController
+  retrospectives: [LSN-017, LSN-023]
+realism_caveats: |
+  This probe pins the BACKEND authorization posture of the dashboard
+  endpoint; it does NOT verify the FRONTEND route guard, because the absence
+  of a WithPermissionsProvider wrapper at App.tsx:73 is already statically
+  certain from the code (no probe needed for that half). The frontend has no
+  client-side gate; this probe answers whether the backend compensates. If
+  status_plain comes back 403, the backend DOES gate the dashboard and the
+  finding downgrades to "frontend tab is shown to users who will get a 403 on
+  data fetch — a UX defect, not a data-exposure defect". If status_plain is
+  200 with full data (the hypothesis), the catalog-wide aggregate posture is
+  read-collaborative and the finding is a doc-gap: the live dashboard.md page
+  is silent on access control. The probe does not exercise the FILTER query
+  parameters (those are owned by the DataQualityFilters sibling node); it
+  fetches the unfiltered dashboard only.

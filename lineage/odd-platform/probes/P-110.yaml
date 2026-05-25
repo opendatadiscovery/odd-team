@@ -1,0 +1,116 @@
+---
+probe_id: P-110
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__DataQualityFilters
+emitted_at: 2026-05-22T00:00:00Z
+status: pending-stress-protocol
+feature_id: null  # P-04:F-002 Quality Dashboard — not yet feature-anchored as F-NNN
+test_class: integration
+verified_against_commit: ede5d277
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category F): the Data Quality Dashboard's "Title" sidebar
+  filter is labelled with the bare i18n key t('Title'). Its selected ids flow
+  through filtersAtom -> getDataQualityTestsRuns(titleIds/deTitleIds) and bind,
+  at ReactiveDataQualityRunsRepositoryImpl.getConditionsForFilters, to
+  OWNERSHIP.TITLE_ID.in(titleIds) (lines 301 and 309). OWNERSHIP.TITLE_ID
+  references the TITLE table — an ownership ROLE (e.g. "Data Steward"), NOT a
+  dataset name/title.
+  Hypothesis: GET /api/dataqualitytest/runs?titleIds={roleId} narrows the
+  dashboard rings to entities that have an ownership row carrying that title,
+  and a request with a titleIds value that is NOT a valid OWNERSHIP.TITLE_ID
+  (or that no ownership row uses) returns an empty/zeroed dashboard rather
+  than the dataset the operator expected when reading the word "Title".
+  If confirmed, the label is operator-misleading (LSN-020 class) and the
+  dashboard doc page (which does not explain the Title filter) is a doc gap.
+---
+arrange:
+  - kind: docker-compose-up
+    note: odd-minimal stack — platform-api + postgres
+  - kind: sql
+    query: |
+      -- a data source + namespace
+      INSERT INTO namespace (id, name, is_deleted)
+      VALUES (7100, 'p110-ns', false);
+      INSERT INTO data_source (id, name, oddrn, namespace_id, connection_url, active)
+      VALUES (7100, 'p110-ds', '//p110/ds', 7100, 'p110://x', true);
+  - kind: sql
+    query: |
+      -- one TABLE data entity (the dataset) and one JOB data entity (the DQ test)
+      -- TYPE_ID 1 = TABLE-class, 4 = JOB per DataEntityTypeDto (verify enum ids
+      -- against odd-platform model.DataEntityTypeDto at probe-run time)
+      INSERT INTO data_entity (id, oddrn, external_name, internal_name, data_source_id, namespace_id, type_id, hollow)
+      VALUES (7101, '//p110/table/sales', 'p110_sales_table', NULL, 7100, 7100, 1, false);
+      INSERT INTO data_entity (id, oddrn, external_name, internal_name, data_source_id, namespace_id, type_id, hollow)
+      VALUES (7102, '//p110/job/sales_test', 'p110_sales_dq_test', NULL, 7100, 7100, 4, false);
+  - kind: sql
+    query: |
+      -- relate the DQ test job to the dataset, and give it a last run
+      INSERT INTO data_quality_test_relations (data_quality_test_oddrn, dataset_oddrn)
+      VALUES ('//p110/job/sales_test', '//p110/table/sales');
+      INSERT INTO data_entity_task_last_run (task_oddrn, status, status_reason, start_time, end_time)
+      VALUES ('//p110/job/sales_test', 'SUCCESS', NULL, NOW() - INTERVAL '1 hour', NOW());
+  - kind: sql
+    query: |
+      -- an owner + TWO distinct ownership titles; assign owner+TITLE_A to the dataset
+      INSERT INTO owner (id, name, is_deleted) VALUES (7100, 'p110-owner', false);
+      INSERT INTO title (id, name, is_deleted) VALUES (7100, 'p110-title-A', false);
+      INSERT INTO title (id, name, is_deleted) VALUES (7101, 'p110-title-B', false);
+      INSERT INTO ownership (id, data_entity_id, owner_id, title_id)
+      VALUES (7100, 7101, 7100, 7100);
+  - kind: env
+    note: auth.type=DISABLED for the probe so no login handshake is needed
+act:
+  - kind: rest
+    method: GET
+    path: /api/dataqualitytest/runs?titleIds=7100
+    capture_as: resp_title_A
+  - kind: rest
+    method: GET
+    path: /api/dataqualitytest/runs?titleIds=7101
+    capture_as: resp_title_B
+  - kind: rest
+    method: GET
+    path: /api/dataqualitytest/runs
+    capture_as: resp_no_filter
+observe:
+  - kind: sql
+    query: |
+      -- total monitored tables with NO filter, for the baseline
+      SELECT count(*) AS monitored
+      FROM data_entity de
+      WHERE de.type_id = 1
+        AND EXISTS (SELECT 1 FROM data_quality_test_relations r
+                    WHERE r.dataset_oddrn = de.oddrn);
+    capture_as: baseline_monitored
+assert:
+  # title-A is the title actually on the dataset's ownership row -> dashboard sees the table
+  - "resp_title_A.tablesDashboard.monitoredTables.monitoredTables == baseline_monitored.monitored"
+  # title-B exists but no ownership row uses it -> dashboard is empty, NOT the dataset
+  # this is the operator-visible failure: 'Title' did not filter by dataset name
+  - "resp_title_B.tablesDashboard.monitoredTables.monitoredTables == 0"
+  # sanity: no filter shows the table
+  - "resp_no_filter.tablesDashboard.monitoredTables.monitoredTables == baseline_monitored.monitored"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__DataQualityFilters
+  retrospectives:
+    - LSN-020
+    - LSN-023
+realism_caveats: |
+  The probe pins the Category-F drift by data construction: title-A is on an
+  ownership row, title-B is not. If resp_title_B comes back EMPTY while
+  title-B is a perfectly valid TITLE row, the "Title" filter provably binds
+  to OWNERSHIP.TITLE_ID and not to any dataset name — confirming the
+  operator-misleading label. The probe does NOT verify the UI label text
+  itself (that is static — t('Title') at TitleFilter.tsx:29); it verifies the
+  end-to-end binding the label sits on top of. DataEntityTypeDto enum ids
+  (TABLE / JOB) must be confirmed against the live model classes at run time;
+  if the ids differ the INSERT type_id values need adjusting. The probe uses
+  the tables-side semantics via deTitleIds-equivalent reasoning but exercises
+  the test-side `titleIds` param directly because both bind through the same
+  getConditionsForFilters helper.

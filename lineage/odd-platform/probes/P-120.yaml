@@ -1,0 +1,95 @@
+---
+probe_id: P-120
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__jotai-store__store__DataQualityStore.md
+emitted_at: 2026-05-22T00:00:00Z
+status: pending-stress-protocol
+feature_id: null   # P-04:F-002 Quality Dashboard — not yet feature-anchored to an F-NNN
+test_class: integration
+verified_against_commit: ede5d277
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category E): the Data Quality Dashboard's filter store is a
+  jotai atom module scoped by a feature-local <Provider> (DataQualityProvider.tsx).
+  The /data-quality route mounts <DataQuality> via a single non-wildcard
+  <Route> and is lazy()-loaded. Hypothesis: navigating away from /data-quality
+  and back UNMOUNTS the route element, destroys the jotai <Provider>, and the
+  next visit starts a fresh store at the all-empty formFiltersAtom default —
+  the operator loses their selected filter slice. A SECONDARY hypothesis: the
+  URL search params that DataQualityFilters' second useEffect writes
+  (?deOwnerIds=[..]&...) are the only persistence channel; if the operator
+  navigates back to a /data-quality URL that still carries those params, the
+  mount-time searchParams-sync useEffect should repopulate formFiltersAtom and
+  the selection survives — but if they navigate back to a bare /data-quality
+  (no query string), the selection is gone. This probe verifies both:
+  (1) bare navigate-away-and-back resets the filters; (2) navigate-away-and-back
+  to the param-carrying URL restores them.
+---
+arrange:
+  - kind: docker-compose-up
+    note: odd-platform + postgres; UI served from the platform container
+  - kind: sql
+    query: |
+      -- seed at least one namespace, datasource, owner so the DQ filter
+      -- autocompletes return a selectable option
+      INSERT INTO namespace (id, name, is_deleted)
+      VALUES (8001, 'probe-ns-p120', false)
+      ON CONFLICT (id) DO NOTHING;
+  - kind: env
+    note: auth.type=DISABLED for the probe run so the SPA loads without a login step
+act:
+  - kind: dom-probe
+    tool: playwright
+    steps:
+      - navigate: "/data-quality"
+      - wait_for_selector: "text=Filters for tables"
+      # select one test-side namespace filter chip
+      - click: "[data-qa='namespace-filter-namespaceIds'] input"
+      - click: "text=probe-ns-p120"
+      - wait_for_url_contains: "namespaceIds"
+      - capture_as: url_with_filter
+        capture: "page.url()"
+      # navigate away to a different route, then back to a BARE /data-quality
+      - navigate: "/management/namespaces"
+      - wait_for_selector: "text=Namespaces"
+      - navigate: "/data-quality"
+      - wait_for_selector: "text=Filters for tables"
+      - capture_as: bare_return_selected_chips
+        capture: "page.locator(\"[data-qa='selected-filter-option']\").count()"
+      - capture_as: bare_return_url
+        capture: "page.url()"
+      # now navigate away and back to the PARAM-CARRYING url
+      - navigate: "/management/namespaces"
+      - wait_for_selector: "text=Namespaces"
+      - navigate_to_captured: url_with_filter
+      - wait_for_selector: "text=Filters for tables"
+      - capture_as: param_return_selected_chips
+        capture: "page.locator(\"[data-qa='selected-filter-option']\").count()"
+observe:
+  - kind: captured-vars
+    vars: [url_with_filter, bare_return_selected_chips, bare_return_url, param_return_selected_chips]
+assert:
+  - "url_with_filter contains 'namespaceIds'   # the chip selection wrote a query param"
+  - "bare_return_selected_chips == 0           # bare navigate-back: store reset to all-empty default"
+  - "bare_return_url does not contain 'namespaceIds'  # bare URL carries no filter state"
+  - "param_return_selected_chips >= 1          # param-carrying navigate-back: searchParams-sync useEffect restored the selection"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__jotai-store__store__DataQualityStore
+    - odd-platform__ts__react-component__DataQualityFilters   # owns the searchParams-sync useEffect — sibling, not yet enriched
+  retrospectives: [LSN-017]
+realism_caveats: |
+  The probe pins the per-Provider-mount reset hypothesis and the URL-param
+  persistence fallback. The data-qa selector names ([data-qa='namespace-filter-...'],
+  [data-qa='selected-filter-option']) are best-guess — if the DQ FilterItem
+  components do not expose data-qa hooks, probe-runner must substitute role/text
+  selectors after reading NamespaceFilter.tsx / SelectedFilterOption.tsx. This
+  probe does NOT verify React StrictMode double-mount behaviour of the
+  searchParams-sync useEffect (whether it double-writes formFiltersAtom on mount)
+  — that is a separate Category-E concern owned by the DataQualityFilters sidecar.
+  It also does NOT measure how many dashboard GET requests fire per chip toggle
+  (the no-debounce performance gap) — that belongs to a DataQualityContent probe.

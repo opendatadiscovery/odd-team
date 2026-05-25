@@ -1,0 +1,169 @@
+name: Data Quality Test Category (anomaly-class bucket)
+canonical_in_docs: true
+canonical_candidate: false
+pillar_affinity:
+  - P-04
+description: |-
+  Per-category grouping of data-quality test runs surfaced on the standalone
+  Data Quality Dashboard (`/data-quality`) and named by the backend
+  `DataQualityCategory` enum: `Assertion Tests | Volume Anomalies |
+  Freshness Anomalies | Schema Changes | Column Values Anomalies | Unknown
+  category`. NEW entity, batch ZC (2026-05-22) — first concept-catalog entry
+  for the per-category dimension of pillar feature P-04:F-002.
+
+  Each category renders as a `TestCategoryResults` row on the dashboard: a
+  category heading (the enum description, rendered verbatim without i18n —
+  always English), a large total-count number, and a fixed row of six
+  per-run-status count tiles (TestCategoryResults.tsx:11-45). The backend
+  `DataQualityCategoryMapperImpl.addMissingStatuses`
+  (DataQualityCategoryMapperImpl.java:45-60) guarantees every category's
+  `results` array carries one entry per `DataEntityRunStatus` value (zero-count
+  injected for absent statuses) — the UI relies on this six-status invariant
+  for stable column alignment across rows but does not enforce it.
+
+  The wire-side type is `DataQualityCategoryResults`
+  (components.yaml:3802-3813) — `{category: string, results: DataQualityRunStatusCount[]}`.
+  The `category` field is `type: string`, NOT an enum — the UI is a generic
+  renderer that adapts to new categories without a frontend change; the
+  hook's `initialData` six-category list (dataQuality.ts:34-60) is only a
+  loading-state placeholder, not a contract.
+
+  vocabulary_status: codebase-anchored, doc-side-partially-covered. The live
+  https://docs.opendatadiscovery.org/features/data-quality/dashboard sub-page
+  (WebFetched 2026-05-22 status 200) enumerates the six categories verbatim
+  in alphabetical order. The dashboard doc page describes "a per-test-category
+  matrix on the right showing per-anomaly-class counts" but does not describe
+  the per-category ROW shape (heading + total + per-status tile row) or the
+  six-status backend guarantee the UI silently depends on.
+vocabulary_status: codebase-anchored, doc-side-partially-covered
+axes_present:
+  - react_components
+  - openapi_specs
+nodes:
+  - odd-platform ts react-component component:TestCategoryResults
+  - odd-platform ts react-component component:DataQualityContent
+contributors:
+  - |-
+    TestCategoryResults (per-category row) batch ZC:
+      entities[DataQualityCategoryResults — the prop, DataQualityRunStatusCount,
+      DataEntityRunStatus enum, test category — a free-text category string
+      sourced from DataQualityCategory.getDescription()];
+      operations[compute-category-total, stabilise-status-order, render-category-row];
+      invariants[pure leaf component, en-dash for zero/negative count, tile colour by
+      run status, present-only flatMap drop branch (dead in production)]
+  - |-
+    DataQualityContent (dashboard body) batch ZC:
+      entities[DataQualityResults — testResults[]];
+      operations[sort-categories-alphabetically, render-category-cards];
+      invariants[category ordering is Unicode collation of the category label,
+      backend imposes no ordering]
+evidence:
+  - TestCategoryResults.md:concepts.entities (DataQualityCategoryResults, DataQualityRunStatusCount, test category)
+  - TestCategoryResults.md:concepts.operations (compute-category-total, stabilise-status-order, render-category-row)
+  - TestCategoryResults.md:implicit_adrs.[0] (fixed-position status tiles via enum-order re-sort)
+  - TestCategoryResults.md:bugs_limitations_corner_cases.[0] (present-only flatMap drop / six-status backend coupling)
+  - DataQualityContent.md:concepts.entities.[1] (DataQualityCategoryResults — the per-category prop)
+  - DataQualityContent.md:concepts.operations (sort-categories-alphabetically, render-category-cards)
+  - DataQualityContent.md:docs_link_semantic.doc_drift_findings.[2] (category ordering undocumented; doc list omits one)
+security_aggregate:
+  overall: HIGH
+  auth_modes_relevant:
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
+    - DISABLED
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: UNKNOWN
+    detail: |-
+      The per-category row is a pure leaf React component (TestCategoryResults.tsx) with
+      no fetch and no auth surface; the category data flows from the dashboard fetch
+      (GET /api/dataqatests/runs), whose authorization posture is recorded under the
+      Data Quality Dashboard parent concept and is PROBE-NEEDED at the backend layer
+      (DataQualityRunsController not yet enriched). The category itself has no
+      independent gate.
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      Category-level data is catalog-wide aggregate — categories enumerate across all
+      datasets the dashboard fetch returned. No principal-derived scope at the category
+      tier.
+  strengths:
+    - |-
+      The category renderer never executes user-supplied code; the `{category}` heading
+      is rendered with React's default JSX escaping, so the verbatim render is not an
+      XSS vector even though the category string is server-defined.
+  weaknesses:
+    - |-
+      The cross-tier coupling (UI assumes backend `addMissingStatuses` always supplies
+      all six statuses) is undocumented at both ends. A future regression of the backend
+      invariant silently breaks dashboard column alignment with no compile or runtime
+      error. Severity LOW today; routes to a doc-gap.
+  cross_file_inconsistencies: []
+  contributing_files:
+    - TestCategoryResults.md
+    - DataQualityContent.md
+  evidence:
+    - TestCategoryResults.md:security.known_security_gaps (none — pure leaf)
+    - TestCategoryResults.md:bugs_limitations_corner_cases.[0] (cross-tier six-status coupling)
+performance_aggregate:
+  overall: HIGH
+  hot_paths:
+    - |-
+      Each `TestCategoryResults` row renders once per category, bounded at six
+      (DataQualityCategoryMapperImpl.java:24-30 emits exactly one per enum value).
+      Two `useMemo`s allocate one number (`total`) and one array of at most six
+      elements (`sortedResults`) per dependency change — trivial cost.
+      TestCategoryResults.tsx:14-25
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: |-
+      One render per category per dashboard mount; no pagination, no streaming,
+      no async at this tier. Re-renders only when `categoryResults` reference
+      changes (parent prop pass).
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: |-
+      Render cost is O(6) — fixed by `DataEntityRunStatus` enum cardinality,
+      independent of catalog size. The dashboard scales by the bounded number
+      of categories, not by data volume.
+  strengths:
+    - |-
+      Bounded category cardinality (six) — the dashboard's per-category tier
+      cannot blow up with catalog growth; the tier scales with anomaly-class
+      enumeration, not with dataset count.
+    - |-
+      Enum-driven tile order (Object.values(DataEntityRunStatus)) is O(6)
+      pure-iteration — no comparator, no allocation beyond the rebuilt array.
+  weaknesses:
+    - |-
+      `data.testResults.toSorted(...)` (category-row ordering) is computed
+      OUTSIDE a useMemo at DataQualityContent.tsx:75-77 — sorted on every
+      parent re-render even when `data` is unchanged. Cheap at N=6, inconsistent
+      with the surrounding useMemo wrapping. Severity LOW.
+  cross_file_inconsistencies: []
+  contributing_files:
+    - TestCategoryResults.md
+    - DataQualityContent.md
+  evidence:
+    - TestCategoryResults.md:performance.hot_paths.[0]
+    - TestCategoryResults.md:performance.scaling_characteristics
+    - DataQualityContent.md:performance.known_performance_gaps.[1] (toSorted outside useMemo)
+related_features:
+  - F-032
+  - F-022
+related_pillar_features:
+  - "P-04:F-002"
+notes: |-
+  This is the per-category bucket on the standalone /data-quality dashboard —
+  distinct from per-dataset test reports (F-022, surfaced via the Test reports
+  tab on the dataset detail page). Both surfaces consume the same
+  DataEntityRunStatus enum and the same category label set, but the category
+  tier is unique to the dashboard's catalog-wide aggregate view; per-dataset
+  test reports do NOT bucket by category at the UI tier.
+
+  The DataQualityCategory enum (six getDescription() values) is the canonical
+  category vocabulary; sidecars confirm 'Unknown category' (lowercase 'c')
+  is the literal rendered string, contradicting the dashboard.md doc which
+  capitalizes 'Unknown Category'. Surface a DOC-NNN follow-up to canonicalize.
+maintainer_curated: false

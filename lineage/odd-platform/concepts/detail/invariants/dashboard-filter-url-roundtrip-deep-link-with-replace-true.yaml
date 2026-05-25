@@ -1,0 +1,142 @@
+name: Dashboard filter URL round-trip — deep-linkable view with replace:true
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-04
+description: |-
+  The Data Quality Dashboard's filter panel mirrors `formFiltersAtom`
+  into the URL query string (`DataQualityFilters.tsx:46-54`, JSON-
+  encoded FilterOption[] including names) and hydrates from
+  `searchParams` on mount (`DataQualityFilters.tsx:28-43`). The
+  `setSearchParams(newSearchParams, { replace: true })` flag avoids
+  pushing a new history entry per chip — the dashboard view becomes
+  bookmarkable, shareable, and reload-survivable. NEW invariant, batch
+  ZC (2026-05-22).
+
+  The invariant is the dashboard's PRIMARY persistence channel: the
+  jotai store is per-mount (the `<DataQualityAtomProvider>` is
+  destroyed on navigation away, see the `jotai-feature-scoped-store`
+  entity), so the URL is the ONLY surface that survives navigation.
+  Without this round-trip the dashboard would lose filter state every
+  time the operator navigates to another page and back.
+
+  The two-way binding is also the deep-link mechanism: an operator can
+  paste `/data-quality?namespaceIds=%5B%7B%22id%22%3A1%2C%22name%22%3A%22prod%22%7D%5D`
+  into Slack or an email, the recipient opens it, the mount-effect
+  hydrates `formFiltersAtom` from the searchParams, and the same
+  filtered dashboard renders. The URL carries the FULL FilterOption[]
+  (id + name) so the autocomplete chip can render its label without
+  re-querying the list API for the id.
+
+  Composition with `replace: true`: history navigation (Back / Forward)
+  is intact across the dashboard's parent navigation but does NOT
+  scrub through per-chip filter changes. A user pressing Back after 30
+  filter toggles returns to where they were BEFORE opening the
+  dashboard, not to the previous filter state.
+
+  Failure mode: the mount effect does `JSON.parse(value)` on each
+  query-param value WITHOUT try/catch (DataQualityFilters.tsx:35). A
+  user who hand-edits `/data-quality?namespaceIds=foo` (not valid JSON)
+  causes JSON.parse to throw inside the effect; React surfaces this as
+  an uncaught render-time error. Recorded under the
+  `sync-dashboard-filters-with-url` operation's weaknesses.
+
+  vocabulary_status: codebase-anchored, doc-side-gap. The live
+  https://docs.opendatadiscovery.org/features/data-quality/dashboard
+  (WebFetched 2026-05-22 status 200) does NOT document the deep-linking
+  behaviour. An operator cannot discover from the docs that their
+  filter state survives reload or can be shared via URL.
+vocabulary_status: codebase-anchored, doc-side-gap
+axes_present:
+  - react_components
+nodes:
+  - odd-platform ts react-component component:DataQualityFilters
+contributors:
+  - |-
+    DataQualityFilters (filter sidebar) batch ZC:
+      implicit_adrs[filter selections are mirrored into the URL query string so the
+      dashboard view is deep-linkable and shareable; replace:true avoids polluting
+      browser history with every keystroke-driven filter change];
+      operations[sync-formFilters-from-url, sync-url-from-formFilters];
+      invariants[URL ↔ atom sync uses JSON.stringify/JSON.parse of full FilterOption[]
+      (id+name), only non-empty filter arrays written to URL];
+      downstream_side_effects[updates browser URL query string with replace:true on
+      every formFilters change]
+evidence:
+  - DataQualityFilters.md:implicit_adrs.[2] (the URL round-trip decision — primary intent)
+  - DataQualityFilters.md:concepts.operations.[1-2] (the two sync directions)
+  - DataQualityFilters.md:concepts.invariants.[1-2] (JSON encoding, empty-drop)
+  - DataQualityFilters.md:downstream_side_effects.[1] (the redirect-issue side-effect)
+security_aggregate:
+  overall: MEDIUM
+  auth_modes_relevant: []
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: N/A
+    detail: |-
+      URL-state invariant — not an authorization concept.
+  owner_scoping:
+    verdict: N/A
+    detail: |-
+      URL-state invariant — not data-scoped.
+  strengths:
+    - |-
+      Sensitive selections (filter chips themselves) do not leak via the
+      jotai store between unrelated features — the per-mount Provider
+      scope ensures the dashboard's filter atoms reset on navigate-away;
+      the URL is the only persistence channel and is explicitly visible.
+  weaknesses:
+    - |-
+      Filter NAMES (not just ids) written to the URL — visible in browser
+      history, server access logs, referer headers. Catalog metadata,
+      not credentials, but worth documenting as an operator-visible side
+      effect. Captured under the `dashboard-filter-panel` entity's
+      security_aggregate.weaknesses.
+  cross_file_inconsistencies: []
+  contributing_files:
+    - DataQualityFilters.md
+  evidence:
+    - DataQualityFilters.md:security.known_security_gaps.[0]
+performance_aggregate:
+  overall: HIGH
+  hot_paths: []
+  throughput_shape:
+    verdict: N/A
+    detail: |-
+      URL-state invariant — not a throughput concept.
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: |-
+      Client-only URL sync; no server resource consumption.
+  strengths:
+    - |-
+      `replace: true` keeps the navigation stack clean across rapid filter
+      edits.
+    - |-
+      The mount-time sync hydrates state from the URL in one pass before
+      the first dashboard fetch fires (modulo the LSN-017 deeplink
+      double-fire captured under `aggregate-catalog-wide-data-quality`).
+  weaknesses: []
+  cross_file_inconsistencies: []
+  contributing_files:
+    - DataQualityFilters.md
+  evidence: []
+related_features:
+  - F-032
+related_pillar_features:
+  - "P-04:F-002"
+notes: |-
+  Generic UI pattern (URL as application state) instantiated on the DQ
+  Dashboard. Sibling `url-as-source-of-truth-for-lineage-view-state`
+  invariant uses URL state for lineage-view canvas params with a
+  different mechanism (URL is the primary state container). This entry's
+  pattern uses URL as a SIDE-CHANNEL for jotai-atom values — a related
+  but distinct shape worth recording independently.
+
+  Operator-visible behaviour worth documenting on a docs refresh:
+    (1) The dashboard view is deep-linkable — paste a /data-quality?... URL
+        to share a filtered view.
+    (2) Filter state survives reload — no need to re-select chips.
+    (3) Browser Back / Forward does NOT scrub through filter changes
+        (replace:true policy) — it navigates the parent navigation only.
+maintainer_curated: false

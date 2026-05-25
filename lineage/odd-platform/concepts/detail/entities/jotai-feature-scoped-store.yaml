@@ -1,0 +1,149 @@
+name: Jotai Feature-Scoped Store (per-feature atom store inside a nested Provider)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-11
+description: |-
+  A consistently-applied per-feature client-state convention in odd-platform-ui:
+  a feature mounts its OWN bare `jotai` `<Provider>` (a thin wrapper named
+  `{Feature}AtomProvider`, almost byte-identical across features), and its
+  atoms RESOLVE against that nested scope rather than jotai's global default
+  store. NEW concept, batch ZC (2026-05-22).
+
+  The decision makes the feature's state feature-local + mount-lifetime-bound:
+  navigating away from the feature destroys the Provider and the next visit
+  starts a fresh atom scope. The convention diverges from the redux +
+  redux-thunk store the rest of `odd-platform-ui` uses (the `handle-response-
+  async-thunk-pattern` concept records the global redux side of the divide).
+  Four feature areas use this jotai-store convention: OwnerAssociations,
+  DEGLineage, DatasetStructure (Overview + Compare), and DataQuality —
+  26 files importing `jotai` across the four areas, all wrapping their
+  subtree in an `{Feature}AtomProvider`.
+
+  Provider shape (byte-for-byte identical across features):
+    `const {Feature}AtomProvider: React.FC<React.PropsWithChildren> =
+       ({ children }) => <Provider>{children}</Provider>;`
+
+  Stores typically expose:
+    - one or more source-of-truth atoms (e.g. `formFiltersAtom`)
+    - derived read-only atoms via `atom(get => ...)` projecting source state
+      into another shape (e.g. `filtersAtom` projecting form state into
+      the request shape consumed by the fetch hook)
+    - write-only "action" atoms via `atom(null, (get, set) => ...)`
+      (e.g. `clearTableFiltersAtom`, `clearTestFiltersAtom`) — used for
+      multi-key resets and other mutation patterns the source atom cannot
+      express ergonomically
+    - sometimes a `getFieldFilterAtom(key)` focused-atom factory for
+      per-key subscriptions (DataQualityStore exports one but DataQualityFilters
+      does not USE it — see the `dashboard-filter-panel` weakness)
+
+  vocabulary_status: codebase-anchored. The convention is purely a UI
+  architectural choice; it is not user-facing and is not named anywhere in
+  the live ODD docs. Surface a CANONICALISATION CANDIDATE — worth recording
+  in a future maintainer-facing UI architecture page if one is ever authored.
+vocabulary_status: codebase-anchored
+axes_present:
+  - jotai_stores
+  - react_components
+nodes:
+  - odd-platform ts jotai-store store:DataQualityStore
+contributors:
+  - |-
+    DataQualityStore (jotai filter store) batch ZC:
+      implicit_adrs[the /data-quality feature manages its filter state with jotai
+      atoms scoped by a feature-local <Provider>, deliberately diverging from the
+      redux + redux-thunk store the rest of odd-platform-ui uses — a consistently-
+      applied per-feature-store convention];
+      implicit_adrs[the store scopes its atoms per-feature-mount — DataQualityProvider
+      wraps the dashboard in a bare jotai <Provider> rather than letting the atoms
+      use jotai's global default store];
+      bugs_limitations_corner_cases[filter selection does not survive navigating away
+      and back — per-Provider-mount reset]
+evidence:
+  - DataQualityStore.md:implicit_adrs.[0] (the convention — 4 feature areas, 26 files)
+  - DataQualityStore.md:implicit_adrs.[1] (per-feature-mount scope decision)
+  - DataQualityStore.md:bugs_limitations_corner_cases.[1] (navigate-away reset behaviour)
+  - DataQualityStore.md:understanding (the four feature areas: OwnerAssociations / DEGLineage / DatasetStructure / DataQuality)
+security_aggregate:
+  overall: HIGH
+  auth_modes_relevant: []
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: N/A
+    detail: |-
+      A client-state convention has no authorization surface. The convention does
+      MARGINALLY improve isolation between features (state cannot leak between
+      pages via a shared global store) — a defence-in-depth benefit, not an
+      authorization gate.
+  owner_scoping:
+    verdict: N/A
+    detail: |-
+      Client state, no scoping concept.
+  strengths:
+    - |-
+      Per-feature scoping reduces cross-feature state leakage — if two features
+      named the same atom key (which jotai's global default would conflate),
+      the nested Provider isolates them.
+    - |-
+      Per-mount reset makes feature state non-persistent across navigation —
+      sensitive in-progress selections (e.g. filter chips on the DQ dashboard)
+      do not survive a navigate-away as a stale leak.
+  weaknesses: []
+  cross_file_inconsistencies: []
+  contributing_files:
+    - DataQualityStore.md
+  evidence:
+    - DataQualityStore.md:implicit_adrs.[0-1]
+performance_aggregate:
+  overall: HIGH
+  hot_paths: []
+  throughput_shape:
+    verdict: N/A
+    detail: |-
+      Client state; not a throughput concept.
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: |-
+      Per-tab, per-mount; no shared state across tabs or sessions.
+  strengths:
+    - |-
+      Atomic state primitives — small re-render surfaces vs redux's slice-wide
+      re-renders. Each atom subscription is per-component, jotai automatically
+      tracks which atoms a component reads.
+    - |-
+      Derived atoms are O(input-size) pure functions cached by jotai; recompute
+      only when source atoms change.
+  weaknesses:
+    - |-
+      Easy to subscribe to a whole composite atom (e.g. `useAtom(formFiltersAtom)`)
+      when only one field is needed — re-renders propagate beyond necessity. The
+      DataQuality feature ships an unused per-key `getFieldFilterAtom` factory
+      (DataQualityStore.ts:24-30); the focused-atom fix exists but is unused.
+      Severity LOW (bounded by feature size).
+  cross_file_inconsistencies: []
+  contributing_files:
+    - DataQualityStore.md
+  evidence:
+    - DataQualityStore.md:performance.hot_paths (re-render fan-out + fetch trigger chain)
+related_features:
+  - F-032
+related_pillar_features:
+  - "P-04:F-002"
+  - "P-11"
+notes: |-
+  This is a UI-architecture pattern recorded as its OWN concept because the
+  convention is independently observable across 4 feature areas — naming it
+  separately makes the next sidecar in OwnerAssociations / DEGLineage /
+  DatasetStructure able to STRENGTHEN this concept without minting yet
+  another duplicate. The full enumeration of all 4 feature areas would
+  require strengthening this concept's `nodes:` and `contributors:` lists
+  as those feature areas get enriched in future batches.
+
+  The convention's primary purpose is feature-local state isolation;
+  per-mount reset is a CONSEQUENCE (sometimes desired — sensitive selections
+  shouldn't leak; sometimes undesired — operator's filter slice resets on
+  navigate-away). The DataQuality feature partially mitigates the reset
+  consequence by also writing filter state to the URL query string
+  (DataQualityFilters.tsx:46-54) — a separate concept entry
+  (`dashboard-filter-url-roundtrip-deep-link-with-replace-true`).
+maintainer_curated: false

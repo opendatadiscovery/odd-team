@@ -1871,3 +1871,93 @@ STRENGTHENED ENTRIES (batch ZB) — no headline rewrite; severity + category unc
 The orchestrator should NOT add new index headlines for these; the STRENGTHENS blocks
 are appended to the existing detail/ shards.
 
+
+## DOC-GAP-263 — Standalone `/data-quality` Quality Dashboard route has NO client-side permission gate AND every live Data Quality doc page is silent on access control — any authenticated user (under LOGIN_FORM/OAUTH2/LDAP) and any anonymous caller (under `auth.type=DISABLED`) can open `/data-quality` and view the CATALOG-WIDE aggregate quality posture (per-namespace/datasource/owner table-health + monitored counts + per-category test-run breakdowns), but the live `features/data-quality/dashboard` page + `features/data-quality` landing make NO statement about who can see this surface **(NEW batch ZC — DataQuality + DataQualityContent react-component PRIMARY SOURCES; live WebFetch `dashboard` + `data-quality` 2026-05-25 status 200; STRENGTHENS-cross-link DOC-GAP-082 META + DOC-GAP-149 + DOC-GAP-198 sibling P-04 cluster; related_features F-022; LSN-001/LSN-002 operator-trap class)**
+
+**Severity**: HIGH
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-263.md`
+
+---
+
+## DOC-GAP-264 — Quality Dashboard "Title" filter is an LSN-020 input-name-vs-implementation drift — the UI label is bare `t('Title')` but the `titleIds`/`deTitleIds` query parameter binds at the SQL layer to `OWNERSHIP.TITLE_ID` (ownership ROLE, e.g. "Data Steward"), NOT to any dataset name/title; the live `/features/data-quality/dashboard` page lists "Title" as one of the five filter dimensions but DOES NOT explain what it filters by; when Owner+Title are both selected the SQL puts them in ONE OWNERSHIP join joined by AND so an operator expecting "owned by Alice AND tagged Title X" may get an empty dashboard if Alice's ownership row carries a different title **(NEW batch ZC — DataQualityFilters react-component PRIMARY SOURCE; live WebFetch `dashboard` 2026-05-25 status 200 confirms verbatim absence of Title description; LSN-020 class — THIRD confirmed instance in catalog after Activity-Feed userIds and getPopularTagList ids; cross-links DOC-GAP-255 + DOC-GAP-146)**
+
+**Severity**: HIGH
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-264.md`
+
+---
+
+## DOC-GAP-265 — Quality Dashboard "Test Results Breakdown" ring + per-category result tiles: live `/features/data-quality/dashboard` page describes the breakdown as 3 statuses ("passed / failed / skipped"); the code renders SIX statuses everywhere — the breakdown donut, the legend, and EVERY per-category result row each iterate the full `DataEntityRunStatus` enum (SUCCESS / FAILED / SKIPPED / BROKEN / ABORTED / UNKNOWN); an operator who sees a `BROKEN` or `ABORTED` slice (or the 4 extra per-category tile columns) has NO doc explaining what the additional statuses mean **(NEW batch ZC — DataQualityContent + TestCategoryResults react-component PRIMARY SOURCES; live WebFetch `dashboard` 2026-05-25 status 200 confirms verbatim 3-status doc description; minor secondary alias drift "passed" vs rendered "Success")**
+
+**Severity**: MEDIUM
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-265.md`
+
+---
+
+## DOC-GAP-266 — Quality Dashboard "Table Health" ring label vocabulary drift — live `/features/data-quality/dashboard` page describes the slices as "success / failed / broken"; the DTO + rendered slice labels are "Healthy / Warning / Error" (`TablesHealthDashboard.{healthyTables, warningTables, errorTables}`); an operator reading the docs looking for a "broken tables" count will not find that label on the screen — the doc's vocabulary is not the product's vocabulary; the SLA colour scheme on the sibling `/sla-statuses` page (GREEN/YELLOW/RED) aligns with the rendered Healthy/Warning/Error, making the dashboard doc's "success/failed/broken" the OUTLIER in the otherwise self-consistent doc tree **(NEW batch ZC — DataQualityContent react-component PRIMARY SOURCE; live WebFetch `dashboard` 2026-05-25 status 200; cross-link DOC-GAP-198 + DOC-GAP-265)**
+
+**Severity**: MEDIUM
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-266.md`
+
+---
+
+## DOC-GAP-267 — Quality Dashboard filter sidebar — the entire INTERACTION MODEL of the dashboard's primary operator surface is undocumented despite the dedicated `dashboard.md` sub-page: the live page names the five filter dimensions and the tables-vs-tests split but is SILENT on (a) URL-deeplinkable / shareable filter selections (every selection is mirrored into the query string with `replace: true`), (b) per-side "Clear" buttons (two of them, scoped per side), (c) autocomplete-by-name search (every keystroke fires a list-API request, no debounce; first 30 results only), (d) the live-filtering model (every chip selection immediately re-queries the dashboard; no Apply gate), (e) the per-mount reset behaviour (navigating away and back resets all filters to the empty default — URL is the only persistence channel) **(NEW batch ZC — DataQualityFilters + DataQualityStore react-component+jotai-store PRIMARY SOURCES; live WebFetch `dashboard` 2026-05-25 status 200 confirms verbatim absence of URL deep-linking + Title description)**
+
+**Severity**: MEDIUM
+**Category**: missing-page
+
+**Full detail**: `detail/DOC-GAP-267.md`
+
+---
+
+## DOC-GAP-268 — Quality Dashboard per-test-category result ROW (the right-side matrix the live page calls "a per-test-category matrix") is undocumented in structure: the doc says "a per-test-category matrix on the right showing per-anomaly-class counts" but never describes the COMPOSITION of a single row — a category name heading + a large total-count number + a horizontal row of per-run-status count tiles (one tile per `DataEntityRunStatus` value, colour-coded, with the literal en-dash `–` for zero/negative counts and the numeral otherwise); operators see the per-category panel and have no doc-side description of what each numeric tile means or how its colour maps to status; the column-alignment design intent (every row's FAILED tile in the same column) is undocumented **(NEW batch ZC — TestCategoryResults react-component PRIMARY SOURCE; live WebFetch `dashboard` 2026-05-25 status 200 confirms one-phrase-only matrix coverage)**
+
+**Severity**: MEDIUM
+**Category**: missing-page
+
+**Full detail**: `detail/DOC-GAP-268.md`
+
+---
+
+## DOC-GAP-269 — Quality Dashboard empty-state / no-data-ingested behaviour is undocumented — an operator opening `/data-quality` on a fresh install (or after a failed dashboard fetch) sees three grey "No data" donuts plus zero category panels, with NO explanatory copy on screen and NO doc-side description; the failed-fetch state is INDISTINGUISHABLE from the genuinely-empty-catalog state because the component destructures only `{ data, isSuccess }` from `useGetDataQualityDashboard` (never `isError`/`error`), and react-query's `initialData` (all-zeros `DataQualityResults`) is shown on both initial-loading and error paths **(NEW batch ZC — DataQualityContent react-component PRIMARY SOURCE; live WebFetch `dashboard` 2026-05-25 status 200 confirms verbatim absence of empty-state coverage)**
+
+**Severity**: LOW
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-269.md`
+
+---
+
+## DOC-GAP-270 — Minor casing mismatch on the "Unknown" test-category label between live doc and rendered UI — live `/features/data-quality/dashboard` page lists the anomaly class as "Unknown Category" (capital C); the code renders `DataQualityCategory.UNKNOWN.getDescription()` whose exact string is "Unknown category" (lowercase c); the other five categories have matching casing across doc and code, so the "Unknown" entry is the lone OUTLIER **(NEW batch ZC — TestCategoryResults react-component PRIMARY SOURCE; live WebFetch `dashboard` 2026-05-25 status 200 confirms doc-side "Unknown Category" casing)**
+
+**Severity**: LOW
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-270.md`
+
+---
+
+## DOC-GAP-271 — `GET /api/dataqatests/runs` (the Quality Dashboard's single backend endpoint, operationId `getDataQualityTestsRuns`) declares 10 query parameters in `openapi.yaml:1973-2078` — 5 `de*`-prefixed (`deNamespaceIds` / `deDatasourceIds` / `deOwnerIds` / `deTitleIds` / `deTagIds`) for the data-entity / tables side and 5 unprefixed (`namespaceIds` / `datasourceIds` / `ownerIds` / `titleIds` / `tagIds`) for the test / jobs side — and EVERY ONE of the 10 parameters has NO `description:` field in the spec; an API consumer hitting the endpoint without using the UI cannot tell `de*` means "data-entity / table-side" vs unprefixed "test-side", and even with that knowledge has no description of what each id-array filters by (let alone the load-bearing `titleIds`→`OWNERSHIP.TITLE_ID` ownership-role binding) **(NEW batch ZC — DataQualityContent + DataQualityFilters react-component PRIMARY SOURCES + openapi.yaml spec-axis primary source; cross-links DOC-GAP-198 missing api-reference sub-page + DOC-GAP-264 LSN-020)**
+
+**Severity**: MEDIUM
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-271.md`
+
+---
+
+## DOC-GAP-272 — Quality Dashboard "Namespace" filter SQL widening is undocumented — the live `/features/data-quality/dashboard` page lists "Namespace" as one of the five filter dimensions but never warns that the SQL match is `NAMESPACE.ID.in(namespaceIds).and(NAMESPACE.ID.eq(DATA_ENTITY.NAMESPACE_ID).or(NAMESPACE.ID.eq(DATA_SOURCE.NAMESPACE_ID)))` — i.e. selecting namespace X matches BOTH entities directly assigned to X AND entities whose datasource is in X; the result set is WIDER than "entities in namespace X" implies, and the doc-side silence means an operator doing a tenant-scoped quality check will silently include cross-tenant tables that happen to live in a datasource registered in that namespace; the widening is asymmetric (data-entity-namespace match widened to datasource-namespace, but not the reverse) **(NEW batch ZC — DataQualityFilters react-component PRIMARY SOURCE; live WebFetch `dashboard` 2026-05-25 status 200; cross-links DOC-GAP-264 + DOC-GAP-271 + DOC-GAP-267)**
+
+**Severity**: MEDIUM
+**Category**: drift
+
+**Full detail**: `detail/DOC-GAP-272.md`
+
+---

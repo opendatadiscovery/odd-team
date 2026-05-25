@@ -1,0 +1,54 @@
+gap_id: TEST-GAP-910
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform ts react-component component:DataQualityContent"
+pillars_affected: [P-04]
+surfaced_by:
+  - "odd-platform__ts__react-component__component__DataQualityContent.md:tests_coverage_semantic.uncovered_behaviours.[4] (the component renders without crashing when the API returns a status value outside the DataEntityRunStatus enum)"
+  - "odd-platform__ts__react-component__component__DataQualityContent.md:bugs_limitations_corner_cases.[0] (palette.runStatus[status].color throws uncaught TypeError and blanks the whole dashboard — severity HIGH)"
+  - "odd-platform__ts__react-component__component__DataQualityContent.md:stress_findings.tunables.questions.[2] (the run-status-color lookup at line 48 is the genuine boundary case)"
+behaviour: |-
+  **HIGH — `palette.runStatus[status].color` (DataQualityContent.tsx:48) throws an uncaught TypeError and blanks the WHOLE catalog-wide Data Quality dashboard if the backend returns a run-status value outside the 6-value `DataEntityRunStatus` enum.**
+
+  The crash chain (statically certain):
+
+  1. `useGetDataQualityDashboard(filterState)` returns `data.testResults[]` with one entry per backend category; each entry's `results[]` carries `(status, count)` pairs from the `DataEntityRunStatus` enum (`components.yaml:1407-1415` — SUCCESS, FAILED, SKIPPED, BROKEN, ABORTED, UNKNOWN).
+  2. `calcTestResultsBreakdown` reduces across all categories, summing per-status counts into a `Map<DataEntityRunStatus, number>` (`DataQualityContent.tsx:28-41`).
+  3. `testResultsBreakdownChartData` materialises the map for the DonutChart: each `[status, value]` entry maps to `color: palette.runStatus[status].color ?? palette.dataQualityDashboard.unknown` (`DataQualityContent.tsx:46-50`).
+  4. `palette.runStatus` is typed `Record<DataEntityRunStatus, ItemColors>` (`interfaces.ts:55`) — keyed by EXACTLY the 6 enum values. If `status` is any other string (e.g. the backend ships a 7th `DataEntityRunStatus` value before the frontend types are regenerated, OR a stale `generated-sources` build, OR a malformed/proxy-injected value), `palette.runStatus[status]` is `undefined` and `.color` throws TypeError **before** the `??` evaluates.
+  5. The error propagates out of the `useMemo`, React's error boundary at the route level is the AppSuspenseWrapper (NO ErrorBoundary — `App.tsx:39, 58` + `AppSuspenseWrapper.tsx:8-21`), and the whole `/data-quality` page blanks.
+
+  The `?? palette.dataQualityDashboard.unknown` fallback is **mis-written defensive code** — it guards a missing `.color` attribute on a PRESENT entry, not a missing entry. The same risk does NOT apply to `tableHealthData` / `tableMonitoredTables` (lines 53-73), which read fixed `palette.dataQualityDashboard` keys, not status-indexed lookups.
+
+  **Why HIGH not CRITICAL**: HIGH per Rule 3 because the SIDECAR self-classifies severity HIGH; the crash is latent (not exploitable as a security vector, no data loss), but it weaponises **any** future backend enum addition into an instant production outage on the Data Quality dashboard — a tier-1 operator surface (`docs.opendatadiscovery.org/features/data-quality/dashboard` 2026-05-22 status 200). No test exists; no type system catches it (the runtime backend can ship enum values the frontend's typed enum does not know about — that is precisely the surface that breaks).
+
+  **Test gap shape**: an integration test mounts `<DataQuality>` inside a test router with a mocked `dataQualityRunsApi.getDataQualityTestsRuns` that returns a `DataQualityResults` whose `testResults[0].results` carries a status string NOT in `DataEntityRunStatus` (e.g. `"PENDING"` or `"TIMEOUT"`). Assertion: the dashboard renders without throwing (a graceful "unknown status" tile, or the donut excludes that slice — the test pins WHICHEVER behaviour the maintainer chooses as the correct one, but the test forces the choice).
+test_class: missing-integration
+criticality_rationale: |-
+  HIGH per Rule 3: source sidecar self-classifies as HIGH (DataQualityContent.md:bugs_limitations_corner_cases.[0]) — latent crash that takes down the whole tier-1 dashboard if the backend ever ships a 7th enum value. Not CRITICAL (no security/data-loss dimension); not MEDIUM (the blast radius is the entire dashboard, not one tile). Single-pillar (P-04) so no cross-pillar criticality bump; HIGH stands.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-ui/src/components/DataQuality/__tests__/DataQualityContent.unknownRunStatus.test.tsx"
+  name: "renderDashboardWithOutOfEnumStatus_doesNotCrash_pinsPaletteRunStatusFallback"
+evidence:
+  - "DataQualityContent.md says (bugs_limitations_corner_cases.[0]): 'palette.runStatus[status].color (line 48) throws an uncaught TypeError and blanks the whole dashboard if the backend returns a run-status outside the DataEntityRunStatus enum. palette.runStatus is a Record<DataEntityRunStatus, ItemColors> (interfaces.ts:55) — keyed by exactly the 6 enum values. If status is any other string ... palette.runStatus[status] is undefined and .color throws BEFORE the ?? is evaluated.' severity: HIGH"
+  - "DataQualityContent.md says (tests_coverage_semantic.uncovered_behaviours.[4]): 'the component renders without crashing when the API returns a status value outside the DataEntityRunStatus enum. palette.runStatus[status].color at line 48 throws TypeError if status is not a runStatus key.' test_class: integration; criticality: HIGH"
+  - "DataQualityContent.md says (stress_findings.tunables.questions.[2]): 'The genuine boundary case for this component is not a tunable but the run-status-color lookup at line 48: palette.runStatus[status].color ?? palette.dataQualityDashboard.unknown. The ?? unknown fallback is DEAD under the current contract ... But if the backend returns a status OUTSIDE the enum ... the whole dashboard blanks. The ?? unknown is mis-written defensive code (it guards a missing .color, not a missing entry).'"
+  - "Verified at primary source via sidecar: DataQualityContent.tsx:47-48 (the unsafe indexed access) + interfaces.ts:55 (RunStatus = Record<DataEntityRunStatus, ItemColors>) + components.yaml:1407-1415 (the 6-value enum)"
+  - "Grep verification: find /home/raman/work/odd/odd-platform/odd-platform-ui/src/components/DataQuality -type f returned 21 source files, 0 test files (2026-05-22) — DataQuality component tree is COMPLETELY untested"
+cross_references:
+  - "F-032 (P-04:F-002 Catalog-wide Data Quality Dashboard) — drift_class out_of_enum_status_blanks_whole_dashboard is enumerated in F-032.drift_class_summary"
+  - "TEST-GAP-927 (this batch — the META cross-cutting zero-tests gap on the DataQuality subtree; TEST-GAP-910 is the most-actionable individual instance)"
+related_features: [F-032]
+related_pillar_features: ["P-04:F-002"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `DataQualityContentUnknownRunStatusTest` under `odd-platform-ui/src/components/DataQuality/__tests__/`. Use Vitest + React Testing Library + MSW to mock `GET /api/dataqatests/runs`. Three pinning methods:
+  (a) `renderDashboardWithUnknownStatus_doesNotCrash`: mock the endpoint to return one category whose `results` contains `{status: "PENDING", count: 5}` plus the 6 known statuses. Render `<DataQuality>` inside a `<MemoryRouter>`. Assert the dashboard renders without throwing — the three DonutCharts mount, the category card renders, and either the unknown status is silently excluded (current intended-by-fallback behaviour) OR rendered with `palette.dataQualityDashboard.unknown` (the fallback intent the `??` operator implies). The test FORCES the maintainer to decide which is correct.
+  (b) `renderDashboardWithUnknownStatus_breakdownTotalIsConsistent`: same mock — assert the `Test Results Breakdown` ring's total equals the sum of all status counts INCLUDING the unknown one (the operator must not see a "lying total" that excludes the unknown count silently).
+  (c) `renderDashboardWithUnknownStatus_legendShowsAllStatusesIncludingUnknown`: assert the legend renders an entry for the unknown status (or pins the deliberate exclusion).
+  Add a `// REGRESSION-PIN — DataQualityContent.tsx:47-48 — palette.runStatus[status].color throws TypeError on out-of-enum status. The ?? fallback is mis-written (guards missing .color, not missing entry). This test pins that the dashboard SURVIVES an out-of-enum status. If the maintainer ever adds a new DataEntityRunStatus value to components.yaml:1407-1415, this test forces them to also extend palette.runStatus in interfaces.ts:55.` comment block.
+batch: 2026-05-22-ZC
+feature_id: F-032

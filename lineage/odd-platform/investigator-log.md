@@ -2500,3 +2500,34 @@ DataSourceController is now class+method complete. High-value fully-dark control
 - 16 unfixable YAML quarantines (unchanged from ZE).
 - Coherence sweep: 98677 generic candidates (regex-noise baseline; per-reducer coherence already vetted).
 
+
+---
+
+## Batch ZG — 2026-05-25/26 (DQ + Run + GenAI + Dataset class-level)
+
+**Sidecars added** (5/5): DataEntityRunController + DataQualityRunsController + GenAIController + DataSetController + DatasetFieldController. **Coverage 47.6% direct / 92.2% effective — broke 92%.** 40 features.
+
+### Phase 1 headlines
+1. **DataQualityRunsController** — LSN-019 class fire: endpoint named `getDataQualityTestsRuns` returning "runs" actually COUNTS TESTS by latest-run status. Filter binds Title → OWNERSHIP.TITLE_ID + namespaceIds OR-widens via DATA_SOURCE.NAMESPACE_ID (LSN-020 class on 2 of 10 filters). No auth gate — catalog-wide DQ aggregate visible to any authenticated user.
+2. **GenAIController** — NOVEL ATTACK SURFACE: no permission gate + no body validation + no rate limit + no audit log + no PII redaction + LSN-002-class zero-timeout default + no SSRF guard + 256KB default response cap + ServerWebExchange exposed-but-discarded. ONE name-behavior drift (`genAiQuestion` implies AI assistant, actually free-text relay).
+3. **DataSetController** — dataEntityId path-param drift across 3 of 4 endpoints (Category F TRANSLATES_SILENTLY); cross-dataset version-id leak + diff-cross-dataset leak.
+4. **DatasetFieldController** — TWO SecurityConstants COPY-PASTE wiring bugs (`POST /api/datasetfields/{id}/terms` gated by DATA_ENTITY_ADD_TERM not DATASET_FIELD_ADD_TERM; `PUT /api/alerts/{id}/status` misrouted to DATASET_FIELD_ADD_TERM). createEnumValue is BULK-REPLACE (silent data destruction) not CREATE.
+5. **DataEntityRunController** — wire-vs-DB enum asymmetry (RUNNING → potential HTTP 500); cross-owner status_reason diagnostic-text PII broadcast.
+
+### Phase 2 deltas
+- concept-merger: +5 new + 15 extended; 0 supersedes (LSN-019/-020 class confirmed at SCHEMA + SERVICE + UI tiers for DQ dashboard).
+- adr-archaeologist: +7 new ADRs (-220..-226) + 5 strengthened. +19 new REFACTORs (REFACTOR-649..667; 8 HIGH/7 MEDIUM/4 LOW) + 10 strengthened. REFACTOR-653 (LSN-019 dashboard) + REFACTOR-657 (DataSetController cross-dataset leak) load-bearing.
+- doc-gap-finder: +7 new DOC-GAPs (293-299; 5 HIGH/2 MEDIUM) + 8 strengthens. DOC-GAP-294 (RUNNING enum 6-vs-7 wire asymmetry) + DOC-GAP-297 (dashboard test-vs-runs name drift) headline.
+- test-coverage-mapper: +18 new TEST-GAPs (976-993) — **3 CRITICAL** (980 status_reason PII broadcast / 984 dashboard LSN-019 / 989 createEnumValue silent destruction) + 11 HIGH + 4 MEDIUM. 5 double-jeopardy.
+- feature-flow-builder: **+2 NEW features** F-039 GenAI Assistant P-07:F-005 (12 facets) + F-040 DQ Test Run History P-04:F-003 (13 facets) + 5 extended (F-032 backend confirmation closing P-090; F-005 strengthen 5; F-004 +2 wiring bugs; F-013 +1 BULK-REPLACE; F-018 strengthen 3). 38 → 40 features.
+
+### Cumulative
+- Direct: 184 → **188/395 (47.6%)**
+- Effective: 353 → **364/395 (92.2%)** ← broke 92% threshold
+- Features: 38 → **40** (+2)
+- CRITICAL test-gaps: 161 → **164** (+3)
+
+### Follow-ups
+- 16 unfixable YAML quarantines unchanged.
+- Coherence-sweep 103516 generic regex candidates (baseline; per-reducer coherence vetted).
+

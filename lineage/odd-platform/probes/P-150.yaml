@@ -1,0 +1,190 @@
+---
+probe_id: P-150
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DataEntityRunController__controller-class__DataEntityRunController
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-022
+test_class: integration
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category C — ordering, ties, NULL ordering): the runs-history
+  endpoint `GET /api/dataentities/{id}/runs` is paginated via
+  `jooqQueryHelper.paginate(baseQuery, DATA_ENTITY_TASK_RUN.END_TIME, SortOrder.DESC, ...)`
+  (ReactiveDataEntityTaskRunRepositoryImpl.java:176-182). The outer SELECT
+  emits a single `ORDER BY end_time DESC` clause with NO tie-breaker, NO
+  NULLS FIRST/LAST directive, and NO secondary sort key.
+
+  Two operator-visible questions follow:
+
+  Q-NULL: when a RUNNING task is in flight, its `end_time` is NULL
+  (DataEntityRunRepositoryImplTest.java:52, 102 confirms RUNNING status
+  produces end_time=null in the repository test fixture). Postgres
+  default for ORDER BY ... DESC is NULLS FIRST. Hypothesis: a RUNNING
+  task appears at the TOP of the runs list — labelled by its start_time
+  (the UI key, TestRunItem.tsx:30) — with an empty Duration column
+  (the formatDistance pair short-circuits on null endTime,
+  TestRunItem.tsx:53-57).
+
+  Q-TIE: two completed runs with IDENTICAL end_time (a backfill of historic
+  runs ingested in the same batch — TaskRunIngestionRequestProcessor
+  bulk-inserts records with timestamps from collector payload) have no
+  deterministic secondary sort key. Postgres returns them in physical-
+  storage order, which the operator perceives as random across paginated
+  page fetches — and the InfiniteScroll consumer (TestRunsHistory.tsx:90-113)
+  appends page 2 to page 1, so a duplicate or skipped run is possible
+  when the natural-order tie-breaker shifts between successive page
+  fetches.
+
+  Probe verifies both: seed RUNNING + identical-end-time rows; fetch
+  page 1 with default size=100 and split page 1 size=2 / page 2 size=2;
+  assert the ordering behaviour observed.
+
+  Drift class: ordering-vs-display-key-mismatch (UI shows start_time,
+  backend orders by end_time); ordering-non-deterministic-on-ties;
+  null-handling-undocumented.
+---
+arrange:
+  - kind: docker-compose-up
+    services: [postgres, odd-platform-api]
+    env_overrides:
+      AUTH_TYPE: "DISABLED"
+  - kind: sql
+    description: "Seed a DQ-test data entity (entity_class_ids = [4] = DATA_QUALITY_TEST)"
+    query: |
+      INSERT INTO data_source (id, oddrn, name, namespace_id, collector_id, token_id, active, created_at, updated_at)
+      VALUES (6000, '//probe-source/p150/dq', 'p150_dq_source', 1, 1, 1, true, NOW(), NOW())
+      ON CONFLICT DO NOTHING;
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, entity_class_ids, status, hollow, manually_created, exclude_from_search, created_at, updated_at)
+      VALUES (6001, '//probe-source/p150/dq/test1', 'p150_dq_test', 6000, 9, ARRAY[4], 1, false, false, false, NOW(), NOW())
+      ON CONFLICT DO NOTHING;
+  - kind: sql
+    description: "Seed 5 task_run rows with mixed scenarios — 2 with identical end_time (tie), 1 RUNNING (NULL end_time), 2 with distinct end_times"
+    query: |
+      INSERT INTO data_entity_task_run (oddrn, task_oddrn, name, start_time, end_time, status, status_reason, type)
+      VALUES
+        ('//probe-source/p150/run/A', '//probe-source/p150/dq/test1', 'run_A_running',  NOW() - INTERVAL '1 minute',  NULL,                              'RUNNING', NULL, 'DATA_QUALITY_TEST_RUN'),
+        ('//probe-source/p150/run/B', '//probe-source/p150/dq/test1', 'run_B_tie',      NOW() - INTERVAL '60 minutes', NOW() - INTERVAL '50 minutes',     'SUCCESS', NULL, 'DATA_QUALITY_TEST_RUN'),
+        ('//probe-source/p150/run/C', '//probe-source/p150/dq/test1', 'run_C_tie',      NOW() - INTERVAL '70 minutes', NOW() - INTERVAL '50 minutes',     'SUCCESS', NULL, 'DATA_QUALITY_TEST_RUN'),
+        ('//probe-source/p150/run/D', '//probe-source/p150/dq/test1', 'run_D_recent',   NOW() - INTERVAL '40 minutes', NOW() - INTERVAL '30 minutes',     'FAILED',  'assertion mismatch', 'DATA_QUALITY_TEST_RUN'),
+        ('//probe-source/p150/run/E', '//probe-source/p150/dq/test1', 'run_E_oldest',   NOW() - INTERVAL '120 minutes', NOW() - INTERVAL '110 minutes',   'SUCCESS', NULL, 'DATA_QUALITY_TEST_RUN');
+act:
+  - kind: rest
+    description: "Page 1 size=100 — observe full ordering with RUNNING at top"
+    method: GET
+    path: /api/dataentities/6001/runs?page=1&size=100
+    capture_as: r1_full
+  - kind: rest
+    description: "Page 1 size=2 — observe top-of-list with RUNNING + first non-null"
+    method: GET
+    path: /api/dataentities/6001/runs?page=1&size=2
+    capture_as: r2_page1
+  - kind: rest
+    description: "Page 2 size=2 — observe whether tied rows split deterministically across pages"
+    method: GET
+    path: /api/dataentities/6001/runs?page=2&size=2
+    capture_as: r3_page2
+  - kind: rest
+    description: "Filter by SUCCESS — RUNNING + FAILED rows should disappear"
+    method: GET
+    path: /api/dataentities/6001/runs?page=1&size=100&status=SUCCESS
+    capture_as: r4_success_filter
+observe:
+  - kind: extract
+    from: r1_full
+    field: "items[*].name"
+    capture_as: r1_names
+  - kind: extract
+    from: r1_full
+    field: "items[*].status"
+    capture_as: r1_statuses
+  - kind: extract
+    from: r1_full
+    field: "items[*].endTime"
+    capture_as: r1_end_times
+  - kind: extract
+    from: r2_page1
+    field: "items[*].name"
+    capture_as: r2_names
+  - kind: extract
+    from: r3_page2
+    field: "items[*].name"
+    capture_as: r3_names
+  - kind: extract
+    from: r4_success_filter
+    field: "items[*].name"
+    capture_as: r4_names
+assert:
+  # Q-NULL (NULLS FIRST on DESC, Postgres default): the RUNNING run with NULL end_time appears first
+  - "r1_names[0] == 'run_A_running' # Postgres DESC default is NULLS FIRST — confirms RUNNING tops the list"
+  - "r1_statuses[0] == 'RUNNING' # CAVEAT: this MAY 500 due to MapStruct enum unmarshal — see P-151"
+  - "r1_end_times[0] == null"
+  # The two SUCCESS rows with identical end_time follow somewhere — order between them is implementation-defined
+  - "r1_names[1] == 'run_D_recent' # D has the most-recent NON-NULL end_time (30 min ago)"
+  - "set(r1_names[2], r1_names[3]) == {'run_B_tie', 'run_C_tie'} # B and C share end_time; order between them is non-deterministic"
+  - "r1_names[4] == 'run_E_oldest' # E has the oldest end_time"
+  # Q-TIE on pagination: when ties split across pages, the assignment is non-deterministic;
+  - "len(set(r2_names + r3_names)) == 4 # combining page 1 (size 2) + page 2 (size 2) should yield 4 DISTINCT items"
+  - "if (len(set(r2_names + r3_names)) < 4) then FAIL 'tie-breaker non-determinism produces duplicates across pages — the InfiniteScroll consumer accumulates a corrupted list'"
+  # Status filter removes RUNNING + FAILED
+  - "'run_A_running' not in r4_names"
+  - "'run_D_recent' not in r4_names"
+  - "set(r4_names) == {'run_B_tie', 'run_C_tie', 'run_E_oldest'}"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM data_entity_task_run WHERE oddrn LIKE '//probe-source/p150/%';
+      DELETE FROM data_entity WHERE id = 6001;
+      DELETE FROM data_source WHERE id = 6000;
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DataEntityRunController__controller-class__DataEntityRunController
+    - odd-platform__java__DataQualityController__controller-class__DataQualityController
+    - odd-platform__java__service__service__IngestionService
+  retrospectives:
+    - LSN-019  # name-vs-behavior drift on ordering — listMostPopular case (analogous)
+    - LSN-020  # name-vs-behavior drift on filter — userIds case (analogous in Category F)
+  features:
+    - F-022
+  drift_classes:
+    - ordering-vs-display-key-mismatch
+    - ordering-non-deterministic-on-ties
+    - null-handling-undocumented
+realism_caveats: |
+  The probe runs under AUTH_TYPE=DISABLED to avoid coupling the test to
+  the auth modes; under LOGIN_FORM / OAUTH2 the same SQL ordering applies
+  regardless. If the operator's runtime is OAUTH2, the same hypothesis
+  holds but the call requires a bearer token.
+
+  The probe assumes Postgres default NULLS-ordering. If the team ever
+  sets a non-default sort flag globally (no evidence in JooqQueryHelper)
+  the assertion `r1_names[0] == 'run_A_running'` would flip — which is
+  itself a finding.
+
+  IMPORTANT: assertion r1_statuses[0] == 'RUNNING' depends on the
+  DataEntityRunMapper not throwing on the unknown 'RUNNING' enum literal.
+  The wire-side OpenAPI enum DataEntityRunStatus does NOT include RUNNING
+  (components.yaml:1407-1415: SUCCESS|FAILED|SKIPPED|BROKEN|ABORTED|UNKNOWN),
+  but the DB column accepts RUNNING (IngestionTaskRunStatus enum has it).
+  MapStruct default unmappedTargetPolicy is IGNORE
+  (MapperConfig.java:9), but enum-value-mismatch typically still throws
+  IllegalArgumentException at the @ValueMapping site. P-151 isolates this
+  question; if P-151 confirms the 500, this probe's first assertion may
+  also fail — but the failure mode is different (500 from the whole
+  endpoint vs the operator seeing RUNNING). Run P-151 first, then
+  re-evaluate this assertion's expected outcome.
+
+  The "tie pagination duplicates" assertion captures the second-order
+  concern: even if any single page-1 fetch is internally self-consistent
+  (Postgres returns the same physical order within one query), the
+  InfiniteScroll consumer in TestRunsHistory.tsx:90-113 issues SEPARATE
+  page fetches via fetchPage(pageInfo.page + 1). When two rows share a
+  sort key, Postgres can split them across page boundaries differently
+  on each invocation. The probe seeds and reads back-to-back so it may
+  NOT reproduce the divergence on a clean docker postgres. If the probe
+  PASSES this assertion, the risk is theoretical-only on this specific
+  seed; if it FAILS, the drift is concretely reproducible.

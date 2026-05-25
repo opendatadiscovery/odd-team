@@ -1,0 +1,144 @@
+---
+probe_id: P-159
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__GenAIController__controller-class__GenAIController
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: performance
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category E + Category A boundary — concurrency under a
+  slow external service):
+  WebClientConfiguration.java:22-29 builds the genAiWebClient from a default
+  `HttpClient.create()` with NO explicit ConnectionProvider tuning. Reactor
+  Netty defaults apply: max-connections = 2 × CPU (typically 4-16 on
+  containers), pendingAcquireTimeout = 45 seconds. GenAIServiceImpl.java:35-52
+  has no Bulkhead, no @CircuitBreaker, no Semaphore — every inbound
+  /api/genai/ask request acquires a connection from the pool.
+
+  Hypothesis: under 50 concurrent /api/genai/ask requests with
+  request_timeout=2 minutes and an external service that sleeps 90 seconds,
+  request #(2*CPU + 1) and beyond wait in the Reactor Netty pending-acquire
+  queue. Some succeed (the first ones acquire a connection and complete);
+  others FAIL with a connection-acquire timeout that DOES NOT match the
+  `ReadTimeoutException` branch in GenAIServiceImpl.java:48-51, so they
+  fall through to the generic GenAIException(e) branch and surface a
+  Reactor-Netty-flavoured error message ('Pool#acquire(Duration) has been
+  cancelled' or similar) — NOT the user-friendly 'Gen AI request take longer
+  that N min' message.
+
+  Operator-visible consequence: under burst load with a slow external
+  service, some users get the friendly timeout message (those whose
+  connection-acquire succeeded then hit the response timeout); others get
+  an opaque Reactor Netty exception message (those whose acquire timed
+  out at the pool). The two failure modes look superficially different
+  but have the same root cause: the platform has no operator-tunable
+  outbound concurrency cap.
+---
+arrange:
+  - kind: docker-compose-up
+    note: |
+      odd-minimal stack with genai.enabled=true, genai.url pointing at a
+      WireMock that delays 90 seconds. We pick 90s so that the inbound
+      request_timeout (2 min = 120s) DOES eventually fire for the
+      requests that successfully acquire a connection — distinguishing
+      the two failure modes.
+  - kind: env
+    AUTH_TYPE: "DISABLED"
+    GENAI_ENABLED: "true"
+    GENAI_URL: "http://wiremock-genai:8080"
+    GENAI_REQUEST_TIMEOUT: "2"   # 2 minutes
+  - kind: wiremock-up
+    container_name: "wiremock-genai"
+    stubs:
+      - method: POST
+        path: /query_data
+        response:
+          status: 200
+          content_type: application/json
+          body: '"PROBE-159-SLOW-RESPONSE"'
+          delay_ms: 90000   # 90 seconds — shorter than the 2-minute platform timeout
+
+act:
+  - kind: rest-concurrent
+    description: "Fire 50 concurrent POST /api/genai/ask requests."
+    method: POST
+    path: /api/genai/ask
+    headers:
+      Content-Type: "application/json"
+    body: |
+      {"body": "PROBE-159-CONCURRENT-QUESTION"}
+    concurrency: 50
+    timeout_seconds: 180   # client-side timeout long enough to see all platform responses
+    capture_as: concurrent_responses
+
+observe:
+  - kind: aggregate
+    source: concurrent_responses
+    capture_as: response_breakdown
+    fields:
+      - count_status_200
+      - count_status_500
+      - distinct_error_messages
+      - p99_elapsed_ms
+      - p50_elapsed_ms
+
+  - kind: wiremock-request-log
+    capture_as: wiremock_log
+    description: "How many of the 50 inbound requests reached WireMock (i.e. acquired an outbound connection)?"
+
+assert:
+  # The probe expects a small number of successes (the requests that acquired a connection)
+  # and a larger number of failures (those that hit either the acquire timeout or the read timeout).
+  # The exact split depends on the platform's CPU count (default Reactor Netty pool = 2 × CPU).
+  # On a 4-CPU container, expect ~8 successes + ~42 failures; on an 8-CPU container ~16 + 34.
+  - "response_breakdown.count_status_200 + response_breakdown.count_status_500 == 50  # all 50 returned (no client-side timeout)"
+  - "response_breakdown.count_status_200 <= 16  # bounded by Reactor Netty default pool (2 × CPU); on a CI machine usually 4 ≤ pool ≤ 16"
+  - "response_breakdown.count_status_500 >= 30  # the majority of concurrent requests fail under burst"
+  - "wiremock_log.count_post_query_data == response_breakdown.count_status_200  # WireMock receives exactly as many calls as the platform successfully acquires connections for"
+  - "response_breakdown.distinct_error_messages.length >= 2  # TWO distinct failure modes (the friendly 'take longer that 2 min' AND a Reactor-Netty-flavoured pool-acquire exception)"
+  - "any(response_breakdown.distinct_error_messages, contains 'Gen AI request take longer that 2 min')  # the friendly timeout fired for the read-timeout class"
+  - "any(response_breakdown.distinct_error_messages, contains 'acquire' OR contains 'Pool' OR contains 'connection')  # the opaque pool-exhaustion class"
+
+cleanup:
+  - kind: wiremock-reset
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  related_sidecars:
+    - odd-platform__java__GenAIController__controller-class__GenAIController
+    - odd-platform__java__org_opendatadiscovery_oddplatform_config_properties__config-properties-class__GenAIProperties
+  retrospectives: []
+
+realism_caveats: |
+  The probe pins the concurrency-burst behaviour but is sensitive to the
+  CI machine's CPU count. The breakdown 200 vs 500 will scale with the
+  container's available CPUs (Reactor Netty pool sizing). What's INVARIANT
+  is:
+    - count_status_200 + count_status_500 == 50 (all requests are answered
+      one way or the other; no hung connections beyond the probe's
+      client-side timeout)
+    - count_status_200 is bounded by a small number (the pool size)
+    - distinct_error_messages contains BOTH the friendly timeout message
+      AND a different, less-friendly Reactor Netty exception message —
+      proving the two-failure-mode hypothesis.
+
+  The probe DOES NOT measure cost-impact (the operator's external bill);
+  the WireMock fixture is cost-free. The probe also does NOT verify
+  behaviour under a working external service — that's the happy-path
+  scenario covered implicitly by the P-156 functional test. The probe's
+  job is to expose the operator-visible consequence of the no-concurrency-
+  cap finding (bugs_limitations_corner_cases.[2] in the GenAIProperties
+  sidecar via cross-reference; performance.known_performance_gaps[no-
+  concurrency-cap] in this sidecar).
+
+  If the assertions FAIL because count_status_200 is, say, 50 (every
+  request succeeded), that would mean Reactor Netty has changed its
+  default pool sizing OR the probe's concurrency setup is not actually
+  parallel; re-check the rest-concurrent harness, then re-read
+  WebClientConfiguration for a non-default ConnectionProvider that
+  the file-analyser missed.

@@ -1,0 +1,48 @@
+gap_id: TEST-GAP-983
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java DataQualityRunsController controller-class:DataQualityRunsController"
+pillars_affected: [P-04]
+surfaced_by:
+  - "DataQualityRunsController.md:bugs_limitations_corner_cases.[5] (No HTTP-level test for the controller; the controller-mapper-service-repository wiring is unverified at the HTTP boundary)"
+  - "DataQualityRunsController.md:tests_coverage_semantic.uncovered_behaviours.[0] (HTTP-level smoke test for GET /api/dataqatests/runs)"
+behaviour: |-
+  **`DataQualityRunsController` has ZERO HTTP-tier test coverage** — the controller is the SOLE backing endpoint of the catalog-wide Data Quality Dashboard (pillar P-04:F-002, the `/data-quality` UI route). Repository-tier tests exist but cover only 2 of 3 sub-queries (`ReactiveDataQualityRunsRepositoryTest.java:91-119` exercises `getLatestDataQualityRunsResults` + `getMonitoredTables` only — `getLatestTablesHealth` is uncovered, see TEST-GAP-985). Service tier, controller tier, and HTTP boundary are entirely unverified.
+
+  **What's at risk**:
+  - **WebFlux routing** of `GET /api/dataqatests/runs` to `DataQualityRunsController.getDataQualityTestsRuns` (`DataQualityRunsController.java:18-33`).
+  - **OpenAPI-generated `@RequestParam` deserialisation of 10 `List<Long>` arrays** (`namespaceIds | datasourceIds | ownerIds | titleIds | tagIds` + 5 `de*` siblings — `openapi.yaml:1979-2078`). A regression in the generator template, the Spring `?ids=1,2,3` vs `?ids=1&ids=2&ids=3` convention, OR the int-vs-long boundary at the wire would silently break filter behaviour.
+  - **Three-way `Mono.zipWith` composition** (`DataQualityRunsServiceImpl.java:36-39`) — fan-out + collect-list dance is correctness-critical; a regression that drops a slice or returns null inside the envelope is invisible at the build layer.
+  - **Jackson serialisation of the nested envelope** (`DataQualityResults{testResults:[...], tablesDashboard:{...}}` — `components.yaml:3748-3800`).
+  - **Mapper padding** (`DataQualityCategoryMapperImpl.java:24-30, 45-60`) — the always-36-cells contract; a regression that strips zero-count cells would break UI rendering invariants.
+
+  Combined with TEST-GAP-984 (the LSN-019 test-vs-run drift) and TEST-GAP-985 (table-health zero coverage), the dashboard's CRITICAL slice has both a semantic-drift bug AND zero defensive coverage. A maintainer refactoring `Mono.zipWith` to a single bulk SQL would have no test catching the regression.
+test_class: missing-integration
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/ReactiveDataQualityRunsRepositoryTest.java (repository-tier, 2 of 3 sub-queries; NOT the controller surface)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DataQualityRunsControllerHttpTest.java"
+  name: "getDataQualityTestsRuns_emptyCatalog_returns200WithAllZeroCellsPaddedTo36_pinsBaseline"
+evidence:
+  - "DataQualityRunsController.md:bugs_limitations_corner_cases.[5] verbatim: 'No HTTP-level test for the controller; the controller-mapper-service-repository wiring is unverified at the HTTP boundary. find <odd-platform> -path *test* -name DataQualityRunsController* returned no files (run 2026-05-25). Repository-tier tests exist but cover only 2 of 3 sub-queries — getLatestTablesHealth has no test. A regression in: WebFlux routing, OpenAPI-generated @RequestParam deserialisation of 10 List<Long> arrays, the three-way Mono.zipWith composition, content-negotiation, Jackson serialisation of the nested envelope — would silently break the dashboard with the build still green.' severity: MEDIUM (promoted to HIGH here per dashboard CRITICAL-pillar role)"
+  - "Verified at primary source: DataQualityRunsController.java:13-34 (the 22-line class) + DataQualityRunsServiceImpl.java:36-39 (the 3-parallel zipWith composition) + Grep `DataQualityRunsController` in test sources returns 0 matches (2026-05-25)"
+cross_references:
+  - "TEST-GAP-984 (sibling — LSN-019 test_results counts tests not runs — the semantic-drift half of this surface)"
+  - "TEST-GAP-985 (sibling — getLatestTablesHealth zero coverage — the missing sub-query half)"
+  - "TEST-GAP-986 (sibling — denormalisation invariant unpinned — the schema-evolution risk)"
+  - "TEST-GAP-987 (sibling — dashboard cross-owner read posture — the security half)"
+  - "F-002 (Quality Dashboard — pillar feature)"
+related_features: []
+related_pillar_features: ["P-04:F-002"]
+proposed_action: |-
+  Add `DataQualityRunsControllerHttpTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Five test methods:
+  1. `getDataQualityTestsRuns_emptyCatalog_returns200WithAllZeroCellsPaddedTo36_pinsBaseline` — empty DB; GET; assert HTTP 200 + testResults.size()=6 (six categories) + each category.results.size()=6 (six statuses) + every count=0. PIN the padded-shape invariant.
+  2. `getDataQualityTestsRuns_seededCatalog_returns200WithCorrectAggregateCells` — seed 3 DQ-tests across 2 categories with mixed latest-run statuses; GET; assert per-category counts match the manual aggregation.
+  3. `getDataQualityTestsRuns_all10FiltersSupplied_andNonOverlapping_returnsAllZeroPadded` — supply 10 filter arrays designed to match no entity; GET; assert HTTP 200 + all counts=0 (NOT 404 or 400). Verifies the empty-result handling.
+  4. `getDataQualityTestsRuns_emptyParams_treatedAsNoFilter_returns200WithEntireCatalog` — GET with no query params; assert HTTP 200 + catalog-wide aggregate (verify via vs. the same call with all-empty-list explicit params).
+  5. `getDataQualityTestsRuns_oneNamespaceIdSupplied_resultIncludesEntitiesViaDataSourceNamespaceOrWidening_pinsLSN020Drift` — seed entity A with namespace=X directly and entity B whose datasource is in namespace=X but A's namespace is null; GET with namespaceIds=[X]; assert BOTH A and B counts appear (the OR-widening — see TEST-GAP-986).
+
+  Pair with TEST-GAP-984, 985, 986, 987 — together this controller's HTTP surface and semantic invariants are covered.
+batch: 2026-05-25-ZG
+feature_id: null

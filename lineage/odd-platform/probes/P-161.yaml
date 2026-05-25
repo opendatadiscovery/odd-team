@@ -1,0 +1,122 @@
+---
+probe_id: P-161
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__GenAIController__controller-class__GenAIController
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: integration
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category A — tunable boundary at the unsafe-default value):
+  GenAIProperties.requestTimeout is a Java primitive `int` (GenAIProperties.java:11)
+  with NO field initializer, so when the YAML key `genai.request_timeout` is
+  unset, Spring's relaxed binding leaves the primitive at its language default
+  of 0. WebClientConfiguration.java:23 then constructs the WebClient with
+  `responseTimeout(Duration.ofMinutes(0))`. The live docs explicitly warn
+  about this case via a `{% hint style="warning" %}` admonition on the
+  configuration page (verified WebFetch 2026-05-25 status 200).
+
+  Hypothesis: with genai.enabled=true and genai.request_timeout left unset
+  (i.e. 0 minutes), every POST /api/genai/ask returns HTTP 500 with the
+  verbatim formatted message 'Gen AI request take longer that 0 min' (note
+  the typo 'that' should be 'than'). The error fires BEFORE any external
+  network call completes — the WebClient times out at the zero-duration
+  boundary. This is the LSN-002-class silent misconfiguration analogue
+  (MinIO region unset → us-east-1 default; here genai.request_timeout
+  unset → immediate failure).
+
+  Operator-visible consequence: an operator who sets only GENAI_ENABLED=true
+  and GENAI_URL=... (forgetting GENAI_REQUEST_TIMEOUT) sees every user-facing
+  GenAI request fail with 'Gen AI request take longer that 0 min' — a
+  confusing diagnostic that frames the misconfiguration as a slow-response
+  problem rather than a missing-config problem.
+---
+arrange:
+  - kind: docker-compose-up
+    note: |
+      odd-minimal stack with auth.type=DISABLED, genai.enabled=true,
+      genai.url pointing at a WireMock that DELAYS 5 seconds before
+      responding. genai.request_timeout is INTENTIONALLY UNSET — we rely on
+      the Java primitive default of 0 to demonstrate the silent misconfig.
+  - kind: env
+    AUTH_TYPE: "DISABLED"
+    GENAI_ENABLED: "true"
+    GENAI_URL: "http://wiremock-genai:8080"
+    # GENAI_REQUEST_TIMEOUT intentionally not set — the probe is testing the unset case.
+  - kind: wiremock-up
+    description: "WireMock with a 5-second delay so we can distinguish 'timeout fired immediately' from 'external service was slow but responded'."
+    container_name: "wiremock-genai"
+    stubs:
+      - method: POST
+        path: /query_data
+        response:
+          status: 200
+          content_type: application/json
+          body: '"PROBE-161-DELAYED-RESPONSE"'
+          delay_ms: 5000
+
+act:
+  - kind: rest
+    description: "Single POST /api/genai/ask with genai.request_timeout=0 (unset)."
+    method: POST
+    path: /api/genai/ask
+    headers:
+      Content-Type: "application/json"
+    body: |
+      {"body": "PROBE-161-TEST-QUESTION"}
+    capture_as: response
+    timeout_seconds: 30   # client-side timeout long enough to see the platform's behavior
+
+observe:
+  - kind: wiremock-request-log
+    capture_as: wiremock_log
+    description: "Did the request reach WireMock at all?"
+
+  - kind: timer
+    capture_as: response_elapsed_ms
+    description: "Time from request fire to response receipt."
+
+assert:
+  - "response.status == 500  # GenAIException → INTERNAL_SERVER_ERROR via ControllerAdvice.java:55-59"
+  - "response.body.message == 'Gen AI request take longer that 0 min'  # verbatim formatted message including the typo and the zero-minute literal"
+  - "response.body.code == 'SERVER_EXCEPTION'  # ErrorCode.SERVER_EXCEPTION per GenAIException.java:5-7"
+  - "response_elapsed_ms < 1000  # the platform fails IMMEDIATELY (not after waiting 5 seconds for WireMock); proves the 0-minute Duration is the cause"
+  - "wiremock_log.count_post_query_data == 0  # WireMock NEVER got the request because the WebClient timed out before any network IO"
+
+cleanup:
+  - kind: wiremock-reset
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  related_sidecars:
+    - odd-platform__java__GenAIController__controller-class__GenAIController
+    - odd-platform__java__org_opendatadiscovery_oddplatform_config_properties__config-properties-class__GenAIProperties
+  retrospectives:
+    - LSN-002
+
+realism_caveats: |
+  The probe pins the LSN-002-class silent-misconfiguration hypothesis directly.
+  The assertions discriminate clearly:
+    - status == 500 + message exactly 'Gen AI request take longer that 0 min'
+      => the error path is GenAIServiceImpl.java:48-51 (the ReadTimeoutException
+      branch with the formatted message). The typo 'that' (should be 'than')
+      is captured verbatim — a UX defect worth its own DOC follow-up.
+    - response_elapsed_ms < 1000 + wiremock_log.count == 0 => the WebClient
+      timed out at the zero-Duration boundary BEFORE any network round-trip;
+      this distinguishes 'GENAI_REQUEST_TIMEOUT not set' from 'external
+      service is just slow'.
+  The probe does NOT test the negative-int boundary (e.g. -1 minutes); the
+  Spring binding does not coerce negative values specially, so -1 minutes
+  would be `Duration.ofMinutes(-1)` which IS a legal Duration but Reactor
+  Netty's behaviour for negative response timeouts is undefined. Out of scope
+  for this probe — the unset-default-zero case is the canonical operator
+  failure mode.
+
+  If the assertions FAIL — specifically if response_elapsed_ms is ~5000 (the
+  external delay) — that would mean Duration.ofMinutes(0) is NOT being
+  treated as immediate timeout by Reactor Netty; re-read WebClientConfiguration
+  and GenAIServiceImpl for a non-obvious default-applied somewhere.

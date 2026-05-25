@@ -1,0 +1,180 @@
+name: data_entity_task_last_run (denormalised one-row-per-task latest-run table — load-bearing for DQ dashboard semantics)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-04
+description: |-
+  NEW ENTITY, batch ZG (2026-05-25, DataQualityRunsController class-level
+  primary source). The denormalised "latest run per task" PostgreSQL
+  table created at `V0_0_45__last_runs_table.sql:7-25`. Its `task_oddrn`
+  column is a `PRIMARY KEY` — exactly ONE row per data-quality test or
+  transformer.
+
+  WHY THIS MATTERS: the table is load-bearing for the Data Quality
+  Dashboard's semantic shape. The dashboard's `testResults` aggregate
+  (the breakdown ring + the per-category cards) is a count of
+  `data_entity_task_last_run` rows grouped by (category, status) —
+  which means the dashboard counts TESTS BY THEIR LATEST-RUN STATUS,
+  NOT TEST RUNS BY STATUS. A test that has run 100 times (99 SUCCESS,
+  1 latest FAILED) contributes ONE row to the FAILED bucket — not
+  99/1. This contradicts the live doc's verbatim definition
+  ("count of test runs broken down by status") and is captured in the
+  `dq-dashboard-test-results-counts-tests-not-runs` HIGH-severity
+  invariant.
+
+  THE BACK-FILL MIGRATION (V0_0_45__last_runs_table.sql:15-21):
+    SELECT DISTINCT ON (tr.task_oddrn)
+      tr.task_oddrn AS task_oddrn,
+      tr.oddrn AS last_task_run_oddrn,
+      tr.end_time AS end_time,
+      tr.status AS status
+    FROM data_entity_task_run tr
+    ORDER BY tr.task_oddrn, tr.end_time DESC
+
+  STEADY-STATE UPDATES: the ingestion path (TaskRunIngestionRequestProcessor)
+  maintains the table via `ON CONFLICT (task_oddrn) DO UPDATE` whenever
+  a new task_run row lands. The table is therefore an OUT-OF-BAND
+  materialisation maintained by the ingestion pipeline — not a JOOQ
+  view computed at query time.
+
+  THE TRADE-OFF: the DESIGN choice is to PRE-COMPUTE "latest run per
+  test" at write time (denormalisation) rather than running
+  `DISTINCT ON (task_oddrn) ORDER BY end_time DESC` at every dashboard
+  load. Captured as implicit_adrs[0] of the
+  DataQualityRunsController sidecar.
+
+  THREE LOAD-BEARING CONSUMERS:
+
+    (1) DATA QUALITY DASHBOARD's testResults (per-category counts):
+        ReactiveDataQualityRunsRepositoryImpl.java:76, 95 joins this
+        table — counts tests, not runs.
+
+    (2) DATA QUALITY DASHBOARD's tablesHealth (HEALTHY/WARNING/ERROR
+        classification): the CTE algebra at lines 111-157 uses the
+        denormalised table to ask "does this dataset have a last_run
+        with status != SUCCESS / status in {BROKEN, FAILED} / etc."
+
+    (3) DATASET SLA badge (F-022 PNG badge): the per-dataset SLA
+        computation also reads this table to compute the per-dataset
+        green/yellow/red rollup; same semantic — last-run-status,
+        not run-history.
+
+  Distinct from `data_entity_task_run` (the FULL run history table,
+  many rows per task, read by per-entity run-history endpoint
+  GET /api/dataentities/{id}/runs — the `per-entity-run-history-list`
+  entity).
+vocabulary_status: codebase-anchored, doc-side-gap
+axes_present:
+  - migrations
+  - repositories
+nodes:
+  - odd-platform java DataQualityRunsController controller-class:DataQualityRunsController
+contributors:
+  - |-
+    DataQualityRunsController (controller-class, batch ZG PRIMARY SOURCE):
+      entities[DATA_ENTITY_TASK_LAST_RUN — denormalised PK-per-task last-run
+      table, the single source of `status` for both test_results and
+      tables_health];
+      invariants[`test_results` counts ONE row per test (its latest run) —
+      NOT one row per historical run; DATA_ENTITY_TASK_LAST_RUN.task_oddrn
+      is PRIMARY KEY];
+      implicit_adrs[the dashboard reads a denormalised 'latest run per
+      test' table rather than aggregating over the full task-run history
+      at query time — confidence HIGH, intent_anchor in
+      V0_0_45__last_runs_table.sql:7-25]
+evidence:
+  - DataQualityRunsController.md:concepts.entities (DATA_ENTITY_TASK_LAST_RUN)
+  - DataQualityRunsController.md:concepts.invariants[2] (one row per test)
+  - DataQualityRunsController.md:implicit_adrs.[0] (denormalisation as design choice)
+  - DataQualityRunsController.md:bugs_limitations_corner_cases.[0] (HIGH — counts diverge from live doc)
+security_aggregate:
+  overall: HIGH
+  auth_modes_relevant: []
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: 'N/A'
+    detail: |-
+      The table is internal storage maintained by the ingestion path;
+      not directly user-facing. Its surface visibility is determined
+      by the controllers that read it (DataQualityRunsController +
+      DataQualityController + per-dataset SLA endpoints), all of
+      which carry their own auth posture.
+  owner_scoping:
+    verdict: 'N/A'
+    detail: |-
+      The table has no owner column; ownership scoping (when applied)
+      happens at the JOIN to OWNERSHIP via the consuming queries.
+  strengths:
+    - |-
+      PK-per-task constraint guarantees deterministic dashboard semantics
+      — exactly one row per test, no fan-out, no GROUP-BY-DISTINCT.
+    - |-
+      Steady-state update via ON CONFLICT DO UPDATE is atomic and
+      idempotent at the ingestion path; no race between back-fill and
+      live writes.
+  weaknesses: []
+  cross_file_inconsistencies: []
+  contributing_files:
+    - DataQualityRunsController.md
+performance_aggregate:
+  overall: HIGH
+  hot_paths:
+    - |-
+      DATA_ENTITY_TASK_LAST_RUN is the single-row-per-task hot read for
+      the catalog-wide DQ dashboard's three sub-queries (testResults,
+      tablesHealth, monitoredTables). The denormalisation IS THE
+      PERFORMANCE WIN — the alternative (DISTINCT ON over
+      data_entity_task_run at every dashboard load) would scale
+      linearly with ingestion volume.
+  throughput_shape:
+    verdict: BATCH_FRIENDLY
+    detail: |-
+      Steady-state writes are batched at the ingestion path's
+      TaskRunIngestionRequestProcessor; the denormalisation has no
+      per-request cost beyond a single INDEXED PK lookup.
+  scaling_shape:
+    verdict: HORIZONTALLY_SCALABLE
+    detail: |-
+      Row count is bounded by the number of DQ tests / transformers
+      in the catalog (typically thousands, not millions); the
+      denormalisation means dashboard query time is independent of
+      historical run-count.
+  strengths:
+    - |-
+      Denormalisation traded write-time work (ON CONFLICT DO UPDATE
+      per incoming run) for read-time correctness — every dashboard
+      load is O(test count) instead of O(run count).
+    - |-
+      PK on task_oddrn means the JOIN to data_entity is index-driven;
+      no full-table scan.
+  weaknesses:
+    - |-
+      The denormalisation introduces a semantic shift the live doc has
+      NOT updated to reflect — "count of test runs" (doc) vs
+      "count of tests by latest-run status" (code). A future maintainer
+      reverting the denormalisation (e.g. switching to a JOOQ window
+      function over data_entity_task_run) would silently CHANGE the
+      dashboard's meaning back to "count of runs" — captured in the
+      `dq-dashboard-test-results-counts-tests-not-runs` invariant.
+  cross_file_inconsistencies: []
+  contributing_files:
+    - DataQualityRunsController.md
+related_features:
+  - F-022
+  - F-032
+related_pillar_features:
+  - "P-04:F-001"
+  - "P-04:F-002"
+notes: |-
+  Pairs with:
+    - invariant:dq-dashboard-test-results-counts-tests-not-runs
+      (the HIGH-severity doc drift this denormalisation drives).
+    - operation:aggregate-catalog-wide-data-quality
+      (the dashboard query that reads this table).
+    - entitie:data-quality-dashboard
+      (the dashboard surface whose semantics are shaped by this
+      denormalisation).
+    - entitie:per-entity-run-history-list
+      (the SIBLING table data_entity_task_run that the per-entity
+      run-history endpoint reads — many rows per task, not one).
+maintainer_curated: false

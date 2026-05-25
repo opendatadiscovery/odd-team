@@ -1,0 +1,44 @@
+gap_id: TEST-GAP-979
+category: missing-edge-case
+criticality: HIGH
+node_ids:
+  - "odd-platform java DataEntityRunController controller-class:DataEntityRunController"
+pillars_affected: [P-04]
+surfaced_by:
+  - "DataEntityRunController.md:bugs_limitations_corner_cases.[1] (Wire enum vs DB enum asymmetry — DB column accepts seven-value IngestionTaskRunStatus enum (incl. RUNNING); wire enum DataEntityRunStatus declares only six values (RUNNING missing); MapStruct's String-to-enum conversion uses Enum.valueOf() which throws IllegalArgumentException on unknown literals)"
+  - "DataEntityRunController.md:tests_coverage_semantic.uncovered_behaviours.[1] (RUNNING status row in result set — DB column accepts RUNNING; wire enum does NOT contain RUNNING; mapper throws; no test asserts whether the operator sees 500 or some softer fallback)"
+behaviour: |-
+  **The `/history` UI tab returns HTTP 500 — silently UNAVAILABLE — exactly while a Data Quality test is in flight, because the wire enum `DataEntityRunStatus` (6 values) is missing the `RUNNING` literal that the DB column `data_entity_task_run.status` carries (7-value `IngestionTaskRunStatus` per `IngestionTaskRun.java:28-36`).** When `getDataEntityRuns(...)` returns a result set containing ANY row with `status='RUNNING'`, the `DataEntityRunMapper.java:13-14` flat-maps the String → wire enum target; MapStruct's String-to-enum conversion strategy uses `Enum.valueOf()` which throws `IllegalArgumentException` on unknown literals. Without an `@onError` fallback at the mapper level or a `.onErrorResume` at the controller layer, the exception propagates to the global `ControllerAdvice` and becomes HTTP 500.
+
+  **Operator-visible failure**: the moment an operator MOST wants to see the run-history page (to monitor an in-flight test) is exactly when the page breaks. The UI displays "Something went wrong" with no path forward; the operator has no signal that the failure is correlated with the in-flight status, no workaround documented, no graceful degradation. Once the in-flight test completes (status transitions to SUCCESS/FAILED/etc.), the page magically works again — a Heisenbug from the operator's perspective.
+
+  **NULL end_time compounds**: a RUNNING task has `end_time=NULL`; Postgres default for `ORDER BY end_time DESC` is NULLS FIRST (`ReactiveDataEntityTaskRunRepositoryImpl.java:178` — no `NULLS FIRST/LAST` directive), so RUNNING rows appear AT THE TOP of the result set — guaranteeing the failure case fires on EVERY request during an in-flight test.
+
+  **Why this is the worst kind of test gap**: pure repository-tier testing CANNOT catch this — the SQL is correct; the bug is at the SQL→Java mapper boundary. Pure unit testing of `DataEntityRunMapper` would catch it ONLY if the test deliberately constructs a Pojo with `status='RUNNING'`. The current `DataEntityRunRepositoryImplTest.java:34-93` does seed a RUNNING row (line 50) but only tests `paginate(...)` not `getDataEntityRuns(...)` — the mapper boundary is never exercised on RUNNING input.
+test_class: missing-edge-case
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/DataEntityRunRepositoryImplTest.java (lines 50 seeds a RUNNING row but the test only exercises paginate(), not the controller→service→mapper boundary)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DataEntityRunStatusEnumAsymmetryTest.java"
+  name: "getRuns_resultSetContainsRUNNINGRow_observedBehaviour_pinsCurrentFailure"
+evidence:
+  - "DataEntityRunController.md:bugs_limitations_corner_cases.[1] verbatim: 'Wire enum vs DB enum asymmetry — DB column data_entity_task_run.status accepts the seven-value IngestionTaskRunStatus enum (SUCCESS|FAILED|SKIPPED|BROKEN|ABORTED|RUNNING|UNKNOWN, IngestionTaskRun.java:28-36) but the wire enum DataEntityRunStatus declares only six values (RUNNING is missing, components.yaml:1407-1415). The DataEntityRunMapper flat-maps the String → wire enum target; MapStruct''s String-to-enum conversion uses Enum.valueOf() which throws on unknown literals. Hypothesis: the runs-history endpoint returns HTTP 500 for any result set containing a RUNNING row — making the page UNAVAILABLE exactly while a test is in flight.' severity: HIGH"
+  - "DataEntityRunController.md:bugs_limitations_corner_cases.[2] verbatim: 'NULL end_time ordering not specified — Postgres default for DESC is NULLS FIRST, so RUNNING rows appear AT THE TOP of the runs list'"
+  - "Verified at primary source: IngestionTaskRun.java:28-36 (7-value DB enum incl. RUNNING) + components.yaml:1407-1415 (6-value wire enum sans RUNNING) + DataEntityRunMapper.java:13-14 (the flat-map line) + MapperConfig.java:7-13 (the MapStruct config that defaults to Enum.valueOf strategy)"
+  - "Probe P-151 emits the canonical scenario; this test pins the current observed behaviour"
+cross_references:
+  - "TEST-GAP-978 (parent — the HTTP-tier zero-coverage gap that subsumes this edge-case)"
+  - "P-151 (the probe skeleton emitted in the sidecar)"
+  - "concepts.yaml:invariants[Wire enums must subset DB enums when mapper uses Enum.valueOf; missing literal triggers IllegalArgumentException]"
+  - "REFACTOR-NNN candidate: add RUNNING value to DataEntityRunStatus wire enum (components.yaml:1407-1415) OR add custom mapper handler that maps RUNNING → a sentinel value (NULL? a new IN_PROGRESS literal?) at the wire layer"
+related_features: []
+related_pillar_features: ["P-04:F-001", "P-04:F-002"]
+proposed_action: |-
+  Add `DataEntityRunStatusEnumAsymmetryTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Three test methods:
+  1. `getRuns_resultSetContainsRUNNINGRow_observedBehaviour_pinsCurrentFailure` — seed a DQ-test + 1 completed run (SUCCESS) + 1 RUNNING task (end_time=NULL); GET via WebTestClient; capture the observed status — likely HTTP 500 with the message from `IllegalArgumentException("No enum constant DataEntityRunStatus.RUNNING")` propagated through ControllerAdvice. PIN the current vulnerable state — any fix flips this assertion.
+  2. `getRuns_pureCompletedRuns_returns200_pinsNonRegressionPath` — seed a DQ-test + 3 completed runs (no RUNNING); GET; assert HTTP 200. Establishes the OK baseline so the bug-fix test 1 can be inverted.
+  3. `dataEntityRunMapper_directInvocationWithRunningPojo_observedBehaviour_pinsMapperFailure` — direct unit-level test on the mapper: build a `DataEntityTaskRunPojo` with `status="RUNNING"`; call `dataEntityRunMapper.mapPojo(pojo)`; assert the exception OR the fallback (whichever the current impl exhibits). Locates the failure precisely at the mapper boundary.
+
+  Pair with REFACTOR-NNN: add `RUNNING` to the wire enum, OR add a custom `@Named` MapStruct conversion that fall-back-maps RUNNING → UNKNOWN. Either fix flips the assertions in tests 1 + 3.
+batch: 2026-05-25-ZG
+feature_id: null

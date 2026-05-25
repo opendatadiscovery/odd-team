@@ -1,0 +1,100 @@
+---
+probe_id: P-149
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DataSetController__controller-class__DataSetController
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: integration
+verified_against_commit: ede5d277
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category B + Category F — diff semantics when versionIds
+  are non-existent or duplicate): DatasetVersionServiceImpl.getDatasetVersionDiff
+  (line 56-64) has two pre-checks:
+    (a) if firstVersionId == secondVersionId → throws BadUserRequestException
+        with message "Couldn't show diff for identical versions" (line 60);
+    (b) the SQL fetches `WHERE DATASET_VERSION.ID.in(List.of(first, second))`
+        and the post-check at line 69 throws RuntimeException
+        "Query returned %s rows for diff request" if the result size != 2.
+
+  Edge cases not specifically asserted by the existing test
+  (DatasetVersionDiffTest.java) and not derivable from static reading:
+    (1) firstVersionId exists, secondVersionId doesn't exist → SQL returns
+        1 row → RuntimeException with "Query returned 1 rows for diff request"
+        → ControllerAdvice maps to HTTP 500 (NOT 404).
+    (2) Both versionIds don't exist → SQL returns 0 rows → "Query returned
+        0 rows for diff request" → HTTP 500.
+    (3) Both versionIds belong to DIFFERENT datasets (separate from P-147 —
+        the diff variant) → SQL returns 2 rows → diff proceeds; the
+        dataEntityId path parameter is discarded.
+
+  Operator-visible consequence: callers passing wrong version_ids get HTTP
+  500 instead of HTTP 400/404, leaking internal error class to the caller.
+  Owner-scoping at the API surface is documentation-only.
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: sql
+    query: |
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id)
+      VALUES (52001, '//probe-source/p149/dataset-d', 'p149_d', 1, 1)
+  - kind: sql
+    query: |
+      INSERT INTO dataset_version (id, dataset_oddrn, version, version_hash, created_at)
+      VALUES (52101, '//probe-source/p149/dataset-d', 1, 'hash-d-v1', NOW() - INTERVAL '2 hours'),
+             (52102, '//probe-source/p149/dataset-d', 2, 'hash-d-v2', NOW() - INTERVAL '1 hour')
+  - kind: sql
+    query: |
+      INSERT INTO dataset_field (id, name, oddrn, type, is_key, is_value)
+      VALUES (52901, 'col_d', '//probe-source/p149/dataset-d/col_d', '{"type":"TYPE_STRING","logical_type":"text"}'::jsonb, false, true)
+  - kind: sql
+    query: |
+      INSERT INTO dataset_structure (dataset_version_id, dataset_field_id)
+      VALUES (52101, 52901), (52102, 52901)
+act:
+  - kind: rest
+    method: GET
+    path: /api/datasets/52001/structure/diff?first_version_id=52101&second_version_id=52101
+    auth: any-authenticated-user
+    capture_as: identical_versions_response
+  - kind: rest
+    method: GET
+    path: /api/datasets/52001/structure/diff?first_version_id=52101&second_version_id=99999
+    auth: any-authenticated-user
+    capture_as: nonexistent_second_response
+  - kind: rest
+    method: GET
+    path: /api/datasets/52001/structure/diff?first_version_id=99998&second_version_id=99999
+    auth: any-authenticated-user
+    capture_as: both_nonexistent_response
+observe:
+  - kind: capture_http_status
+    of: identical_versions_response
+    capture_as: identical_status
+  - kind: capture_http_status
+    of: nonexistent_second_response
+    capture_as: missing_one_status
+  - kind: capture_http_status
+    of: both_nonexistent_response
+    capture_as: missing_both_status
+assert:
+  - "identical_status == 400                            # BadUserRequestException → 400"
+  - "missing_one_status == 500                          # RuntimeException for size mismatch → 500 (drift hypothesis: should be 404)"
+  - "missing_both_status == 500                         # RuntimeException for size mismatch → 500 (drift hypothesis: should be 404)"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars: [odd-platform__java__DataSetController__controller-class__DataSetController]
+  retrospectives: []
+realism_caveats: |
+  The 500 vs 400/404 status code drift is a small UX defect, not a security
+  hole. The leaking exception class can be informative for adversaries
+  (confirms version existence by status differential — 200 vs 500) but the
+  same enumeration is possible via the GET-by-id endpoint with NotFoundException.
+  The probe also does not verify the response body — assumes ControllerAdvice
+  maps RuntimeException → 500. If a future ControllerAdvice change adds
+  explicit handling for the "Query returned N rows" case, the status code
+  changes and this probe must be updated.

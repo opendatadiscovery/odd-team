@@ -1,0 +1,56 @@
+gap_id: TEST-GAP-987
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java DataQualityRunsController controller-class:DataQualityRunsController"
+pillars_affected: [P-04, P-09]
+surfaced_by:
+  - "DataQualityRunsController.md:bugs_limitations_corner_cases.[3] (Controller has no @PreAuthorize, no SecurityRule entry; the catalog-wide DQ aggregate is visible to any authenticated user including all five filter dimensions enumerated)"
+  - "DataQualityRunsController.md:tests_coverage_semantic.uncovered_behaviours.[5] (Authorization — call without authentication under LOGIN_FORM/OAUTH2/LDAP returns 401; call with any authenticated principal (no owner association) returns 200 with full catalog data — severity HIGH)"
+  - "DataQualityRunsController.md:security.known_security_gaps.[0] (No entry in SecurityConstants.SECURITY_RULES; falls through to .pathMatchers('/**').authenticated(). Downstream SQL has no owner predicate. The live dashboard doc is silent on access control. NEW invocation site of the REFACTOR-024 cross-owner-read family applied to P-04 Data Quality dashboard)"
+behaviour: |-
+  **The catalog-wide Data Quality Dashboard returns full aggregate test counts + table-health distribution + monitored-tables coverage to any authenticated user — including users with no ownership association anywhere in the catalog.** The endpoint sits behind `.pathMatchers("/**").authenticated()` only (`AuthorizationCustomizer.java:29-30`); `SecurityConstants.SECURITY_RULES` (`SecurityConstants.java:98-355`) has NO entry for `/api/dataqatests/runs` (grep verified 2026-05-25); the downstream SQL has no owner predicate (`ReactiveDataQualityRunsRepositoryImpl.java:65-196` — every condition is filter-derived, none principal-derived).
+
+  **What leaks**:
+  - **Catalog-wide test count distribution**: total tests by category × status — useful for risk-assessment + competitive intelligence (which teams have heavy DQ investment, which categories of anomaly are most common).
+  - **Table-health distribution**: how many tables are healthy / warning / error platform-wide — operational quality signal across owner boundaries.
+  - **Monitored vs unmonitored coverage**: which fraction of TABLE-type entities have ANY DQ test attached — exposes which teams have poor / no DQ practice.
+  - **Filter-dimension enumeration**: a 3rd-party API consumer can iterate namespaceIds/datasourceIds/ownerIds/titleIds/tagIds, observing per-filter aggregate response — this is a META-information enumeration vector: a caller can map the platform's test infrastructure (which namespaces have failing tests, which owners are responsible for unhealthy tables) without ever reading a specific entity name.
+
+  **Compound with `auth.type=DISABLED`**: under DISABLED, the dashboard endpoint is ANONYMOUSLY reachable. The full catalog-wide DQ aggregate leaks to anyone on the network. DISABLED is documented as dev-only per the configuration-and-deployment docs, but operators misconfiguring prod see catalog-wide DQ data publicly.
+
+  **Why HIGH**:
+  - **Intentional posture, undocumented**: the cross-owner-read posture is consistent with the platform's read-collaborative pillar (ADR-CANDIDATE-003 / REFACTOR-024) — it's a deliberate design choice. But the LIVE doc page (`https://docs.opendatadiscovery.org/features/data-quality/dashboard`) is COMPLETELY SILENT on who can view the dashboard. Operator's mental model doesn't align with platform reality — and the platform doesn't help.
+  - **Enumeration vector**: even if the AGGREGATE counts are "harmless", the FILTER-API combined with this endpoint becomes a catalog-mapping tool that bypasses per-entity read gates.
+  - **Compound with TEST-GAP-980** (DataEntityRun status_reason PII broadcast): the dashboard tells you WHERE the failing tests are (which owners / namespaces); the runs endpoint tells you WHAT they say (status_reason PII). Together they form a catalog-wide DQ diagnostic enumeration surface.
+
+  No test pins this — neither the posture (no test asserts the dashboard is reachable by non-owner) nor the documentation drift (no test asserts the operator can opt into restriction).
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DataQualityRunsCrossOwnerReadTest.java"
+  name: "getDataQualityTestsRuns_callerHasNoOwnership_returns200WithFullCatalogAggregate_pinsReadCollaborativePosture"
+evidence:
+  - "DataQualityRunsController.md:bugs_limitations_corner_cases.[3] verbatim: 'Controller has no @PreAuthorize, no SecurityRule entry; the catalog-wide DQ aggregate is visible to any authenticated user including all five filter dimensions enumerated. No entry in SecurityConstants.SECURITY_RULES for /api/dataqatests/runs. The path falls through to .pathMatchers('/**').authenticated(). Downstream ReactiveDataQualityRunsRepositoryImpl has no owner predicate. Coherent with the read-collaborative posture; a NEW invocation site of the cross-owner enumeration family applied to the dashboard surface.' severity: MEDIUM (promoted to HIGH per dashboard CRITICAL-pillar + compound with PII enumeration via runs endpoint)"
+  - "DataQualityRunsController.md:security.owner_scoping verbatim: 'BYPASSES — returns catalog-wide DQ aggregate across all owners. The downstream ReactiveDataQualityRunsRepositoryImpl SQL has no owner predicate, no current-user reference, no principal-derived filter.'"
+  - "Verified at primary source: SecurityConstants.java:98-355 (grep dataqatests/runs returns 0 hits) + AuthorizationCustomizer.java:29-30 + ReactiveDataQualityRunsRepositoryImpl.java:65-196 (no principal predicate)"
+  - "Probe P-157 emits the canonical no-ownership scenario"
+cross_references:
+  - "TEST-GAP-980 (sibling — DataEntityRunController status_reason PII broadcast — same read-collaborative class on a different surface; together = full DQ enumeration)"
+  - "TEST-GAP-709 (sibling — DataQualityController per-entity reads — sister cross-owner posture on a 4-GET surface)"
+  - "TEST-GAP-983 (parent — controller HTTP-tier zero-coverage)"
+  - "REFACTOR-024 (the canonical read-collaborative-catalog family; this is the dashboard-aggregate invocation site)"
+  - "P-157 (the probe skeleton emitted in the sidecar)"
+  - "DOC-NNN candidate: surface the read-collaborative posture explicitly on the live data-quality/dashboard doc page (currently silent)"
+related_features: []
+related_pillar_features: ["P-04:F-002", "P-09:F-001"]
+proposed_action: |-
+  Add `DataQualityRunsCrossOwnerReadTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Four test methods:
+  1. `getDataQualityTestsRuns_callerHasNoOwnership_returns200WithFullCatalogAggregate_pinsReadCollaborativePosture` — seed datasets owned by alice + carol; switch principal to bob with NO ownership association; GET dashboard; assert HTTP 200 with non-zero counts spanning alice's + carol's tests. PIN the catalog-wide read posture.
+  2. `getDataQualityTestsRuns_unauthenticatedUnderLOGIN_FORM_returns401_baselineAuthGate` — no session; GET; assert HTTP 401. Baseline auth gate verification (so test 1 isn't accidentally about auth-disabled).
+  3. `getDataQualityTestsRuns_authTypeDISABLED_anonymousCaller_returns200WithFullCatalog_pinsWorstCase` — under DISABLED, no auth; GET; assert HTTP 200 with full catalog data. PIN the anonymous-leak worst case.
+  4. `getDataQualityTestsRuns_filterDimensionEnumeration_returnsPerFilterAggregates_pinsEnumerationVector` — supply per-namespaceId / per-ownerId filter; verify the response narrows accordingly; pin that filter combination is a catalog-mapping tool (an attacker can iterate through all namespace ids enumerating which has failing tests).
+
+  Pair with REFACTOR-024 follow-up: introduce an OPTIONAL `DATA_QUALITY_DASHBOARD_VIEW` permission (defaulting to "any authenticated user" for backwards compat) — owner-scoped operators can grant only to subset users. Pair with DOC-NNN: surface the read-collaborative posture explicitly on the dashboard doc page.
+batch: 2026-05-25-ZG
+feature_id: null

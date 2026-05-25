@@ -1,0 +1,158 @@
+---
+probe_id: P-155
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DatasetFieldController__controller-class__DatasetFieldController
+emitted_at: 2026-05-25T17:50:00Z
+status: pending-stress-protocol
+feature_id: F-004
+test_class: integration
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question surfaced by Category E (resource boundaries) and Category B
+  (name-vs-behaviour) on `deleteTermFromDatasetField`:
+
+  TermRelationsRepositoryImpl.deleteRelationWithDatasetField (line 175-183)
+  filters its DELETE on `.and(DATASET_FIELD_TO_TERM.IS_DESCRIPTION_LINK.isFalse())`.
+  The endpoint is named "Delete term from dataset field" (OpenAPI: "Delete
+  term from current dataset field terms list") — the name promises that the
+  term is removed from the field's terms list. The implementation removes
+  only MANUAL term-links (rows where `is_description_link = false`); rows
+  with `is_description_link = true` (auto-created when the description body
+  contains `[[namespace/name]]` term markers) survive.
+
+  Operator-visible failure: when the same term is reachable via BOTH the
+  explicit "Add term" button AND the description body marker, a DELETE call
+  against that term/field pair APPEARS to succeed (200 No Content) but the
+  term is STILL shown in the linked-terms tab because the description-link
+  row remains. The only way to remove the description-link is to edit the
+  description body and remove the `[[...]]` marker — the DELETE endpoint
+  has no effect on description-links.
+
+  Hypothesis: a term linked via BOTH paths survives a DELETE call. The
+  probe verifies this by setting up the dual-link state, calling DELETE,
+  and reading the dataset_field_to_term table.
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: sql
+    description: Dataset entity + field + term + namespace
+    query: |
+      INSERT INTO namespace (id, name, created_at) VALUES (8401, 'p155_ns', NOW());
+
+      INSERT INTO term (id, name, namespace_id, definition, created_at, updated_at)
+      VALUES (8501, 'p155_term', 8401, 'a probe term', NOW(), NOW());
+
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, created_at)
+      VALUES (8601, '//probe-source/p-155/ds', 'p155_ds', 1, 3, NOW());
+
+      INSERT INTO dataset_version (id, dataset_oddrn, version, version_hash, created_at)
+      VALUES (8701, '//probe-source/p-155/ds', 1, 'h1', NOW());
+
+      INSERT INTO dataset_field (id, oddrn, name, type, dataset_version_id, created_at)
+      VALUES (8801, '//probe-source/p-155/ds/col1', 'col1',
+              '{"type":"TYPE_STRING"}'::jsonb, 8701, NOW())
+act:
+  - kind: rest
+    description: Step A — Edit description so that the term marker creates a description-link
+    method: PUT
+    path: /api/datasetfields/8801/description
+    auth_as: admin
+    body: |
+      {"description": "This column references the [[p155_ns/p155_term]] in the marker syntax."}
+    capture_as: stepA_response
+    capture_status_as: stepA_status
+  - kind: rest
+    description: Step B — Add the same term via the explicit terms POST to create a manual link
+    method: POST
+    path: /api/datasetfields/8801/terms
+    auth_as: admin
+    body: '{"termId": 8501}'
+    capture_as: stepB_response
+    capture_status_as: stepB_status
+  - kind: sql
+    description: Confirm dual-link state — both rows present
+    query: |
+      SELECT term_id, is_description_link
+      FROM dataset_field_to_term
+      WHERE dataset_field_id = 8801 AND term_id = 8501
+      ORDER BY is_description_link
+    capture_as: dual_link_state
+  - kind: rest
+    description: Step C — DELETE the term via /terms/{term_id}
+    method: DELETE
+    path: /api/datasetfields/8801/terms/8501
+    auth_as: admin
+    capture_as: stepC_response
+    capture_status_as: stepC_status
+  - kind: sql
+    description: After DELETE — only description-link should remain
+    query: |
+      SELECT term_id, is_description_link
+      FROM dataset_field_to_term
+      WHERE dataset_field_id = 8801 AND term_id = 8501
+      ORDER BY is_description_link
+    capture_as: post_delete_state
+  - kind: rest
+    description: Step D — read the field's linked-terms list (this is what the UI shows in the Terms tab)
+    method: GET
+    path: /api/datasetfields/8801/terms
+    auth_as: admin
+    capture_as: stepD_linked_terms
+    capture_status_as: stepD_status
+observe:
+  - kind: capture
+    of: post_delete_state
+    capture_as: post_delete_rows
+  - kind: capture
+    of: stepD_linked_terms
+    capture_as: terms_in_ui
+assert:
+  - "stepA_status == 200            # description edit emitted a description-link"
+  - "stepB_status == 200            # explicit add-term emitted a manual-link"
+  - "len(dual_link_state) == 2      # both rows present pre-delete"
+  - "stepC_status == 204            # DELETE returns No Content as documented"
+  - "len(post_delete_rows) == 1     # description-link survived"
+  - "post_delete_rows[0]['is_description_link'] == True   # surviving row is the description-link"
+  - "any(t['id'] == 8501 for t in terms_in_ui)            # UI still shows the term as linked"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM dataset_field_to_term WHERE dataset_field_id = 8801;
+      DELETE FROM dataset_field WHERE id = 8801;
+      DELETE FROM dataset_version WHERE id = 8701;
+      DELETE FROM data_entity WHERE id = 8601;
+      DELETE FROM term WHERE id = 8501;
+      DELETE FROM namespace WHERE id = 8401
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DatasetFieldController__controller-class__DatasetFieldController
+    - odd-platform__java__TermController__controller-class__TermController
+  retrospectives:
+    - LSN-019
+realism_caveats: |
+  The probe verifies the term-link-cascade semantics from the operator's
+  perspective. If `len(post_delete_rows) == 0` (assert fails), it would mean
+  the implementation does drop description-links on explicit DELETE — which
+  would contradict the read of TermRelationsRepositoryImpl.java:175-183
+  (the `.and(IS_DESCRIPTION_LINK.isFalse())` clause). Re-read the
+  repository if the assert fails.
+
+  The probe assumes the description-term-marker pattern is `[[namespace/name]]`
+  as inferred from TermServiceImpl.findTermsInDescription line 337-360. If
+  the marker pattern is different (e.g. a regex with different delimiters)
+  the description-link in step A will not be created and the dual-link state
+  will be 1 row, not 2 — re-read TermServiceImpl.findTermsInDescription
+  and adjust the description body in step A.
+
+  The probe verifies the operator-perspective bug-shape: "I deleted the term
+  but it still shows up in the linked-terms tab". The remedy (edit
+  description to remove the marker) is documented in the realism block of
+  the sidecar's bugs_limitations_corner_cases entry. The probe does NOT
+  verify the remedy path; that is left for a follow-up integration test.
+
+  Per Rule 8 the probe runs entirely on the local Testcontainers + docker
+  compose stack.

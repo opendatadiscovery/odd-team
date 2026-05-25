@@ -1,0 +1,117 @@
+name: List Runs for Data Entity (paginated run-history for a DQ test or transformer)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-04
+description: |-
+  NEW OPERATION, batch ZG (2026-05-25). The lone operation on
+  DataEntityRunController — GET /api/dataentities/{data_entity_id}/runs
+  with optional `page`, `size`, `status` query params. Returns the
+  paginated DataEntityRunList (`per-entity-run-history-list` entity)
+  for a single Data Quality Test or Data Transformer entity.
+
+  IMPLEMENTATION: DataEntityRunController.java:13-28 (one-line
+  forwarding `genAiQuestion`-shape thin proxy) →
+  DataEntityRunServiceImpl.getDataEntityRuns (lines 32-44):
+    (i) load entity via reactiveDataEntityRepository.get(id),
+        404 if absent (line 32-34);
+    (ii) gate by entity class — `BadUserRequestException` (400) if
+         the entity's class is neither DATA_TRANSFORMER (2) nor
+         DATA_QUALITY_TEST (4) at lines 35-44; the RUN classes
+         (DATA_TRANSFORMER_RUN=3, DATA_QUALITY_TEST_RUN=5) are
+         NOT accepted — only the parent jobs;
+    (iii) read run records from data_entity_task_run via JOOQ
+          paginate at ReactiveDataEntityTaskRunRepositoryImpl.java:160-191:
+          - WHERE DATA_ENTITY.ID.eq(dataQualityTestId) AND optionally
+            DATA_ENTITY_TASK_RUN.STATUS.eq(status.name());
+          - ORDER BY end_time DESC (no tie-breaker, no NULLS-FIRST/LAST);
+          - LIMIT size OFFSET (page-1)*size, 1-based pagination.
+
+  THREE LOAD-BEARING SEMANTIC PROPERTIES:
+
+    (1) ORDERING BY end_time DESC — chosen at the JOOQ paginate call
+        (line 178) over start_time / id / created_at. The repository
+        integration test EXPLICITLY asserts this with
+        DataEntityTaskRunPojoEndTimeComparator (RepositoryImplTest:22-23).
+        Operator-visible: a slow run started yesterday may appear
+        ABOVE a fast run started today (the UI sort key `startTime`
+        in TestRunsHistory.tsx:74-77 diverges from the backend sort).
+
+    (2) NULLS-FIRST/LAST UNSPECIFIED — when a row has end_time = NULL
+        (RUNNING task), Postgres default for DESC is NULLS FIRST.
+        RUNNING rows appear AT THE TOP of the runs list with an
+        empty Duration column (TestRunItem.tsx:53-57). Operator sees
+        an undated-looking row first, with no visual signal it's
+        an in-flight test.
+
+    (3) STATUS FILTER ONLY 6-OF-7 VALUES — the wire enum
+        DataEntityRunStatus (6 values) is a subset of the DB column's
+        possible values (7: + RUNNING). Caller cannot filter for
+        RUNNING because the wire enum has no such literal; the
+        workaround (omit the filter to fetch all) triggers the
+        wire-enum-unmarshal mapper failure on any RUNNING row
+        (HIGH severity — see
+        wire-enum-running-asymmetry-data-entity-run-status invariant).
+
+  COMPLETE BUG INVENTORY (severity-graded):
+    - Cross-owner read posture (HIGH) — no SecurityRule entry; any
+      authenticated user reads any DQ test's run history including
+      status_reason text.
+    - Wire enum vs DB enum asymmetry (HIGH) — runs-history returns
+      HTTP 500 for any result set containing a RUNNING row.
+    - Page-size unbounded (MEDIUM) — DoS vector via single large
+      page request; OpenAPI SizeParam has no max constraint.
+    - NULL end_time ordering not specified (MEDIUM) — RUNNING rows
+      at top of list with no UI signal.
+    - No tie-breaker on identical end_time (LOW) — InfiniteScroll
+      consumer may duplicate or skip rows across page boundaries.
+    - UI sort key (start_time) ≠ backend sort key (end_time) (LOW) —
+      operator-visible ordering divergence for long-running tests.
+    - Entity-class gate accepts only parent classes (LOW) — generic
+      error message with no hint to look up the parent JOB / DQ TEST.
+    - No `existsIncludingSoftDeleted` (LOW) — inconsistent with the
+      DataQualityController's deliberate forensic-coverage preservation.
+
+  PROBES EMITTED (3):
+    P-150 — NULLS-FIRST ordering + tie-breaker behaviour
+    P-151 — wire-enum unmarshal 500 on RUNNING row
+    P-152 — cross-owner read of status_reason text
+axes_present:
+  - controllers
+  - repositories
+nodes:
+  - odd-platform java DataEntityRunController controller-class:DataEntityRunController
+contributors:
+  - |-
+    DataEntityRunController (controller-class, batch ZG PRIMARY SOURCE):
+      operations[list-runs-for-dq-test-or-transformer — GET /api/dataentities/{id}/runs];
+      invariants[reactive Mono signature, entity-class gate, 404 on missing,
+      ORDER BY end_time DESC, status filter, 1-based pagination];
+      bugs_limitations_corner_cases.[0-7] (8 findings with HIGH-MEDIUM-LOW grading);
+      stress_findings.tunables[pageSize=100, size=10],
+      orderings[end_time DESC no tie-breaker], auth_gates[no @PreAuthorize,
+      no SecurityRule, no owner predicate]
+evidence:
+  - DataEntityRunController.md:concepts.operations
+  - DataEntityRunController.md:concepts.invariants[1-7]
+  - DataEntityRunController.md:bugs_limitations_corner_cases.[0-7]
+  - DataEntityRunController.md:implicit_adrs.[0-2]
+  - DataEntityRunController.md:stress_findings.orderings + auth_gates + request_inputs
+  - DataEntityRunController.md:upstream_callers.[0-2] (TestRunsHistory + TestReportDetailsHistory + third-party)
+notes: |-
+  Pairs with entity:per-entity-run-history-list (the DTO this operation
+  returns), with invariant:wire-enum-running-asymmetry-data-entity-run-status
+  (the HIGH mapper-failure on RUNNING result row), and with
+  invariant:read-collaborative-cross-owner-enumeration (the 5th
+  invocation site of the cross-owner-read family).
+
+  DISTINCT from `aggregate-catalog-wide-data-quality` (the catalog-wide
+  DQ dashboard query, single aggregate response, 36-cell category x
+  status matrix) and from `aggregate-test-status-counts-for-dataset`
+  (the per-dataset Test Reports tab aggregate — also one aggregate
+  response, not a run history).
+related_features:
+  - F-022
+related_pillar_features:
+  - "P-04:F-001"
+maintainer_curated: false

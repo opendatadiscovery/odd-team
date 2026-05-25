@@ -1,0 +1,42 @@
+gap_id: TEST-GAP-976
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:GenAIController"
+pillars_affected: [P-09]
+surfaced_by:
+  - "GenAIController.md:security.known_security_gaps.[5] (no per-user rate limit, no global rate limit, no abuse-detection; unbounded prompt body up to 20MB)"
+behaviour: |-
+  **GenAI endpoint has NO rate limit, NO per-user quota, NO max-concurrent-requests cap — denial-of-service AND unbounded-cost surface.** `POST /api/genai/ask` accepts requests as fast as any authenticated principal can submit them (any logged-in user under LOGIN_FORM/OAUTH2/LDAP, or any anonymous caller under DISABLED). Combined with the absence of `@Size` on `GenAIRequest.body` (only the implicit `spring.codec.max-in-memory-size: 20MB` ceiling at `application.yml:15`), this is BOTH:
+
+  - **DoS surface**: a single user (or a worm in the network under DISABLED) can submit a flood of 20MB prompts, exhausting Reactor Netty's event-loop and upstream LLM service connection pool.
+  - **Unbounded-cost surface**: the operator's external LLM bills per-token; the platform forwards every request verbatim with no spend-cap, no per-user quota, no audit accounting. A malicious or buggy script can burn through the operator's LLM budget in hours.
+
+  No test asserts this posture. The current state is intentional (the live doc states "deploy behind a network policy / mesh / ingress that authenticates / restricts callers") but the platform offers NO defense-in-depth — a missed network policy at the deployment layer leaves the GenAI surface unprotected.
+
+  **Distinct from existing TEST-GAP-037** (which pins unbounded prompt-body SIZE). This gap pins unbounded REQUEST FREQUENCY + unbounded COST. A test pinning rate-limit posture would also serve as a guardrail when a future hardening (e.g. `@RateLimit` annotation, per-user counter in Micrometer) lands.
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/GenAIRateLimitPostureTest.java"
+  name: "genAiAsk_unboundedRequestFrequency_noRateLimitNoQuota_pinsCurrentPosture"
+evidence:
+  - "GenAIController.md:security.known_security_gaps.[5] verbatim: 'no per-user rate limit, no global rate limit, no abuse-detection at this layer. An authenticated user can fire requests as fast as they can submit them; with N concurrent users, the platform makes N concurrent outbound calls to {genai.url} with no throttling. Combined with the absence of an upper-bound on prompt body size, this is a denial-of-service surface AND an unbounded-cost surface (the operator's external LLM may bill per token; the platform offers no spend cap).' (severity MEDIUM at the sidecar — promoted to HIGH here per concept-aggregate; unbounded-cost via authenticated user is operationally HIGH-impact for OSS adopters)"
+  - "Verified at primary source: GenAIController.java:1-24 (no rate-limit annotation, no @Throttle-equivalent) + GenAIServiceImpl.java:36-52 (no rate-limit operator in the Mono pipeline) + application.yml:14-15 (spring.codec.max-in-memory-size: 20MB)"
+  - "concepts.yaml:entities[GenAI Assistant].security_aggregate.weaknesses.[multiple]"
+cross_references:
+  - "TEST-GAP-037 (sibling — unbounded prompt body SIZE; distinct from unbounded FREQUENCY pinned here)"
+  - "TEST-GAP-039 (sibling — prompt injection + SSRF; same surface, different threat model)"
+  - "concepts.yaml:invariants[GenAI feature is a thin proxy — abuse prevention delegated to operator network layer]"
+  - "REFACTOR-NNN candidate: Add per-user token-bucket rate limit at controller layer + Micrometer counter for spend-tracking"
+related_features: []
+related_pillar_features: ["P-09:F-001"]
+proposed_action: |-
+  Add `GenAIRateLimitPostureTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Three test methods:
+  1. `genAiAsk_unboundedRequestFrequency_noRateLimitNoQuota_pinsCurrentPosture` — single authenticated user issues 100 sequential POSTs in 1 second; assert all 100 return HTTP 200 with no 429 / Retry-After / X-RateLimit-Remaining headers. PIN the no-limit posture.
+  2. `genAiAsk_concurrentRequestsFromSameUser_allProceed_pinsAbsentConcurrencyCap` — same user fires 20 concurrent requests via `Flux.range(0, 20).parallel()`; assert all 20 reach the controller (verify via a mock external LLM counter). PIN the no-concurrency-cap posture.
+  3. `genAiAsk_authTypeDISABLED_anonymousRequestFlood_noRateLimit_pinsWorstCase` — under DISABLED, anonymous caller fires 50 requests; assert all 50 reach the controller. PIN the worst-case posture (anonymous + unrate-limited + unbounded body).
+
+  Pair with REFACTOR-NNN: introduce per-user token-bucket rate limit at the WebFlux layer + Micrometer counter for spend-tracking. Pair with DOC-NNN: surface the operator-network-policy responsibility on the live GenAI page (currently mentioned only in passing).
+batch: 2026-05-25-ZG
+feature_id: null

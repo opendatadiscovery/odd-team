@@ -4153,3 +4153,191 @@ The orchestrator re-ranks the global `## Top 20 by leverage` head over the COMBI
 **Full detail**: `detail/REFACTOR-632.md`
 
 ---
+
+## Refresh note — batch ZG (2026-05-25 — five new controller-class sidecars: DataEntityRunController + DataQualityRunsController + GenAIController + DataSetController + DatasetFieldController)
+
+Five new controller-class sidecars. Per the Rule-0 wisdom test: **19 new refactoring scopes** (REFACTOR-649..667), **10 existing scopes STRENGTHENED**. Zero coherence conflicts surfaced.
+
+**10 existing scopes STRENGTHENED**:
+
+- **REFACTOR-020** (unbounded `PageParam` / `SizeParam` across the platform) — DataEntityRunController's `size` param confirms; the 19th paginated surface in the catalogue. The repo test (`DataEntityRunRepositoryImplTest`) covers the in-range path; size=10M reaches the SQL unvalidated.
+- **REFACTOR-024** (cross-owner read-collaborative posture family) — FOUR new invocation sites this batch:
+  - DataEntityRunController per-entity run-history (`/api/dataentities/{id}/runs`) — 5th batch surface
+  - DataQualityRunsController catalog-wide DQ dashboard (`/api/dataqatests/runs`) — extends the AGGREGATE layer with quality posture
+  - DatasetFieldController GETs (`/enum_values` + `/metrics`) — extends to the COLUMN-GRAIN surface
+  - DataSetController 4 GETs (`/structure`, `/structure/{v}`, `/structure/diff`, `/relationships`) — extends to the dataset-structure read surface (column names, types, descriptions, lookup-table definitions, relationships are all cross-owner)
+- **REFACTOR-001/-002/-003/-004/-007/-014/-016/-019/-023** (GenAI family) — re-strengthened with the new GenAIController-controller-class sidecar (distinct node_id from the prior `org_opendatadiscovery_oddplatform_controller__controller__GenAIController` sidecar; deeper file-analyser/0.4.0 evidence + 2026-05-25 live-doc re-verification at `https://docs.opendatadiscovery.org/features/active-platform-features/genai`).
+- **REFACTOR-482** (TWO SecurityConstants wiring bugs at 295-299) — DatasetFieldController class-level sidecar reconfirms BOTH bugs:
+  - Bug A — `POST /api/datasetfields/{id}/terms` gated by `DATA_ENTITY_ADD_TERM` instead of `DATASET_FIELD_ADD_TERM` (the documented gate per live `/configuration-and-deployment/enable-security/authorization/permissions` 2026-05-25)
+  - Bug B — `PUT /api/alerts/{alert_id}/status` gated by `DATASET_FIELD_ADD_TERM` (copy-paste bug from the immediately-preceding dataset-field block)
+- **REFACTOR-439** (dataset_field verbatim XSS-class storage — F-004 family) — DatasetFieldController class-level sidecar reconfirms: `PUT /description` accepts verbatim Markdown/HTML/`<script>` payloads; ReactiveDatasetFieldRepositoryImpl.updateDescription does only empty-to-null normalisation. Defence-in-depth at the Markdown.tsx UI render layer (P-009) but cross-tab coverage unverified.
+- **REFACTOR-545** (spec/code 201-vs-200 drift cluster) — DatasetFieldController adds THREE new endpoint-level instances: PUT description, PUT name, PUT tags all return 200 while OpenAPI declares 201. Cluster size grows from 9+ to 12+ endpoint-level instances.
+- **REFACTOR-546 / REFACTOR-490** (LSN-019 family — name-vs-behaviour drift) — REFACTOR-653 NEW is the DQ-dashboard instance; co-related but on a different surface (the dashboard reads denormalised state per ADR-CANDIDATE-220 NEW; the doc says "count of test runs" but the SQL counts tests).
+- **REFACTOR-593** (titleIds → OWNERSHIP.TITLE_ID drift on DQ dashboard) — DataQualityRunsController controller-class sidecar reconfirms at the controller layer (the original sidecar was at the UI-filters surface; this batch adds the backend layer's confirmation; the LSN-020 class is now anchored at BOTH sides).
+- **REFACTOR-594** (namespaceIds OR widening on DQ dashboard) — same shape: controller-class sidecar reconfirms at the controller layer.
+- **REFACTOR-600** (DQ dashboard doc incomplete on multiple axes) — DataQualityRunsController controller-class sidecar adds the controller-level evidence for the TABLE-only restriction (ADR-CANDIDATE-222 NEW captures the architectural intent; REFACTOR-600 catalogues the doc-side gaps).
+
+**Coherence (Rule 6)**: cross-registry grep + Read confirmed all 19 new findings are SAME-polarity with the other registries — `feature-flows` F-022 already carries the per-entity test-report mention; `concepts/index.yaml` already lists `DATA_ENTITY_TASK_LAST_RUN` as a denormalised table; `test-map` already carries TEST-GAP entries for the un-tested DQ-dashboard SQL. Zero SUPERSEDES; zero CONTRADICTS. Twelve STRENGTHENS recorded against the existing entries above.
+
+**Batch-ZG leverage ranking** (new entries; `triangulation_count × severity_weight`, CRITICAL=8/HIGH=4/MEDIUM=2/LOW=1):
+
+| Rank | ID | Title (truncated) | Severity | Triangulation count | Score |
+|---|---|---|---|---|---|
+| 1 | REFACTOR-657 | Cross-dataset version_id leak via dataEntityId-ignored SQL | HIGH | 2 (controller + repo) | 8 |
+| 2 | REFACTOR-653 | DQ dashboard counts TESTS not RUNS (LSN-019 instance) | HIGH | 2 (doc + SQL) | 8 |
+| 3 | REFACTOR-661 | createEnumValue BULK-REPLACE silent data-loss on partial body | HIGH | 2 (service + UI defends) | 8 |
+| 4 | REFACTOR-663 | createEnumValue concurrency last-write-wins | HIGH | 2 (service + tx isolation) | 8 |
+| 5 | REFACTOR-664 | deleteTermFromDatasetField removes only manual links | HIGH | 2 (repo filter + UI surface) | 8 |
+| 6 | REFACTOR-649 | DataEntityRun wire-vs-DB enum asymmetry (mid-flight 500) | HIGH | 2 (DB enum + wire enum + mapper) | 8 |
+| 7 | REFACTOR-652 | DataEntityRun cross-owner status_reason free-form PII | HIGH | 1 (unique blast-shape) | 4 |
+| 8 | REFACTOR-650 | DataEntityRun NULL end_time NULLS-FIRST surprise | MEDIUM | 1 | 2 |
+| 9 | REFACTOR-656 | GenAI no max-in-memory-size codec default misuse | MEDIUM | 1 | 2 |
+| 10 | REFACTOR-658 | DataSetController diff endpoint 500-not-404 | MEDIUM | 1 | 2 |
+| 11 | REFACTOR-662 | createEnumValue replay-safe-for-state-not-audit | MEDIUM | 1 | 2 |
+| 12 | REFACTOR-667 | DQ dashboard JSONB no functional index | MEDIUM | 1 | 2 |
+| 13 | REFACTOR-654 | DQ dashboard Table Health SKIPPED ambiguity | LOW | 1 | 1 |
+| 14 | REFACTOR-655 | DQ dashboard combined owner+title AND-semantics | LOW | 1 | 1 |
+| 15 | REFACTOR-651 | DataEntityRun display-key vs sort-key drift | LOW | 1 | 1 |
+| 16 | REFACTOR-659 | DataSetController "Latest"=max(version) not max(created_at) | LOW | 1 | 1 |
+| 17 | REFACTOR-660 | DataSetController diff in-memory full-field load | LOW | 1 | 1 |
+| 18 | REFACTOR-666 | DatasetField per-request DB extractor round-trip no cache | LOW | 1 | 1 |
+| 19 | REFACTOR-665 | DatasetField description-edit dual events undocumented | LOW | 1 | 1 |
+
+The 19 new "## REFACTOR-NNN — headline" blocks are below the marker line for the orchestrator's awk-merge.
+
+---
+
+## REFACTOR-649 — DataEntityRunController returns HTTP 500 mid-flight: the runs-history endpoint mapper fails on any result-set row whose status is `RUNNING` because the wire enum `DataEntityRunStatus` has 6 values but the DB column `data_entity_task_run.status` accepts 7 (the `IngestionTaskRunStatus` enum)
+
+**Severity**: HIGH
+**Category**: wire-enum-asymmetry
+
+The DB column accepts SUCCESS|FAILED|SKIPPED|BROKEN|ABORTED|RUNNING|UNKNOWN (`IngestionTaskRun.java:28-36`); the wire enum declares SUCCESS|FAILED|SKIPPED|BROKEN|ABORTED|UNKNOWN (missing RUNNING, `components.yaml:1407-1415`). The mapper at `DatasetEntityRunMapper.java:13-14` flat-maps the String column to the wire enum target; MapStruct's String-to-enum conversion uses `Enum.valueOf()` which THROWS `IllegalArgumentException` on unknown literals. Hypothesis (P-151): the runs-history endpoint returns HTTP 500 whenever a RUNNING row is in the result set — i.e. EXACTLY when the operator wants to see the in-flight test on the page.
+
+## REFACTOR-650 — DataEntityRunController's runs-history list orders by `end_time DESC` with NO `NULLS FIRST/LAST` directive — Postgres default for DESC is NULLS FIRST → RUNNING rows (with end_time=NULL) appear at the TOP of the list, undated-looking with no visual signal
+
+**Severity**: MEDIUM
+**Category**: ordering-NULLS-FIRST-surprise
+
+The JOOQ paginate emits `ORDER BY end_time DESC` (`ReactiveDataEntityTaskRunRepositoryImpl.java:176-182`, `JooqQueryHelper.java:55-90`) with no NULLS directive. The UI labels each row by `startTime` (`TestRunItem.tsx:30`) with an empty Duration column when endTime is null — operator sees an undated-looking row at the top with no signal that it represents an in-flight test.
+
+## REFACTOR-651 — DataEntityRunController's UI sort key (`start_time`, leftmost rendered column) ≠ backend sort key (`end_time`); the two are correlated for typical fast runs but diverge for long-running tests (a run STARTED yesterday but ENDED today may appear ABOVE a run STARTED + ENDED earlier today)
+
+**Severity**: LOW
+**Category**: display-vs-sort-key-drift
+
+`TestRunsHistory.tsx:75-77` renders `startTime` in the leftmost column; backend SQL orders by `end_time` (`ReactiveDataEntityTaskRunRepositoryImpl.java:178`). For typical completed runs the two are correlated; for long-running tests the divergence is operator-visible.
+
+## REFACTOR-652 — DataEntityRunController's runs-history endpoint cross-owner-broadcasts `status_reason` — a free-form diagnostic text field commonly carrying Great Expectations / dbt / custom framework failed-row sample values (PII-bearing) — any authenticated user reads any data entity's run history including this text
+
+**Severity**: HIGH
+**Category**: cross-owner-pii
+
+REFACTOR-024 family extension to a NEW data shape. The runs-history payload includes `items[].statusReason` — a free-form string set by the test framework. Frameworks like Great Expectations emit failed-row sample values; dbt emits row counts; custom frameworks emit anything. Combined with cross-owner read posture (REFACTOR-024 confirmed at this surface in batch ZG), the field is a PII-broadcast channel.
+
+## REFACTOR-653 — Data Quality Dashboard's "Test Results Breakdown" ring counts TESTS keyed on latest-run-status, NOT test runs — contrary to the live doc's verbatim "count of test runs broken down by status" wording (LSN-019 class instance at the DQ-dashboard surface)
+
+**Severity**: HIGH
+**Category**: count-tests-vs-runs (LSN-019)
+
+`getLatestDataQualityRunsResults` joins `DATA_ENTITY_TASK_LAST_RUN` (PK on `task_oddrn`, one row per test per ADR-CANDIDATE-220 NEW). A test with 100 historical runs (99 SUCCESS, 1 latest FAILED) contributes 1 to FAILED — not 99/1. The dashboard cannot distinguish "one transient failure on a stable test" from "a test that fails every run". The doc says "count of test runs"; the implementation delivers "count of tests by latest-run status." Operator-visible mismatch.
+
+## REFACTOR-654 — Data Quality Dashboard's "Table Health" classification has a subtle SKIPPED ambiguity — a dataset with all-SUCCESS-but-one-SKIPPED latest runs classifies as WARNING (correct per CTE algebra) but operators may expect SKIPPED to be benign; the doc page does not disclose the rules
+
+**Severity**: LOW
+**Category**: operator-surprise-classification-rules
+
+HEALTHY CTE: `NOT EXISTS last_run WHERE STATUS != SUCCESS`. ERROR CTE: `EXISTS last_run WHERE STATUS in (BROKEN, FAILED) AND NOT in healthy`. WARNING CTE: fallthrough. A dataset with 10 tests where 9 latest-runs are SUCCESS and 1 is SKIPPED classifies WARNING (not HEALTHY because SKIPPED != SUCCESS; not ERROR because no BROKEN/FAILED). The doc page does not explain the rules.
+
+## REFACTOR-655 — Data Quality Dashboard filter combinations using BOTH `ownerIds` AND `titleIds` enforce same-ownership-row AND constraint — operator-surprising AND semantics across two distinct dimensions
+
+**Severity**: LOW
+**Category**: operator-surprise-AND-semantics
+
+`ReactiveDataQualityRunsRepositoryImpl.java:297-302` joins ONE `OWNERSHIP` row that must satisfy `OWNER_ID.in(ownerIds) AND TITLE_ID.in(titleIds)`. An operator selecting 'Owner: Alice' AND 'Title: Data Steward' sees ONLY datasets where Alice is specifically the Data Steward — NOT datasets where Alice is the owner under a different title, NOR datasets where someone else is the Data Steward. The SQL is consistent; the surface labels are operator-misleading.
+
+## REFACTOR-656 — GenAI's `genAiWebClient` builder does NOT call `.codecs(c -> c.defaultCodecs().maxInMemorySize(...))` — uses Spring WebFlux default 256KB; long-form LLM responses > 256KB fail with `DataBufferLimitException`; the application-wide `spring.codec.max-in-memory-size: 20MB` is NOT inherited
+
+**Severity**: MEDIUM
+**Category**: codec-default-misuse
+
+`WebClientConfiguration.java:26-29` builds the client without codec configuration. The app-wide YAML value (`application.yml:14-15`) applies only to default-Spring-codecs; per-WebClient builders must explicitly inherit. LSN-002-class regional analogue: an unset SDK builder parameter that ships silent misbehaviour rather than fail-fast at startup.
+
+## REFACTOR-657 — DataSetController's `dataEntityId` path parameter is documentation-only: the SQL filters by `versionId` only; an authenticated user can request `/api/datasets/X/structure/V` with V belonging to dataset Y and get Y's structure back (cross-dataset structure leak)
+
+**Severity**: HIGH
+**Category**: cross-dataset-leak
+
+`DatasetController.getDataSetStructureByVersionId` (line 28-30) consumes `dataEntityId` but drops it; only `versionId` reaches `ReactiveDatasetVersionRepositoryImpl.getDatasetVersion` which filters by `DATASET_VERSION.ID.eq(datasetVersionId)`. The diff endpoint has the same shape: `getDatasetVersionWithFields(List.of(firstVersionId, secondVersionId))` ignores dataEntityId entirely; SQL filters `DATASET_VERSION.ID.in(...)` only. Cross-dataset enumeration of dataset_version IDs (sequential bigserial) reveals every dataset's column-level structure (fields, types, tags, terms, lookup-table definitions). The available-but-unused column is `DATASET_VERSION.DATASET_ODDRN` — a one-line predicate (`AND DATASET_VERSION.DATASET_ODDRN = (SELECT ODDRN FROM DATA_ENTITY WHERE ID = :datasetId)`) closes the leak.
+
+## REFACTOR-658 — DataSetController's diff endpoint returns HTTP 500 for non-existent `version_ids` (`size != 2` falls through to bare `RuntimeException`) — operator cannot distinguish "wrong id" from "platform broken" from the status code
+
+**Severity**: MEDIUM
+**Category**: error-mapping-500-not-404
+
+`DatasetVersionServiceImpl.buildDataSetVersionDiffList` throws bare `RuntimeException('Query returned %s rows for diff request')` (lines 69-71) when one or both ids are missing. ControllerAdvice catch-all maps to 500. Identical-version_ids gets a clean 400 via `BadUserRequestException` (line 60); non-existent gets a 500. Asymmetric and operator-misleading.
+
+## REFACTOR-659 — DataSetController's "Latest" endpoint computes `max(DATASET_VERSION.VERSION)` not `max(created_at)`; correct under normal ingestion (`version` monotonic per `DatasetStructureIngestionRequestProcessor.incrementDatasetVersion`) but diverges after manual SQL fixup / replay / backfill
+
+**Severity**: LOW
+**Category**: latest-by-version-not-time
+
+`ReactiveDatasetVersionRepositoryImpl.getLatestDatasetVersion` (lines 160-217) selects the row matching `version = (SELECT max(version) FROM ...)`. The `created_at` column exists but is not referenced. After manual DB fixup or replay, the highest-version row may have an older `created_at` than another row; the endpoint returns the version-max row. Operator copying `/api/datasets/{id}/structure` with the expectation 'most-recently-ingested' is not exactly what the code returns under those conditions.
+
+## REFACTOR-660 — DataSetController's diff endpoint loads 2 versions' full field lists in-memory for recursive parent-oddrn change detection (`DatasetVersionServiceImpl.getParentOddrnChangedPojos:156-180`); no streaming, no pagination, no row-count guard; very-wide schemas (10K+ fields) materialise everything
+
+**Severity**: LOW
+**Category**: memory-bound-diff-no-streaming
+
+The recursive change-detection allocates `versionToFieldsMap`, `firstVersionFields`, `secondVersionFields`, `versionDiffFields` per call — 4 maps over the union of both versions' fields. For very-wide datasets (hundreds-of-thousands of nested fields), this is a memory-bound operation.
+
+## REFACTOR-661 — DatasetFieldController's `createEnumValue` is BULK-REPLACE-AS-STATE (per ADR-CANDIDATE-226 NEW): a partial body silently soft-deletes the omitted live enum values; a third-party API consumer or a future UI refactor sending only the changed item will corrupt the data
+
+**Severity**: HIGH
+**Category**: replace-as-state silent-data-loss
+
+`EnumValueServiceImpl.java:91-122` partitions input by `id != null`, then `softDeleteExcept(datasetFieldId, idsToKeep)` removes every existing row whose id is NOT in the request. Submitting `{"items": [{"value": "NEW"}]}` (one item, no ids) against a field with 3 existing items soft-deletes the other 2. The DatasetFieldEnumsForm at `DatasetFieldEnumsForm.tsx:90-105` correctly sends the FULL `data.enums` array — the UI is the operative defence; the wire contract has no warning. ADR-CANDIDATE-226 NEW captures the architectural intent; THIS REFACTOR captures the operator-facing data-loss hazard the intent creates.
+
+## REFACTOR-662 — DatasetFieldController's `createEnumValue` is replay-safe-for-state but NOT for audit-trail: identical bodies twice produce the same visible state but DIFFERENT row identities (the second call's softDeleteExcept removes the first call's rows; bulkCreate makes new ones); auditors using row ids lose the chain
+
+**Severity**: MEDIUM
+**Category**: audit-trail-replay-churn
+
+`EnumValueServiceImpl.java:91-122` always runs `softDeleteExcept` then `bulkCreate` on INTERNAL-origin rows. Identical resubmits churn row ids; each call emits its own `DATASET_FIELD_VALUES_UPDATED` activity event. Operators inspecting the activity feed see two events with no state diff; auditors using `enum_value.id` to correlate events lose the chain across the resubmit.
+
+## REFACTOR-663 — DatasetFieldController's `createEnumValue` has NO concurrency control — two concurrent POSTs against the same `datasetFieldId` produce silent last-write-wins; both READ-COMMITTED transactions softDeleteExcept-then-bulkCreate; whichever commits LAST wipes the other's writes
+
+**Severity**: HIGH
+**Category**: data-loss-on-concurrent-write
+
+`EnumValueServiceImpl.java:39-82` runs inside `@ReactiveTransactional` at READ-COMMITTED isolation. Two concurrent submits: T1 reads state, softDeleteExcept its idsToKeep, bulkCreates its body, commits → T2 reads pre-T2 state (which includes T1's writes by now), softDeleteExcept ITS idsToKeep (which doesn't include T1's new ids), bulkCreates ITS body, commits → T1's writes are GONE. No optimistic-lock version, no advisory lock at `dataset_field_id`, no SERIALIZABLE isolation. Two operators editing the same field's enum values concurrently silently lose one set. Cross-link REFACTOR-586 (data_source no optimistic lock) and REFACTOR-210 (data-entity status concurrent PUTs) — same shape on a third resource type.
+
+## REFACTOR-664 — DatasetFieldController's `deleteTermFromDatasetField` removes only MANUAL term-links (`IS_DESCRIPTION_LINK.isFalse()` filter at `TermRelationsRepositoryImpl.java:179`); a term linked via BOTH the `[[ns/name]]` description marker AND the explicit POST /terms has TWO rows; DELETE returns 204 but the description-link row survives → term remains visible in the linked-terms tab
+
+**Severity**: HIGH
+**Category**: cascade-incomplete operator-surprise
+
+The DELETE filter is deliberate (ADR-CANDIDATE-064/108 — description-link coexistence); the architectural intent is sound. The gap is operator-surprise: the endpoint description ('Delete term from current dataset field terms list') does not warn that the deletion may be PARTIAL when the term is also referenced in the description body. Remedy is for the operator to edit the description and remove the marker — but the operator must KNOW to do this. The endpoint should warn (response body or error message) when the deletion is partial.
+
+## REFACTOR-665 — DatasetFieldController's description-edit dual activity-event semantics (one `DATASET_FIELD_DESCRIPTION_UPDATED` + one `DATASET_FIELD_TERM_ASSIGNMENT_UPDATED`) is NOT documented at the live activity-feed page — operators reading the feed see two rows with same actor + timestamp and may infer two distinct user actions
+
+**Severity**: LOW
+**Category**: dual-event-undocumented
+
+ADR-CANDIDATE-225 NEW captures the architectural intent (the dual emission is deliberate); this REFACTOR captures the doc-side gap. The live page (`/features/active-platform-features/activity-feed#event-types`) lists both event types but does not state that ONE description-edit emits BOTH events when the new text contains term markers.
+
+## REFACTOR-666 — DatasetFieldController's per-request DB round-trip via `DatasetFieldResourceExtractor.extractResourceId` runs the 3-table join (`dataset_field → dataset_structure → dataset_version → data_entity`) BEFORE every authorized request; no cache; for high-edit-frequency users (data-curators bulk-editing column metadata) this is one extra round-trip per request beyond the operation itself
+
+**Severity**: LOW
+**Category**: per-request-DB-round-trip-no-cache
+
+ADR-CANDIDATE-224 NEW captures the architectural intent (parent-scoped authorization is the deliberate model); this REFACTOR captures the perf-side gap. A short-TTL cache keyed on `dataset_field_id → parent data_entity_id` would close the gap without changing the model.
+
+## REFACTOR-667 — Data Quality Dashboard's JSONB path extract `specific_attributes->'DATA_QUALITY_TEST'->'expectation'->>'category'` is recomputed at every query — no functional index visible in the migration history; for a catalog with hundreds of thousands of data entities the index absence means each dashboard query does a Seq Scan + per-row JSONB extract
+
+**Severity**: MEDIUM
+**Category**: jsonb-no-functional-index
+
+`ReactiveDataQualityRunsRepositoryImpl.java:46-47` extracts the category JSONB path; `grep -i 'CREATE INDEX.*specific_attributes' <odd-platform>/odd-platform-api/src/main/resources/db/migration/` returned no DQ-category-specific index (2026-05-25 audit). A `CREATE INDEX ... ON data_entity ((specific_attributes->'DATA_QUALITY_TEST'->'expectation'->>'category'))` would convert this to an index scan. Compounds with the no-debounce UI surface — every filter change re-runs the seq scan.
+
+---

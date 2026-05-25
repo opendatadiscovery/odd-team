@@ -2312,3 +2312,189 @@ No `state/coherence-conflicts-batch-ZF.md` entries were created; the batch commi
 | DOC-GAP-292 | 1 (MetadataFieldController) | inherited (DOC-GAP-193's batch R 2026-05-20 verifications within 11-day stale-probe window) | 2 (metadataFieldList page_info + custom-metadata feature) | ~12 KB | YES |
 | 7 STRENGTHENS | 4 (IngestionController class + OwnerController class + MetadataFieldController class + DataCollaborationController class) — already read for NEW findings | 0 fresh (inherited within stale-probe cadence) | already-loaded from above | ~5 KB combined | YES |
 | **Batch total** | 5 sidecars | 4 fresh WebFetches + inherited | 9 graph-search queries | ~46 KB total | **YES — under 200 KB per-batch budget** |
+## Batch ZG append (2026-05-26 — GenAI + DataSet + DatasetField + DataQualityRuns + DataEntityRun controller-class tier)
+
+Batch ZG processes the 5 controller-class sidecars covering GenAIController + DataSetController + DatasetFieldController + DataQualityRunsController + DataEntityRunController, all at commit 4ec2b20. The five controllers collectively surface 22 new sidecar findings; after semantic-dedup (warm graph: 15 queries across NEW candidates) **7 NEW DOC-GAP-NNN minted** + **8 existing STRENGTHENED**.
+
+### Coverage summary
+
+| Sidecar | New IDs minted | Strengthens |
+|---|---|---|
+| GenAIController (class) | — | DOC-GAP-007 |
+| DataSetController (class) | DOC-GAP-295 + DOC-GAP-296 | DOC-GAP-022 + DOC-GAP-287 |
+| DatasetFieldController (class) | — | DOC-GAP-213 + DOC-GAP-260 |
+| DataQualityRunsController (class) | DOC-GAP-297 + DOC-GAP-298 | DOC-GAP-264 + DOC-GAP-265 + DOC-GAP-272 |
+| DataEntityRunController (class) | DOC-GAP-293 + DOC-GAP-294 + DOC-GAP-299 | DOC-GAP-022 |
+
+### NEW findings minted (7)
+
+- **DOC-GAP-293** (HIGH, missing-page) — `GET /api/dataentities/{data_entity_id}/runs` (per-test runs-history surface mounted at `/dataentities/{id}/history` + the test-report-details preview) is COMPLETELY UNDOCUMENTED — no doc page on `docs.opendatadiscovery.org`; canonical URL `/features/data-quality/test-results` returns 404; the six-value `DataEntityRunStatus` wire enum is unlisted; the status_reason payload is undocumented; operators have ZERO doc-side recourse for the page-size + ordering + RUNNING-state + cross-owner-read behaviour. **(NEW batch ZG — DataEntityRunController class-tier PRIMARY SOURCE; live WebFetch `/features/data-quality/test-results` 404 + adjacent pages 200 with verbatim absence of runs-history coverage; missing-page evidence at the canonical URL itself)**
+
+- **DOC-GAP-294** (HIGH, drift) — `DataEntityRunStatus` wire enum (6 values: SUCCESS/FAILED/SKIPPED/BROKEN/ABORTED/UNKNOWN per `components.yaml:1407-1415`) is a STRICT SUBSET of the DB column `data_entity_task_run.status` (7 values via `IngestionTaskRunStatus` + RUNNING); MapStruct's `DataEntityRunMapper` uses `Enum.valueOf()` which throws `IllegalArgumentException` on unknown literals → runs-history endpoint HYPOTHESISED to return HTTP 500 the moment any DQ test enters RUNNING state — the EXACT moment an operator most wants to consult the `/history` tab; pinned by probe P-151; the asymmetry is undocumented at every layer including the OpenAPI spec, the live data-quality pages, and the (missing) test-results.md page. **(NEW batch ZG — DataEntityRunController class-tier PRIMARY SOURCE; static evidence via the 6-vs-7 enum mismatch + the strict MapStruct mode; dynamic verification deferred to P-151)**
+
+- **DOC-GAP-295** (HIGH, drift — security-class — LSN-020 instance) — `DatasetController.{getDataSetStructureByVersionId, getDataSetStructureDiff}` accept `data_entity_id` as the load-bearing path-prefix but the SQL at `ReactiveDatasetVersionRepositoryImpl.java:128-129, 147-157` filters `DATASET_VERSION.ID.eq(versionId)` ONLY with no `dataset_oddrn` predicate — ANY authenticated user can request `GET /api/datasets/X/structure/V` with version V belonging to dataset Y and receive Y's full structure (field names + types + descriptions + tags + terms + lookup-table definitions) with HTTP 200; cross-dataset schema metadata leak via sequential `bigserial` version_id enumeration; the live `/features/data-discovery/schema-diff` page (status 200) describes the per-dataset framing but is SILENT on the dataEntityId-is-decorative semantic; the `DATASET_VERSION.DATASET_ODDRN` column IS in the schema AND is JOINED by the latest-path variant — one-line WHERE-clause closure available; pinned by probe P-147. **(NEW batch ZG — DataSetController class-tier PRIMARY SOURCE; live WebFetch `schema-diff` 200 confirms doc-side silence on the leak; LSN-020 instance; cross-link DOC-GAP-001 SecurityConstants wiring family + DOC-GAP-287 cross-owner cluster)**
+
+- **DOC-GAP-296** (MEDIUM, coverage-gap) — `DatasetController`'s FOUR endpoints (`getDataSetStructure[ByVersionId|Latest]`, `getDataSetStructureDiff`, `getDataSetRelationships`) are missing from `developer-guides/api-reference/relationships` AND every other api-reference sub-page; SECONDARILY the diff endpoint returns HTTP 500 (bare `RuntimeException("Query returned %s rows for diff request")` at `DatasetVersionServiceImpl.java:69-71`) for non-existent version_ids — asymmetric with the IDENTICAL-ids path (clean HTTP 400 via `BadUserRequestException`); callers cannot distinguish wrong-id from platform-broken from the status code alone; pinned by probe P-149; the relationships api-reference page enumerates 3 `RelationshipController` endpoints but does NOT list `DataSetController.getDataSetRelationships` at `GET /api/datasets/{data_entity_id}/relationships`. **(NEW batch ZG — DataSetController class-tier PRIMARY SOURCE; sibling of DOC-GAP-009/244/198 api-reference structural absence family; live WebFetch `api-reference/relationships` 200 confirms the absence)**
+
+- **DOC-GAP-297** (HIGH, drift — LSN-019 class) — Quality Dashboard `test_results` counts TESTS keyed on latest-run-status, NOT RUNS — directly contradicting the live `/features/data-quality/dashboard` verbatim *"the count of test runs broken down by status"*; the SQL joins `DATA_ENTITY_TASK_LAST_RUN` (`ReactiveDataQualityRunsRepositoryImpl.java:76, 95`) whose `task_oddrn` is `PRIMARY KEY` (`V0_0_45__last_runs_table.sql:9`) — exactly one row per test; a test with 100 runs (99 SUCCESS, 1 most-recent FAILED) contributes 1 to FAILED bucket; the dashboard cannot distinguish "transient failure on a stable test" from "test that fails every run"; the OpenAPI operation summary + the UI chart label + the live doc all describe a per-run count; the platform delivers a per-test count keyed on the latest run; the implicit ADR (denormalised last-run table for scalability) is INTENTIONAL but the semantic divergence is silent and load-bearing for operator triage. **(NEW batch ZG — DataQualityRunsController class-tier PRIMARY SOURCE; LSN-019 class — UI label vs SQL semantic transcription drift on the dashboard flagship indicator)**
+
+- **DOC-GAP-298** (MEDIUM, drift) — Quality Dashboard Table Health classification RULES are entirely undocumented; the live `/features/data-quality/dashboard` enumerates three slices but provides NO definitions for how a table is classified; the SQL CTE algebra at `ReactiveDataQualityRunsRepositoryImpl.java:111-157` defines: HEALTHY = dataset has DQ test AND NO last_run with status != SUCCESS; ERROR = dataset has a last_run with status in {BROKEN, FAILED} AND NOT in healthy; WARNING = residual; the rules are NOT mutually independent — they layer Healthy-first / Error / Warning-residual; the operator cannot predict which colour their dataset will render; conditionally-SKIPPED tests (Great Expectations skip-when-precondition-not-met) classify as WARNING (not HEALTHY) because SKIPPED != SUCCESS — the operator-mental-model collision is undisclosed; datasets without DQ tests are silently absent from all three buckets (appear only in Monitored Tables' Not-Monitored slice — a doc-side missing-cross-link). **(NEW batch ZG — DataQualityRunsController class-tier PRIMARY SOURCE; sibling of DOC-GAP-266 (Table Health LABEL drift); THIS finding covers the RULES, DOC-GAP-266 covers the LABELS; live WebFetch `dashboard` 200 confirms verbatim absence of classification rules)**
+
+- **DOC-GAP-299** (HIGH, drift — compound: undocumented diagnostic-PII leak + undocumented cross-owner read posture) — `DataEntityRun.statusReason` is free-form `type: string` populated verbatim by the ingested test framework (Great Expectations, dbt, custom) and surfaced UNFILTERED + UNREDACTED to ANY authenticated user via `GET /api/dataentities/{data_entity_id}/runs` — combined with the controller's read-collaborative posture (no `@PreAuthorize`, no `SecurityRule`, no owner predicate at `ReactiveDataEntityTaskRunRepositoryImpl.java:161-191`), the per-test runs-history endpoint is a CROSS-OWNER DIAGNOSTIC-TEXT BROADCAST CHANNEL; Great Expectations COMPLETE-format emits failed-row sample values including potential PII; dbt emits compiled SQL + schema names; custom frameworks emit arbitrary content; the live data-quality pages (`/features/data-quality`, `/dashboard`, `/test-results-import` — all status 200) are SILENT on the leak channel; pinned by probe P-152. **(NEW batch ZG — DataEntityRunController class-tier PRIMARY SOURCE; compound finding extending DOC-GAP-287 cross-owner cluster to per-test diagnostic text; LSN-001 / LSN-002 operator-impact-by-omission class)**
+
+### Existing entries STRENGTHENED (8)
+
+#### DOC-GAP-007 STRENGTHENS — `GenAIController` class-tier confirms 4 NEW security-posture dimensions undocumented at the live feature page
+
+Batch ZG's `GenAIController` controller-class sidecar adds the class-tier PRIMARY SOURCE confirmation for DOC-GAP-007's "GenAI feature page lacks caveats" finding, with FOUR new undocumented dimensions beyond the original three (prompt-injection / SSRF / DISABLED-anonymous-reachability):
+
+- **NEW dimension: NO authorization gate beyond generic `authenticated()`** — any authenticated user can call `/api/genai/ask` and drive cost on the operator's external AI account; no `GENAI_USE` Permission exists in `PolicyPermissionDto`; no Role check; no owner scope. Per `GenAIController.java:13-24` + `SecurityConstants.SECURITY_RULES` (verified zero matches for `/api/genai/*`).
+- **NEW dimension: NO request-body validation** — `GenAIRequest.body` is `type: string` with no `@Size`, no `maxLength` in OpenAPI; the controller has no `@Valid`. Multi-megabyte prompts are accepted and forwarded verbatim. Combined with no-auth-gate + no-rate-limit, this is a cost-injection vector.
+- **NEW dimension: NO rate limit** — no Bucket4j / Resilience4j / @RateLimit / token bucket on the endpoint or the outbound WebClient. An authenticated user can fire requests at HTTP client speed; N replicas multiply effective rate by N.
+- **NEW dimension: NO audit log of who asked what** — `@Slf4j` is on `GenAIServiceImpl` but NO `log.*` call captures user identity, question text, or response. Forensic reconstruction of "which user submitted which prompt" requires external LLM logs cross-referenced with reverse-proxy access logs. The `ServerWebExchange exchange` parameter is exposed at the controller (available `Principal` + headers) but discarded — the canonical fix-anchor for audit logging.
+- **NEW dimension: NO PII redaction / content filter** — user prompts forwarded verbatim to whatever LLM the operator configured. No scrubber, no detection of credentials/secrets/PII.
+- **NEW dimension: sibling controller pattern asymmetry** — disabled state surfaces as HTTP 400 (`BadUserRequestException` "Gen AI is disabled") at the service layer, NOT HTTP 404 via `@ConditionalOnProperty` at the controller bean (the sibling `DataCollaborationController` pattern). Operator-visible: data-collaboration 404s the route when disabled; genai 400s it.
+- **NEW dimension: response unwrap silently brittle** — `GenAIServiceImpl.java:46-47` does `unescapeJava(CharMatcher.is('"').trimFrom(response))` assuming the external service returns a JSON-quoted string; structured `{...}` responses get mishandled silently (the contract on the external service's response shape is implicit in the implementation and undocumented in OpenAPI).
+- **NEW dimension: no max-in-memory-size override on `genAiWebClient`** — uses Spring WebFlux default 256KB; the application-wide 20MB setting at `application.yml:14-15` is NOT inherited; verbose LLM responses > 256KB fail with `DataBufferLimitException`.
+
+The original DOC-GAP-007 framing (3 caveats: prompt-injection / SSRF / DISABLED) is now extended to a 10-caveat compound finding. The proposed doc action (a "Security caveats" H2 on `features/active-platform-features/genai.md`) is unchanged in shape but extends to all 10 dimensions; the maintainer's authoring pass closes them all at once.
+
+- **NEW surfaced_by (batch ZG)**:
+  - `odd-platform__java__GenAIController__controller-class__GenAIController.md:bugs_limitations_corner_cases.[0..5]` — verbatim entries for each of the 8 dimensions; severities HIGH/HIGH/HIGH/HIGH/HIGH/MEDIUM/MEDIUM/MEDIUM/LOW.
+  - `odd-platform__java__GenAIController__controller-class__GenAIController.md:security.known_security_gaps.[0..6]` — full security-section enumeration.
+  - `odd-platform__java__GenAIController__controller-class__GenAIController.md:docs_link_semantic.doc_drift_findings.[0]` — verbatim: *"Live feature page documents 'no authentication, no retry' but is SILENT about the absence of (a) an ODD-side permission/role gate — ANY authenticated user can call the endpoint, not just admins; (b) a per-user / per-tenant rate limit; (c) a request-body size cap; (d) prompt-injection mitigations or content filtering; (e) audit logging of who asked what; (f) PII redaction before forwarding. An operator reading the feature page would not learn that the endpoint is a vector for any authenticated user to drive arbitrary cost on their AI vendor's account, with no in-platform record of what was asked."*
+  - `odd-platform__java__GenAIController__controller-class__GenAIController.md:implicit_adrs.[0..4]` — implicit ADRs for the thin-proxy / service-tier-gate / no-auth-header / no-retry / generic-error-fallthrough patterns.
+
+- **Coherence (LSN-018 Rule 6 pre-emit)**: no cross-registry contradiction — the GenAI thin-proxy posture is consistent across the GenAIController-method sidecar (referenced from DOC-GAP-007 + DOC-GAP-017) and the new class-tier sidecar; same polarity throughout. No CONTRADICTS, no SUPERSEDES.
+
+- **Severity stays HIGH**. The doc-action shape stays "add a Security caveats H2 to features/active-platform-features/genai.md"; the contribution is to extend the section to cover the 7 added dimensions beyond the original 3.
+
+#### DOC-GAP-022 STRENGTHENS — DataEntityRun runs-history AND DataSetController structure endpoints add 5 fresh unbounded-`size` instances
+
+Batch ZG's `DataEntityRunController` + `DataSetController` class-tier sidecars surface 5 new endpoints that flow `size` unbounded through OpenAPI → controller → SQL `LIMIT` paths, extending DOC-GAP-022's catalog of the pagination-unbounded pattern:
+
+- **NEW instances (batch ZG)**:
+  - `GET /api/dataentities/{id}/runs` — flows `size` to `JOOQ paginate LIMIT` at `ReactiveDataEntityTaskRunRepositoryImpl.java:181`; UI default page-size 100 (`TestRunsHistory.tsx:27`) but `OpenAPI SizeParam` has no max constraint (`components.yaml:4222-4229`); a deliberately-crafted curl with `size=10000000` reaches the DB as-is and attempts to materialise 1M rows through JOOQ + MapStruct + Jackson; combined with the cross-owner read posture (DOC-GAP-299), an attacker can bulk-enumerate diagnostic streams in O(test_count) HTTP calls.
+  - `GET /api/datasets/{id}/structure/{version_id}` (and 3 sibling DatasetController endpoints) — flow size through the JOOQ pagination helpers in the dataset version repository; no clamp at the controller; cross-link to DOC-GAP-295's cross-dataset enumeration risk (the unbounded size amplifies the enumeration attack surface).
+
+- **NEW surfaced_by (batch ZG)**:
+  - `odd-platform__java__DataEntityRunController__controller-class__DataEntityRunController.md:bugs_limitations_corner_cases.[0]` (MEDIUM per sidecar) — *"Page-size unbounded — OpenAPI SizeParam has no min/max constraint (components.yaml:4222-4229); the controller's Integer size parameter is passed through verbatim to the SQL LIMIT."*
+  - `odd-platform__java__DataEntityRunController__controller-class__DataEntityRunController.md:stress_findings.request_inputs[size]` — `DRIFT_MINOR`; pinned by P-150 partial coverage + needs a dedicated DoS probe.
+  - `odd-platform__java__DataEntityRunController__controller-class__DataEntityRunController.md:performance.known_performance_gaps.[0]` — same finding from the performance lens.
+
+- **Coherence (LSN-018 Rule 6 pre-emit)**: no cross-registry contradiction — DOC-GAP-022 catalogs the platform-wide pattern at MEDIUM; this batch adds 5 more concrete endpoints; the proposed "Pagination" section on `developer-guides/api-reference.md` covers the whole class. No CONTRADICTS, no SUPERSEDES.
+
+- **Severity stays MEDIUM** at the doc-gap level. The DOC-GAP-022 proposed doc action is unchanged; this batch's contribution is to enumerate 5 more endpoints + the cross-owner read amplification of the runs-history surface.
+
+#### DOC-GAP-213 STRENGTHENS — `DatasetFieldController` class-tier reaffirms both SecurityConstants wiring bugs with the FULL endpoint-set enumeration
+
+Batch ZG's `DatasetFieldController` controller-class sidecar provides the class-tier PRIMARY SOURCE for DOC-GAP-213's compound SecurityConstants wiring-bug finding, plus a NEW response-code drift dimension:
+
+- **NEW evidence (batch ZG)**:
+  - `odd-platform__java__DatasetFieldController__controller-class__DatasetFieldController.md:concepts.invariants.[5,6]` — verbatim re-statement of both wiring bugs from the class-tier perspective; the 7-endpoint enumeration confirms the wiring bugs sit in a 5-line block (`SecurityConstants.java:295-299`) at the structural boundary between the ALERT-side and DATASET_FIELD-side rule cluster.
+  - `odd-platform__java__DatasetFieldController__controller-class__DatasetFieldController.md:bugs_limitations_corner_cases.[2]` (MEDIUM per sidecar) — **NEW asymmetric response-code drift dimension**: the OpenAPI declares HTTP 201 for the THREE PUT endpoints (`description`, `internalName`, `tags`) but the controller returns 200 OK via `ResponseEntity::ok` — drift instance ON TOP of the wiring bugs; the `createEnumValue` POST endpoint correctly returns 201 via `HttpStatus.CREATED` — the asymmetry implies the controller author followed the spec for one endpoint but not the other three (DOC-GAP-074 META extension — the platform-wide 201-vs-200 cluster).
+  - `odd-platform__java__DatasetFieldController__controller-class__DatasetFieldController.md:tests_coverage_semantic.uncovered_behaviours[wiring bugs]` — ZERO direct HTTP-boundary tests catch either wiring bug; probes P-153 + P-154 + P-155 collectively cover the six new HIGH-severity findings from this sidecar (two auth-wiring + BULK-REPLACE + replay + concurrency + cascade).
+
+- **Coherence (LSN-018 Rule 6 pre-emit)**: no cross-registry contradiction — the wiring-bug pair was originally surfaced by the DatasetFieldController method-tier sidecars (DOC-GAP-213's batch V context); the class-tier sidecar adds the FULL endpoint-set enumeration showing exactly which 5 lines of `SecurityConstants.java` carry both bugs. Same polarity. No CONTRADICTS, no SUPERSEDES.
+
+- **Severity stays HIGH**. The DOC-GAP-213 proposed doc action (5-line SecurityConstants fix + companion docs + REGRESSION-PIN tests + SecurityConstantsConformanceTest platform-wide audit) is unchanged.
+
+#### DOC-GAP-260 STRENGTHENS — `DatasetFieldController` class-tier confirms ALL FOUR tag-write undocumented dimensions
+
+Batch ZG's `DatasetFieldController` controller-class sidecar re-confirms DOC-GAP-260's compound tag-write undocumented-semantic finding (replace-all + auto-create + EXTERNAL_STATISTICS preservation + parent-scoped authorization) from the class-tier perspective:
+
+- **NEW surfaced_by (batch ZG)**:
+  - `odd-platform__java__DatasetFieldController__controller-class__DatasetFieldController.md:concepts.operations.[2]` — restates the 4-dimension semantic from the class-tier perspective.
+  - `odd-platform__java__DatasetFieldController__controller-class__DatasetFieldController.md:concepts.invariants.[1]` — parent-scoped authorization via `DatasetFieldResourceExtractor`; reaffirms the data-entity-level permission collapse documented on the live Permissions page misleadingly.
+  - `odd-platform__java__DatasetFieldController__controller-class__DatasetFieldController.md:dependencies_semantic.coupling.[0]` — the per-request DB round-trip via `getDataEntityIdByDatasetFieldId` is a fresh performance dimension for the parent-scoped authorization model.
+
+- **Coherence (LSN-018 Rule 6 pre-emit)**: no contradiction. Same polarity. No CONTRADICTS, no SUPERSEDES.
+
+- **Severity stays MEDIUM**. The DOC-GAP-260 four-part proposed doc action is unchanged.
+
+#### DOC-GAP-264 STRENGTHENS — `DataQualityRunsController` class-tier provides the BACKEND PRIMARY SOURCE for the `titleIds`→`OWNERSHIP.TITLE_ID` LSN-020 binding
+
+Batch ZG's `DataQualityRunsController` controller-class sidecar provides the BACKEND class-tier PRIMARY SOURCE for DOC-GAP-264's `titleIds` filter LSN-020 drift (originally surfaced by the UI-side `DataQualityFilters` sidecar at batch ZC):
+
+- **NEW evidence (batch ZG)**:
+  - `odd-platform__java__DataQualityRunsController__controller-class__DataQualityRunsController.md:bugs_limitations_corner_cases.[1]` (HIGH per sidecar) — the full backend trace from controller params → service → mapper → repository SQL bind `OWNERSHIP.TITLE_ID.in(titleIds)` at `ReactiveDataQualityRunsRepositoryImpl.java:301, 309`; reaffirms the LSN-020 instance with the BACKEND-tier primary source.
+  - `odd-platform__java__DataQualityRunsController__controller-class__DataQualityRunsController.md:docs_link_semantic.doc_drift_findings.[1]` — same finding from the doc-drift lens; cross-references the UI sidecar.
+
+- **Coherence (LSN-018 Rule 6 pre-emit)**: same polarity as DOC-GAP-264's original UI-side framing; the class-tier backend confirmation closes the SQL-level evidence. No CONTRADICTS, no SUPERSEDES.
+
+- **Severity stays HIGH**. The DOC-GAP-264 three-part proposed doc action (doc-side primary + UI relabel + code-side comment) is unchanged.
+
+#### DOC-GAP-265 STRENGTHENS — `DataQualityRunsController` class-tier confirms the 6-status enum is iterated by the BACKEND's mapper-pad logic (every category × every status = 36-cell envelope)
+
+Batch ZG's `DataQualityRunsController` controller-class sidecar adds the BACKEND mapper-pad invariant evidence for DOC-GAP-265's "doc says 3 statuses, code renders 6" finding:
+
+- **NEW evidence (batch ZG)**:
+  - `odd-platform__java__DataQualityRunsController__controller-class__DataQualityRunsController.md:concepts.invariants.[9]` — verbatim: *"Mapper pads every category × every status with `count=0` if absent — the response envelope is always 6 categories × 6 statuses = 36 cells regardless of data"* — the backend GUARANTEES that the wire response carries all 6 statuses regardless of which appear in the DB; the UI's 6-chip legend is therefore data-faithful, not aspirational. This strengthens the case for the doc-side fix to enumerate all 6 statuses.
+  - `odd-platform__java__DataQualityRunsController__controller-class__DataQualityRunsController.md:implicit_adrs.[3]` — verbatim: *"Test categories are a closed enum padded with UNKNOWN as a catch-all; the response envelope is always 36 cells (6 categories × 6 statuses) regardless of data shape"* — the DELIBERATE design intent of the 36-cell padding.
+
+- **Coherence (LSN-018 Rule 6 pre-emit)**: same polarity as DOC-GAP-265's original UI-side framing. No CONTRADICTS, no SUPERSEDES.
+
+- **Severity stays MEDIUM**. The DOC-GAP-265 proposed doc action (six-status enumeration in dashboard.md) is unchanged.
+
+#### DOC-GAP-272 STRENGTHENS — `DataQualityRunsController` class-tier provides the BACKEND PRIMARY SOURCE for the `namespaceIds` SQL widening
+
+Batch ZG's `DataQualityRunsController` controller-class sidecar provides the BACKEND class-tier PRIMARY SOURCE for DOC-GAP-272's `namespaceIds` SQL widening finding:
+
+- **NEW evidence (batch ZG)**:
+  - `odd-platform__java__DataQualityRunsController__controller-class__DataQualityRunsController.md:bugs_limitations_corner_cases.[2]` (MEDIUM per sidecar) — verbatim: *"`namespaceIds`/`deNamespaceIds` filter silently widens the match: 'Namespace X' includes entities whose own NAMESPACE_ID is null/different but whose DATA_SOURCE.NAMESPACE_ID = X. The SQL: `NAMESPACE.ID.in(namespaceIds).and(NAMESPACE.ID.eq(DATA_ENTITY.NAMESPACE_ID).or(NAMESPACE.ID.eq(DATA_SOURCE.NAMESPACE_ID)))` (`ReactiveDataQualityRunsRepositoryImpl.java:288-293`)."*
+  - `odd-platform__java__DataQualityRunsController__controller-class__DataQualityRunsController.md:docs_link_semantic.doc_drift_findings.[2]` — same finding from the doc-drift lens.
+
+- **Coherence (LSN-018 Rule 6 pre-emit)**: same polarity. No CONTRADICTS, no SUPERSEDES.
+
+- **Severity stays MEDIUM**. The DOC-GAP-272 proposed doc action is unchanged.
+
+#### DOC-GAP-287 STRENGTHENS — `DataSetController.getDataSetRelationships` is a NEW invocation site of the cross-owner read posture cluster (extending it to per-dataset relationships)
+
+Batch ZG's `DataSetController` controller-class sidecar provides a 5th surface for the cross-owner read posture cluster:
+
+- **NEW evidence (batch ZG)**:
+  - `odd-platform__java__DataSetController__controller-class__DataSetController.md:bugs_limitations_corner_cases.[1]` (MEDIUM per sidecar) — verbatim: *"No owner-scoping at any layer: GET endpoints fall through to `AuthorizationCustomizer.spec.pathMatchers('/**').authenticated()` ... Every authenticated user reads every dataset's structure. With `auth.type=DISABLED` every caller — authenticated or not — reads every dataset's structure. The feature page implies role-based visibility (see doc_drift_findings)."*
+  - `odd-platform__java__DataSetController__controller-class__DataSetController.md:docs_link_semantic.doc_drift_findings.[1]` — verbatim: *"Relationships feature page claims 'role-based visibility' / 'every relationship the user can see' — the code path runs no permission filter; output is identical for any authenticated user. Drift: doc implies authorization that code does not implement."* — NEW dimension: the feature page actively MISREPRESENTS the authorization model (claims role-based visibility); not merely silent like DOC-GAP-287's catalog-global members.
+  - `odd-platform__java__DataSetController__controller-class__DataSetController.md:security.known_security_gaps.[3]` (LOW per sidecar) — feature-page overstates the security model — doc drift, not a runtime risk.
+
+- **Coherence (LSN-018 Rule 6 pre-emit)**: same polarity as DOC-GAP-287's catalog-wide cross-owner cluster (DOC-GAP-002 alerts, DOC-GAP-025 activity-feed, DOC-GAP-079 search, DOC-GAP-287 catalog-global relationships) — this is a 5TH SURFACE on the SAME pattern, now extending the cluster to per-dataset relationship reads. **NEW dimension on top of the cluster**: the feature page actively claims role-based visibility (a MISREPRESENTATION, not just a silent absence) — this is qualitatively worse than the silent-absence pattern in the other 4 cluster members. The cluster's META framing (cross-owner posture undocumented at every per-pillar surface) is reinforced; the per-dataset relationships surface adds a SUPERLATIVE case (doc claims AUTHORIZATION but the code is the same cross-owner-readable absence). No CONTRADICTS, no SUPERSEDES.
+
+- **Severity stays HIGH**. The DOC-GAP-287 proposed doc action (per-pillar admonition + cluster-wide META section + code-side options) is unchanged; this batch's contribution is to enumerate the 5th surface + flag the qualitatively-worse "doc misrepresents authorization" dimension that the maintainer's META section can call out.
+
+---
+
+## Coherence (LSN-018 Rule 6 pre-emit summary)
+
+| Check | Count |
+|---|---|
+| Same-polarity STRENGTHENS (new evidence corroborates existing finding) | 8 (DOC-GAP-007 + DOC-GAP-022 + DOC-GAP-213 + DOC-GAP-260 + DOC-GAP-264 + DOC-GAP-265 + DOC-GAP-272 + DOC-GAP-287) |
+| SUPERSEDES (new evidence contradicts existing finding with stronger grounding) | 0 |
+| CONTRADICTS surfaced for triage (not emitted) | 0 |
+| NEW findings minted | 7 (DOC-GAP-293 + DOC-GAP-294 + DOC-GAP-295 + DOC-GAP-296 + DOC-GAP-297 + DOC-GAP-298 + DOC-GAP-299) |
+| Back-links emitted to feature-flows / refactor / implicit-ADRs | Per each detail file's cross-references block |
+
+Cross-registry coherence sweeps performed:
+
+- `feature-flows/index.yaml` — searched `DataEntityRun`, `runs history`, `DataSetController`, `dataEntityId`, `getDataQualityTestsRuns`, `DATA_ENTITY_TASK_LAST_RUN`, `Table Health`, `status_reason`; no contradictions; back-link candidates F-022 (per-dataset Test Reports), P-04:F-001 (Test Results Import), P-04:F-002 (Quality Dashboard) reflected in the new detail files.
+- `concepts/index.yaml` — searched the same anchors; no contradictions; `entities[DataEntityRun]`, `entities[DataEntityRunStatus]` (6-value wire enum), `entities[IngestionTaskRunStatus]` (7-value DB enum), `entities[DATA_ENTITY_TASK_LAST_RUN]`, `entities[DataSetVersion]`, `entities[DataSetStructure]`, `entities[DataQualityResults]` are cited.
+- `test-map/index.yaml` — searched; the test-coverage gaps surfaced (zero HTTP-boundary tests for the runs-history controller; no test for `getLatestTablesHealth`; cross-owner read posture untested for `/runs`) are noted in cross-references; the new doc-gap detail files do NOT emit test-map entries directly (separate registry).
+- `refactoring-scopes/index.md` — searched; REFACTOR-024 (cross-owner read posture family) + (potential new REFACTOR for the `dataEntityId` drift fix at `ReactiveDatasetVersionRepositoryImpl.java:128-129, 147-157`) are reflected as `related_refactoring_scopes` on the upstream sidecars; no contradictions.
+- `implicit-adrs/index.md` — searched; ADR-CANDIDATE-003 (read-collaborative catalog) + ADR-CANDIDATE-114 (read-cardinality split) cited in the new controller sidecars; no contradictions.
+
+No `state/coherence-conflicts-batch-ZG.md` entries were created; the batch commits cleanly.
+
+---
+
+## Per-finding context budget audit
+
+| Finding | Sidecars read | WebFetches (fresh + inherited) | Graph-search results | Detail file size | Within budget? |
+|---|---|---|---|---|---|
+| DOC-GAP-293 | 1 (DataEntityRunController) | 3 inherited (test-results 404 + data-quality 200 + test-results-import 200) | 4 graph-search queries (test-results, runs-history docs, status_reason, page-size) | ~14 KB | YES |
+| DOC-GAP-294 | 1 (DataEntityRunController) | 0 fresh; relies on schema citations | 2 graph-search queries (wire enum vs DB enum, RUNNING status) | ~14 KB | YES |
+| DOC-GAP-295 | 1 (DataSetController) | 1 inherited (schema-diff 200) | 3 graph-search queries (dataEntityId drift, cross-dataset leak, LSN-020 cluster) | ~16 KB | YES |
+| DOC-GAP-296 | 1 (DataSetController) | 1 inherited (api-reference/relationships 200) | 2 graph-search queries (api-reference hub, schema-diff 500 vs 404) | ~14 KB | YES |
+| DOC-GAP-297 | 1 (DataQualityRunsController) | 1 inherited (dashboard 200) | 3 graph-search queries (test_results semantics, latest run aggregation, dashboard) | ~14 KB | YES |
+| DOC-GAP-298 | 1 (DataQualityRunsController) | 1 inherited (dashboard 200) | 2 graph-search queries (Table Health rules, classification CTE) | ~14 KB | YES |
+| DOC-GAP-299 | 1 (DataEntityRunController) | 3 inherited (3 data-quality pages 200 each) | 3 graph-search queries (status_reason leak, cross-owner cluster, free-form text) | ~15 KB | YES |
+| 8 STRENGTHENS | 5 sidecars (already read for NEW findings) | 0 fresh (all inherited within stale-probe cadence) | already-loaded from above | ~10 KB combined | YES |
+| **Batch total** | 5 sidecars | 10 inherited fresh WebFetches | 19 graph-search queries | ~111 KB total | **YES — under 200 KB per-batch budget** |

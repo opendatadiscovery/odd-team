@@ -1,0 +1,48 @@
+gap_id: TEST-GAP-982
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DataEntityRunController controller-class:DataEntityRunController"
+pillars_affected: [P-04]
+surfaced_by:
+  - "DataEntityRunController.md:bugs_limitations_corner_cases.[2] (NULL end_time ordering not specified — ORDER BY end_time DESC with no NULLS-FIRST/LAST directive; Postgres default for DESC is NULLS FIRST, so RUNNING rows appear AT THE TOP)"
+  - "DataEntityRunController.md:bugs_limitations_corner_cases.[3] (No tie-breaker on identical end_time — ordering between rows with shared end_time is Postgres physical-storage-defined; InfiniteScroll appends pages via independent SQL invocations; ties may duplicate or skip across page boundaries)"
+behaviour: |-
+  **The runs-history UI displays an inconsistent / non-deterministic ordering at the page boundary when (a) NULL end_time RUNNING rows mix with completed runs, or (b) multiple completed runs share an end_time value.** The SQL emits `ORDER BY end_time DESC` (single field, no tie-breaker, no NULLS-FIRST/LAST directive — `ReactiveDataEntityTaskRunRepositoryImpl.java:178` + `JooqQueryHelper.java:74-89`). Two operator-visible failure modes:
+
+  **(a) NULL end_time positioning** — Postgres default for DESC is NULLS FIRST, so RUNNING tasks (end_time=NULL) appear AT THE TOP of the runs list. The UI labels each row by `startTime` in the leftmost column (`TestRunItem.tsx:30`) with an empty Duration column when endTime is null (`TestRunItem.tsx:53-57`); the operator sees an undated-looking row first with no visual signal that it represents an in-flight test. Combined with TEST-GAP-979 (the RUNNING-enum-mapper failure), this is the trigger condition: a RUNNING row at position [0] in the result set fires the IllegalArgumentException at the mapper.
+
+  **(b) Tied end_time across page boundaries** — InfiniteScroll consumer (TestRunsHistory.tsx:90-113) appends successive pages via independent SQL invocations (each fetch issues its own `LIMIT OFFSET` query). If two completed runs share an end_time AND span the page boundary (page 1 ends at index 100, page 2 starts at index 100; rows 99-101 share end_time), the Postgres physical-storage order may differ across fetches — operator sees the same row twice (duplicated across pages) OR sees rows skipped (one row never appears in either page).
+
+  **Compound with display key mismatch** — the UI's leftmost column is `startTime` (`TestRunsHistory.tsx:74-87`); the SQL sort is `end_time DESC`. For long-running tests the two diverge: a run started YESTERDAY but ended TODAY appears ABOVE a run started AND ended earlier today. The operator's mental model "this list is sorted by what I see in the first column" is wrong.
+
+  No test asserts ordering under (a) or (b). The repository test (`DataEntityRunRepositoryImplTest.java:62`) uses `DataEntityTaskRunPojoEndTimeComparator` to compute the EXPECTED order — but only for completed runs with distinct end_times; the NULL and tied cases are uncovered.
+test_class: missing-edge-case
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/DataEntityRunRepositoryImplTest.java (completed-runs ordering only; no NULL/tie test cases)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DataEntityRunOrderingEdgeCasesTest.java"
+  name: "getRuns_runningAndCompletedMixed_runningAppearsFirst_pinsNullsFirstOrdering"
+evidence:
+  - "DataEntityRunController.md:bugs_limitations_corner_cases.[2] verbatim: 'NULL end_time ordering not specified — when a row has end_time = NULL (RUNNING task), the JOOQ paginate emits ORDER BY end_time DESC with no NULLS FIRST/LAST directive. Postgres default for DESC is NULLS FIRST, so RUNNING rows appear AT THE TOP of the runs list.' severity: MEDIUM"
+  - "DataEntityRunController.md:bugs_limitations_corner_cases.[3] verbatim: 'No tie-breaker on identical end_time — when two completed runs share end_time, ordering between them is Postgres physical-storage-defined. The InfiniteScroll consumer (TestRunsHistory.tsx:90-113) appends successive pages via independent SQL invocations; if a tie splits across the page boundary differently on each fetch, the operator sees duplicated or skipped rows in the rendered list.' severity: LOW"
+  - "DataEntityRunController.md:bugs_limitations_corner_cases.[4] verbatim: 'UI sort key (start_time) ≠ backend sort key (end_time)'"
+  - "Verified at primary source: ReactiveDataEntityTaskRunRepositoryImpl.java:176-182 (ORDER BY end_time DESC, no NULLS directive) + JooqQueryHelper.java:55-90 (the paginate impl) + TestRunsHistory.tsx:74-87 (UI displays start_time)"
+  - "Probe P-150 emits the canonical NULL + tie scenarios"
+cross_references:
+  - "TEST-GAP-979 (compound dependency — NULL end_time positioning is the trigger for RUNNING-enum-mapper failure)"
+  - "TEST-GAP-978 (parent — HTTP-tier zero-coverage gap)"
+  - "P-150 (the probe skeleton emitted in the sidecar)"
+  - "REFACTOR-NNN candidate: add NULLS LAST + .orderBy(id ASC) tie-breaker at the JOOQ paginate site"
+related_features: []
+related_pillar_features: ["P-04:F-001"]
+proposed_action: |-
+  Add `DataEntityRunOrderingEdgeCasesTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Four test methods:
+  1. `getRuns_runningAndCompletedMixed_runningAppearsFirst_pinsNullsFirstOrdering` — seed 1 RUNNING (end_time=null) + 3 completed runs; GET; assert items[0].endTime is null. PIN the NULLS-FIRST behaviour.
+  2. `getRuns_twoRunsShareEndTime_orderingIsImplementationDefined_pinsTieBreakerAbsence` — seed 5 runs with two pairs at identical end_times; GET; capture order; re-issue the same GET; assert observed order MAY differ (or document that PG returns same order due to physical storage); pin the no-tie-breaker contract.
+  3. `getRuns_paginationBoundary_tiedEndTime_observedDuplicationOrSkip_pinsBoundaryHazard` — seed 12 runs, runs 4+5 share end_time; GET page=1 size=4 then page=2 size=4; verify whether rows 4+5 appear correctly across the boundary; pin the observed behaviour.
+  4. `getRuns_uiSortKeyMismatch_runStartedYesterdayEndedToday_appearsAboveRunStartedAndEndedEarlierToday_pinsKeyMismatch` — seed run A (start yesterday, end today) + run B (start today, end today, earlier than A); GET; assert items[0] is A (end_time newer) even though start_time of A is older than B. PIN the display-key vs sort-key mismatch.
+
+  Pair with REFACTOR-NNN: add `.orderBy(DATA_ENTITY_TASK_RUN.END_TIME.desc().nullsLast(), DATA_ENTITY_TASK_RUN.ID.desc())` at the paginate site. The two-key ordering closes (a) and (b). Flips tests 1+2+3 deliberately.
+batch: 2026-05-25-ZG
+feature_id: null

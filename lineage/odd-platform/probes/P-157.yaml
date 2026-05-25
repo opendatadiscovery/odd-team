@@ -1,0 +1,238 @@
+---
+probe_id: P-157
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DataQualityRunsController__controller-class__DataQualityRunsController
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-022
+test_class: security
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category D — auth gates on GET /api/dataqatests/runs):
+  Verify the cross-owner read-collaborative posture of the catalog-wide Data
+  Quality dashboard endpoint across the 4 auth modes.
+
+  Specifically:
+    (1) Under DISABLED, anonymous GET returns 200 OK with full catalog data.
+    (2) Under LOGIN_FORM, anonymous GET (no session cookie) returns 401 or
+        302→/login; with valid session cookie returns 200 OK with full
+        catalog data regardless of the principal's owner association.
+    (3) Under OAUTH2, anonymous GET (no bearer token) returns 401; with valid
+        bearer token returns 200 OK with full catalog data regardless of the
+        principal's owner association.
+    (4) Under LDAP, same as OAUTH2 (shares AuthorizationCustomizer wiring).
+
+  The probe confirms the read-collaborative posture (ADR-CANDIDATE-003 /
+  REFACTOR-024 applied to P-04:F-002): any authenticated user sees the
+  catalog-wide DQ aggregate, including filter dimensions for owners,
+  namespaces, datasources, titles, and tags that they may not own.
+
+  Failure mode (auth tighter than expected): if a non-owner principal
+  receives 403 under any mode, the static analysis missed a gate — re-read
+  AuthorizationCustomizer and SecurityConstants for any rule matching
+  /api/dataqatests/runs or a parent path.
+
+  Failure mode (auth looser than expected): if under LOGIN_FORM/OAUTH2/LDAP
+  an unauthenticated caller receives 200, the static analysis missed a
+  permitAll/whitelist entry — check WHITELIST_PATHS and the
+  LoginFormSecurityConfiguration permittedPaths array.
+---
+arrange:
+  - kind: docker-compose-up
+    services: [postgres, odd-platform-api]
+    env_overrides:
+      AUTH_TYPE: "DISABLED"
+  - kind: sql
+    description: "Seed a minimal DQ-test fixture so the endpoint returns non-zero counts (to distinguish 'auth allowed me through, response empty' from 'auth allowed me through, response correct')"
+    query: |
+      INSERT INTO data_source (id, oddrn, name, namespace_id, active, created_at, updated_at)
+      VALUES (8000, '//probe-source/p157', 'p157_source', NULL, true, NOW(), NOW())
+      ON CONFLICT DO NOTHING;
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, entity_class_ids, status, hollow, manually_created, exclude_from_search, created_at, updated_at)
+      VALUES (8001, '//probe-source/p157/dataset', 'p157_dataset', 8000, 4, ARRAY[1], 1, false, false, false, NOW(), NOW())
+      ON CONFLICT DO NOTHING;
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, entity_class_ids, status, hollow, manually_created, exclude_from_search, specific_attributes, created_at, updated_at)
+      VALUES (8002, '//probe-source/p157/dq-test', 'p157_dq_test', 8000, 8, ARRAY[2], 1, false, false, false,
+              '{"DATA_QUALITY_TEST": {"expectation": {"category": "ASSERTION"}}}'::jsonb, NOW(), NOW())
+      ON CONFLICT DO NOTHING;
+      INSERT INTO data_quality_test_relations (data_quality_test_oddrn, dataset_oddrn)
+      VALUES ('//probe-source/p157/dq-test', '//probe-source/p157/dataset')
+      ON CONFLICT DO NOTHING;
+      INSERT INTO data_entity_task_last_run (task_oddrn, last_task_run_oddrn, end_time, status)
+      VALUES ('//probe-source/p157/dq-test', '//probe-source/p157/dq-test/lr', NOW(), 'SUCCESS')
+      ON CONFLICT (task_oddrn) DO UPDATE SET status = excluded.status;
+act:
+  # Test 1: DISABLED mode — anonymous GET should succeed
+  - kind: rest
+    description: "DISABLED: anonymous GET to /api/dataqatests/runs — HYPOTHESIS: 200 OK"
+    method: GET
+    path: /api/dataqatests/runs
+    capture_as: t1_disabled_anonymous
+  # Switch to LOGIN_FORM mode
+  - kind: docker-compose-down
+    destroy_volumes: false
+  - kind: docker-compose-up
+    services: [postgres, odd-platform-api]
+    env_overrides:
+      AUTH_TYPE: "LOGIN_FORM"
+      AUTH_LOGIN_FORM_CREDENTIALS: "admin:admin"
+  # Test 2: LOGIN_FORM mode, anonymous — should be 401/302
+  - kind: rest
+    description: "LOGIN_FORM: anonymous GET to /api/dataqatests/runs — HYPOTHESIS: 401 or 302→/login (path not in permittedPaths)"
+    method: GET
+    path: /api/dataqatests/runs
+    headers:
+      Accept: "application/json"
+    capture_as: t2_loginform_anonymous
+  # Test 3: LOGIN_FORM mode, authenticated as admin — should succeed
+  - kind: rest
+    description: "LOGIN_FORM: login as admin via POST /login, capture session cookie"
+    method: POST
+    path: /login
+    headers:
+      Content-Type: "application/x-www-form-urlencoded"
+    body: "username=admin&password=admin"
+    capture_as: t3_loginform_login
+  - kind: rest
+    description: "LOGIN_FORM: authenticated GET to /api/dataqatests/runs with session cookie — HYPOTHESIS: 200 OK regardless of admin's owner association"
+    method: GET
+    path: /api/dataqatests/runs
+    headers:
+      Cookie: "${t3_loginform_login.set_cookie}"
+    capture_as: t4_loginform_authenticated
+  # Switch to OAUTH2 mode (with mock OIDC provider)
+  - kind: docker-compose-down
+    destroy_volumes: false
+  - kind: docker-compose-up
+    services: [postgres, odd-platform-api, oidc-mock]
+    env_overrides:
+      AUTH_TYPE: "OAUTH2"
+      AUTH_OAUTH2_CLIENT_TEST_PROVIDER: "okta"
+      AUTH_OAUTH2_CLIENT_TEST_CLIENT_ID: "test-client"
+      AUTH_OAUTH2_CLIENT_TEST_CLIENT_SECRET: "test-secret"
+      AUTH_OAUTH2_CLIENT_TEST_ISSUER_URI: "http://oidc-mock:9099/realms/test"
+  # Test 4: OAUTH2 anonymous — should be 401
+  - kind: rest
+    description: "OAUTH2: anonymous GET — HYPOTHESIS: 401 Unauthorized"
+    method: GET
+    path: /api/dataqatests/runs
+    headers:
+      Accept: "application/json"
+    capture_as: t5_oauth2_anonymous
+  # Test 5: OAUTH2 authenticated with a non-owner principal — should be 200 (cross-owner read posture)
+  - kind: oauth2-token-acquire
+    description: "Acquire a bearer token for a test user with NO owner association in the platform"
+    issuer: "http://oidc-mock:9099/realms/test"
+    client_id: "test-client"
+    client_secret: "test-secret"
+    user: "non-owner-user"
+    capture_as: t6_oauth2_token
+  - kind: rest
+    description: "OAUTH2: authenticated GET with non-owner bearer token — HYPOTHESIS: 200 OK with full catalog data (read-collaborative posture)"
+    method: GET
+    path: /api/dataqatests/runs
+    headers:
+      Authorization: "Bearer ${t6_oauth2_token.access_token}"
+    capture_as: t7_oauth2_nonowner
+observe:
+  - kind: extract
+    from: t1_disabled_anonymous
+    field: "(status_code)"
+    capture_as: t1_status
+  - kind: extract
+    from: t1_disabled_anonymous
+    field: "$.testResults"
+    capture_as: t1_body_test_results
+  - kind: extract
+    from: t2_loginform_anonymous
+    field: "(status_code)"
+    capture_as: t2_status
+  - kind: extract
+    from: t4_loginform_authenticated
+    field: "(status_code)"
+    capture_as: t4_status
+  - kind: extract
+    from: t4_loginform_authenticated
+    field: "$.testResults"
+    capture_as: t4_body_test_results
+  - kind: extract
+    from: t5_oauth2_anonymous
+    field: "(status_code)"
+    capture_as: t5_status
+  - kind: extract
+    from: t7_oauth2_nonowner
+    field: "(status_code)"
+    capture_as: t7_status
+  - kind: extract
+    from: t7_oauth2_nonowner
+    field: "$.testResults"
+    capture_as: t7_body_test_results
+assert:
+  - "t1_status == 200 # DISABLED: anonymous succeeds"
+  - "t1_body_test_results.length > 0 # DISABLED: response body is non-empty (the seeded dataset shows up)"
+  - "t2_status in [401, 302] # LOGIN_FORM: anonymous denied"
+  - "t4_status == 200 # LOGIN_FORM: authenticated (admin) succeeds"
+  - "t4_body_test_results.length > 0 # LOGIN_FORM: authenticated principal sees the seeded catalog data"
+  - "t5_status == 401 # OAUTH2: anonymous denied (no bearer token)"
+  - "t7_status == 200 # OAUTH2: a NON-OWNER authenticated user sees the catalog-wide aggregate"
+  - "t7_body_test_results.length > 0 # OAUTH2: the non-owner principal sees the SAME data (cross-owner read confirmed)"
+  - "if (t7_status in [401, 403]) then FAIL 'OAUTH2 rejected a non-owner authenticated principal — the static analysis missed an authorization gate. Re-read AuthorizationCustomizer.java and any SecurityRule matching /api/dataqatests/runs or a parent path. Possibly the path is matched by a wildcard rule the static audit missed.'"
+  - "if (t4_body_test_results != t7_body_test_results) then FAIL 'LOGIN_FORM admin and OAUTH2 non-owner see DIFFERENT data — the SQL has a principal-derived predicate after all. Re-read ReactiveDataQualityRunsRepositoryImpl.java for any current-user reference; also check if the controller passes ServerWebExchange beyond the framework default.'"
+  - "if (t7_status == 200 AND t7_body_test_results.length > 0) then PASS 'Cross-owner read-collaborative posture confirmed for GET /api/dataqatests/runs. NEW invocation site of REFACTOR-024 cross-owner enumeration family on P-04:F-002.'"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM data_entity_task_last_run WHERE task_oddrn = '//probe-source/p157/dq-test';
+      DELETE FROM data_quality_test_relations WHERE data_quality_test_oddrn = '//probe-source/p157/dq-test';
+      DELETE FROM data_entity WHERE id IN (8001, 8002);
+      DELETE FROM data_source WHERE id = 8000;
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DataQualityRunsController__controller-class__DataQualityRunsController
+    - odd-platform__java__DataQualityController__controller-class__DataQualityController
+    - odd-platform__java__IngestionController__controller-class__IngestionController
+  retrospectives: []
+  features:
+    - F-022
+  drift_classes:
+    - default-off-read-authorization
+    - cross-owner-read-posture
+realism_caveats: |
+  The probe verifies 3 of 4 auth modes explicitly (DISABLED, LOGIN_FORM,
+  OAUTH2); LDAP is omitted because it shares the AuthorizationCustomizer
+  with OAUTH2 (LDAPSecurityConfiguration uses the same gating wiring). If
+  LDAP behaves differently from OAUTH2, that's an additional finding
+  outside this probe's scope.
+
+  The probe requires a mock OIDC provider for OAUTH2 mode. A
+  Keycloak-based fixture or a WireMock OIDC fixture is needed; the probe
+  spec assumes a `oidc-mock` service is available in the docker-compose
+  stack. If the OAUTH2 stack cannot boot without a working OIDC issuer,
+  the test may need an alternative — e.g. inject a pre-validated JWT
+  directly bypassing the OIDC handshake.
+
+  The probe does NOT test:
+  - The 10 filter parameters' authorization implications (e.g. can a
+    non-owner enumerate other owners by setting ownerIds=[X])?
+    Static analysis: yes — the SQL simply filters by the supplied ids
+    without checking the principal's ownership. A separate probe could
+    confirm.
+  - The Category-F titleIds/namespaceIds drifts under authentication
+    (the drifts exist regardless of who is authenticated; auth doesn't
+    affect them).
+  - Performance under concurrent authenticated load.
+
+  If the probe PASSES, update the DataQualityRunsController sidecar's
+  stress_findings.auth_gates confidence from STATIC-INFERRED to
+  PROBE-VERIFIED, and route a DOC-NNN follow-up to the data-quality
+  dashboard doc page to disclose the read-collaborative posture
+  explicitly (currently silent per docs_link_semantic.doc_drift_findings[5]).
+
+  If the probe FAILS in the "auth tighter than expected" direction, the
+  static analysis missed a gate; the read-collaborative posture is NOT
+  what the platform actually does — re-audit and update REFACTOR-024 to
+  remove the falsified invocation site.

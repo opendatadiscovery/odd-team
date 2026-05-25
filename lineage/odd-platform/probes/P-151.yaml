@@ -1,0 +1,173 @@
+---
+probe_id: P-151
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DataEntityRunController__controller-class__DataEntityRunController
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-022
+test_class: integration
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category B — name-behavior pair) + wire-vs-DB enum
+  asymmetry: the DB column `data_entity_task_run.status` accepts the
+  full IngestionTaskRunStatus enum (SUCCESS | FAILED | SKIPPED | BROKEN
+  | ABORTED | RUNNING | UNKNOWN — seven values, IngestionTaskRun.java:28-36).
+  The OpenAPI wire-side enum `DataEntityRunStatus` does NOT include
+  RUNNING (components.yaml:1407-1415: SUCCESS | FAILED | SKIPPED |
+  BROKEN | ABORTED | UNKNOWN — six values).
+
+  The DataEntityRunMapper @Mapping(source="run", target=".") flat-maps
+  the pojo's String `status` field into the OpenAPI enum target
+  (DataEntityRunMapper.java:13-14). MapperConfig.java:9 sets
+  unmappedTargetPolicy=IGNORE — but that controls UNMAPPED PROPERTIES,
+  not unknown enum literals. MapStruct's default for an unknown enum
+  literal is to emit an `IllegalArgumentException` at the generated
+  toEnum() switch-case `default:` branch.
+
+  Two questions:
+
+  Q1: when the runs-history endpoint encounters a row with
+  `status='RUNNING'` (which the DB happily stores during in-flight
+  task execution — DataEntityRunRepositoryImplTest.java:52, 102 seeds
+  this exact scenario), what HTTP status does the operator see? 500
+  with a marshal failure, or does some catch-all map it to a wire-safe
+  value (e.g. UNKNOWN)?
+
+  Q2: the OpenAPI client (the UI's generated-sources DataEntityRunStatus)
+  would also choke on a RUNNING string if it somehow leaked through.
+  Confirm or refute that the failure (if it exists) is at the server
+  side (MapStruct throws before serialisation) vs the client side
+  (server emits "RUNNING" string in JSON, client's enum-binding fails).
+
+  Hypothesis: the endpoint returns HTTP 500 when the result set
+  contains any RUNNING row — making the runs-history surface
+  COMPLETELY UNAVAILABLE while any test is in flight (a
+  silent-availability bug — the page renders empty / error to the
+  operator at the moment the operator most needs to see "the test is
+  running now").
+
+  Drift class: wire-vs-DB enum asymmetry; RUNNING-state-unmodeled-at-wire;
+  silent-availability-bug-during-in-flight-runs.
+
+  This probe is HIGH-priority because the failure mode is operator-
+  blocking (the runs page returns 500 instead of showing the live run).
+---
+arrange:
+  - kind: docker-compose-up
+    services: [postgres, odd-platform-api]
+    env_overrides:
+      AUTH_TYPE: "DISABLED"
+  - kind: sql
+    description: "Seed a DQ-test data entity"
+    query: |
+      INSERT INTO data_source (id, oddrn, name, namespace_id, collector_id, token_id, active, created_at, updated_at)
+      VALUES (6100, '//probe-source/p151/dq', 'p151_dq_source', 1, 1, 1, true, NOW(), NOW())
+      ON CONFLICT DO NOTHING;
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, entity_class_ids, status, hollow, manually_created, exclude_from_search, created_at, updated_at)
+      VALUES (6101, '//probe-source/p151/dq/test1', 'p151_dq_test', 6100, 9, ARRAY[4], 1, false, false, false, NOW(), NOW())
+      ON CONFLICT DO NOTHING;
+  - kind: sql
+    description: "Seed a SINGLE in-flight run row with status=RUNNING and end_time=NULL"
+    query: |
+      INSERT INTO data_entity_task_run (oddrn, task_oddrn, name, start_time, end_time, status, status_reason, type)
+      VALUES
+        ('//probe-source/p151/run/inflight', '//probe-source/p151/dq/test1', 'inflight_run', NOW() - INTERVAL '1 minute', NULL, 'RUNNING', NULL, 'DATA_QUALITY_TEST_RUN');
+act:
+  - kind: rest
+    description: "Fetch runs — should the operator see HTTP 200 with the RUNNING row, or HTTP 500 due to mapper failure?"
+    method: GET
+    path: /api/dataentities/6101/runs?page=1&size=10
+    capture_as: r1_inflight_only
+  - kind: sql
+    description: "Add a completed SUCCESS row alongside the RUNNING row"
+    query: |
+      INSERT INTO data_entity_task_run (oddrn, task_oddrn, name, start_time, end_time, status, status_reason, type)
+      VALUES
+        ('//probe-source/p151/run/completed', '//probe-source/p151/dq/test1', 'completed_run', NOW() - INTERVAL '30 minutes', NOW() - INTERVAL '25 minutes', 'SUCCESS', NULL, 'DATA_QUALITY_TEST_RUN');
+  - kind: rest
+    description: "Re-fetch — does the SUCCESS row come through while the RUNNING row poisons the page?"
+    method: GET
+    path: /api/dataentities/6101/runs?page=1&size=10
+    capture_as: r2_mixed
+  - kind: rest
+    description: "Filter by SUCCESS only — should bypass the RUNNING row entirely"
+    method: GET
+    path: /api/dataentities/6101/runs?page=1&size=10&status=SUCCESS
+    capture_as: r3_success_only
+observe:
+  - kind: extract
+    from: r1_inflight_only
+    field: "(status_code)"
+    capture_as: r1_status
+  - kind: extract
+    from: r1_inflight_only
+    field: "items[*].status"
+    capture_as: r1_items_statuses
+  - kind: extract
+    from: r2_mixed
+    field: "(status_code)"
+    capture_as: r2_status
+  - kind: extract
+    from: r3_success_only
+    field: "(status_code)"
+    capture_as: r3_status
+  - kind: extract
+    from: r3_success_only
+    field: "items[*].status"
+    capture_as: r3_items_statuses
+assert:
+  # Two possible outcomes — record both so the runner can identify which path the system takes:
+  # Outcome A (server-side mapper throws on unknown enum): r1_status == 500
+  # Outcome B (server-side maps RUNNING to null / UNKNOWN / passes through): r1_status == 200
+  - "r1_status in [200, 500] # observe which path the implementation takes"
+  - "if (r1_status == 500) then DOCUMENT_FINDING 'RUNNING-state-poisons-runs-history — operator sees blank page while test is in flight; this is a HIGH-severity silent-availability bug; fix: add @ValueMapping or filter status=RUNNING out at SQL layer'"
+  - "if (r1_status == 200 AND 'RUNNING' in r1_items_statuses) then DOCUMENT_FINDING 'RUNNING leaks through to wire — wire-side enum DataEntityRunStatus does NOT declare RUNNING; the JSON contract is silently violated; OpenAPI clients that strict-validate enums will fail at parse-time'"
+  - "if (r1_status == 200 AND r1_items_statuses == [null]) then DOCUMENT_FINDING 'RUNNING silently mapped to null — operator sees an empty status badge with no indication that a test is in flight'"
+  # The filter-by-SUCCESS path should always succeed (the RUNNING row is excluded at SQL level by status filter)
+  - "r3_status == 200"
+  - "'RUNNING' not in r3_items_statuses"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM data_entity_task_run WHERE oddrn LIKE '//probe-source/p151/%';
+      DELETE FROM data_entity WHERE id = 6101;
+      DELETE FROM data_source WHERE id = 6100;
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DataEntityRunController__controller-class__DataEntityRunController
+    - odd-platform__java__service__service__IngestionService
+  retrospectives:
+    - LSN-019
+    - LSN-020
+  features:
+    - F-022
+  drift_classes:
+    - wire-vs-db-enum-asymmetry
+    - running-state-unmodeled-at-wire
+    - silent-availability-bug-during-in-flight-runs
+realism_caveats: |
+  The probe assumes the DB column has no CHECK constraint forcing
+  the six-value enum. Confirmed by grepping migrations — no enum-type
+  constraint on data_entity_task_run.status; it is a free-form text
+  column populated by IngestionTaskRunStatus.toString().
+
+  The MapStruct-generated mapper at compile time emits a switch case
+  per source-enum literal. Whether it throws or silently returns null
+  on an unknown source literal depends on MapStruct's NullValueMappingStrategy
+  + ValueMappings + the source field being a String (not an enum). In
+  THIS mapper the source is the pojo's String `status` field, not an
+  enum — so MapStruct emits a String->enum conversion that uses
+  Enum.valueOf() under the hood. valueOf() throws IllegalArgumentException
+  for unknown literals; the controller's reactive chain has no
+  onErrorResume, so the failure surfaces as HTTP 500 via Spring's
+  default error handler.
+
+  This probe IS reproducible from the code: the failure mode is
+  deterministic. The only question is whether some upstream layer
+  (a custom @ValueMapping, a Jackson configuration, a global exception
+  handler) intercepts and softens the failure. The probe surfaces the
+  ACTUAL observed status_code so the run produces ground truth.

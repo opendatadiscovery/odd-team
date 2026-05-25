@@ -1,0 +1,97 @@
+---
+probe_id: P-148
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DataSetController__controller-class__DataSetController
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: integration
+verified_against_commit: ede5d277
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category C — "latest" ordering; Category B — name vs
+  behavior): getLatestDatasetVersion at ReactiveDatasetVersionRepositoryImpl
+  line 161 picks the row with `max(DATASET_VERSION.VERSION)`. The version
+  column is a manually-managed bigint, incremented +1 per re-ingestion (per
+  DatasetStructureIngestionRequestProcessor.incrementDatasetVersion line 176).
+  created_at is recorded but never used in the ORDER BY.
+
+  Two scenarios this probe verifies:
+    (a) baseline — latest is the row with highest `version`, which matches
+        the row with most-recent created_at when ingestion is sequential
+        (normal case);
+    (b) drift case — if an operator manually backfills a higher version number
+        on an OLDER row (e.g. via direct SQL fix-up, or via re-running an
+        ingestion against a restored snapshot of the dataset_version table),
+        the "latest" returned has an OLDER created_at than another existing
+        row. The endpoint returns the higher-version row, not the
+        latest-by-time row. The UI label "Latest" is then misleading.
+
+  Operator-visible consequence: the "Latest" terminology in the doc page
+  ("Get latest version's DataSet structure information") and the UI flow
+  (`fetchDataSetStructureLatest` on the Structure tab) implicitly assume
+  version-number monotonicity == time-monotonicity. ODD's normal ingestion
+  guarantees this; ad-hoc admin SQL or replay scenarios do not.
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: sql
+    query: |
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id)
+      VALUES (51001, '//probe-source/p148/dataset-c', 'p148_c', 1, 1)
+  - kind: sql
+    query: |
+      -- Note inverted timestamps: version 3 is OLDER than version 2.
+      INSERT INTO dataset_version (id, dataset_oddrn, version, version_hash, created_at)
+      VALUES (51101, '//probe-source/p148/dataset-c', 1, 'hash-c-v1', NOW() - INTERVAL '3 hours'),
+             (51102, '//probe-source/p148/dataset-c', 2, 'hash-c-v2', NOW() - INTERVAL '1 hour'),
+             (51103, '//probe-source/p148/dataset-c', 3, 'hash-c-v3-backfilled', NOW() - INTERVAL '2 hours')
+  - kind: sql
+    query: |
+      INSERT INTO dataset_field (id, name, oddrn, type, is_key, is_value)
+      VALUES (51901, 'col_v1', '//probe-source/p148/dataset-c/col_v1', '{"type":"TYPE_STRING","logical_type":"text"}'::jsonb, false, true),
+             (51902, 'col_v2', '//probe-source/p148/dataset-c/col_v2', '{"type":"TYPE_NUMBER","logical_type":"int"}'::jsonb, false, true),
+             (51903, 'col_v3', '//probe-source/p148/dataset-c/col_v3', '{"type":"TYPE_BOOLEAN","logical_type":"bool"}'::jsonb, false, true)
+  - kind: sql
+    query: |
+      INSERT INTO dataset_structure (dataset_version_id, dataset_field_id)
+      VALUES (51101, 51901), (51102, 51902), (51103, 51903)
+act:
+  - kind: rest
+    method: GET
+    path: /api/datasets/51001/structure
+    auth: any-authenticated-user
+    capture_as: latest_response
+observe:
+  - kind: capture_field
+    of: latest_response
+    path: dataSetVersion.id
+    capture_as: returned_version_id
+  - kind: capture_field
+    of: latest_response
+    path: dataSetVersion.version
+    capture_as: returned_version_number
+  - kind: capture_field
+    of: latest_response
+    path: dataSetVersion.createdAt
+    capture_as: returned_created_at
+assert:
+  - "returned_version_id == 51103                       # row with highest version is returned"
+  - "returned_version_number == 3                       # version number = 3"
+  - "any(f.name == 'col_v3' for f in latest_response.fieldList)  # structure from v3 (backfilled)"
+  - "returned_created_at < <created_at of version 2>    # the row labelled 'Latest' has older timestamp than v2 — the drift confirmation"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars: [odd-platform__java__DataSetController__controller-class__DataSetController]
+  retrospectives: [LSN-019]
+realism_caveats: |
+  In normal ingestion flow, version monotonicity == time monotonicity, so the
+  drift does not surface. The probe confirms the semantic gap; operators
+  doing data-fixup / replay must understand that "Latest" means "highest
+  version number", not "most recently created". The probe does NOT verify
+  what the UI actually displays — the UI consumes the same response and
+  shows version + createdAt side-by-side, so a careful operator can read the
+  timestamp and notice. But the API contract's "latest" word is unqualified.

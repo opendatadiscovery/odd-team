@@ -1,0 +1,135 @@
+name: |-
+  Data Quality Dashboard 'Test Results' counts TESTS by latest-run status, NOT RUNS (live doc says 'count of test runs')
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-04
+description: |-
+  NEW HIGH-SEVERITY INVARIANT, batch ZG (2026-05-25,
+  DataQualityRunsController class-level primary source). The Data
+  Quality Dashboard's `testResults` (the breakdown ring + per-category
+  result tiles) counts TESTS keyed on their latest-run status — NOT
+  RUNS. This contradicts the live doc verbatim and the user-facing
+  UI label.
+
+  THE DOC SIDE (verbatim from
+  https://docs.opendatadiscovery.org/features/data-quality/dashboard
+  WebFetched 2026-05-25 status 200):
+    "Test Results Breakdown — the count of test runs broken down by
+     status (passed / failed / skipped)."
+
+  THE UI SIDE:
+    DataQualityContent.tsx:110 renders the chart title verbatim as
+    'Test Results Breakdown'.
+    OpenAPI summary at openapi.yaml:1975-1976: 'Get Data Quality tests
+    runs'.
+    Wire response field name: `test_results` (components.yaml:3748-3759).
+
+  THE CODE SIDE:
+    ReactiveDataQualityRunsRepositoryImpl.java:76, 95 — the SQL JOINs
+    `data_entity_task_last_run` (NOT `data_entity_task_run`).
+    V0_0_45__last_runs_table.sql:9 — task_oddrn is PRIMARY KEY,
+    guaranteeing one row per test.
+    GROUP BY (category, status), COUNT(*) — the count IS therefore
+    the number of TESTS whose latest run has status X, not the number
+    of TEST RUNS with status X.
+
+  CONCRETE CONSEQUENCE:
+    A test that ran 100 times (90 SUCCESS, 10 FAILED, latest=FAILED)
+    contributes ONE row to FAILED bucket — not 90+10. A test that
+    succeeded for years and just started failing shows as ONE FAILED,
+    eclipsing the success history. A test that flapped 50/50 over
+    its history but most recently succeeded contributes ONE SUCCESS.
+
+    The dashboard cannot distinguish 'one transient failure on a
+    stable test' from 'a test that fails every run'. The operator
+    triaging will see a count and assume it reflects run volume;
+    the count actually reflects test count whose most recent
+    execution had that status.
+
+  THIS IS THE LSN-019 CLASS — mechanical-transcription drift from
+  name to behaviour. The OpenAPI operation name 'getDataQualityTestsRuns',
+  the URL segment '/runs', the UI label 'Test Results Breakdown', and
+  the wire field name `test_results` ALL imply per-run granularity;
+  the implementation delivers per-test granularity. The denormalisation
+  table `data_entity_task_last_run` (captured in
+  `entitie:data-entity-task-last-run`) IS the intentional design choice
+  that drives the semantic — but the surface labels have not been
+  updated to reflect the choice.
+
+  SEVERITY: HIGH — both the operator-visible label and the live doc
+  describe a per-run count; the platform delivers a per-test count
+  keyed on the latest run.
+
+  RECOMMENDED REMEDIATION (cite-anchored, not adopted):
+    EITHER (a) rename the chart title + the wire field + the doc to
+    'Test Status' or 'Tests by Latest-Run Status' — i.e. match the
+    label to the implementation;
+    OR (b) restore per-run semantics — recompute from
+    `data_entity_task_run` at query time with a window function (the
+    perf cost the denormalisation was avoiding); update the live doc
+    with the correctness statement.
+
+    Option (a) is the cheap fix that matches operator expectation
+    today; option (b) is the expensive fix that matches the doc's
+    verbatim definition. The maintainer decides routing.
+axes_present:
+  - controllers
+  - migrations
+  - openapi_schemas
+  - react_components
+nodes:
+  - odd-platform java DataQualityRunsController controller-class:DataQualityRunsController
+contributors:
+  - |-
+    DataQualityRunsController (controller-class, batch ZG PRIMARY SOURCE):
+      invariants[`test_results` counts ONE row per test (its latest run)
+      — NOT one row per historical run. DATA_ENTITY_TASK_LAST_RUN.task_oddrn
+      is PRIMARY KEY; the count is therefore the number of TESTS whose
+      latest run has status X, not the number of TEST RUNS with status X];
+      bugs_limitations_corner_cases.[0] HIGH severity (test_results counts
+      TESTS, not RUNS — diverges from user-facing label and live doc);
+      docs_link_semantic.doc_drift_findings.[0] HIGH severity (live doc
+      says 'count of test runs', code says 'count of tests by latest-run
+      status');
+      implicit_adrs.[0] HIGH confidence (the dashboard reads a
+      denormalised 'latest run per test' table rather than aggregating
+      over the full task-run history at query time — V0_0_45 back-fill
+      + ingestion-path ON CONFLICT DO UPDATE)
+evidence:
+  - DataQualityRunsController.md:concepts.invariants[2] (one row per test)
+  - DataQualityRunsController.md:bugs_limitations_corner_cases.[0] (HIGH severity)
+  - DataQualityRunsController.md:docs_link_semantic.doc_drift_findings.[0] (verbatim doc quote)
+  - DataQualityRunsController.md:implicit_adrs.[0] (denormalisation as design choice)
+  - DataQualityRunsController.md:stress_findings.name_behavior_pairs[1] (DRIFT_NAME_VS_BEHAVIOR)
+  - WebFetch https://docs.opendatadiscovery.org/features/data-quality/dashboard 2026-05-25 status 200 verbatim 'count of test runs broken down by status (passed / failed / skipped)'
+notes: |-
+  Pairs with:
+    - entitie:data-entity-task-last-run (the denormalisation table that
+      drives the semantic shift; PK on task_oddrn means one row per test).
+    - operation:aggregate-catalog-wide-data-quality (the dashboard query
+      whose semantic this invariant captures).
+    - entitie:data-quality-dashboard (the surface label diverges from
+      the count semantic).
+    - invariant:lsn-019-stress-protocol-mechanical-drift-detection-class
+      (the LSN-019 family — name-vs-behaviour drift detected via stress
+      protocol).
+
+  This is the SECOND HIGH-severity dashboard drift surfaced from
+  controller-class enrichment (the first was the title-binds-ownership-title
+  drift). Both share the shape: live doc names a thing, code implements
+  a related-but-different thing, no UI signal of the divergence. Both
+  routes to a docs / UI follow-up.
+
+  ROUTES TO FOLLOW-UP: DOC-NNN
+    (a) Update the live dashboard.md page to disclose the per-test
+        latest-run semantic (one row per test);
+    OR (b) Rename the UI label + wire field + OpenAPI summary to
+        match the implementation;
+    OR (c) Recompute per-run via window function (revert the
+        denormalisation, accept the perf cost).
+maintainer_curated: false
+related_features:
+  - F-032
+related_pillar_features:
+  - "P-04:F-002"

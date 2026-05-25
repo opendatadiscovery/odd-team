@@ -1,0 +1,47 @@
+gap_id: TEST-GAP-977
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:GenAIController"
+pillars_affected: [P-09]
+surfaced_by:
+  - "GenAIController.md:security.known_security_gaps.[6] (Neither prompt nor response is logged for audit / abuse-investigation purposes)"
+behaviour: |-
+  **No audit log of GenAI prompts or responses — abuse investigation, PII leak forensics, and compliance reporting are impossible at the platform tier.** The controller has no `@Slf4j` annotation and no log calls (`GenAIController.java:1-24`); `GenAIServiceImpl.java:19`'s `@Slf4j` annotation is present but its `log` instance is unreferenced in the visible 53 lines (no `log.info` / `log.warn` / `log.error` calls). An operator investigating:
+
+  - **Prompt-injection abuse**: which user submitted the malicious system-prompt-overlay attempt that broke the upstream LLM into leaking another tenant's data?
+  - **PII exfiltration through prompts**: which user submitted a dataset extract as a prompt body, leaking GDPR-protected data to the external LLM operator?
+  - **Spend anomaly**: who burned through the LLM budget last weekend?
+  - **Compliance**: who has accessed the LLM service today (SOC 2 access-log requirement)?
+
+  ...has NO platform-side trail. The only audit trail is at the external LLM service (which the platform operator may not control) plus the network layer (which captures URLs not bodies for HTTPS traffic).
+
+  **Distinct from TEST-GAP-039** (which pins prompt-injection / SSRF posture at request-time). This gap pins POST-incident-forensics posture — even if no defense exists, an audit log enables retrospective investigation and credible compliance reporting. Combined with TEST-GAP-976 (no rate limit), the platform offers NEITHER prevention NOR detection of LLM abuse.
+
+  The live GenAI doc page acknowledges this gap implicitly (no logging language in the operator-facing guidance); explicitly surfacing it as a test gap pins the current posture and converts future audit-log instrumentation into a deliberate test update.
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/GenAIAuditTrailAbsenceTest.java"
+  name: "genAiAsk_promptAndResponse_absentFromActivityFeedAndApplicationLog_pinsForensicsGap"
+evidence:
+  - "GenAIController.md:security.known_security_gaps.[6] verbatim: 'Neither prompt nor response is logged for audit / abuse-investigation purposes — the controller has no @Slf4j annotation and no log calls; GenAIServiceImpl.java:19''s @Slf4j annotation is present but its log instance is unreferenced in this version of the file (no log.info / log.warn / log.error calls in the visible 53 lines). An operator investigating prompt-injection abuse or data-exfiltration through the LLM has no platform-side trail.' (severity MEDIUM at sidecar — promoted to HIGH here per compliance + PII surface)"
+  - "Verified at primary source: GenAIController.java:1-24 (no @Slf4j, no log calls) + GenAIServiceImpl.java:1-53 (the log field is declared by @Slf4j but never invoked in the visible code)"
+  - "Cross-ref: ActivityEventTypeDto.java:3-31 has no GEN_AI_* or LLM_* entry — the activity-feed event-type enum does not model GenAI operations"
+cross_references:
+  - "TEST-GAP-039 (sibling — prompt-injection + SSRF at request-time; this gap is the post-incident-forensics complement)"
+  - "TEST-GAP-976 (sibling — no rate-limit; combined with this gap, neither prevention nor detection exists)"
+  - "F-006 audit-silence pattern (this is a new instance of the same class — operations that mutate platform state OR exfiltrate data should produce activity events)"
+  - "concepts.yaml:invariants[Activity Feed is the audit-log source-of-truth; gaps in coverage are F-006 audit-silence class]"
+  - "REFACTOR-NNN candidate: add GEN_AI_PROMPT_SUBMITTED ActivityEventType; emit at controller entry with prompt-hash (not verbatim text for PII safety); pair with optional verbatim-text setting gated by `genai.audit.full_text=true`"
+related_features: []
+related_pillar_features: ["P-09:F-001"]
+proposed_action: |-
+  Add `GenAIAuditTrailAbsenceTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Three test methods:
+  1. `genAiAsk_promptAndResponse_absentFromActivityFeedAndApplicationLog_pinsForensicsGap` — submit a prompt with caller A; immediately query `/api/activity` for caller A's recent events; assert NO entry references GenAI / LLM / prompt / `/api/genai/ask`. PIN the absence.
+  2. `genAiAsk_applicationLogRemainsSilent_evenForLargeOrSuspiciousPrompts_pinsLogAbsence` — submit a 19MB prompt with suspicious content (e.g. "ignore previous instructions"); capture application logs via TestAppender; assert no log entry references the prompt content, the prompt size, or the user id. PIN the application-log absence.
+  3. `genAiAsk_underDISABLED_anonymousPrompt_noTrailAtAll_pinsAnonymousGenAIAbusePosture` — under DISABLED, anonymous caller submits 5 prompts; assert no activity-feed entry + no application-log entry + no Micrometer counter increment exists for GenAI invocations. PIN the worst-case posture: anonymous user + zero audit trail.
+
+  Pair with REFACTOR-NNN: add `GEN_AI_PROMPT_SUBMITTED` ActivityEventType; emit at controller entry capturing (caller-id, prompt-hash, prompt-byte-length, upstream-response-status). Operator-toggleable verbatim-text capture via `genai.audit.full_text=true` for compliance contexts. Pair with DOC-NNN: surface the audit posture on the live GenAI page.
+batch: 2026-05-25-ZG
+feature_id: null

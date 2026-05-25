@@ -1687,3 +1687,81 @@ The borderline_flag: deliberate catalog-as-public-metadata stance OR the EXCLUDE
 **Full detail**: `detail/ADR-CANDIDATE-215.md`
 
 ---
+
+## Refresh note — batch ZG (2026-05-25 — five new controller-class sidecars: DataEntityRunController + DataQualityRunsController + GenAIController + DataSetController + DatasetFieldController)
+
+Five new controller-class sidecars enriched. Per the Rule-0 wisdom test the batch is mixed — **7 new ADR candidates** (ADR-CANDIDATE-220..226), **5 existing ADR candidates STRENGTHENED** (ADR-001 thin-proxy / ADR-003 read-collaborative / ADR-005 GenAI-thin-proxy / ADR-060 programmatic activity emission / ADR-064 description-link coexistence), and **14 candidates reclassified to refactoring-scopes.md** (gap-shaped findings that failed the wisdom test).
+
+**5 ADR candidates STRENGTHENED**:
+- **ADR-CANDIDATE-001** (thin-proxy controllers) — 3 new surfaces: DataSetController (4 GETs, all one-liner `service.X.map(::ok)`), DatasetFieldController (7 endpoints across 4 services, every body `formDataMono.flatMap.map(::ok)`), DataEntityRunController (1 GET, one-liner). The 28→31-surface evidence base. The pattern now covers EVERY controller in batches V/W/X/Y/Z + ZD/ZE/ZF/ZG.
+- **ADR-CANDIDATE-003** (read-collaborative GET — intentional unscoped reads) — 4 new invocation sites: DataEntityRunController (`/api/dataentities/{id}/runs` — runs-history cross-owner); DataQualityRunsController (`/api/dataqatests/runs` — catalog-wide DQ dashboard cross-owner; ALREADY listed at REFACTOR-617's surface — strengthens the cross-batch case); DatasetFieldController GETs (`/api/datasetfields/{id}/enum_values` + `/metrics` — no SecurityRule, fall through); DataSetController GETs (4 GETs — `/structure`, `/structure/{v}`, `/structure/diff`, `/relationships`). The pattern is now confirmed at the COLUMN-LEVEL surface and the RUN-HISTORY surface — every read endpoint in the platform falls under this ADR.
+- **ADR-CANDIDATE-005** (GenAI thin-proxy) — the new `GenAIController__controller-class` sidecar (distinct node_id from the prior `org_opendatadiscovery_oddplatform_controller__controller__GenAIController` sidecar) re-confirms the thin-proxy stance with the same live-doc anchors (`/features/active-platform-features/genai` 2026-05-25 status 200). The decision is now anchored by BOTH the config-side sidecar (GenAIProperties) AND TWO controller-class sidecars.
+- **ADR-CANDIDATE-060** (programmatic activity-event emission at the service tier) — DatasetFieldController's description-edit chain emits TWO activity events for one user operation (`DATASET_FIELD_DESCRIPTION_UPDATED` at the inner-service line 28 + `DATASET_FIELD_TERM_ASSIGNMENT_UPDATED` at TermServiceImpl.java:243). The dual-event semantics is a NEW instance of programmatic emission applied to a composite mutation (description body + re-extracted term references).
+- **ADR-CANDIDATE-064 / -108** (description-link coexistence — `is_description_link` flag) — DatasetFieldController's `deleteTermFromDatasetField` excludes description-link rows via `IS_DESCRIPTION_LINK.isFalse()` at TermRelationsRepositoryImpl.java:179. The COLUMN-level surface now confirms the same convention as the entity-level surface; the convention is symmetric across both term-link tables (`data_entity_to_term` + `dataset_field_to_term`).
+
+**7 new ADR candidates** (full detail files emitted; headlines below for the orchestrator's awk-merge):
+
+## ADR-CANDIDATE-220 — Data Quality Dashboard reads a DENORMALISED `DATA_ENTITY_TASK_LAST_RUN` table (one row per test, `task_oddrn` PRIMARY KEY) — pre-compute "latest run per test" at write time rather than aggregating over `data_entity_task_run` at query time
+
+- **Classification**: promote
+- **Severity**: HIGH
+- **Pillars affected**: [P-04 Data Quality, P-10 Ingestion]
+- **Support**: 1 sidecar (DataQualityRunsController class-level); structural impact across every dashboard render + the ingestion-side write path
+- **Decision statement**: Pre-compute "latest run per test" at write time (denormalisation) via DATA_ENTITY_TASK_LAST_RUN (`task_oddrn` PRIMARY KEY → one row per test). The dashboard's `getLatestDataQualityRunsResults` joins this table directly (`ReactiveDataQualityRunsRepositoryImpl.java:76, 95`). The architectural choice is throughput-driven: the dashboard query fires on every UI filter change with no debounce; recomputing `DISTINCT ON (task_oddrn) ORDER BY end_time DESC` across DATA_ENTITY_TASK_RUN (which grows linearly with ingestion volume) would scale poorly. The denormalisation IS the decision; it changes the dashboard's semantic from "count of test runs by status" to "count of tests by their latest-run-status" (gap-side surfaced as REFACTOR-653; LSN-019 instance at the dashboard surface).
+- **Wisdom test**: PASS — schema-level intent anchor (migration V0_0_45 declares PK + back-fill semantics); structural for both the dashboard read path and the ingestion-side write path; the alternative (compute at query time) is a structural change.
+
+## ADR-CANDIDATE-221 — Data Quality Dashboard response is ALWAYS a 36-cell category×status matrix — closed enum + UNKNOWN catch-all + always-padded `count=0` for absent cells — the schema-shape is stable regardless of data
+
+- **Classification**: promote
+- **Severity**: MEDIUM
+- **Pillars affected**: [P-04 Data Quality]
+- **Support**: 1 sidecar
+- **Decision statement**: The DQ dashboard's `test_results` envelope ALWAYS contains 6 categories × 6 statuses = 36 cells, with `count=0` filled where absent. `DataQualityCategory.resolveByName` returns UNKNOWN for any input that doesn't match a declared name (`DataQualityCategory.java:29-31`); `DataQualityCategoryMapperImpl.addMissingStatuses` (lines 45-60) pads every status enum value with count=0 if absent. The intent is to externalise category-set evolution: adding a new category enum value automatically extends the response without a deployment.
+- **Wisdom test**: PASS — closed enum + catch-all + always-pad is a deliberate three-part contract; structural impact on the UI's ring/legend rendering (the UI relies on a stable 36-cell shape).
+
+## ADR-CANDIDATE-222 — Data Quality Dashboard's "Monitored Tables" ring is INTENTIONALLY scoped to TABLE-type data entities only — Views, Files, Topics, Streams are absent from BOTH "monitored" and "not-monitored" counts
+
+- **Classification**: promote
+- **Severity**: MEDIUM
+- **Pillars affected**: [P-04 Data Quality]
+- **Support**: 1 sidecar (live doc 2026-05-25 confirms the TABLE-only language)
+- **Decision statement**: The `getMonitoredTables` CTE filter `DATA_ENTITY.TYPE_ID.eq(DataEntityTypeDto.TABLE.getId())` (`ReactiveDataQualityRunsRepositoryImpl.java:179`) restricts the monitored-tables count to TABLE-type entities ONLY. Non-Table dataset sub-types (Views, Files, Topics, Streams) are NEITHER counted in monitored NOR in not-monitored — they are silently absent. The live dashboard doc page confirms the restriction verbatim ("The Monitored vs Unmonitored framing applies specifically to Table-type datasets").
+- **Wisdom test**: PASS — the live doc page explicitly states the intent; the SQL filter is a literal `TABLE.getId()` (not a parameter); the alternative (count every dataset type) is a structural change to the metric's meaning.
+
+## ADR-CANDIDATE-223 — Feature-flag-disabled endpoints return HTTP 400 BadUserRequestException — request-time service-tier gate — NOT HTTP 404 via `@ConditionalOnProperty` bean-non-registration; framing is "feature flag off", not "feature not deployed"
+
+- **Classification**: promote
+- **Severity**: MEDIUM
+- **Pillars affected**: [P-07 Active Platform Features, P-09 Configuration]
+- **Support**: 1 sidecar (GenAIController class-level), contrast with EventApiController sibling
+- **Decision statement**: GenAI's `enabled` gate is at the SERVICE layer (`GenAIServiceImpl.java:37-39` — `if (!genAIProperties.isEnabled()) return Mono.error(new BadUserRequestException("Gen AI is disabled"))`), surfaced as HTTP 400 via ControllerAdvice. The controller bean is ALWAYS registered (no `@ConditionalOnProperty` on the class), so `POST /api/genai/ask` is always REACHABLE. The opposite pattern is the sibling EventApiController which carries `@ConditionalOnDataCollaboration` and 404s when disabled. Both patterns are internally consistent; this ADR codifies that the platform uses 400-not-404 framing as the convention for feature-flag-off, framing the disabled state as "feature flag off" (operator-debuggable) rather than "feature not deployed" (route absent).
+- **Wisdom test**: PASS — deliberate framing choice; rationale stated by the typed exception ("Gen AI is disabled") and the structural symmetry-vs-asymmetry with the sibling controller; affects observability/debugging (operators see a 4xx with a clear message vs a 404).
+
+## ADR-CANDIDATE-224 — Per-column DATASET_FIELD permissions are PARENT-SCOPED via `DatasetFieldResourceExtractor` — every field-level permission resolves to the parent DataEntity's permission; there is NO field-level permission check
+
+- **Classification**: promote
+- **Severity**: HIGH
+- **Pillars affected**: [P-09 Security & Access Control, P-01 Data Discovery (column-level metadata)]
+- **Support**: 1 sidecar (DatasetFieldController class-level)
+- **Decision statement**: Authorization for the 7 DatasetField endpoints under `/api/datasetfields/{id}/...` runs through `DatasetFieldResourceExtractor` (`DatasetFieldResourceExtractor.java:21-27`), whose final step is `reactiveDatasetFieldRepository.getDataEntityIdByDatasetFieldId(id)` — the resolver returns the parent `data_entity.id`, NOT the `dataset_field.id`. The downstream `ReactiveAuthorizationManager` evaluates the permission against the PARENT DataEntity. There is NO field-level permission check; a user with permission on the parent has permission on every field. The structural anchor: six `SecurityRule` entries at `SecurityConstants.java:282-303` keyed on `AuthorizationManagerType.DATASET_FIELD` — the type name says "field" but the extractor resolves to the parent.
+- **Wisdom test**: PASS — deliberate structural decision (the extractor's resolution step encodes the intent); load-bearing for the entire column-metadata-editing surface; alternative (field-level permissions) is a structural change to the permission table + extractor + ReactiveAuthorizationManager.
+
+## ADR-CANDIDATE-225 — Description-edit on a dataset/dataset-field emits TWO activity events for a SINGLE user operation — one for the description body + one for re-extracted term mentions in the new text
+
+- **Classification**: promote
+- **Severity**: MEDIUM
+- **Pillars affected**: [P-07 Active Platform Features (Activity Feed), P-01 Data Discovery (description editing), P-06 Business Glossary (term-link coupling)]
+- **Support**: 1 sidecar (DatasetFieldController) + cross-link with the entity-side equivalent (DataEntityController description-edit)
+- **Decision statement**: A user's `PUT /api/datasetfields/{id}/description` (or the entity-level sibling) triggers TWO activity events: (a) `DATASET_FIELD_DESCRIPTION_UPDATED` (or `DATA_ENTITY_DESCRIPTION_UPDATED`) at the inner-service `@ActivityLog` annotation; (b) `DATASET_FIELD_TERM_ASSIGNMENT_UPDATED` (or `DATA_ENTITY_TERM_ASSIGNMENT_UPDATED`) at `TermServiceImpl.handleDatasetFieldDescriptionTerms` (line 243) when the new description body contains `[[namespace/name]]` term markers. The chain at `DatasetFieldServiceImpl.updateDescription` (lines 87-95) is `datasetFieldInternalInformationService.updateDescription(...).then(termService.handleDatasetFieldDescriptionTerms(...))`. The intent: the activity feed records BOTH the textual change AND the structural term-graph change as separate audit-able events.
+- **Wisdom test**: PASS — deliberate two-event emission (the `.then(...)` chain is the structural anchor); affects audit/observability (operators see two rows in the feed for one user click); alternative (single composite event) is a structural change to the activity-event taxonomy.
+
+## ADR-CANDIDATE-226 — `createEnumValue` is BULK-REPLACE-AS-STATE: the request body IS the desired enum-value set; omitted items are SOFT-DELETED; the operation name says "create" but the implementation reconciles
+
+- **Classification**: promote
+- **Severity**: MEDIUM
+- **Pillars affected**: [P-01 Data Discovery (column-level enum values), P-10 Ingestion (EXTERNAL-origin enum-value handling)]
+- **Support**: 1 sidecar (DatasetFieldController) + the EnumValueService primary source
+- **Decision statement**: `POST /api/datasetfields/{id}/enum_values` accepts a `BulkEnumValueFormData` body whose `items: [EnumValueFormData]` array IS the new state. `EnumValueServiceImpl.java:91-122` partitions items into id-present (bulkUpdate) and id-absent (bulkCreate); existing rows whose id is NOT in `idsToKeep` are SOFT-DELETED via `softDeleteExcept(datasetFieldId, idsToKeep)`. EXTERNAL-origin enum values follow a description-only-update path (the row identities are owned by the collector). The maintainer chose REPLACE-AS-STATE semantics (the body is the authoritative state) over MERGE-CREATE semantics (the body is an additive delta). The operationId `createEnumValue` understates this; the wire surface understates it. The gap-side consequence — partial-body submission silently deletes omitted items — is REFACTOR-661.
+- **Wisdom test**: PASS — deliberate semantic choice (the partition-then-softDeleteExcept algorithm encodes the intent); structural impact on the operator's mental model + every UI surface that calls this endpoint (the UI must preserve the full item list on every submit); alternative (additive PATCH semantics) is a structural change to the service contract.
+
+---

@@ -1,0 +1,55 @@
+gap_id: TEST-GAP-985
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java DataQualityRunsController controller-class:DataQualityRunsController"
+pillars_affected: [P-04]
+surfaced_by:
+  - "DataQualityRunsController.md:tests_coverage_semantic.uncovered_behaviours.[3] (getLatestTablesHealth — a dataset whose ONLY DQ test's latest run is SUCCESS classifies as healthy; same dataset with a single FAILED latest-run classifies as error; a dataset with mixed pass/skip latest runs classifies as warning — no test exercises getLatestTablesHealth; the 3-way classification (healthy / error / warning) is unverified)"
+  - "DataQualityRunsController.md:bugs_limitations_corner_cases.[6] (Table Health computation has a subtle classification gap: a dataset whose latest runs are all SUCCESS but include a SKIPPED is classified HEALTHY — actually NOT-HEALTHY because SKIPPED != SUCCESS — also NOT-ERROR — fallthrough WARNING)"
+  - "DataQualityRunsController.md:docs_link_semantic.doc_drift_findings.[3] (DOC DRIFT — Table Health classification rules entirely undocumented)"
+behaviour: |-
+  **`getLatestTablesHealth` — one of THREE sub-queries the dashboard fans out to — has ZERO test coverage at any tier.** The existing `ReactiveDataQualityRunsRepositoryTest.java:91-119` covers `getLatestDataQualityRunsResults` (line 91-99) and `getMonitoredTables` (line 101-119); the THIRD method `getLatestTablesHealth` (`ReactiveDataQualityRunsRepositoryImpl.java:108-173`) has NO test method asserting its 3-way classification CTE algebra.
+
+  **What's at risk**:
+  - **HEALTHY classification**: `NOT EXISTS last_run WHERE STATUS != SUCCESS` (`ReactiveDataQualityRunsRepositoryImpl.java:118-124`). A dataset is healthy iff EVERY one of its DQ tests has a latest run with status=SUCCESS.
+  - **ERROR classification**: `EXISTS last_run with STATUS in {BROKEN, FAILED}` AND NOT in healthy (`ReactiveDataQualityRunsRepositoryImpl.java:127-146`).
+  - **WARNING classification**: fallthrough — NOT IN healthy AND NOT IN error (`ReactiveDataQualityRunsRepositoryImpl.java:148-157`). Typical case: a dataset with latest-runs including SKIPPED / ABORTED / UNKNOWN but no BROKEN / FAILED.
+  - **Mutually exclusive + exhaustive**: every dataset with at least one DQ test falls into exactly one bucket per the CTE algebra. Datasets with NO DQ tests are absent from all three (a separate concept — they're counted in `notMonitoredTables` instead).
+
+  **Operator-visible failure modes if the SQL drifts**:
+  - A subtle classification gap (per sidecar `bugs_limitations_corner_cases[6]`): a dataset with 10 tests where 9 latest-runs are SUCCESS and 1 is SKIPPED is classified WARNING (because SKIPPED != SUCCESS), not HEALTHY. The operator's mental model "SKIPPED is benign" misaligns with the SQL's "anything not SUCCESS = not healthy".
+  - The UNION ALL collapse: `UNION ALL` (not `UNION`) is the join across the 3 CTEs; if the CTE predicates accidentally overlap (e.g. a future bug at line 130-145 lets WARNING and ERROR co-classify the same dataset), the table-health ring's slice cardinality breaks. No test pins the mutual-exclusivity.
+
+  **Compound with doc-drift**: the live `https://docs.opendatadiscovery.org/features/data-quality/dashboard` page enumerates the three states but provides NO rules — operators cannot predict which colour their dataset renders. Pinning the CTE algebra in tests is the operator-trust substrate the doc currently lacks.
+
+  No test asserts ANY of the above. A maintainer refactoring the CTE chain has no regression coverage to catch a classification flip. The sidecar's `name_behavior_pairs.[2]` records the lexicon drift (doc says "success / failed / broken"; UI says "healthy / warning / error"; SQL constants say `GOOD_HEALTH / WARNING / ERROR`) — three lexicons compound the test gap.
+test_class: missing-integration
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/ReactiveDataQualityRunsRepositoryTest.java (lines 91-119 cover 2 of 3 sub-queries; getLatestTablesHealth is NOT tested)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/ReactiveDataQualityRunsTableHealthTest.java"
+  name: "getLatestTablesHealth_threeWayClassification_pinsCTEAlgebra"
+evidence:
+  - "DataQualityRunsController.md:tests_coverage_semantic.uncovered_behaviours.[3] verbatim: 'getLatestTablesHealth — a dataset whose ONLY DQ test's latest run is SUCCESS classifies as healthy; same dataset with a single FAILED latest-run classifies as error; a dataset with mixed pass/skip latest runs classifies as warning. no test exercises getLatestTablesHealth; the 3-way classification (healthy / error / warning) is unverified' criticality: HIGH"
+  - "DataQualityRunsController.md:bugs_limitations_corner_cases.[6] verbatim: 'Table Health computation has a subtle classification gap: a dataset whose latest runs are all SUCCESS but include a SKIPPED is classified HEALTHY; the operator may expect SKIPPED to be a caution state... A dataset with 10 tests where 9 latest-runs are SUCCESS and 1 is SKIPPED is classified NOT-HEALTHY (because SKIPPED != SUCCESS) but also NOT-ERROR (no BROKEN/FAILED) → WARNING'"
+  - "Verified at primary source: ReactiveDataQualityRunsRepositoryImpl.java:108-173 (the 3 CTE methods) + ReactiveDataQualityRunsRepositoryTest.java:91-119 (existing tests show no method for getLatestTablesHealth)"
+cross_references:
+  - "TEST-GAP-983 (parent — controller HTTP-tier zero-coverage)"
+  - "TEST-GAP-984 (sibling — test_results LSN-019 drift on a different sub-query of the same controller)"
+  - "DataQualityRunsController.md:name_behavior_pairs.[2] (the lexicon drift across doc / UI / SQL)"
+  - "DOC-NNN candidate: surface the classification rules on the live dashboard doc — currently entirely undocumented per the sidecar's doc_drift_findings.[3]"
+related_features: []
+related_pillar_features: ["P-04:F-002"]
+proposed_action: |-
+  Add `ReactiveDataQualityRunsTableHealthTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/`. Six test methods:
+  1. `getLatestTablesHealth_allTestsSuccessOnDataset_classifiedHealthy` — seed 1 dataset + 3 DQ-tests, all latest-runs=SUCCESS; assert tablesHealth.healthyTables=1, errorTables=0, warningTables=0.
+  2. `getLatestTablesHealth_oneFailedLatestRun_classifiedError` — seed 1 dataset + 3 tests, one latest=FAILED; assert errorTables=1, healthyTables=0.
+  3. `getLatestTablesHealth_oneBrokenLatestRun_classifiedError` — same shape but BROKEN; assert errorTables=1.
+  4. `getLatestTablesHealth_oneSkippedAmongSuccesses_classifiedWarning_pinsSubtleGap` — 1 dataset + 3 tests, two SUCCESS one SKIPPED; assert warningTables=1, healthyTables=0. PIN the subtle non-SUCCESS-means-NOT-HEALTHY rule.
+  5. `getLatestTablesHealth_mutuallyExclusiveAcrossBuckets_pinsCTEAlgebraInvariant` — seed 10 datasets across all 3 classifications; sum healthy+error+warning; assert sum equals total datasets with at least one DQ test.
+  6. `getLatestTablesHealth_datasetWithoutAnyDQTest_absentFromAllThreeBuckets` — seed a dataset with NO DQ test; assert it's in NEITHER healthy NOR error NOR warning; the table-health ring excludes it. PIN the with-test-only clause.
+
+  Pair with DOC-NNN: surface the classification rules on the live `data-quality/dashboard` doc page. Operator's mental model needs explicit rules to align with the SQL's algebra.
+batch: 2026-05-25-ZG
+feature_id: null

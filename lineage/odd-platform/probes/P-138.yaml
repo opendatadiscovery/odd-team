@@ -1,0 +1,160 @@
+---
+probe_id: P-138
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__EventApiController__controller-class__EventApiController
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: integration
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category E — resource boundaries / idempotency):
+  Slack's Events API documents at-least-once delivery — events may be
+  delivered multiple times under retries when the receiver returns non-2xx
+  OR exceeds the 3-second ack deadline (https://api.slack.com/apis/events-api#retries).
+  The `message_provider_event` table schema (V0_0_59__data_collaboration.sql:25-39)
+  declares:
+    - id BIGSERIAL PRIMARY KEY
+    - parent_message_uuid + parent_message_created_at FK on message
+    - provider, action, event JSONB, state, error_message, created_at
+  No unique constraint on (provider, event_id), no unique index on
+  (provider, event->>'ts'), no idempotency key column. The INSERT statement
+  (ReactiveMessageRepositoryImpl.java:136-155) is a plain INSERT with no
+  ON CONFLICT clause.
+
+  Hypothesis: duplicating an inbound Slack event (same event_id, same
+  event.ts, same event.thread_ts, same payload) inserts N message_provider_event
+  rows; the processor (DataCollaborationMessageEventProcessor.java:88-101)
+  materialises N child message rows. Subsequent reads via
+  `getUUIDByProviderInfo(provider_message_id, provider)` (ReactiveMessageRepositoryImpl.java:188-195)
+  perform `SELECT uuid FROM message WHERE provider_message_id = ? AND
+  provider = ?` with NO LIMIT and NO ORDER BY — when multiple rows match,
+  the jOOQ `.mono(query)` execution returns an arbitrary single row
+  (effectively undefined under multi-result; Reactor's signature for `mono`
+  on a multi-result is "first emission", but with no ORDER BY the row order
+  is database-implementation-defined).
+
+  Operator-visible consequences:
+    1. Discussions tab on a data entity shows N duplicate reply rows for one
+       genuine Slack thread reply.
+    2. Subsequent inbound events targeting that thread_ts produce duplicate
+       chains because getUUIDByProviderInfo returns an arbitrary uuid each
+       time (consistency loss).
+    3. Storage grows with N for the JSONB payload per duplicated delivery.
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: env
+    DATACOLLABORATION_ENABLED: "true"
+    DATACOLLABORATION_SLACK_OAUTH_TOKEN: "xoxb-test-token-not-real"
+    AUTH_TYPE: "DISABLED"
+  - kind: sql
+    description: "Seed a tracked parent message."
+    query: |
+      INSERT INTO message (
+        uuid, parent_message_uuid, data_entity_id, text, created_at, sent_at,
+        state, provider, provider_channel_id, provider_channel_name,
+        provider_message_id, owner_id
+      ) VALUES (
+        '22222222-2222-2222-2222-222222222222', NULL, 1, 'tracked parent for P-138',
+        NOW() AT TIME ZONE 'utc', NOW() AT TIME ZONE 'utc',
+        2 /* SENT */, 'SLACK', 'C0PROBE138', 'probe-channel-138',
+        '1800000000.000100', NULL
+      );
+
+act:
+  - kind: rest
+    description: "Same Slack thread-reply event POSTed 3 times — simulating Slack's at-least-once retry."
+    method: POST
+    path: /api/slack/events
+    headers:
+      Content-Type: "application/json"
+      # Slack would send X-Slack-Retry-Num: 1,2 on retries; the platform
+      # ignores it, but we send it for realism.
+      X-Slack-Retry-Num: "1"
+    body: |
+      {
+        "type": "event_callback",
+        "event_id": "Ev1PROBE138",
+        "event_time": 1800000000,
+        "event": {
+          "type": "message",
+          "user": "U_PROBE138",
+          "text": "DUP-DELIVERY-CONTENT",
+          "ts": "1800000001.000200",
+          "thread_ts": "1800000000.000100",
+          "channel": "C0PROBE138"
+        }
+      }
+    repeat: 3
+    capture_as: dup_responses
+
+observe:
+  - kind: sql
+    description: "Count message_provider_event rows for this event_id / ts."
+    query: |
+      SELECT count(*) AS event_rows
+        FROM message_provider_event
+       WHERE event->>'event_id' = 'Ev1PROBE138'
+          OR event->>'ts' = '1800000001.000200'
+    capture_as: event_rows
+    poll_for_seconds: 30
+  - kind: sql
+    description: "Count child message rows materialised from the duplicate events."
+    query: |
+      SELECT count(*) AS child_msg_rows
+        FROM message
+       WHERE provider_message_id = '1800000001.000200'
+         AND provider = 'SLACK'
+    capture_as: child_msg_rows
+    poll_for_seconds: 30
+  - kind: sql
+    description: "What does getUUIDByProviderInfo return under multi-row? Verify the SQL has no LIMIT."
+    query: |
+      SELECT uuid
+        FROM message
+       WHERE provider_message_id = '1800000001.000200'
+         AND provider = 'SLACK'
+       ORDER BY created_at ASC
+    capture_as: all_uuids_for_ts
+
+assert:
+  - "dup_responses.all(r => r.status == 200)  # all three retries accepted"
+  - "event_rows.row[0].event_rows == 3  # no dedup on the event-row insert"
+  - "child_msg_rows.row[0].child_msg_rows == 3  # processor materialises three child messages from three duplicate events"
+  - "all_uuids_for_ts.rowcount == 3  # three distinct uuids for the same provider_message_id — the lookup ambiguity is real"
+
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM message_provider_event WHERE event->>'event_id' = 'Ev1PROBE138' OR event->>'ts' = '1800000001.000200';
+      DELETE FROM message WHERE provider_message_id IN ('1800000000.000100', '1800000001.000200');
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  related_sidecars:
+    - odd-platform__java__EventApiController__controller-class__EventApiController
+  retrospectives: []
+
+realism_caveats: |
+  The probe directly simulates Slack's at-least-once delivery by replaying
+  the same event payload three times — Slack's real retry path also resends
+  the same event_id, so the test is faithful to the production failure mode.
+  The probe does NOT exercise the case where retries arrive interleaved with
+  the processor's materialisation cycle (race between INSERT and SELECT) —
+  that's a separate race-condition probe, deferred. The probe also does NOT
+  exercise the case where the parent message is missing — that's filtered
+  at SlackMessageProviderEventHandler.java:32-35 and is the only existing
+  dedup-like behavior (and it's not really dedup, it's "drop events whose
+  parent we don't track"). If assertions PASS, the fix anchor is either
+  (a) UNIQUE INDEX on `message_provider_event (provider, (event->>'event_id'))`
+  with ON CONFLICT DO NOTHING in the INSERT, OR (b) UNIQUE INDEX on
+  `message (provider, provider_message_id)` with ON CONFLICT DO NOTHING in
+  the materialisation INSERT — option (b) is more conservative because it
+  catches duplicates regardless of source. If assertions FAIL (e.g. only
+  one row materialised), the JOOQ chain has dedup behavior the
+  file-analyser missed during static read; re-walk
+  DataCollaborationMessageEventProcessor.handleEvent.

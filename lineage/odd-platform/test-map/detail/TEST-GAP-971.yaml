@@ -1,0 +1,68 @@
+gap_id: TEST-GAP-971
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java IngestionController controller-class:IngestionController"
+pillars_affected: [P-10, P-11]
+surfaced_by:
+  - "IngestionController__controller-class.md:tests_coverage_semantic.uncovered_behaviours.[8]"
+  - "IngestionController__controller-class.md:concepts.invariants.[6]"
+  - "IngestionController__controller-class.md:downstream_side_effects.[4]"
+behaviour: |-
+  **MEDIUM — Response-code drift across the 3 mutating handlers on IngestionController: postDataEntityList returns 200 OK (line 44) but OpenAPI spec declares 201 Created; postDataSetStatsList returns 201 Created (line 86); ingestMetrics returns 201 Created (line 94); createDataSource returns 200 OK (line 72). Three different response-code postures on one controller. The drift is locked in by BaseIngestionTest.java:79 asserting isOk() (200) for postDataEntityList vs isCreated() (201) for ingestStatistics/ingestMetrics. Spec-vs-impl drift has shipped.**
+
+  Verified at primary source:
+  - `IngestionController.java:44` — `postDataEntityList` returns `ResponseEntity.ok().build()` (HTTP 200).
+  - `IngestionController.java:86` — `postDataSetStatsList` returns `ResponseEntity.status(HttpStatus.CREATED).build()` (HTTP 201).
+  - `IngestionController.java:94` — `ingestMetrics` returns `ResponseEntity.status(HttpStatus.CREATED).build()` (HTTP 201).
+  - `IngestionController.java:72` — `createDataSource` returns `ResponseEntity.ok().build()` (HTTP 200).
+  - `BaseIngestionTest.java:79` — asserts `.expectStatus().isOk()` for postDataEntityList.
+  - `BaseIngestionTest.java:87` — asserts `.expectStatus().isCreated()` for ingestStatistics.
+  - `BaseIngestionTest.java:95` — asserts `.expectStatus().isCreated()` for ingestMetrics.
+  - The OpenAPI spec declares 201 Created for postDataEntityList per the per-method postDataEntityList sidecar (concepts.invariants.[2]) — the spec and code disagree.
+
+  **Operator-visible consequence**:
+  - OpenAPI-codegen clients consuming the spec generate 201-expecting handlers; the platform returns 200 for postDataEntityList → silent client-side warning OR fall into a default-handler path.
+  - Spec-conformance audits fail.
+  - The PATTERN of "3 mutating endpoints, 3 different response postures" is itself a code smell — a reviewer reading the controller sees 200 / 201 / 201 / 200 across consecutive methods with no comment explaining the asymmetry.
+
+  **Why MEDIUM (not LOW)**:
+  - The spec is the published contract for collectors building against the IngestionApi interface.
+  - The drift is locked in by the test suite (which asserts per-implementation, not per-spec) — meaning a "fix" to align code with spec would BREAK existing tests, requiring coordinated update.
+  - This is the canonical case-study of the `openapi-200-vs-201-status-code-drift` concept (cross-pillar invariant at `concepts/detail/invariants/openapi-200-vs-201-status-code-drift.yaml`).
+
+  **Why pin the current behaviour**: the choice between 200 and 201 has semantic meaning (201 implies a resource was created and its URI is in the response). The fix path is either (a) update the spec to declare 200 for postDataEntityList, OR (b) update the code to return 201. The test pins the CURRENT shipped behaviour so the fix is intentional.
+
+  **Distinguishes**:
+  - `concepts/detail/invariants/openapi-200-vs-201-status-code-drift.yaml` — the cross-pillar invariant.
+  - TEST-GAP-974 (sister this batch) — OwnerController 201-vs-200 drift on create+update.
+  - TEST-GAP-966 (sister this batch) — DataCollab 302-vs-301 drift.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/BaseIngestionTest.java"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/IngestionControllerResponseCodeDriftTest.java"
+  name: "ingestionController_threeHandlerResponseCodePosture_currentImplementation_pinsClassWideDrift"
+evidence:
+  - 'IngestionController.md says (tests_coverage_semantic.uncovered_behaviours.[8]): ''Response code drift assertion: NO test explicitly captures that postDataEntityList returns 200 vs the OpenAPI spec''''s 201. Tests assert isOk() / isCreated() per the IMPLEMENTATION, not per the spec — the drift is locked in'' (criticality LOW — promoted to MEDIUM at reducer level because the class-wide nature is a canonical case-study)'
+  - 'IngestionController.md says (concepts.invariants.[6]): ''Response-code drift across the 3 mutating service-path handlers: postDataEntityList → 200 OK (line 44), postDataSetStatsList → 201 Created (line 86), ingestMetrics → 201 Created (line 94). Per existing batch-F postDataEntityList sidecar (concepts.invariants[2]), the OpenAPI spec declares 201 for postDataEntityList; the implementation returns 200. The drift is locked in by BaseIngestionTest.java:79 asserting expectStatus().isOk() (200) for postDataEntityList vs isCreated() (201) for the other two'''
+  - "Verified at primary source: IngestionController.java:44, 72, 86, 94 (the four return statements); BaseIngestionTest.java:79, 87, 95 (the three locked-in assertions)"
+cross_references:
+  - "TEST-GAP-974 (sister this batch — Owner controller 201-vs-200 drift on create+update)"
+  - "TEST-GAP-966 (sister this batch — DataCollab 302-vs-301 drift)"
+  - 'concepts/detail/invariants/openapi-200-vs-201-status-code-drift.yaml'
+  - "REFACTOR-NNN-candidate (align spec to code OR code to spec; coordinated 3-file update)"
+  - "DOC-GAP-NNN-candidate (live S2S api-reference must acknowledge the current 200/201 posture)"
+  - "F-008 (Batch Ingestion)"
+related_features: [F-008]
+related_pillar_features: ["P-10:F-001 Batch Ingestion (S2S API)", "P-11:Platform API & Developer Surface"]
+proposed_action: |-
+  Add `IngestionControllerResponseCodeDriftTest`:
+
+  1. `post_ingestionEntities_returns200OK_notHttp201Created_pinsSpecDrift` — assert postDataEntityList returns 200. Comment: '// REGRESSION-PIN — code returns 200, spec declares 201. See concepts/detail/invariants/openapi-200-vs-201-status-code-drift.yaml.'
+  2. `post_ingestionEntitiesDatasetsStats_returns201Created_pinsCurrentShape`.
+  3. `post_ingestionMetrics_returns201Created_pinsCurrentShape`.
+  4. `post_ingestionDatasources_returns200OK_pinsCurrentShape`.
+
+  Coherence note (LSN-018 Rule 6): NET-NEW class-level finding. STRENGTHENS the cross-pillar drift concept; adds the IngestionController instance.
+batch: 2026-05-25-ZF
+feature_id: F-008

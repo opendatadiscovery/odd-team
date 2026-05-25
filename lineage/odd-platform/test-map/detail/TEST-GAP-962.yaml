@@ -1,0 +1,70 @@
+gap_id: TEST-GAP-962
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java OwnerController controller-class:OwnerController"
+pillars_affected: [P-08, P-09]
+surfaced_by:
+  - "OwnerController__controller-class.md:tests_coverage_semantic.uncovered_behaviours.[1]"
+  - "OwnerController__controller-class.md:tests_coverage_semantic.uncovered_behaviours.[5]"
+  - "OwnerController__controller-class.md:bugs_limitations_corner_cases.[0]"
+  - "OwnerController__controller-class.md:coherence_notes.[1]"
+behaviour: |-
+  **HIGH — `GET /api/owners` is unauthenticated-read at the rule layer: SecurityConstants.SECURITY_RULES[143-147] contains rules for POST/PUT/DELETE only; the GET path has NO entry. Any authenticated user under LOGIN_FORM/OAUTH2/LDAP enumerates the entire Owner directory; any anonymous user under `auth.type=DISABLED` does the same. This contract is undocumented at both the live `/owners` and `/permissions` doc pages and untested anywhere.**
+
+  Verified via Grep `/api/owners` against `/home/raman/work/odd/odd-platform/odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/SecurityConstants.java` 2026-05-25: exactly three matches under `/api/owners*` mutating paths (POST line 143 → OWNER_CREATE, PUT line 144-145 → OWNER_UPDATE, DELETE line 146-147 → OWNER_DELETE) + two matches under `/api/owners/{owner_id}/mapping` paths. Zero matches for GET. The fourth method — `getOwnerList` at `OwnerController.java:30-38` — falls through to `AuthorizationCustomizer.customize`'s catch-all `pathMatchers("/**").authenticated()` (AuthorizationCustomizer.java:29-30).
+
+  **What the directory enumeration leaks**:
+  - Full list of Owner directory entries, including names that may carry PII (e.g. `alice@acme.com`, `[Pseudonymous Researcher]`, internal team-name strings).
+  - The `allowedForSync` LEFT JOIN exposes which Owners have pending/approved `owner_association_request` rows — useful for an attacker constructing a phishing email targeting users mid-association-flow.
+  - Combined with TEST-GAP-963 (DataCollaboration redirect open-redirect) the leaked names become cross-pillar pivot targets.
+
+  **Documentation silence**:
+  - Live `/owners` doc page (WebFetched 2026-05-25, status 200) is silent on listing-without-permission semantics.
+  - Live `/permissions` doc page (WebFetched 2026-05-25, status 200) defines OWNER_CREATE / OWNER_UPDATE / OWNER_DELETE / OWNER_RELATION_MANAGE / OWNER_ASSOCIATION_MANAGE / DIRECT_OWNER_SYNC — **there is NO OWNER_READ permission**, confirming the design intent. But the absence of OWNER_READ is itself the gap operators cannot infer.
+  - OpenAPI spec (`openapi.yaml:131-155`) declares only `200` and `500` responses for getOwnerList — no `401`/`403`. Implicitly confirms the design but provides no explicit policy claim.
+
+  **Distinguishes from existing IDs**:
+  - TEST-GAP-746 (LOW) — OwnerAssociationRequestController HTTP floor. Different controller.
+  - TEST-GAP-736 (HIGH) — `GET /api/owner_association_request/activity` audit-trail unauthorized read. Different endpoint.
+  - TEST-GAP-031 — DirectoryController @PreAuthorize absence (general directory). Different controller.
+  - TEST-GAP-706 — ActivityController exposes global audit trail. Different surface.
+
+  This entry is **CLASS-LEVEL NEW** for OwnerController and is the under-documented enumeration surface specifically for the Owner directory.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/owner/OwnerControllerGetListAuthMatrixTest.java"
+  name: "get_apiOwners_underEachAuthMode_returnsFullDirectory_pinsUnauthenticatedReadContract"
+evidence:
+  - 'OwnerController.md says (tests_coverage_semantic.uncovered_behaviours.[1]): ''Authorization-gate completeness — POST/PUT/DELETE return 403 to a caller without the matching permission; GET returns 200 to any authenticated caller — Confirms the SecurityConstants entries actually wire to the WebFlux chain AND the GET-list is genuinely ungated (the asymmetry has never been tested in any direction)'' (criticality HIGH)'
+  - 'OwnerController.md says (tests_coverage_semantic.uncovered_behaviours.[5]): ''GET /api/owners directory-enumeration — under each auth mode, an authenticated caller without OWNER_CREATE/UPDATE/DELETE reads the full Owner directory — The read-collaborative posture is the platform default (cross-link ADR-CANDIDATE-003), but should be pinned via test for regression detection'' (criticality MEDIUM)'
+  - 'OwnerController.md says (bugs_limitations_corner_cases.[0]): ''GET /api/owners is unauthenticated-read at the rule layer — SecurityConstants.SECURITY_RULES[143-147] contains rules for POST/PUT/DELETE only ... Any authenticated user (under LOGIN_FORM/OAUTH2/LDAP) can enumerate the entire Owner directory, including owners whose names may carry PII; under auth.type=DISABLED the endpoint is anonymously reachable'' (severity MEDIUM)'
+  - "Reducer-side Grep `/api/owners` against `/home/raman/work/odd/odd-platform/odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/SecurityConstants.java` 2026-05-25: exactly 3 matches under mutating paths, ZERO under GET (verified)"
+  - "Verified at primary source: OwnerController.java:30-38 (no @PreAuthorize); SecurityConstants.java:143-147 (only POST/PUT/DELETE entries); AuthorizationCustomizer.java:29-30 (catch-all authenticated rule)"
+  - "Live WebFetch 2026-05-25 status 200 of `/owners` + `/permissions`: page explicitly silent on listing-without-permission; no OWNER_READ permission defined"
+cross_references:
+  - "ADR-CANDIDATE-003 (read-collaborative posture — the design intent that's not test-pinned)"
+  - "TEST-GAP-746 (LOW — OwnerAssociationRequestController HTTP floor)"
+  - "TEST-GAP-736 (HIGH — `/api/owner_association_request/activity` unauthorized read)"
+  - "TEST-GAP-706 (ActivityController global audit trail unauthorized read)"
+  - "TEST-GAP-031 (DirectoryController @PreAuthorize absence)"
+  - "TEST-GAP-963 (DataCollaboration class-level — pivot target for leaked owner names)"
+  - "TEST-GAP-973 (sister — allowedForSync semantics undocumented; same endpoint)"
+  - "F-019 (Owner Lifecycle Management — top of the 5-layer triangulation)"
+  - "F-006 (RBAC — Permissions catalog silent on OWNER_READ)"
+  - "DOC-GAP-NNN-candidate (live `/owners` + `/permissions` docs must document the GET unauthenticated-read posture explicitly)"
+related_features: [F-019, F-006]
+related_pillar_features: ["P-08:F-003 Owner Lifecycle Management (F-019)", "P-09:F-001 Role-Based Access Control (F-006)"]
+proposed_action: |-
+  Add `OwnerControllerGetListAuthMatrixTest`:
+
+  1. `get_apiOwners_authDisabled_anonymousCaller_returns200_withFullDirectory_pinsAnonymousReach` — WebTestClient `.get().uri("/api/owners").exchange().expectStatus().isOk()` under `@TestPropertySource("auth.type=DISABLED")`. Comment: `// REGRESSION-PIN — read-collaborative posture under DISABLED. ADR-CANDIDATE-003.`
+  2. `get_apiOwners_authLoginForm_authenticatedCallerNoPermissions_returns200_pinsAuthenticatedReachUngated` — login as a user with ZERO OWNER_* permissions; assert 200 + full directory.
+  3. `get_apiOwners_authOauth2_authenticatedCaller_returns200_underReadCollaborativePosture` — same under OAUTH2.
+  4. `get_apiOwners_authLdap_authenticatedCaller_returns200_underReadCollaborativePosture` — same under LDAP.
+  5. `post_apiOwners_authLoginForm_callerWithoutOwnerCreate_returns403_pinsMutationGate` — same context, but POST without OWNER_CREATE → 403. Confirms the SecurityConstants rules DO wire correctly for mutations, by contrast.
+  6. Document each assertion with the design intent (ADR-CANDIDATE-003) so a future refactor that ADDS a SecurityRule for GET /api/owners surfaces this test as a deliberate intent-change rather than a green-flip.
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. Dedup query "OwnerController GET unauthenticated read full directory" found no overlapping TEST-GAP. STRENGTHENS the documentation gap by demanding live-docs language. NO conflicts.
+batch: 2026-05-25-ZF
+feature_id: F-019

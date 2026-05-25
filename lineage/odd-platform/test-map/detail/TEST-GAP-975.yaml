@@ -1,0 +1,61 @@
+gap_id: TEST-GAP-975
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java OwnerController controller-class:OwnerController"
+pillars_affected: [P-08, P-09]
+surfaced_by:
+  - "OwnerController__controller-class.md:bugs_limitations_corner_cases.[4]"
+  - "OwnerController__controller-class.md:related_refactors:REFACTOR-426"
+behaviour: |-
+  **MEDIUM — OwnerController class-level zero observability: no @Slf4j logger, no log calls in any of the four method bodies (OwnerController.java:21-54), no @ActivityLog on any of the three mutating service paths (REFACTOR-426). Combined with the no-@ActivityLog finding, the four-method controller is FORENSICALLY SILENT at every observability layer. A regression that returns the wrong owner or fails silently at the service tier surfaces only as a 500/4xx in the access log; the caller's identity and the request payload are not in the application log.**
+
+  Verified at primary source:
+  - `OwnerController.java:1-55` — no logger field, no `log.info`/`debug`/`warn`/`error` calls.
+  - `OwnerServiceImpl.java:1-123` — no logger either (verified by Grep `private static final.*Logger` 2026-05-25 — zero matches).
+  - The three mutating service methods (`OwnerService.create`, `update`, `delete`) do NOT carry `@ActivityLog` (REFACTOR-426 — cross-batch sidecar).
+
+  **The four-method controller is silent at every layer**:
+  - Controller layer: no log call, no MDC enrichment.
+  - Service layer: no log call.
+  - Activity Feed layer: no @ActivityLog → no operator-visible audit-trail row.
+  - Default Spring access log: captures request line + status + elapsed only (no caller identity, no payload).
+
+  **Operator-visible failure modes**:
+  - A regression at the service tier (e.g. `update` silently dropping role bindings — REFACTOR-425) emits NO trace at any observability layer. The bug is detectable ONLY by reading the response body's `roles: []` field — which most clients don't.
+  - A silent owner mint via `getOrCreate` side-channel (per TEST-GAP-683) leaves NO log entry.
+  - A wrong-owner-delete (in case of UI race condition) leaves no diagnostic trail.
+
+  **Why MEDIUM**:
+  - Observability is plumbing; the absence is operationally costly but not data-loss-inducing.
+  - Combined with TEST-GAP-683 (getOrCreate bypass) + TEST-GAP-962 (GET unauthenticated read) + TEST-GAP-731 (REFACTOR-425 empty-roles destruction) + the no-@ActivityLog finding, the F-019 Owner Lifecycle subsystem has multiple silent-failure modes that compound. Observability is the SINGLE cross-cutting fix that turns "silent" into "diagnosable".
+
+  **Distinguishes**: this is a CROSS-CUTTING class-level concern; no prior TEST-GAP covers the OwnerController-specific zero-observability surface as a class.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/owner/OwnerControllerObservabilityTest.java"
+  name: "ownerController_fourMethods_currentlyEmitNoApplicationLog_pinsZeroObservabilityClassWide"
+evidence:
+  - 'OwnerController.md says (bugs_limitations_corner_cases.[4]): ''No class-level @Slf4j — no observability on the four methods — the class carries no logger; no info/debug/warn/error calls in any of the four method bodies (OwnerController.java:21-54); no MDC enrichment. The only operator-visible trace of an Owner CRUD operation is the default Spring access log (request line + status + elapsed) and the downstream service-tier logging (which also has none — verified by Grep private static final.*Logger against OwnerServiceImpl.java 2026-05-25 — zero matches). Combined with the no-@ActivityLog finding, the four-method controller is forensically silent at every observability layer'' (severity MEDIUM)'
+  - "Verified at primary source: OwnerController.java:1-55 (no logger) + OwnerServiceImpl.java:1-123 (no logger) + REFACTOR-426 (no @ActivityLog on the three mutating service paths)"
+cross_references:
+  - "TEST-GAP-683 (existing — getOrCreate side-channel bypass; compounds with zero observability)"
+  - "TEST-GAP-962 (HIGH this batch — GET unauthenticated read; would benefit from log capture for forensic detection)"
+  - "TEST-GAP-731 (existing — REFACTOR-425 empty-roles destruction; silent at every layer)"
+  - "REFACTOR-426 (no @ActivityLog on Owner mutations)"
+  - "REFACTOR-NNN-candidate (add @Slf4j + log lines to OwnerController + OwnerServiceImpl; add @ActivityLog to the three mutating service methods)"
+  - "F-019 (Owner Lifecycle Management)"
+related_features: [F-019]
+related_pillar_features: ["P-08:F-003 Owner Lifecycle Management (F-019)", "P-09:Security & Access Control"]
+proposed_action: |-
+  Add `OwnerControllerObservabilityTest`:
+
+  1. `ownerController_createOwner_currentlyEmitsNoApplicationLog_pinsObservabilityGap` — capture log output during a createOwner call; assert no log line at INFO/WARN/ERROR level mentioning the operation. Comment: '// REGRESSION-PIN — current implementation is silent. When REFACTOR-NNN-candidate adds @Slf4j, this test MUST FLIP to assert the expected log line shape.'
+  2. `ownerController_updateOwner_currentlyEmitsNoApplicationLog_pinsObservabilityGap`.
+  3. `ownerController_deleteOwner_currentlyEmitsNoApplicationLog_pinsObservabilityGap`.
+  4. `ownerService_create_currentlyEmitsNoApplicationLog_pinsServiceTierGap`.
+  5. Pair with REFACTOR-NNN-candidate (add observability + @ActivityLog).
+
+  Coherence note (LSN-018 Rule 6): NET-NEW class-level cross-cutting concern. STRENGTHENS the F-019 audit-silence family.
+batch: 2026-05-25-ZF
+feature_id: F-019

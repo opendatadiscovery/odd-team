@@ -1,0 +1,57 @@
+gap_id: TEST-GAP-965
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DataCollaborationController controller-class:DataCollaborationController"
+pillars_affected: [P-07]
+surfaced_by:
+  - "DataCollaborationController__controller-class.md:tests_coverage_semantic.uncovered_behaviours.[7]"
+  - "DataCollaborationController__controller-class.md:tests_coverage_semantic.uncovered_behaviours.[8]"
+  - "DataCollaborationController__controller-class.md:concepts.invariants.[8]"
+behaviour: |-
+  **MEDIUM — `GET /api/messages/{message_id}/url` returns 200 OK with empty body (NOT 404) for two distinct error paths: (a) a non-v1 UUID input, (b) a non-existent UUIDv1 input. Both cases are semantically 404 but the controller chain emits 200.**
+
+  Two compounding code paths:
+
+  1. **UUIDv1 requirement**: `ReactiveMessageRepositoryImpl.getMessageProviderIdentity` (`:171-185`) binds an extra `MESSAGE.CREATED_AT.eq(UUIDHelper.extractDateTimeFromUUID(messageId))` condition alongside `MESSAGE.UUID.eq(messageId)`. A non-v1 UUID extracts a wrong (or null) timestamp from `UUIDHelper.extractDateTimeFromUUID`; the WHERE clause matches zero rows; the inner Mono is empty.
+
+  2. **No `switchIfEmpty(NotFoundException)`**: The controller chain (`DataCollaborationController.java:42-48`) is `dataCollaborationService.resolveMessageUrl(messageId).map(providerUrl -> ResponseEntity.status(FOUND).headers(...).build())`. When the inner Mono is empty (no row found), the `.map` is never invoked; the outer Mono completes empty; WebFlux's default reactive Mono-empty-handling renders the response as **200 OK with empty body**, NOT 404.
+
+  **Operator-visible consequences**:
+  - API consumer (script, OpenAPI codegen client) expecting 404 for missing message gets 200 instead — silent data-shape drift; client code that decides 'redirect succeeded → open in new tab' gets a hung browser tab on `about:blank`.
+  - UI consumer (`Message.tsx:60-66`) clicks 'Open in Slack' button → opens new tab pointing at `/api/messages/<deleted-uuid>/url` → gets 200 with no Location header → browser sits on a blank tab.
+  - Forensics: no trace in logs (no @Slf4j, no metrics) — the failure mode is invisible.
+
+  **Why MEDIUM (not LOW)**: the bug is UX-shaped, not data-loss-shaped. But (a) it compounds with the open-redirect class TEST-GAP-963 (silent empty redirect masks the open-redirect concern), and (b) the OpenAPI spec implicitly contracts a 4xx response for missing resources (every other `/messages/*` endpoint declares 404 explicitly per the api-reference fetch).
+
+  **Distinguishes**:
+  - TEST-GAP-411 — `getLineage` NotFoundException propagation. Different controller.
+  - TEST-GAP-376 — `getDetails` NotFoundException path. Different.
+  - This entry is the **DataCollaboration class instance** of the missing-`switchIfEmpty` family.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/datacollaboration/DataCollaborationControllerRedirectMissingMessageTest.java"
+  name: "get_messageUrl_nonV1UUID_currentImplementationReturns200OkEmpty_pinsSilentEmptyBehaviour"
+evidence:
+  - 'DataCollaborationController.md says (tests_coverage_semantic.uncovered_behaviours.[7]): ''`redirect` non-v1 UUID — assert response is 200 OK with empty body (NOT 404)'' (criticality MEDIUM)'
+  - 'DataCollaborationController.md says (tests_coverage_semantic.uncovered_behaviours.[8]): ''`redirect` non-existent UUIDv1 — assert response is 200 OK with empty body (NOT 404)'' (criticality MEDIUM)'
+  - 'DataCollaborationController.md says (concepts.invariants.[8]): ''messageId MUST be a UUIDv1 — ReactiveMessageRepositoryImpl.getMessageProviderIdentity binds an extra MESSAGE.CREATED_AT.eq(UUIDHelper.extractDateTimeFromUUID(messageId)) condition; a non-v1 UUID extracts a wrong timestamp, the WHERE clause fails, the inner Mono is empty, and (per the controller-class invariant on Mono.empty) the redirect endpoint returns 200 OK with no body — NOT 404. The path lacks any switchIfEmpty(Mono.error(new NotFoundException(...)))'''
+  - "Verified at primary source: DataCollaborationController.java:42-48 + DataCollaborationServiceImpl.java:72-77 + ReactiveMessageRepositoryImpl.java:171-185 + UUIDHelper.extractDateTimeFromUUID"
+cross_references:
+  - "TEST-GAP-411 (getLineage NotFoundException propagation; sister)"
+  - "TEST-GAP-376 (getDetails NotFoundException path; sister)"
+  - "TEST-GAP-963 (CRITICAL — same endpoint, open-redirect class; compounding concern)"
+  - "TEST-GAP-966 (sister — 302-vs-301 status drift on the same endpoint)"
+  - "REFACTOR-NNN-candidate (add switchIfEmpty(NotFoundException) to resolveMessageUrl Mono chain)"
+related_features: [F-022]
+related_pillar_features: ["P-07:F-NNN Data Collaboration (Discussions)"]
+proposed_action: |-
+  Add `DataCollaborationControllerRedirectMissingMessageTest`:
+
+  1. `get_messageUrl_nonV1UUID_currentImplementationReturns200OkEmpty_pinsSilentBehaviour` — WebTestClient GET `/api/messages/00000000-0000-4000-8000-000000000000/url` (v4 UUID); assert response is 200 OK with empty body. Comment: '// REGRESSION-PIN — current behaviour. When TEST-GAP-965 is fixed, this MUST FLIP to expectStatus().isNotFound().'
+  2. `get_messageUrl_nonExistentV1UUID_returns200OkEmpty_pinsSilentBehaviour` — POST a v1 UUID that does not exist in the DB; assert 200 OK with empty body.
+  3. `get_messageUrl_existingV1UUID_returns302WithLocation_pinsHappyPath` — seed a `messages` row with state PENDING_SENT; assert 302 with `Location:` header (the contrast happy path that the bug-cases differ from).
+
+  Coherence note (LSN-018 Rule 6): NET-NEW for THIS endpoint. STRENGTHENS the missing-`switchIfEmpty` family (TEST-GAP-411, TEST-GAP-376).
+batch: 2026-05-25-ZF
+feature_id: F-022

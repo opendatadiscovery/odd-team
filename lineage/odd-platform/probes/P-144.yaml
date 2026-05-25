@@ -1,0 +1,173 @@
+---
+probe_id: P-144
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DataCollaborationController__controller-class__DataCollaborationController
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-051
+test_class: security
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress questions: GET /api/messages/{message_id}/url is RBAC-ungated and
+  has NO `switchIfEmpty(Mono.error(new NotFoundException(...)))` in the
+  resolveMessageUrl chain. The hypothesis from code reading:
+
+  (1) **200/empty for non-existent messageId** — when the messageId does not
+      exist in the `messages` table, `getMessageProviderIdentity` returns
+      Mono.empty; the `.map` short-circuits; Spring WebFlux serialises
+      Mono.empty as `200 OK` with no body, NOT `404 Not Found`. This is
+      operator-surprising because REST convention says GET /resource/{id}
+      returns 404 on miss.
+
+  (2) **302 for existing messageId** — the controller emits 302 Found with
+      the Slack permalink as Location header.
+
+  (3) **Message-existence oracle** — combining (1) and (2): any
+      authenticated user can probe message ids by inspecting the status code
+      (200 = does not exist; 302 = exists). Combined with the absence of an
+      audit log on the redirect path and the absence of RBAC, this is a
+      message-existence-by-id-enumeration vulnerability.
+
+  (4) **UUIDv1 covering-index assist** — the JOOQ predicate at
+      ReactiveMessageRepositoryImpl.java:177 binds BOTH `MESSAGE.UUID.eq` AND
+      `MESSAGE.CREATED_AT.eq(extractDateTimeFromUUID(messageId))`. A non-v1
+      UUID (e.g., UUIDv4) returns Mono.empty because the extracted timestamp
+      doesn't match. The probe verifies the platform accepts UUIDv4
+      syntactically (per the OpenAPI `format: uuid` declaration) but returns
+      200/empty because the predicate fails.
+
+  Confirmed = hypothesis holds. Action: file a backlog item to add
+  switchIfEmpty(Mono.error(new NotFoundException)) to resolveMessageUrl.
+---
+arrange:
+  - kind: docker-compose-up
+    services: [postgres, odd-platform-api]
+    env:
+      DATACOLLABORATION_ENABLED: "true"
+      DATACOLLABORATION_SLACK_OAUTH_TOKEN: "xoxb-stub-for-probe"
+      AUTH_TYPE: "LOGIN_FORM"
+      AUTH_LOGIN_FORM_CREDENTIALS: "probe:probe"
+  - kind: wiremock-up
+    matcher: "POST https://slack.com/api/chat.getPermalink"
+    response_initial: |
+      { "ok": true,
+        "permalink": "https://test-workspace.slack.com/archives/C001/p1234567890" }
+  - kind: rest
+    method: POST
+    path: /login
+    body: { username: probe, password: probe }
+    capture_as: session_cookie
+  - kind: sql
+    query: |
+      -- Seed a real UUIDv1 message row (must include CREATED_AT matching the v1 timestamp).
+      -- The platform's UUIDHelper.generateUUIDv1 produces v1 UUIDs with embedded timestamp;
+      -- the test arranges that mapping explicitly. UUID v1 format:
+      -- time_low-time_mid-version+time_hi-clock_seq-node.
+      -- For probe purposes, generate the UUID server-side and read back, or use a known fixed-v1.
+      -- This SQL pattern is approximate; the probe-runner should use UUIDHelper.generateUUIDv1() from Java.
+      INSERT INTO message (uuid, created_at, data_entity_id, state, provider,
+                           provider_channel_id, provider_channel_name,
+                           provider_message_id, owner_id, text)
+      VALUES ('00112233-4455-1677-8899-aabbccddeeff'::uuid,
+              '2024-01-01 00:00:00.000+00:00'::timestamptz,
+              1, 1, 'SLACK', 'C001', 'alerts-team',
+              '1234567890.000100', null, 'probe seeded message')
+act:
+  # (1) Test the existence-oracle — request a real (seeded) messageId
+  - kind: rest
+    method: GET
+    path: /api/messages/00112233-4455-1677-8899-aabbccddeeff/url
+    cookie: "{session_cookie}"
+    follow_redirects: false
+    capture_as: response_existing_uuidv1
+  # (2) Test a non-existent v1 UUID (different timestamp = matches the predicate predicate-style)
+  - kind: rest
+    method: GET
+    path: /api/messages/00aabbcc-ddee-1ff0-1122-334455667788/url
+    cookie: "{session_cookie}"
+    follow_redirects: false
+    capture_as: response_nonexistent_uuidv1
+  # (3) Test a UUIDv4 (the covering-index assist fails)
+  - kind: rest
+    method: GET
+    path: /api/messages/4f8e4f8e-4f8e-4f8e-4f8e-4f8e4f8e4f8e/url
+    cookie: "{session_cookie}"
+    follow_redirects: false
+    capture_as: response_uuidv4
+  # (4) Test the enumeration-without-audit-log hypothesis — fire 100 requests
+  - kind: rest-loop
+    count: 100
+    method: GET
+    path_pattern: /api/messages/{random_uuidv1}/url
+    cookie: "{session_cookie}"
+    follow_redirects: false
+    capture_as: enumeration_response_codes
+observe:
+  - kind: log-grep
+    pattern: "messageId|/api/messages/.*url"
+    container: odd-platform-api
+    capture_as: redirect_audit_log_lines
+assert:
+  # (1) Existing UUIDv1 → 302 with Slack permalink Location header
+  - "response_existing_uuidv1.status == 302"
+  - "response_existing_uuidv1.headers.location == 'https://test-workspace.slack.com/archives/C001/p1234567890'"
+  # (2) Non-existent UUIDv1 → 200 OK with empty body (NOT 404)
+  - "response_nonexistent_uuidv1.status == 200"
+  - "response_nonexistent_uuidv1.body == ''"
+  # (3) UUIDv4 → 200 OK with empty body (the covering-index assist fails because
+  #     extractDateTimeFromUUID returns a wrong timestamp on non-v1)
+  - "response_uuidv4.status == 200"
+  - "response_uuidv4.body == ''"
+  # (4) Existence-oracle: across 100 random UUIDv1 probes, the status codes
+  #     differentiate non-existent (200) from existent (302) for any attacker
+  #     who can construct UUIDv1 timestamps matching real seeded rows
+  - "all(r.status == 200 for r in enumeration_response_codes if r.uuid_was_not_seeded)"
+  - "all(r.status == 302 for r in enumeration_response_codes if r.uuid_was_seeded)"
+  # (5) No audit log of redirect activity — the log-grep finds zero matches
+  #     for /api/messages/.*url access patterns (controller has no log.info calls)
+  - "redirect_audit_log_lines.length == 0"
+cleanup:
+  - kind: sql
+    query: "DELETE FROM message WHERE uuid = '00112233-4455-1677-8899-aabbccddeeff'::uuid"
+  - kind: docker-compose-down
+    destroy_volumes: true
+  - kind: wiremock-down
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DataCollaborationController__controller-class__DataCollaborationController
+  retrospectives: []
+realism_caveats: |
+  The probe pins three load-bearing claims:
+  (a) 200/empty (not 404) on missing messageId — the WebFlux Mono.empty
+      serialisation contract;
+  (b) 302 on existing messageId — the happy path;
+  (c) absence of audit logging on the redirect path — the operator-relevant
+      observability gap.
+
+  The enumeration-oracle claim (claim 4 in expected_outcome) is sketched but
+  is hard to verify EXHAUSTIVELY in a probe because UUIDv1 space is large
+  (122 effective bits even after timestamp constraint). The probe's 100-call
+  sample is illustrative: it does not prove the oracle is exploitable at
+  scale, but it pins the distinguishable status codes that make the oracle
+  shape true. A separate threat-modelling analysis would calculate the
+  collision rate against a known message-creation-time window.
+
+  The probe does NOT exercise:
+  - The Slack-API-error path (where chat.getPermalink fails — e.g.,
+    message deleted Slack-side). That's covered by P-145 (open-redirect /
+    Slack-error handling).
+  - The `owner_id is null` versus `owner_id is some other user` cases —
+    the controller has no owner-scoping anyway; the lookup is purely by
+    UUID. A future enrichment of /api/dataentities/{id}/messages should
+    cover the read-side authorization.
+
+  The UUIDv1 timestamp arithmetic in the SQL `arrange` block is
+  approximate; the actual probe should generate the v1 UUID via the
+  platform's UUIDHelper.generateUUIDv1() to ensure the embedded timestamp
+  matches the CREATED_AT column.
+
+  If the platform ever adds switchIfEmpty(Mono.error(new NotFoundException))
+  to resolveMessageUrl, OR adds an audit log on the redirect path, this
+  probe MUST be re-run; the current claim is correct only for commit 4ec2b20.

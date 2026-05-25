@@ -1,0 +1,165 @@
+---
+probe_id: P-141
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__OwnerController__controller-class__OwnerController
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-019
+test_class: security
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category B + F + class-level NEW finding): Does
+  `OwnerService.getOrCreate(name)` at `OwnerServiceImpl.java:38-42` BYPASS the
+  `OWNER_CREATE` permission gate when reached from one of its three known
+  service-tier callsites?
+
+  Specifically:
+    - `OwnerAssociationRequestServiceImpl.java:57` is reached via POST
+      /api/owner_association_request (no SecurityRule entry for this POST path
+      — any authenticated user can submit).
+    - `OwnershipServiceImpl.java:52` is reached via POST
+      /api/dataentities/{data_entity_id}/ownerships (gated by
+      DATA_ENTITY_OWNERSHIP_CREATE, NOT by OWNER_CREATE).
+    - `TermOwnershipServiceImpl.java:35` is reached via POST
+      /api/terms/{term_id}/ownerships (analogous gating, NOT OWNER_CREATE).
+
+  Hypothesis: a caller authenticated with ONLY
+  DATA_ENTITY_OWNERSHIP_CREATE (no OWNER_CREATE, no OWNER_*) can POST
+  /api/dataentities/{id}/ownerships with `ownerName = 'P141-SideChannel-' +
+  random()`; the platform silently inserts a new row into the OWNER table
+  via `getOrCreate`; the new row is then visible at GET /api/owners.
+  Operator consequence: the OWNER_CREATE permission gate documented at
+  https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions
+  is NOT the sole gate on Owner directory writes; three additional service-tier
+  paths reach the same write under different permissions, and the live
+  doc page is silent on this side-channel.
+---
+arrange:
+  - kind: docker-compose-up
+    profile: odd-minimal
+  - kind: sql
+    query: |
+      -- Bootstrap a data entity to attach ownership to.
+      INSERT INTO data_source (id, oddrn, name, namespace_id, connection_url, active)
+      VALUES (9001, '//probe-source/p141/source', 'p141_source', 1, 'http://localhost', true);
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, hollow, deleted_at)
+      VALUES (9001, '//probe-source/p141/entity', 'p141_entity', 9001, 1, false, NULL);
+  - kind: sql
+    query: |
+      -- Create a probe user + role that holds ONLY DATA_ENTITY_OWNERSHIP_CREATE
+      -- (NOT OWNER_CREATE). The Role's policy must grant the create-ownership
+      -- permission only.
+      INSERT INTO role (id, name, deleted_at) VALUES (901, 'p141-ownership-only', NULL);
+      INSERT INTO policy (id, name, policy, deleted_at)
+      VALUES (901, 'p141-ownership-only-policy',
+              '{"statements":[{"resource":{"type":"DATA_ENTITY"},"permissions":["DATA_ENTITY_OWNERSHIP_CREATE"]}]}'::jsonb,
+              NULL);
+      INSERT INTO role_to_policy (role_id, policy_id) VALUES (901, 901);
+  - kind: env
+    var: ODDPLATFORM_AUTH_TYPE
+    value: LOGIN_FORM
+  - kind: rest
+    method: POST
+    path: /api/login
+    body: '{"username":"p141-probe-user","password":"p141-probe-secret"}'
+    expect_status: 200
+    capture_as: probe_session_cookie
+  - kind: sql
+    query: |
+      -- Bind the just-created session's owner to the probe role.
+      -- (In production this is done via association-request approval; for the
+      -- probe we directly insert the user_owner_mapping + the owner_to_role.)
+      INSERT INTO owner (id, name, deleted_at) VALUES (9001, 'p141-probe-owner', NULL);
+      INSERT INTO owner_to_role (owner_id, role_id) VALUES (9001, 901);
+      INSERT INTO user_owner_mapping (oidc_username, provider, owner_id, deleted_at)
+      VALUES ('p141-probe-user', 'INTERNAL', 9001, NULL);
+act:
+  - kind: rest
+    method: POST
+    path: /api/dataentities/9001/ownerships
+    cookie: ${probe_session_cookie}
+    body: |
+      {
+        "ownerName": "P141-SideChannel-NeverSeen",
+        "titleName": "p141-stub-title",
+        "roles": []
+      }
+    capture_as: ownership_create_response
+  - kind: rest
+    method: GET
+    path: /api/owners?query=P141-SideChannel
+    cookie: ${probe_session_cookie}
+    capture_as: owners_listing_after_sidechannel
+observe:
+  - kind: sql
+    query: |
+      SELECT id, name, deleted_at FROM owner WHERE name = 'P141-SideChannel-NeverSeen';
+    capture_as: side_channel_owner_row
+  - kind: sql
+    query: |
+      SELECT 'has_owner_create' AS p
+      FROM role_to_policy rtp
+      JOIN policy p ON p.id = rtp.policy_id
+      WHERE rtp.role_id = 901
+        AND p.policy::text LIKE '%OWNER_CREATE%';
+    capture_as: probe_user_owner_create_check
+assert:
+  - "ownership_create_response.status == 200 || ownership_create_response.status == 201   # the ownership create succeeded"
+  - "side_channel_owner_row.length == 1   # the never-seen owner WAS silently created"
+  - "side_channel_owner_row[0].name == 'P141-SideChannel-NeverSeen'"
+  - "side_channel_owner_row[0].deleted_at == null"
+  - "owners_listing_after_sidechannel.items.length >= 1   # the new owner appears in GET /api/owners"
+  - "owners_listing_after_sidechannel.items.find(o => o.name == 'P141-SideChannel-NeverSeen') != null"
+  - "probe_user_owner_create_check.length == 0   # the probe role does NOT hold OWNER_CREATE; confirms the bypass"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM ownership WHERE data_entity_id = 9001;
+      DELETE FROM owner_to_role WHERE owner_id IN (9001) OR role_id = 901;
+      DELETE FROM owner WHERE name LIKE 'P141-SideChannel%' OR id = 9001;
+      DELETE FROM user_owner_mapping WHERE oidc_username = 'p141-probe-user';
+      DELETE FROM role_to_policy WHERE role_id = 901;
+      DELETE FROM policy WHERE id = 901;
+      DELETE FROM role WHERE id = 901;
+      DELETE FROM data_entity WHERE id = 9001;
+      DELETE FROM data_source WHERE id = 9001;
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__OwnerController__controller-class__OwnerController
+    - odd-platform__java__service__service__OwnerServiceImpl
+    - odd-platform__java__service__service__OwnershipServiceImpl
+    - odd-platform__java__OwnerAssociationRequestController__controller-class__OwnerAssociationRequestController
+  retrospectives: [LSN-019, LSN-020]
+realism_caveats: |
+  The probe pins the BYPASS hypothesis via the OwnershipServiceImpl callsite
+  (`OwnerServiceImpl.java:52`). If the assertions PASS, the OWNER_CREATE
+  permission documented at the live `/permissions` page is NOT the sole gate
+  on Owner directory writes; the platform exposes three side-channel paths
+  through different permissions. Doc-gap-finder should add an OWNER_CREATE
+  caveat to the live permissions page.
+
+  Realism caveats:
+  - The probe uses the OwnershipServiceImpl path only; the OwnerAssociationRequestServiceImpl
+    and TermOwnershipServiceImpl callsites are NOT exercised. A follow-up
+    probe could exercise all three; the current probe is sufficient to
+    confirm the class of bug.
+  - The probe assumes the LOGIN_FORM session-cookie endpoint accepts a
+    probe-user with a custom password; if the stack uses LDAP/OAUTH2 only,
+    the arrange-section needs to be adjusted. The odd-minimal profile is
+    expected to ship LOGIN_FORM by default.
+  - The probe role's permission JSON shape MAY not match the actual production
+    policy schema exactly (the schema is derived from PolicyServiceImpl /
+    PermissionDto enums); a real probe-runner pass should validate the JSON
+    against the live `/api/policies` POST endpoint's accepted shape before
+    relying on the assertion semantics.
+  - If the assertions FAIL (the side-channel owner does NOT appear), the
+    hypothesis is wrong; possible explanations: (a) the OwnershipServiceImpl
+    flow has an undocumented OWNER_CREATE check upstream of `getOrCreate`
+    that this analyser missed; (b) the probe's permission setup is incorrect
+    and the user actually has OWNER_CREATE indirectly. Re-check the policy
+    JSON and the SecurityConstants list against the probe-runner's evidence
+    before concluding the analyser was wrong.

@@ -1,0 +1,70 @@
+gap_id: TEST-GAP-964
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java MetadataFieldController controller-class:MetadataFieldController"
+pillars_affected: [P-04, P-09]
+surfaced_by:
+  - "MetadataFieldController__controller-class.md:tests_coverage_semantic.uncovered_behaviours.[3]"
+  - "MetadataFieldController__controller-class.md:docs_link_semantic.doc_drift_findings.[2]"
+  - "MetadataFieldController__controller-class.md:docs_link_semantic.doc_drift_findings.[3]"
+behaviour: |-
+  **HIGH — `GET /api/metadata/fields` is RBAC-ungated AND its catalogue is GLOBALLY-SHARED: ANY authenticated user reads the entire INTERNAL metadata-field catalogue including names that may reveal organizational structure, internal taxonomies, or PII-leaking field labels created by other users on unrelated data entities.**
+
+  Verified by Grep `/api/metadata/fields` against `/home/raman/work/odd/odd-platform/odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/SecurityConstants.java` 2026-05-25: ZERO matches. The endpoint falls through to `AuthorizationCustomizer.customize`'s catch-all `.authenticated()` rule.
+
+  **The catalogue is cross-data-entity globally shared**:
+  - `MetadataFieldServiceImpl.getOrCreateMetadataFields` (called from `DataEntityServiceImpl.createMetadata`) inserts a new row into the global `metadata_field` table whenever a user submits a custom-metadata value with a previously-unseen field name.
+  - Every authenticated user reading `GET /api/metadata/fields` sees the union: their own creations + every other authenticated user's creations + every collector-ingested EXTERNAL-origin field's INTERNAL siblings.
+  - The Discoverer of a field-name created by Team A on data entity X (e.g. `acquisition_cost_2025_q3`) is Team B, browsing autocomplete on data entity Y.
+
+  **Three concrete leak vectors**:
+  1. **Organizational discovery**: field names like `acquisition_cost_2025_q3`, `pii_compliance_status`, `pre_ipo_runway_months` reveal business context.
+  2. **PII-by-label**: field names like `customer_alice_smith_notes`, `vendor_redacted_co_pricing` leak per-row identifiers via the FIELD NAME itself (rare but observed in customer deployments).
+  3. **Taxonomy reconnaissance**: an attacker authenticated as a low-privilege auditor enumerates the full INTERNAL taxonomy of every data entity in the catalogue.
+
+  **Documentation silence (compounding)**:
+  - No `CUSTOM_METADATA_FIELD_READ` permission exists in the live `/permissions` page (WebFetched 2026-05-25 status 200, verified silent).
+  - No live doc page documents the cross-data-entity catalogue exposure (`MetadataFieldController.md` doc_drift_findings.[2-3] both verbatim 'no live doc page documents').
+  - Live `/active-platform-features/metadata` returns 404 (per sidecar's WebFetch).
+  - Operators wiring policies for the write-side (e.g. restricting DATA_ENTITY_CUSTOM_METADATA_UPDATE to entity owners) reasonably assume the catalogue is similarly scoped; documentation never clarifies the truth.
+
+  **Distinguishes from existing IDs**:
+  - TEST-GAP-728 (CRITICAL) — DatasetField wrong-permission wiring bug. Different controller.
+  - TEST-GAP-706 — ActivityController global audit exposure. Different surface.
+  - TEST-GAP-962 (sister this batch) — OwnerController GET unauthenticated. Same class-of-bug; different controller.
+  - This entry is the **CLASS-LEVEL NEW** for MetadataFieldController.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/ReactiveMetadataFieldRepositoryImplTest.java"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/metadata/MetadataFieldControllerAuthMatrixTest.java"
+  name: "get_apiMetadataFields_underEachAuthMode_returnsFullCatalogue_pinsCrossUserExposureContract"
+evidence:
+  - 'MetadataFieldController.md says (tests_coverage_semantic.uncovered_behaviours.[3]): ''Auth surface across DISABLED / LOGIN_FORM / OAUTH2 / LDAP — No test confirms that an unauthenticated caller is rejected with 401/302 under LOGIN_FORM / OAUTH2 / LDAP, or that auth.type=DISABLED genuinely returns the catalogue. No test confirms that a READ_ONLY role gets the same response as an ADMIN.'' (criticality HIGH)'
+  - 'MetadataFieldController.md says (docs_link_semantic.doc_drift_findings.[2]): ''No live doc page mentions the auto-create-on-miss catalogue-growth side-effect. Operators are not told that submitting a Data Entity custom-metadata value with a previously-unseen field name silently adds that name to the global INTERNAL catalogue (visible to every authenticated user via this read endpoint). The cross-data-entity exposure semantics are undocumented.'''
+  - 'MetadataFieldController.md says (docs_link_semantic.doc_drift_findings.[3]): ''No live doc page mentions that the /api/metadata/fields read has NO per-permission gate. Operators wiring policies for the per-value write surface ... may assume that the catalogue itself is similarly scoped; the documentation never clarifies that the catalogue read is open to every authenticated user.'''
+  - "Reducer-side Grep `/api/metadata/fields|CUSTOM_METADATA_FIELD_READ|MetadataFieldController` against `/home/raman/work/odd/odd-platform/odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/SecurityConstants.java` 2026-05-25: 0 hits (no SecurityRule)"
+  - "Verified at primary source: MetadataFieldController.java (no @PreAuthorize); SecurityConstants.java:95-355 (zero entries matching the path); AuthorizationCustomizer.java:29-30 (catch-all)"
+cross_references:
+  - "TEST-GAP-728 (CRITICAL — DatasetField wrong-permission; sister class-of-bug)"
+  - "TEST-GAP-706 (ActivityController global audit exposure; sister)"
+  - "TEST-GAP-962 (sister this batch — OwnerController GET unauthenticated; same class)"
+  - "TEST-GAP-820 (HIGH — tag-namespace catalogue side-channel; sister cross-user contamination)"
+  - "TEST-GAP-763 (HIGH — getPopularTagList full-directory bypass; sister)"
+  - "DOC-GAP-NNN-candidate (live `/permissions` page MUST document the absence of CUSTOM_METADATA_FIELD_READ; live `/owners` and `/active-platform-features/metadata` pages MUST document the cross-data-entity catalogue exposure)"
+  - "REFACTOR-NNN-candidate (consider adding scoping by data-entity ownership for the autocomplete; OR adding a CUSTOM_METADATA_FIELD_READ permission for hardened deployments)"
+  - "F-NNN Custom Metadata feature (undocumented at live docs)"
+related_features: []
+related_pillar_features: ["P-04:Data Discovery (Custom Metadata)", "P-09:Security & Access Control"]
+proposed_action: |-
+  Add `MetadataFieldControllerAuthMatrixTest`:
+
+  1. `get_apiMetadataFields_authDisabled_anonymousCaller_returns200_withFullCatalogue_pinsAnonymousReach` — WebTestClient under `auth.type=DISABLED`; seed 5 fields (3 INTERNAL + 2 EXTERNAL); assert 200 + 3 items returned.
+  2. `get_apiMetadataFields_authLoginForm_authenticatedNoPermissions_returns200_pinsAuthenticatedReachUngated` — same seed; login as user with ZERO permissions; assert 200 + 3 items.
+  3. `get_apiMetadataFields_authOauth2_callerSeesFieldsCreatedByOtherUserOnUnrelatedDataEntity_pinsCrossUserExposure` — User A creates a custom-metadata value with field-name `org_secret_acquisition` on data entity X; assert User B (who has access to data entity Y but NOT X) sees `org_secret_acquisition` in the autocomplete catalogue. Pins the cross-user exposure contract.
+  4. `get_apiMetadataFields_currentImplementation_noOWNERREAD_orCUSTOM_METADATA_FIELD_READ_permission_exists` — assert via grep that `SecurityConstants.SECURITY_RULES` has zero entries matching `/api/metadata/fields`.
+  5. Pair with DOC-GAP-NNN-candidate (live docs must explicitly note the read posture) and REFACTOR-NNN-candidate (consider scoping by ownership for hardened deployments).
+
+  Coherence note (LSN-018 Rule 6): NET-NEW for THIS controller. STRENGTHENS the read-collaborative-posture family (TEST-GAP-820, TEST-GAP-763, TEST-GAP-962). NO conflicts surfaced.
+batch: 2026-05-25-ZF
+feature_id: null

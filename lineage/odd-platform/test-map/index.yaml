@@ -7,16 +7,16 @@ source_monolith_frontmatter:
   sidecar_count: 65
   test_files_indexed: 70
   prompt_version: test-coverage-mapper/0.1.0
-  total_test_gaps: 954
+  total_test_gaps: 972
   gaps_by_criticality:
-    CRITICAL: 157
-    HIGH: 316
-    MEDIUM: 357
-    LOW: 124
+    CRITICAL: 161
+    HIGH: 321
+    MEDIUM: 365
+    LOW: 125
   gaps_by_category:
-    missing-integration: 188
-    missing-security: 264
-    missing-edge-case: 306
+    missing-integration: 198
+    missing-security: 270
+    missing-edge-case: 308
     missing-unit: 90
     sidecar-stale: 3
     missing-performance: 35
@@ -214,7 +214,7 @@ source_monolith_frontmatter:
   - odd-platform java notification.sender class:SlackNotificationSender
   - odd-platform java notification.sender class:WebhookNotificationSender
   - odd-platform java notification.processor class:PostgresWALMessageProcessor
-total_entries: 954
+total_entries: 972
 notice: Rebuilt from detail/ by lineage/_extractor/registry-shard/rebuild_indexes.py.
   The detail files are the source of truth; this index is derived headlines for the
   registry-search subagent.
@@ -28767,3 +28767,1184 @@ test_gaps_index:
   related_refactor_ids: []
   related_doc_gap_ids: []
   detail_path: detail/TEST-GAP-957.yaml
+- gap_id: TEST-GAP-958
+  behaviour: '**CRITICAL — class-level 4-of-5 unauthenticated-in-all-modes matrix:
+    NO test exists that runs IngestionController under multiple `auth.type` modes
+    to demonstrate the 5-endpoint × 2-filter × 4-auth-mode reachability matrix.**
+
+
+    The current test profile fixes `auth.type=DISABLED` + `auth.ingestion.filter.enabled=false`
+    (BaseIngestionTest.java) — meaning EVERY existing ingestion test runs against
+    the most-open posture. The production-recommended postures (OAUTH2/LDAP/LOGIN_FORM
+    × filter-enabled true × s2s-enabled true) are completely untested at this controller''s
+    class surface.
+
+
+    **The matrix the test absence preserves**:
+
+    - 5 endpoints (`postDataEntityList`, `createDataSource`, `getDataEntitiesByDEGOddrn`,
+    `postDataSetStatsList`, `ingestMetrics`)
+
+    - × 4 auth modes (DISABLED, OAUTH2, LDAP, LOGIN_FORM)
+
+    - × 2 filter toggle values (`auth.ingestion.filter.enabled` true/false)
+
+    - × 2 s2s toggle values (`auth.s2s.enabled` true/false)
+
+    = 80-cell reachability matrix, ZERO cells covered.
+
+
+    **What the matrix would reveal**:
+
+    - 4 of 5 endpoints reachable unauthenticated under default deployment (only `createDataSource`
+    requires a collector token).
+
+    - 3 of 5 endpoints (`postDataSetStatsList`, `ingestMetrics`, `getDataEntitiesByDEGOddrn`)
+    REMAIN unauthenticated even with operator opt-in (`auth.ingestion.filter.enabled=true`),
+    because `IngestionDataEntitiesFilter.java:28` hard-codes `POST /ingestion/entities`
+    as exact-literal — does NOT match the other 3 paths.
+
+    - `SecurityConstants.WHITELIST_PATHS = {.., "/ingestion/**", ..}` (SecurityConstants.java:95-96)
+    exempts the entire ingestion namespace from UI auth.
+
+    - Under the most-hardened deployment (OAUTH2 + s2s.enabled=true + filter.enabled=true),
+    still 3 of 5 endpoints unauthenticated.
+
+
+    **Operator-misleading consequence**: the property name `auth.ingestion.filter.enabled`
+    reads as ''protect ingestion globally''. The truth is ''protect one endpoint exactly''.
+    Without a class-level test matrix pinning the gap, operators believing they''ve
+    hardened the surface are wrong. The live docs at `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security`
+    flag the gap; the bundled defaults + the test suite both reinforce silence.
+
+
+    **Distinguishes from existing IDs**:
+
+    - TEST-GAP-815 (CRITICAL) — covers `getDataEntitiesByDEGOddrn` only, single-endpoint
+    unauth reach.
+
+    - TEST-GAP-823 (CRITICAL) — covers `ingestMetrics` only.
+
+    - TEST-GAP-819 — covers `postDataSetStatsList` only.
+
+    - TEST-GAP-618 — covers `createDataSource` vs `postDataEntityList` asymmetric
+    posture (2 endpoints).
+
+    - TEST-GAP-116 — covers default-off `auth.ingestion.filter.enabled` semantics
+    on the filter alone.
+
+    - TEST-GAP-579 — covers IngestionDataEntitiesFilter class default-OFF posture.
+
+
+    This entry is the **CLASS-LEVEL META-ANCHOR**: instead of 5 single-endpoint reachability
+    tests, a single parameterised test (5 endpoints × 4 modes × 2 toggles × 2 toggles
+    = 80 cells) holds the matrix as the regression contract. A future refactor that
+    widens the filter path-matcher OR removes `/ingestion/**` from WHITELIST_PATHS
+    surfaces as a green/red mass-flip across this one file rather than five.'
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-958.yaml
+- gap_id: TEST-GAP-959
+  behaviour: '**CRITICAL — `POST /api/slack/events` is reachable by ANY internet caller
+    AND no `X-Slack-Signature` / `X-Slack-Request-Timestamp` verification exists in
+    the controller, the parser, or the service. Forged Slack events can be injected
+    by any HTTP caller able to reach the platform''s port.**
+
+
+    Three independent vulnerabilities compound:
+
+
+    1. **No signature verification in code path**: Grep `X-Slack-Signature|x-slack-signature|SLACK_SIGNING_SECRET|signing-secret`
+    against `/home/raman/work/odd/odd-platform/odd-platform-api/src/main/java/`: 0
+    hits (verified 2026-05-25). The controller `EventApiController.java:18-57` reads
+    the raw JSON body via `JSONSerDeUtils.deserializeJson` (SlackEventParser.java:23)
+    and acts on its contents without verifying the request actually came from Slack.
+
+
+    2. **Path is whitelisted in EVERY auth mode**: `/api/slack/events` is in `LoginFormSecurityConfiguration.WHITELIST_PATHS`
+    and `SecurityConstants.WHITELIST_PATHS` (per the sidecar''s verified grep). Under
+    LOGIN_FORM/OAUTH2/LDAP, the path bypasses the SecurityWebFilterChain. Under `auth.type=DISABLED`,
+    every path is anonymous anyway.
+
+
+    3. **No bot/installation-id check**: even if Slack DID send the event, there''s
+    no check that `team_id` / `app_id` / `api_app_id` match the configured Slack app
+    — a forged payload with the right shape gets accepted regardless of origin.
+
+
+    **Exploit shape**: An attacker who learns the platform''s base URL (e.g. via the
+    published Slack manifest template at `docs.opendatadiscovery.org/configuration-and-deployment/odd-platform#enable-data-collaboration`)
+    can POST a crafted JSON body:
+
+    ```
+
+    POST /api/slack/events
+
+    {"type":"event_callback","event":{"type":"message","subtype":null,"thread_ts":"<existing-message-provider-id>","channel":"<bot-channel>","text":"forged
+    content","user":"<spoof-user-id>","ts":"<ts>"}}
+
+    ```
+
+    → `SlackEventParser` classifies as PAYLOAD → `DataCollaborationService.enqueueMessageEvent`
+    inserts a row into `message_provider_event` with state=PENDING → the asynchronous
+    `DataCollaborationMessageEventProcessor` materialises a child `message` row attributed
+    to the spoofed user → the UI''s Discussions tab shows the forged message thread-attached
+    to a real ODD message.
+
+
+    **Blast radius**:
+
+    - Inject arbitrary thread-reply messages onto any Data Entity''s Discussions thread.
+
+    - Forge author attribution (the `user` field is consumed verbatim per SlackMessageProviderEventHandler.java:31).
+
+    - Inject `message_changed` subtypes to alter visible history.
+
+    - Combined with TEST-GAP-960 (no idempotency), an attacker can flood the platform
+    with millions of forged events.
+
+
+    **Slack''s mandate**: per `https://api.slack.com/authentication/verifying-requests-from-slack`
+    (WebFetched 2026-05-25), production Slack integrations MUST verify the HMAC-SHA256
+    signature in the `X-Slack-Signature` header against the bot''s signing secret,
+    using the timestamp from `X-Slack-Request-Timestamp` to prevent replay (5-minute
+    window). ODD Platform implements none of this.
+
+
+    **Why CRITICAL**: this is a P-07 Data Collaboration multi-class vulnerability
+    (forged content + author spoofing + UI deception) gated only by feature-flag enablement
+    (`datacollaboration.enabled=true`). The sidecar''s `uncovered_behaviours.[4]`
+    notes: ''this is the load-bearing untested behaviour''. There''s no live doc warning
+    operators that enabling Discussions means publishing an unauthenticated webhook
+    receiver to the public internet.'
+  test_class: missing-security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-022
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-959.yaml
+- gap_id: TEST-GAP-960
+  behaviour: '**CRITICAL — Slack''s at-least-once delivery guarantee combined with
+    the absence of any idempotency key, unique constraint, or replay-detection mechanism
+    in `EventApiController` → duplicate Slack deliveries silently amplify into N rows
+    in `message_provider_event` and N materialised child `message` rows.**
+
+
+    Slack documents at `https://api.slack.com/apis/events-api#retries` (WebFetched
+    2026-05-25): ''If we don''t receive an HTTP 2xx response within 3 seconds, we''ll
+    retry once. If we still don''t get a 2xx, we''ll continue retrying with exponential
+    backoff for up to 3 times.'' This means a single Slack event can legitimately
+    arrive 1-4 times at `POST /api/slack/events`.
+
+
+    **The four absent defences**:
+
+    1. **No unique constraint on (provider, event_id)**: `V0_0_59__data_collaboration.sql:25-39`
+    creates `message_provider_event` with `(id UUID PRIMARY KEY, message_id BIGINT,
+    state TEXT, event TEXT, created_at TIMESTAMP)` — there is no column storing Slack''s
+    `event_id` and no UNIQUE constraint enforcing one-shot delivery semantics.
+
+    2. **No application-level idempotency key**: `DataCollaborationServiceImpl.enqueueMessageEvent`
+    inserts an unconditional new row each time `EventApiController` calls it; the
+    row''s `id` is a freshly-generated UUIDv1 (no relation to the inbound event''s
+    `event_id`).
+
+    3. **No replay-detection window**: there''s no in-memory or in-DB sliding-window
+    deduplication (e.g. ''I''ve seen this event_id in the last 5 minutes; drop it'').
+
+    4. **No header-based dedup**: Slack sends `X-Slack-Retry-Num` and `X-Slack-Retry-Reason`
+    headers on retried deliveries (Slack''s docs verbatim); the controller reads neither
+    (verified by Grep `X-Slack-Retry|x-slack-retry` against `/home/raman/work/odd/odd-platform/odd-platform-api/src/main/java/`:
+    0 hits 2026-05-25).
+
+
+    **Concrete failure mode** (the sidecar''s example): same Slack `event_id` arriving
+    4 times → 4 rows inserted into `message_provider_event` → `DataCollaborationMessageEventProcessor`
+    (leader-elected, single-threaded consumer) materialises 4 child `message` rows
+    → the Discussions UI displays the same thread-reply 4 times.
+
+
+    **Operator-visible consequence**:
+
+    - Discussions tab UX: duplicates render side-by-side; the user thinks Slack double-posted.
+
+    - Forensics: `message_provider_event` table grows 4× for chatty workspaces — wastes
+    disk, slows the leader-elected consumer.
+
+    - Audit: combined with TEST-GAP-959 (no signature verification), an attacker can
+    deliberately flood the system by replaying captured payloads — million-row amplification
+    trivial.
+
+
+    **Why CRITICAL**: this is a P-07 data-integrity vulnerability that operators cannot
+    detect without manual inspection of the database. The Slack at-least-once contract
+    is documented; the platform''s failure to honour it is not. Without a regression-pin
+    test, a future "optimisation" that further weakens dedup (or a Slack API upgrade
+    that changes retry semantics) ships silently.'
+  test_class: missing-integration
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-022
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-960.yaml
+- gap_id: TEST-GAP-961
+  behaviour: '**CRITICAL — URL-verification CHALLENGE handshake (the ONLY contract
+    Slack uses to register the callback) is fully UNTESTED. If it regresses, Slack
+    rejects the event-subscription configuration AND the entire data-collaboration
+    thread-reply ingest dies silently — failure is asymptomatic on the ODD side.**
+
+
+    Slack''s Events API onboarding: when an operator configures `request_url: https://<ODD_PLATFORM_BASE_URL>/api/slack/events`
+    in the Slack app config UI, Slack sends a one-time URL-verification POST:
+
+    ```
+
+    POST /api/slack/events
+
+    {"token":"...", "challenge":"<random-string>", "type":"url_verification"}
+
+    ```
+
+    Slack expects an HTTP 200 response with body `{"challenge":"<echoed-value>"}`
+    within 3 seconds. If the response doesn''t echo the challenge value, Slack marks
+    the URL invalid and **refuses to send any further events to that endpoint until
+    the operator re-verifies**.
+
+
+    **The current implementation** (`SlackEventParser.java:23-50`) classifies the
+    body into `ParseResultType.CHALLENGE` and `EventApiController.java:25-57` echoes
+    the value back. The path is correct as-shipped. But:
+
+    - Zero tests assert the CHALLENGE round-trip.
+
+    - A refactor of `SlackEventParser.parse` (e.g. moving the URL-verification branch,
+    renaming the field-extraction key, switching to a different deserializer) ships
+    silently.
+
+    - The regression failure mode is **asymptomatic on the ODD platform side**: the
+    controller still returns 200, Discussions doesn''t display anything new, no logs
+    show anything wrong. The only signal is in the Slack app config UI, which most
+    operators never check after initial setup.
+
+    - An operator re-installing the Slack app (e.g. after rotating the bot token,
+    after a workspace migration) would discover the regression at the worst moment
+    — production setup, with no test to catch it.
+
+
+    **Why CRITICAL**: this is the single point of failure for the entire P-07 Discussions
+    sub-feature. A regression here doesn''t break a feature — it **silently amputates
+    the feature** with no operator-visible signal until they need to re-subscribe.
+    Combined with the fact that the live `docs.opendatadiscovery.org/active-platform-features/data-collaboration`
+    URL is 404 (per sidecar''s WebFetch 2026-05-25), an operator with a regression
+    has nowhere to look for diagnosis.
+
+
+    **Sidecar''s own assessment** (uncovered_behaviours.[0] note): ''If this regresses,
+    Slack rejects the event subscription and the entire data-collaboration thread-reply
+    ingest is silently dead — the failure is asymptomatic on the ODD side; only Slack''s
+    app config UI shows the verification failure.''
+
+
+    **Distinguishes from existing IDs**: TEST-GAP-087 (MEDIUM) covers the disabled-feature
+    404 contract for the sibling DataCollaboration controller; this CRITICAL is for
+    the ENABLED-feature CHALLENGE handshake on a different controller (EventApiController).
+    No prior TEST-GAP covers the CHALLENGE round-trip.'
+  test_class: missing-integration
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: F-022
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-961.yaml
+- gap_id: TEST-GAP-962
+  behaviour: '**HIGH — `GET /api/owners` is unauthenticated-read at the rule layer:
+    SecurityConstants.SECURITY_RULES[143-147] contains rules for POST/PUT/DELETE only;
+    the GET path has NO entry. Any authenticated user under LOGIN_FORM/OAUTH2/LDAP
+    enumerates the entire Owner directory; any anonymous user under `auth.type=DISABLED`
+    does the same. This contract is undocumented at both the live `/owners` and `/permissions`
+    doc pages and untested anywhere.**
+
+
+    Verified via Grep `/api/owners` against `/home/raman/work/odd/odd-platform/odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/SecurityConstants.java`
+    2026-05-25: exactly three matches under `/api/owners*` mutating paths (POST line
+    143 → OWNER_CREATE, PUT line 144-145 → OWNER_UPDATE, DELETE line 146-147 → OWNER_DELETE)
+    + two matches under `/api/owners/{owner_id}/mapping` paths. Zero matches for GET.
+    The fourth method — `getOwnerList` at `OwnerController.java:30-38` — falls through
+    to `AuthorizationCustomizer.customize`''s catch-all `pathMatchers("/**").authenticated()`
+    (AuthorizationCustomizer.java:29-30).
+
+
+    **What the directory enumeration leaks**:
+
+    - Full list of Owner directory entries, including names that may carry PII (e.g.
+    `alice@acme.com`, `[Pseudonymous Researcher]`, internal team-name strings).
+
+    - The `allowedForSync` LEFT JOIN exposes which Owners have pending/approved `owner_association_request`
+    rows — useful for an attacker constructing a phishing email targeting users mid-association-flow.
+
+    - Combined with TEST-GAP-963 (DataCollaboration redirect open-redirect) the leaked
+    names become cross-pillar pivot targets.
+
+
+    **Documentation silence**:
+
+    - Live `/owners` doc page (WebFetched 2026-05-25, status 200) is silent on listing-without-permission
+    semantics.
+
+    - Live `/permissions` doc page (WebFetched 2026-05-25, status 200) defines OWNER_CREATE
+    / OWNER_UPDATE / OWNER_DELETE / OWNER_RELATION_MANAGE / OWNER_ASSOCIATION_MANAGE
+    / DIRECT_OWNER_SYNC — **there is NO OWNER_READ permission**, confirming the design
+    intent. But the absence of OWNER_READ is itself the gap operators cannot infer.
+
+    - OpenAPI spec (`openapi.yaml:131-155`) declares only `200` and `500` responses
+    for getOwnerList — no `401`/`403`. Implicitly confirms the design but provides
+    no explicit policy claim.
+
+
+    **Distinguishes from existing IDs**:
+
+    - TEST-GAP-746 (LOW) — OwnerAssociationRequestController HTTP floor. Different
+    controller.
+
+    - TEST-GAP-736 (HIGH) — `GET /api/owner_association_request/activity` audit-trail
+    unauthorized read. Different endpoint.
+
+    - TEST-GAP-031 — DirectoryController @PreAuthorize absence (general directory).
+    Different controller.
+
+    - TEST-GAP-706 — ActivityController exposes global audit trail. Different surface.
+
+
+    This entry is **CLASS-LEVEL NEW** for OwnerController and is the under-documented
+    enumeration surface specifically for the Owner directory.'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-019
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-962.yaml
+- gap_id: TEST-GAP-963
+  behaviour: '**HIGH — `GET /api/messages/{message_id}/url` (redirect) emits `ResponseEntity.status(FOUND).headers(h
+    -> h.setLocation(URI.create(providerUrl)))` (DataCollaborationController.java:42-48)
+    where `providerUrl` comes from Slack''s `chat.getPermalink` response (SlackAPIClientImpl.java:84-95)
+    UNCONDITIONALLY. No host check, no scheme check, no allowlist. The platform is
+    an open-redirect surface dependent SOLELY on Slack API integrity.**
+
+
+    Verified by reading the four files in the chain: `DataCollaborationController.java:42-48`
+    (the controller), `DataCollaborationServiceImpl.java:72-77` (the service), `SlackMessageProviderClient.java:64-66`
+    (the client), `SlackAPIClientImpl.java:83-95` (the SDK wrapper) — none of them
+    validate the URL. The trust assumption is ''Slack returns slack.com URLs''.
+
+
+    **Three concrete bug classes the absence enables**:
+
+    1. **Scheme bypass**: if Slack''s API ever returns `javascript:` / `data:` / `file:`
+    URLs, the controller emits 302 to them. `URI.create` accepts any valid URI scheme.
+
+    2. **Host smuggling**: if Slack''s API is compromised, returns an attacker-controlled
+    URL (`https://evil.com/...`), the platform redirects every user clicking ''Open
+    in Slack'' on every Discussions thread.
+
+    3. **Malformed URI propagation**: `URI.create(providerUrl)` throws `IllegalArgumentException`
+    on malformed strings; failure bubbles to WebFlux''s default exception handler
+    → 5xx, not 4xx. Operator-confusing.
+
+
+    **No defence in depth**:
+
+    - No `URI.create(providerUrl).getHost().endsWith(".slack.com")` check.
+
+    - No `URI.create(providerUrl).getScheme().equals("https")` check.
+
+    - No allowlist of known-good URL prefixes (e.g. `https://*.slack.com/archives/...`).
+
+    - No catch-and-fallback for `IllegalArgumentException`.
+
+
+    **OWASP class**: A01:2021 Broken Access Control — Open Redirect sub-class. See
+    `https://owasp.org/Top10/A01_2021-Broken_Access_Control/`.
+
+
+    **Why HIGH (not CRITICAL)**: the attack surface depends on Slack''s API integrity.
+    Slack has a strong reputation for not returning attacker-controlled permalinks.
+    But the platform''s failure to defend in depth means a single Slack incident (e.g.
+    workspace token rotation gone wrong, Slack''s response cache poisoning, MITM if
+    outbound TLS pinning is missed) produces an immediate platform-wide pivot vector.
+    With TEST-GAP-959 (no inbound signature verification) + TEST-GAP-960 (no idempotency)
+    compounding, the trust-the-Slack-API anti-pattern is **the dominant security weakness
+    in P-07 Data Collaboration**.
+
+
+    **Distinguishes from existing IDs**:
+
+    - TEST-GAP-142 (HIGH) — `auth.login-form-redirect` open-redirect class via `@Value`.
+    SAME CLASS-OF-BUG, different ingestion surface (config-key consumer vs Slack API
+    consumer).
+
+    - TEST-GAP-738 (HIGH) — link URL `javascript:` scheme bypass. Different controller
+    surface (DataEntity link UI), same class.
+
+    - TEST-GAP-807 / 808 — Webhook / Slack URI no scheme allowlist. Sister gaps in
+    the **outbound** direction (notification sender).
+
+    - This entry is the **redirect endpoint in the Discussions sub-feature** class
+    instance.'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-022
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-963.yaml
+- gap_id: TEST-GAP-964
+  behaviour: '**HIGH — `GET /api/metadata/fields` is RBAC-ungated AND its catalogue
+    is GLOBALLY-SHARED: ANY authenticated user reads the entire INTERNAL metadata-field
+    catalogue including names that may reveal organizational structure, internal taxonomies,
+    or PII-leaking field labels created by other users on unrelated data entities.**
+
+
+    Verified by Grep `/api/metadata/fields` against `/home/raman/work/odd/odd-platform/odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/SecurityConstants.java`
+    2026-05-25: ZERO matches. The endpoint falls through to `AuthorizationCustomizer.customize`''s
+    catch-all `.authenticated()` rule.
+
+
+    **The catalogue is cross-data-entity globally shared**:
+
+    - `MetadataFieldServiceImpl.getOrCreateMetadataFields` (called from `DataEntityServiceImpl.createMetadata`)
+    inserts a new row into the global `metadata_field` table whenever a user submits
+    a custom-metadata value with a previously-unseen field name.
+
+    - Every authenticated user reading `GET /api/metadata/fields` sees the union:
+    their own creations + every other authenticated user''s creations + every collector-ingested
+    EXTERNAL-origin field''s INTERNAL siblings.
+
+    - The Discoverer of a field-name created by Team A on data entity X (e.g. `acquisition_cost_2025_q3`)
+    is Team B, browsing autocomplete on data entity Y.
+
+
+    **Three concrete leak vectors**:
+
+    1. **Organizational discovery**: field names like `acquisition_cost_2025_q3`,
+    `pii_compliance_status`, `pre_ipo_runway_months` reveal business context.
+
+    2. **PII-by-label**: field names like `customer_alice_smith_notes`, `vendor_redacted_co_pricing`
+    leak per-row identifiers via the FIELD NAME itself (rare but observed in customer
+    deployments).
+
+    3. **Taxonomy reconnaissance**: an attacker authenticated as a low-privilege auditor
+    enumerates the full INTERNAL taxonomy of every data entity in the catalogue.
+
+
+    **Documentation silence (compounding)**:
+
+    - No `CUSTOM_METADATA_FIELD_READ` permission exists in the live `/permissions`
+    page (WebFetched 2026-05-25 status 200, verified silent).
+
+    - No live doc page documents the cross-data-entity catalogue exposure (`MetadataFieldController.md`
+    doc_drift_findings.[2-3] both verbatim ''no live doc page documents'').
+
+    - Live `/active-platform-features/metadata` returns 404 (per sidecar''s WebFetch).
+
+    - Operators wiring policies for the write-side (e.g. restricting DATA_ENTITY_CUSTOM_METADATA_UPDATE
+    to entity owners) reasonably assume the catalogue is similarly scoped; documentation
+    never clarifies the truth.
+
+
+    **Distinguishes from existing IDs**:
+
+    - TEST-GAP-728 (CRITICAL) — DatasetField wrong-permission wiring bug. Different
+    controller.
+
+    - TEST-GAP-706 — ActivityController global audit exposure. Different surface.
+
+    - TEST-GAP-962 (sister this batch) — OwnerController GET unauthenticated. Same
+    class-of-bug; different controller.
+
+    - This entry is the **CLASS-LEVEL NEW** for MetadataFieldController.'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-964.yaml
+- gap_id: TEST-GAP-965
+  behaviour: '**MEDIUM — `GET /api/messages/{message_id}/url` returns 200 OK with
+    empty body (NOT 404) for two distinct error paths: (a) a non-v1 UUID input, (b)
+    a non-existent UUIDv1 input. Both cases are semantically 404 but the controller
+    chain emits 200.**
+
+
+    Two compounding code paths:
+
+
+    1. **UUIDv1 requirement**: `ReactiveMessageRepositoryImpl.getMessageProviderIdentity`
+    (`:171-185`) binds an extra `MESSAGE.CREATED_AT.eq(UUIDHelper.extractDateTimeFromUUID(messageId))`
+    condition alongside `MESSAGE.UUID.eq(messageId)`. A non-v1 UUID extracts a wrong
+    (or null) timestamp from `UUIDHelper.extractDateTimeFromUUID`; the WHERE clause
+    matches zero rows; the inner Mono is empty.
+
+
+    2. **No `switchIfEmpty(NotFoundException)`**: The controller chain (`DataCollaborationController.java:42-48`)
+    is `dataCollaborationService.resolveMessageUrl(messageId).map(providerUrl -> ResponseEntity.status(FOUND).headers(...).build())`.
+    When the inner Mono is empty (no row found), the `.map` is never invoked; the
+    outer Mono completes empty; WebFlux''s default reactive Mono-empty-handling renders
+    the response as **200 OK with empty body**, NOT 404.
+
+
+    **Operator-visible consequences**:
+
+    - API consumer (script, OpenAPI codegen client) expecting 404 for missing message
+    gets 200 instead — silent data-shape drift; client code that decides ''redirect
+    succeeded → open in new tab'' gets a hung browser tab on `about:blank`.
+
+    - UI consumer (`Message.tsx:60-66`) clicks ''Open in Slack'' button → opens new
+    tab pointing at `/api/messages/<deleted-uuid>/url` → gets 200 with no Location
+    header → browser sits on a blank tab.
+
+    - Forensics: no trace in logs (no @Slf4j, no metrics) — the failure mode is invisible.
+
+
+    **Why MEDIUM (not LOW)**: the bug is UX-shaped, not data-loss-shaped. But (a)
+    it compounds with the open-redirect class TEST-GAP-963 (silent empty redirect
+    masks the open-redirect concern), and (b) the OpenAPI spec implicitly contracts
+    a 4xx response for missing resources (every other `/messages/*` endpoint declares
+    404 explicitly per the api-reference fetch).
+
+
+    **Distinguishes**:
+
+    - TEST-GAP-411 — `getLineage` NotFoundException propagation. Different controller.
+
+    - TEST-GAP-376 — `getDetails` NotFoundException path. Different.
+
+    - This entry is the **DataCollaboration class instance** of the missing-`switchIfEmpty`
+    family.'
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-022
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-965.yaml
+- gap_id: TEST-GAP-966
+  behaviour: '**MEDIUM — OpenAPI spec declares 301 Moved Permanently for `GET /api/messages/{message_id}/url`
+    but the controller emits `HttpStatus.FOUND` (302). Three sources of truth disagree:
+    code emits 302, spec declares 301, live api-reference doc page acknowledges 302
+    — OpenAPI-codegen clients are wrongly typed.**
+
+
+    Verified at primary source:
+
+    - `openapi.yaml:1788-1789` declares `''301'': $ref ''./components.yaml/#/components/responses/MovedPermanently''`.
+
+    - `DataCollaborationController.java:45` emits `ResponseEntity.status(FOUND)` where
+    `FOUND` is `HttpStatus.FOUND` (302).
+
+    - Live `https://docs.opendatadiscovery.org/developer-guides/api-reference/data-collaboration`
+    (WebFetched 2026-05-25 status 200) acknowledges: ''The OpenAPI spec declares `301
+    Moved Permanently` for this route; the platform actually serves `302 Found`. Operators
+    should treat responses as 302.''
+
+
+    **Operator-visible consequence**:
+
+    - OpenAPI-codegen clients (TypeScript, Python, Java, etc.) generate response-type
+    signatures based on the spec. A client expecting 301 may not register a handler
+    for 302 → falls into a default-handler path that drops the redirect.
+
+    - Browser-via-UI: modern browsers handle both 301 and 302 the same way for GET
+    (follow redirect); no operator impact for the in-app UI use case.
+
+    - Spec-conformance audits: the platform fails OpenAPI conformance.
+
+
+    **Why MEDIUM**: harmless for the dominant UI use-case, but locks in the spec-vs-code
+    drift indefinitely without a test. The live api-reference doc page acknowledging
+    the drift is itself documentation debt — the spec should match the implementation
+    OR the implementation should switch to 301.
+
+
+    **Why pin the current behaviour (not fix immediately)**: the choice between 301
+    (cacheable) and 302 (non-cacheable) is meaningful. For Slack permalinks that may
+    change (Slack workspace migration, channel rename, archived channel), 302 is the
+    correct semantic. The fix is to update the SPEC, not the CODE. The test pins the
+    current shipped behaviour so spec-update + test-update happen in lock-step.
+
+
+    **Distinguishes**:
+
+    - `concepts/detail/invariants/openapi-200-vs-201-status-code-drift.yaml` — sister
+    drift family (different status pair).
+
+    - TEST-GAP-971 (sister this batch) — Ingestion controller class-wide 200-vs-201
+    drift on 3 mutating handlers.'
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-022
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-966.yaml
+- gap_id: TEST-GAP-967
+  behaviour: "**MEDIUM — `GET /api/datacollaboration/providers/slack/channels?channel_name=<X>`\
+    \ filters by `channel.name.startsWith(X)`, NOT `contains` / `fuzzy`. A user typing\
+    \ the middle of a channel name (e.g. `platform` to find `#odd-platform-alerts`)\
+    \ returns zero results despite the channel existing in the bot's joined set.**\n\
+    \nVerified at primary source: `SlackMessageProviderClient.java:50-55`:\n```java\n\
+    return cache.get(SENTINEL).thenApply(channels ->\n  channels.stream()\n      .filter(c\
+    \ -> c.name().startsWith(nameLike))\n      .toList());\n```\n\n**Operator-visible\
+    \ UX consequences**:\n- User types `platform` in the channel autocomplete → expects\
+    \ autocomplete to surface `#odd-platform-alerts`, `#data-platform-team`, `#core-platform-engineering`\
+    \ → gets EMPTY autocomplete list.\n- User then types `odd-platform` (the prefix)\
+    \ → autocomplete works → user learns the implicit prefix-only contract by trial-and-error.\n\
+    - Slack's own channel autocomplete (`#`-typeahead in the desktop app) uses `contains`\
+    \ matching — the ODD platform autocomplete is INCONSISTENT with Slack's UX norms.\n\
+    - Documentation: the live api-reference page describes `channel_name` as 'optionally\
+    \ filtered by `channel_name`' — does NOT state the filter is `startsWith` (per\
+    \ sidecar's doc_drift_findings.[3]).\n\n**The 500ms debounce compounds**: `SlackChannelsAutocomplete.tsx:43-54`\
+    \ dispatches a fresh API call on every debounced keystroke. A user typing 'platform'\
+    \ (8 chars) dispatches up to 8 cache-fronted requests, all returning empty — the\
+    \ user sees the empty list flicker for 4+ seconds before giving up.\n\n**Why MEDIUM**:\
+    \ the failure mode is UX-shaped (the channel exists, user just can't find it).\
+    \ But (a) the Discussions sub-feature is OPT-IN and operator-facing-only; (b)\
+    \ the workaround (type the channel prefix) is discoverable; (c) the silent contract\
+    \ drift erodes operator confidence in autocomplete reliability.\n\n**Distinguishes**:\
+    \ no prior TEST-GAP covers this specific filter contract. NET-NEW."
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-022
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-967.yaml
+- gap_id: TEST-GAP-968
+  behaviour: "**MEDIUM — `GET /api/datacollaboration/providers/slack/channels` is\
+    \ fronted by a 1-minute TTL Caffeine cache with `maximumSize(1)` and `expireAfterWrite(1,\
+    \ MINUTES)` keyed on a fixed sentinel string. A freshly-invited bot-channel is\
+    \ invisible to the autocomplete for up to 60 seconds; the staleness contract is\
+    \ undocumented.**\n\nVerified at primary source: `SlackMessageProviderClient.java:36-44`:\n\
+    ```java\nthis.cache = Caffeine.newBuilder()\n    .maximumSize(1)\n    .expireAfterWrite(Duration.ofMinutes(1))\n\
+    \    .buildAsync((key, executor) -> slackAPIClient.getSlackChannels());\n```\n\
+    \n**Operator workflow consequence**:\n1. Operator invites the ODD platform bot\
+    \ to `#new-channel` via Slack.\n2. Operator immediately switches to ODD platform\
+    \ UI and tries to post a message in `#new-channel` via the Discussions tab.\n\
+    3. The Slack channels autocomplete does NOT show `#new-channel` — the platform\
+    \ still serves the cached pre-invite channel set.\n4. Operator waits 60 seconds\
+    \ → invites the bot to additional channels in the meantime → continues to see\
+    \ stale list.\n5. Eventually the cache expires; the autocomplete refreshes.\n\
+    6. Operator perceives the autocomplete as \"broken\" (because there's no documentation\
+    \ explaining the 60-second propagation delay).\n\nCombined with TEST-GAP-967 (startsWith\
+    \ filter drift), the autocomplete UX is doubly opaque: even when the cache refreshes,\
+    \ the user must guess the prefix to find the channel.\n\n**The cache is shared\
+    \ across ALL callers** (single-entry, sentinel-keyed): every request for any `channel_name`\
+    \ hits the same cached channel set. There's no per-caller cache, no cache-bypass\
+    \ query param.\n\n**Why MEDIUM (not LOW)**:\n- The staleness window (60s) is short\
+    \ enough that most operators eventually succeed.\n- But the staleness is UNDOCUMENTED\
+    \ at the live api-reference page (per sidecar's doc_drift_findings.[4]).\n- Cache-poisoning\
+    \ class concern: if a transient Slack API failure populates the cache with a partial\
+    \ channel set, the 60s window magnifies the operator confusion.\n\n**Distinguishes**:\
+    \ no prior TEST-GAP covers this cache behaviour."
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-022
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-968.yaml
+- gap_id: TEST-GAP-969
+  behaviour: '**HIGH — IngestionController''s 5 handlers use TWO ENTIRELY DIFFERENT
+    identity-resolution mechanisms; the asymmetry is silent, has no comment, and no
+    test asserts the consequence: createDataSource reads collector identity from the
+    WebSession (session-bridge from IngestionDataSourceFilter), while postDataEntityList
+    / postDataSetStatsList / ingestMetrics identify the target via PAYLOAD ODDRNs
+    (downstream identity validation).**
+
+
+    Verified at primary source:
+
+    - `createDataSource` (`IngestionController.java:47-73`) is the ONLY method that
+    reads the WebSession (lines 50-58 — `exchange.getSession().flatMap(session ->
+    session.getAttribute(SessionConstants.COLLECTOR_ID_SESSION_KEY))`).
+
+    - Session attribute is WRITTEN by `IngestionDataSourceFilter.java:37-38` BEFORE
+    this controller method runs.
+
+    - The other 4 methods do NOT read the session.
+
+    - `postDataEntityList` identifies the target datasource via the PAYLOAD field
+    `dataSourceOddrn` (consumed downstream in `IngestionServiceImpl.java:68`).
+
+    - `IngestionDataEntitiesFilter.java:43` (when toggle is enabled) reads `dataSourceOddrn`
+    from the body for token validation.
+
+
+    **The asymmetry has no comment** (verified by reading IngestionServiceImpl.java
+    end-to-end and IngestionController.java end-to-end 2026-05-25 — no inline comment,
+    no Javadoc, no ADR explanation).
+
+
+    **Three concrete consequences the absence of testing preserves**:
+
+
+    1. **Cross-collector authentication** (the sidecar''s uncovered_behaviours.[3]):
+    Collector A''s token attempting to register a datasource that Collector B already
+    owns — NO test asserts the cross-tenant authentication boundary. The session-based
+    mechanism for `createDataSource` enforces ''the token IS the collector identity'';
+    the payload-based mechanism for `postDataEntityList` enforces ''the token signs
+    payloads for THIS datasource''. The boundary is enforceable but unenforced/untested.
+
+
+    2. **Payload-vs-token cross-validation on POST /ingestion/entities**: when IngestionDataEntitiesFilter
+    IS enabled, a valid collector-A token POSTing entities under data_source_oddrn
+    belonging to collector B — no test asserts the rejection.
+
+
+    3. **Failure-shape divergence**: `createDataSource` throws `IllegalStateException("Collector
+    id is null")` (line 54) when session attribute is missing — propagates as **HTTP
+    500** via the default reactive error handler (NOT 401). `postDataEntityList` and
+    siblings have no equivalent fail-loud check — they accept anonymous requests when
+    the filter is unregistered. The operator-visible diagnostic across the 5 endpoints
+    is INCONSISTENT.
+
+
+    **Why HIGH**: this is the class-level posture asymmetry that the TEST-GAP-958
+    4-mode matrix doesn''t fully cover. TEST-GAP-958 tests reachability; TEST-GAP-969
+    tests **identity correctness** — orthogonal concerns. A cross-tenant exploit (collector
+    A POSTing entities for collector B''s datasource) is reachable in the gap between
+    ''reachable + unauthenticated'' (TEST-GAP-958) and ''reachable but identity-correct''
+    (this gap).
+
+
+    **Distinguishes**:
+
+    - TEST-GAP-958 (CRITICAL — class-level reachability matrix, this batch).
+
+    - TEST-GAP-097 / 119 / 583 — existing S2S filter coupling regressions.
+
+    - This entry is the **identity-resolution bifurcation** concern specifically;
+    no prior TEST-GAP names the session-vs-payload asymmetry as a single class-level
+    finding.'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-969.yaml
+- gap_id: TEST-GAP-970
+  behaviour: '**HIGH — `createDataSource` (POST /ingestion/datasources) throws `IllegalStateException("Collector
+    id is null")` (IngestionController.java:54) when the WebSession attribute is missing.
+    The exception propagates as HTTP 500 (NOT 401) via the default reactive error
+    handler. The operator-visible diagnostic is "looks like a server crash" — but
+    the actual cause is "missing prior auth step" — and the failure mode is untested.**
+
+
+    Verified at primary source: `IngestionController.java:47-73` — `createDataSource`
+    reads `SessionConstants.COLLECTOR_ID_SESSION_KEY` from the WebSession (lines 50-58);
+    on absence, throws `IllegalStateException`. The default reactive error handler
+    returns HTTP 500 with a generic error body — no auth-specific 401 framing.
+
+
+    **The probe-shape for the bug**:
+
+    ```
+
+    POST /ingestion/datasources HTTP/1.1
+
+    Host: odd.example.com
+
+    Content-Type: application/json
+
+    // INTENTIONALLY no Authorization: Bearer header
+
+
+    {"items": [{...}]}
+
+    ```
+
+    Expected response (per HTTP semantics): 401 Unauthorized with `WWW-Authenticate:
+    Bearer` header.
+
+    Actual response: 500 Internal Server Error with body `{"error": "Internal Server
+    Error"}` and stack-trace `IllegalStateException: Collector id is null` (in logs).
+
+
+    **Why HIGH (not MEDIUM)**:
+
+    - 500 vs 401 is a security finding class: a probing attacker probing the auth
+    surface gets a different error than expected, which gates downstream tooling decisions
+    (does the platform exist? is the bearer wrong? is the format wrong?). 500 hides
+    the auth signal.
+
+    - Operator-confusing failure mode: an operator first deploying a collector that
+    hasn''t been issued a token sees 500 — the natural diagnostic step is to check
+    application logs (not to check Authorization headers).
+
+    - The other 4 methods have NO equivalent fail-loud check — the failure shape is
+    asymmetric.
+
+    - LSN-001-class (silent default insecure behaviour): the diagnostic muddle is
+    itself a class.
+
+
+    **Distinguishes**:
+
+    - TEST-GAP-583 (existing) — `NotFoundException → 5xx (NOT 401)` info-leak in IngestionDataEntitiesFilter;
+    same class but different surface (filter vs controller).
+
+    - TEST-GAP-958 / 969 (this batch) — broader concerns.'
+  test_class: missing-edge-case
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-970.yaml
+- gap_id: TEST-GAP-971
+  behaviour: '**MEDIUM — Response-code drift across the 3 mutating handlers on IngestionController:
+    postDataEntityList returns 200 OK (line 44) but OpenAPI spec declares 201 Created;
+    postDataSetStatsList returns 201 Created (line 86); ingestMetrics returns 201
+    Created (line 94); createDataSource returns 200 OK (line 72). Three different
+    response-code postures on one controller. The drift is locked in by BaseIngestionTest.java:79
+    asserting isOk() (200) for postDataEntityList vs isCreated() (201) for ingestStatistics/ingestMetrics.
+    Spec-vs-impl drift has shipped.**
+
+
+    Verified at primary source:
+
+    - `IngestionController.java:44` — `postDataEntityList` returns `ResponseEntity.ok().build()`
+    (HTTP 200).
+
+    - `IngestionController.java:86` — `postDataSetStatsList` returns `ResponseEntity.status(HttpStatus.CREATED).build()`
+    (HTTP 201).
+
+    - `IngestionController.java:94` — `ingestMetrics` returns `ResponseEntity.status(HttpStatus.CREATED).build()`
+    (HTTP 201).
+
+    - `IngestionController.java:72` — `createDataSource` returns `ResponseEntity.ok().build()`
+    (HTTP 200).
+
+    - `BaseIngestionTest.java:79` — asserts `.expectStatus().isOk()` for postDataEntityList.
+
+    - `BaseIngestionTest.java:87` — asserts `.expectStatus().isCreated()` for ingestStatistics.
+
+    - `BaseIngestionTest.java:95` — asserts `.expectStatus().isCreated()` for ingestMetrics.
+
+    - The OpenAPI spec declares 201 Created for postDataEntityList per the per-method
+    postDataEntityList sidecar (concepts.invariants.[2]) — the spec and code disagree.
+
+
+    **Operator-visible consequence**:
+
+    - OpenAPI-codegen clients consuming the spec generate 201-expecting handlers;
+    the platform returns 200 for postDataEntityList → silent client-side warning OR
+    fall into a default-handler path.
+
+    - Spec-conformance audits fail.
+
+    - The PATTERN of "3 mutating endpoints, 3 different response postures" is itself
+    a code smell — a reviewer reading the controller sees 200 / 201 / 201 / 200 across
+    consecutive methods with no comment explaining the asymmetry.
+
+
+    **Why MEDIUM (not LOW)**:
+
+    - The spec is the published contract for collectors building against the IngestionApi
+    interface.
+
+    - The drift is locked in by the test suite (which asserts per-implementation,
+    not per-spec) — meaning a "fix" to align code with spec would BREAK existing tests,
+    requiring coordinated update.
+
+    - This is the canonical case-study of the `openapi-200-vs-201-status-code-drift`
+    concept (cross-pillar invariant at `concepts/detail/invariants/openapi-200-vs-201-status-code-drift.yaml`).
+
+
+    **Why pin the current behaviour**: the choice between 200 and 201 has semantic
+    meaning (201 implies a resource was created and its URI is in the response). The
+    fix path is either (a) update the spec to declare 200 for postDataEntityList,
+    OR (b) update the code to return 201. The test pins the CURRENT shipped behaviour
+    so the fix is intentional.
+
+
+    **Distinguishes**:
+
+    - `concepts/detail/invariants/openapi-200-vs-201-status-code-drift.yaml` — the
+    cross-pillar invariant.
+
+    - TEST-GAP-974 (sister this batch) — OwnerController 201-vs-200 drift on create+update.
+
+    - TEST-GAP-966 (sister this batch) — DataCollab 302-vs-301 drift.'
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-971.yaml
+- gap_id: TEST-GAP-972
+  behaviour: '**MEDIUM — Empty-payload guard asymmetry across the 3 mutating non-datasource
+    handlers: postDataEntityList short-circuits on `CollectionUtils.isNotEmpty(del.getItems())`
+    (line 41) and returns 400 BadUserRequestException; postDataSetStatsList and ingestMetrics
+    have NO empty-payload guard (lines 84-86, 92-94 are plain `body.flatMap(service::method).thenReturn(...)`).
+    The asymmetry has no comment defending it. NO test covers the `items: []` no-op-201
+    path or the `items: null` NPE-in-service path for the unguarded methods.**
+
+
+    Verified at primary source:
+
+    - `IngestionController.java:41` — `postDataEntityList` guards: `if (!CollectionUtils.isNotEmpty(del.getItems()))
+    { throw new BadUserRequestException("Ingestion payload is empty"); }`.
+
+    - `IngestionController.java:84-86` — `postDataSetStatsList` has no guard.
+
+    - `IngestionController.java:92-94` — `ingestMetrics` has no guard.
+
+
+    **Operator-visible consequences**:
+
+    - **`items: []` case**: postDataEntityList returns 400 ("Ingestion payload is
+    empty"); postDataSetStatsList and ingestMetrics return 201 (silently no-op). A
+    collector sending an empty batch as a "heartbeat" gets inconsistent error semantics
+    across the three endpoints.
+
+    - **`items: null` case**: postDataEntityList returns 400 (the guard fires before
+    NPE); postDataSetStatsList and ingestMetrics throw NPE in service → propagate
+    as 500 (per batch-Z postDataSetStatsList sidecar uncovered_behaviours[1]).
+
+    - **Forensic ambiguity**: a 201 from postDataSetStatsList with `items: []` is
+    INDISTINGUISHABLE from a 201 from postDataSetStatsList with `items: [a, b, c]`
+    from the operator''s perspective — both succeed.
+
+
+    **Why MEDIUM**: not a security finding; semantic-correctness concern. But the
+    inconsistency surfaces every time a collector implementation needs to decide "do
+    I send empty batches or skip them?" — and the platform''s answer differs across
+    three sibling endpoints.
+
+
+    **Distinguishes**: no prior TEST-GAP covers this specific asymmetry. NET-NEW.'
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-008
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-972.yaml
+- gap_id: TEST-GAP-973
+  behaviour: '**MEDIUM — `GET /api/owners?allowedForSync=<true|false>` query parameter
+    name TRANSLATES_SILENTLY: the param name implies ''eligible for synchronization''
+    but the actual SQL predicate is ''has-or-has-not a row in owner_association_request''
+    (the LEFT JOIN''s presence/absence). Whether ''allowed for sync'' equals ''has
+    an APPROVED request'' or ''has any request'' or ''has no request'' is not derivable
+    from the parameter name. The OpenAPI spec has no description (only type: boolean);
+    the live `/owners` doc page is silent.**
+
+
+    Verified at primary source: `OwnerController.java:34` (the parameter) + `openapi.yaml:140-144`
+    (spec with no description) + the ReactiveOwnerRepositoryImpl sidecar''s analysis
+    of `enrichSelect`''s LEFT JOIN on `owner_association_request` + WebFetch live
+    `/owners` doc 2026-05-25 status 200 (verified silent).
+
+
+    **What the parameter actually does**:
+
+    - The implementation forwards to `ownerService.list(page, size, query, ids, allowedForSync)`
+    (line 36) → `ReactiveOwnerRepositoryImpl.list` applies the paginate-wrapper +
+    name-LIKE + ID-IN + LEFT JOIN on `owner_association_request` filters.
+
+    - The semantic the UI''s `OwnerSelect` autocomplete RELIES ON (per OwnersList
+    batch-Q sidecar) — but this dependency is undocumented at the API contract level.
+
+    - An API consumer outside the UI cannot determine which interpretation is in effect.
+
+
+    **Operator-visible consequence**:
+
+    - Operator querying `allowedForSync=true` expecting ''owners eligible to be sync''d
+    with a user account'' may receive owners who have a PENDING/DECLINED owner_association_request
+    (semantically ''has a request, not yet eligible'') — OR the inverse (filtered
+    out as ''has a request, not eligible because still pending'').
+
+    - The mismatch is silent: the API returns SOME set of owners with NO indication
+    of how they were filtered.
+
+    - Combined with TEST-GAP-962 (GET unauthenticated read), the parameter becomes
+    a partial-info-leak: an attacker can probe which Owners have / don''t have association
+    requests by alternating `allowedForSync=true|false`.
+
+
+    **Why MEDIUM**: not a data-loss / security concern at this size; documentation
+    concern. But the parameter is the load-bearing semantic input for the UI''s user-owner
+    association flow.
+
+
+    **Distinguishes**:
+
+    - TEST-GAP-962 (HIGH this batch) — same endpoint, different concern (auth posture).
+
+    - No prior TEST-GAP covers the parameter-name-vs-implementation drift specifically.'
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-019
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-973.yaml
+- gap_id: TEST-GAP-974
+  behaviour: '**LOW — OwnerController class-wide OpenAPI vs implementation status-code
+    drift on mutating endpoints: `createOwner` declares 201 returns 200 (OwnerController.java:26
+    vs openapi.yaml:165-171); `updateOwner` declares 201 returns 200 (OwnerController.java:53
+    vs openapi.yaml:195-201). The two non-drift methods (`deleteOwner` 204→204, `getOwnerList`
+    200→200) align. The drift is consistent class-wide: BOTH PUT/POST mutating endpoints
+    underspecify the success code.**
+
+
+    Verified at primary source:
+
+    - `OwnerController.java:26` — `createOwner` returns `.map(ResponseEntity::ok)`
+    (HTTP 200).
+
+    - `OwnerController.java:53` — `updateOwner` returns `.map(ResponseEntity::ok)`
+    (HTTP 200).
+
+    - `OwnerController.java:44` — `deleteOwner` returns 204 (aligns with spec at openapi.yaml:215-217).
+
+    - `OwnerController.java:37` — `getOwnerList` returns 200 (aligns with spec at
+    openapi.yaml:145-151).
+
+    - `openapi.yaml:165-171` — createOwner declares `''201'': $ref ''./components.yaml/#/components/responses/Created''`.
+
+    - `openapi.yaml:195-201` — updateOwner declares `''201'': $ref ''./components.yaml/#/components/responses/Created''`.
+
+
+    **Operator-visible consequence**:
+
+    - OpenAPI-codegen client expecting 201 sees 200 → silent client-side warning;
+    the failure mode is "unexpected status code" in the generated handler.
+
+    - Sibling write operations across the platform (`PUT /api/policies/{id}`, `PUT
+    /api/tags/{id}`, `PUT /api/roles/{id}`) show similar drift per the F-006 batch
+    sidecars — this is **platform-wide pattern**, not OwnerController-specific.
+
+
+    **Why LOW**:
+
+    - The pattern is platform-wide; the OwnerController instance is a contributing
+    data point, not a singularity.
+
+    - The fix path is well-defined (spec OR code update; coordinated).
+
+    - The drift is locked in by zero existing tests (the OwnerController has NO controller-tier
+    HTTP test); a fresh test pins the current shipped behaviour without breaking anything.
+
+
+    **Distinguishes**:
+
+    - TEST-GAP-971 (sister this batch) — IngestionController class-wide drift on 3
+    mutating handlers.
+
+    - TEST-GAP-966 (sister this batch) — DataCollab 302-vs-301 drift.
+
+    - `concepts/detail/invariants/openapi-200-vs-201-status-code-drift.yaml` — the
+    cross-pillar invariant.'
+  test_class: missing-integration
+  criticality: LOW
+  node_id: ''
+  feature_id: F-019
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-974.yaml
+- gap_id: TEST-GAP-975
+  behaviour: '**MEDIUM — OwnerController class-level zero observability: no @Slf4j
+    logger, no log calls in any of the four method bodies (OwnerController.java:21-54),
+    no @ActivityLog on any of the three mutating service paths (REFACTOR-426). Combined
+    with the no-@ActivityLog finding, the four-method controller is FORENSICALLY SILENT
+    at every observability layer. A regression that returns the wrong owner or fails
+    silently at the service tier surfaces only as a 500/4xx in the access log; the
+    caller''s identity and the request payload are not in the application log.**
+
+
+    Verified at primary source:
+
+    - `OwnerController.java:1-55` — no logger field, no `log.info`/`debug`/`warn`/`error`
+    calls.
+
+    - `OwnerServiceImpl.java:1-123` — no logger either (verified by Grep `private
+    static final.*Logger` 2026-05-25 — zero matches).
+
+    - The three mutating service methods (`OwnerService.create`, `update`, `delete`)
+    do NOT carry `@ActivityLog` (REFACTOR-426 — cross-batch sidecar).
+
+
+    **The four-method controller is silent at every layer**:
+
+    - Controller layer: no log call, no MDC enrichment.
+
+    - Service layer: no log call.
+
+    - Activity Feed layer: no @ActivityLog → no operator-visible audit-trail row.
+
+    - Default Spring access log: captures request line + status + elapsed only (no
+    caller identity, no payload).
+
+
+    **Operator-visible failure modes**:
+
+    - A regression at the service tier (e.g. `update` silently dropping role bindings
+    — REFACTOR-425) emits NO trace at any observability layer. The bug is detectable
+    ONLY by reading the response body''s `roles: []` field — which most clients don''t.
+
+    - A silent owner mint via `getOrCreate` side-channel (per TEST-GAP-683) leaves
+    NO log entry.
+
+    - A wrong-owner-delete (in case of UI race condition) leaves no diagnostic trail.
+
+
+    **Why MEDIUM**:
+
+    - Observability is plumbing; the absence is operationally costly but not data-loss-inducing.
+
+    - Combined with TEST-GAP-683 (getOrCreate bypass) + TEST-GAP-962 (GET unauthenticated
+    read) + TEST-GAP-731 (REFACTOR-425 empty-roles destruction) + the no-@ActivityLog
+    finding, the F-019 Owner Lifecycle subsystem has multiple silent-failure modes
+    that compound. Observability is the SINGLE cross-cutting fix that turns "silent"
+    into "diagnosable".
+
+
+    **Distinguishes**: this is a CROSS-CUTTING class-level concern; no prior TEST-GAP
+    covers the OwnerController-specific zero-observability surface as a class.'
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-019
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-975.yaml

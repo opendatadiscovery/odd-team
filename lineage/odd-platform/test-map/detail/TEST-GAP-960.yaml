@@ -1,0 +1,57 @@
+gap_id: TEST-GAP-960
+category: missing-integration
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java EventApiController controller-class:EventApiController"
+pillars_affected: [P-07, P-09]
+surfaced_by:
+  - "EventApiController__controller-class.md:tests_coverage_semantic.uncovered_behaviours.[5]"
+behaviour: |-
+  **CRITICAL — Slack's at-least-once delivery guarantee combined with the absence of any idempotency key, unique constraint, or replay-detection mechanism in `EventApiController` → duplicate Slack deliveries silently amplify into N rows in `message_provider_event` and N materialised child `message` rows.**
+
+  Slack documents at `https://api.slack.com/apis/events-api#retries` (WebFetched 2026-05-25): 'If we don't receive an HTTP 2xx response within 3 seconds, we'll retry once. If we still don't get a 2xx, we'll continue retrying with exponential backoff for up to 3 times.' This means a single Slack event can legitimately arrive 1-4 times at `POST /api/slack/events`.
+
+  **The four absent defences**:
+  1. **No unique constraint on (provider, event_id)**: `V0_0_59__data_collaboration.sql:25-39` creates `message_provider_event` with `(id UUID PRIMARY KEY, message_id BIGINT, state TEXT, event TEXT, created_at TIMESTAMP)` — there is no column storing Slack's `event_id` and no UNIQUE constraint enforcing one-shot delivery semantics.
+  2. **No application-level idempotency key**: `DataCollaborationServiceImpl.enqueueMessageEvent` inserts an unconditional new row each time `EventApiController` calls it; the row's `id` is a freshly-generated UUIDv1 (no relation to the inbound event's `event_id`).
+  3. **No replay-detection window**: there's no in-memory or in-DB sliding-window deduplication (e.g. 'I've seen this event_id in the last 5 minutes; drop it').
+  4. **No header-based dedup**: Slack sends `X-Slack-Retry-Num` and `X-Slack-Retry-Reason` headers on retried deliveries (Slack's docs verbatim); the controller reads neither (verified by Grep `X-Slack-Retry|x-slack-retry` against `/home/raman/work/odd/odd-platform/odd-platform-api/src/main/java/`: 0 hits 2026-05-25).
+
+  **Concrete failure mode** (the sidecar's example): same Slack `event_id` arriving 4 times → 4 rows inserted into `message_provider_event` → `DataCollaborationMessageEventProcessor` (leader-elected, single-threaded consumer) materialises 4 child `message` rows → the Discussions UI displays the same thread-reply 4 times.
+
+  **Operator-visible consequence**:
+  - Discussions tab UX: duplicates render side-by-side; the user thinks Slack double-posted.
+  - Forensics: `message_provider_event` table grows 4× for chatty workspaces — wastes disk, slows the leader-elected consumer.
+  - Audit: combined with TEST-GAP-959 (no signature verification), an attacker can deliberately flood the system by replaying captured payloads — million-row amplification trivial.
+
+  **Why CRITICAL**: this is a P-07 data-integrity vulnerability that operators cannot detect without manual inspection of the database. The Slack at-least-once contract is documented; the platform's failure to honour it is not. Without a regression-pin test, a future "optimisation" that further weakens dedup (or a Slack API upgrade that changes retry semantics) ships silently.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/datacollaboration/EventApiControllerIdempotencyTest.java"
+  name: "post_slackEvents_sameEventId_arrivingFourTimes_currentBehaviourInsertsFourRows_pinsAmplification"
+evidence:
+  - 'EventApiController.md says (tests_coverage_semantic.uncovered_behaviours.[5]): ''Slack at-least-once duplicate delivery — same event_id arriving N times inserts N message_provider_event rows; downstream processor materialises N child message rows — No idempotency key, no unique constraint on (provider, event_id) in V0_0_59__data_collaboration.sql:25-39'' (criticality HIGH — promoted to CRITICAL by reducer because the silent-amplification combined with the no-signature-verification CRITICAL TEST-GAP-959 produces an unbounded-DoS exploit chain)'
+  - "Reducer-side Grep `X-Slack-Retry|x-slack-retry|retry_num|retry_reason|event_id.*UNIQUE` against `/home/raman/work/odd/odd-platform/odd-platform-api/`: 0 hits (verified 2026-05-25)"
+  - "Verified at primary source: V0_0_59__data_collaboration.sql:25-39 (message_provider_event schema, no UNIQUE on event_id, no event_id column at all); EventApiController.java:18-57 (controller body, no retry-header read, no dedup); DataCollaborationServiceImpl.enqueueMessageEvent (no idempotency)"
+  - "Slack docs WebFetch 2026-05-25 of `https://api.slack.com/apis/events-api#retries`: documents the at-least-once delivery semantics + the X-Slack-Retry-Num / X-Slack-Retry-Reason headers"
+cross_references:
+  - "TEST-GAP-959 (CRITICAL sister — no signature verification; combined exploit makes amplification deliberate)"
+  - "TEST-GAP-961 (CRITICAL sister — URL CHALLENGE handshake)"
+  - "TEST-GAP-087 (existing — datacollaboration.enabled=false 404; class-level anchor)"
+  - "TEST-GAP-575 (existing — UniqueConstraintException mapping; sister race-condition pattern)"
+  - "TEST-GAP-366 (existing — AlertManager webhook idempotency gap; analogous inbound-webhook integrity hole)"
+  - "REFACTOR-NNN-candidate (FIX: add (event_id, provider) UNIQUE constraint OR application-level sliding-window dedup OR honour X-Slack-Retry-Num header)"
+  - 'DOC-GAP-NNN-candidate (live docs MUST warn operators that the platform does not dedupe Slack retries)'
+related_features: [F-022]
+related_pillar_features: ["P-07:F-NNN Data Collaboration (Discussions)", "P-09:Security & Access Control"]
+proposed_action: |-
+  Add `EventApiControllerIdempotencyTest`:
+
+  1. `post_slackEvents_sameEventId_arrivingFourTimes_pinsFourRowsInserted` — WebTestClient POST the same `{event: {..., event_id: "Ev01"}}` body 4 times → query `message_provider_event` → assert COUNT=4. Comment block: '// REGRESSION-PIN — current implementation has no idempotency. When TEST-GAP-960 is fixed, this test MUST FLIP to assert COUNT=1.'
+  2. `post_slackEvents_currentImplementation_ignoresXSlackRetryNum_pinsHeaderNotRead` — POST with `X-Slack-Retry-Num: 1` header → assert the platform still inserts a row.
+  3. `post_slackEvents_currentImplementation_materialisesNDuplicateMessageRows_pinsUIDeception` — exercise the downstream processor; assert N rows in the `message` table after N inbound deliveries.
+  4. Pair with REFACTOR-NNN-candidate (FIX path).
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. Dedup query "EventApi idempotency duplicate event_id" found TEST-GAP-366 (AlertManager analogue) and TEST-GAP-575 (UniqueConstraintException mapping) — both adjacent classes, NEITHER covers `/api/slack/events` specifically. NO conflicts surfaced.
+batch: 2026-05-25-ZF
+feature_id: F-022

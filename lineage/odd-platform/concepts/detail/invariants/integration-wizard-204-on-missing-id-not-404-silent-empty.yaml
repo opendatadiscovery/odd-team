@@ -1,8 +1,9 @@
 name: |-
-  Integration getIntegration({unknown-id}) returns 204 No Content, NOT 404
+  Integration getIntegration({unknown-id}) returns 204 No Content, NOT 404 (batch ZF: DataCollab redirect surfaces the SECOND instance — Mono.empty silent-200-or-204 class)
 canonical_in_docs: false
 canonical_candidate: true
 pillar_affinity:
+- P-07
 - P-10
 description: |-
   **NEW INVARIANT, batch 2026-05-25-ZD** — `GET /api/integrations/{id}`
@@ -57,6 +58,61 @@ description: |-
   the switchIfEmpty pattern that sibling services use) is
   unknowable from source-comment evidence.
 
+  ## STRENGTHENED batch 2026-05-25-ZF — DataCollaborationController.redirect surfaces SECOND instance (200 OK on Mono.empty, NOT 204 OR 404)
+
+  Batch ZF surfaces a SECOND instance of the same class-of-bug at
+  the DataCollaborationController.redirect endpoint
+  (`GET /api/messages/{message_id}/url`):
+
+    Trace:
+      DataCollaborationController.redirect(messageId, exchange)
+        (DataCollaborationController.java:41-49)
+        → dataCollaborationService.resolveMessageUrl(messageId)
+        (DataCollaborationServiceImpl.java:72-77)
+        → reactiveMessageRepository.getMessageProviderIdentity(messageId)
+        (ReactiveMessageRepositoryImpl.java:171-185)
+        → if not found / not UUIDv1: returns Mono.empty
+
+    When `messageId` does not exist OR is not a valid UUIDv1
+    (causes `extractDateTimeFromUUID(messageId)` to produce a
+    wrong timestamp, the WHERE clause fails, the inner Mono
+    is empty), the controller's
+    `dataCollaborationService.resolveMessageUrl(messageId).map(...)`
+    short-circuits to `Mono.empty`. Spring WebFlux translates
+    `Mono.empty` from a controller to `200 OK` with NO body —
+    NOT 404 NOR 204. There is no `switchIfEmpty(Mono.error(new
+    NotFoundException(...)))` anywhere in the chain.
+
+  **The DataCollab variant differs from the Integration variant**
+  in one operator-relevant way: Integration emits 204 No Content
+  (per Spring WebFlux's default Mono.empty handling for empty
+  body); DataCollab.redirect emits 200 OK (per the same default,
+  but the operator's expectation differs because the endpoint's
+  natural shape is a redirect — a 302 with Location: header).
+  A caller who probes the endpoint for a non-existent
+  messageId sees a 200 OK with no body AND no Location: header —
+  a UNIQUE response shape that no documented contract describes.
+  Combined with the missing RBAC permission on the endpoint per
+  `rbac-read-endpoints-no-securityrule-authenticated-only-fall-through`,
+  ANY authenticated user can effectively use the endpoint as a
+  message-existence-by-id ORACLE: probe IDs, distinguish 200/empty
+  (does not exist) from 302/slack-url (exists). The class-of-bug
+  is the same (Mono.empty silently returned, no switchIfEmpty,
+  no NotFoundException); the operator-visible consequence is more
+  serious for DataCollab because of the redirect-shape mismatch.
+
+  ## Compare to sibling endpoints (extended)
+
+  Most other GET-by-id endpoints in this codebase use a
+  switchIfEmpty error chain to surface 404; TWO OUTLIERS now
+  confirmed:
+
+    - **Integration.get** — returns 204 No Content
+    - **DataCollab.redirect** — returns 200 OK with no body
+      (no Location: header either; a unique shape)
+    - All other sibling getById endpoints surface 404 via
+      switchIfEmpty + NotFoundException
+
   ## Severity
 
   MEDIUM. Functional impact:
@@ -71,10 +127,17 @@ description: |-
       mismatch.
     - SDK generators auto-generating response handlers for the
       sole 200 response treat 204 as an error in some libraries.
+    - **DataCollab.redirect variant**: the UI's `<Button to={url}
+      target='_blank'>` in `Message.tsx:60-66` opens the URL in
+      a new tab; if the redirect returns 200 OK with no body, the
+      browser shows a blank page rather than a 404. The
+      operator-visible UX is "I clicked Open-in-Slack and got a
+      blank tab" — diagnosable only by capturing the response
+      headers.
 
   ## Fix surface
 
-  Two coherent paths:
+  Two coherent paths for EACH outlier:
 
     (A) Add `switchIfEmpty(Mono.error(new NotFoundException(
         "Integration with id '%s' hasn't been found".formatted(id))))`
@@ -83,32 +146,63 @@ description: |-
         with sibling service-tier patterns. Surfaces as HTTP 404
         with code `USR002` via ControllerAdvice. One-line change.
 
-    (B) Update the OpenAPI spec (openapi.yaml:75-81) to declare
+        For DataCollab: same shape applied to
+        `DataCollaborationServiceImpl.resolveMessageUrl` or to the
+        `ReactiveMessageRepositoryImpl.getMessageProviderIdentity`
+        callsite — surfaces 404 instead of 200/empty.
+
+    (B) Update the OpenAPI spec (openapi.yaml:75-81 for Integration;
+        openapi.yaml:1776-1791 for DataCollab redirect) to declare
         both `200` and `204` (or both `200` and `404`) as valid
         responses. Aligns the contract to the implementation
         reality. Requires SDK regeneration for downstream
         consumers.
 
   Path (A) is more consistent with the codebase. Path (B) is
-  faster to apply but locks in the 204 contract for SDK
+  faster to apply but locks in the 200/204 contract for SDK
   consumers.
 
   ## Live doc drift
 
-  The live API-reference page
+  The live API-reference page for Integration
   (`/developer-guides/api-reference/integrations` WebFetched
-  2026-05-25, status 200) does NOT document either the 204-on-missing
-  behaviour or the 404-not-emitted behaviour — the page omits
-  response schemas, HTTP status codes, and authentication
-  requirements entirely.
+  2026-05-25, status 200) does NOT document either the
+  204-on-missing behaviour or the 404-not-emitted behaviour —
+  the page omits response schemas, HTTP status codes, and
+  authentication requirements entirely.
+
+  The live api-reference page for DataCollab
+  (`/developer-guides/api-reference/data-collaboration` WebFetched
+  2026-05-25, status 200) acknowledges the 302-vs-301 drift on
+  redirect but is SILENT on the 200-on-missing-message-id
+  behaviour. The endpoint's documented contract is "302 to
+  provider's deep-link"; nothing says what happens when the
+  message ID is not in the message table.
 axes_present:
 - controllers
 nodes:
 - odd-platform java IntegrationController controller-class:IntegrationController
+- odd-platform java DataCollaborationController controller-class:DataCollaborationController
 contributors:
 - 'IntegrationController.md (batch ZD class-level sidecar):
   bugs_limitations_corner_cases.[1] + stress_findings.name_behavior_pairs.[1]
   + docs_link_semantic.doc_drift_findings.[1]'
+- |-
+  **BATCH ZF** DataCollaborationController.md (controller-class):
+  bugs_limitations_corner_cases.[2] (No 404 / NotFoundException path
+  on redirect: when messageId does not exist OR is not a valid UUIDv1,
+  ReactiveMessageRepositoryImpl.getMessageProviderIdentity returns
+  Mono.empty. The controller's
+  `dataCollaborationService.resolveMessageUrl(messageId).map(...)`
+  short-circuits to Mono.empty. Spring WebFlux translates Mono.empty
+  from a controller to 200 OK with NO body — NOT 404 Not Found.
+  There is no switchIfEmpty(Mono.error(new NotFoundException(...)))
+  anywhere in the chain. A caller cannot distinguish 'message does not
+  exist' from 'message exists but Slack returned no permalink') +
+  concepts.invariants.[8] (messageId MUST be a UUIDv1) +
+  stress_findings.auth_gates.[0].q[1] (anonymous-caller-sees:
+  200 OK for any FILTER case + redirect on existing UUID +
+  200 OK no body on missing UUID = message-existence-by-id oracle)
 evidence:
 - 'IntegrationController.java:19-22 (controller method body — no
   switchIfEmpty)'
@@ -118,16 +212,47 @@ evidence:
 - 'openapi.yaml:75-81 (spec declares only 200 — no 404)'
 - 'Comparison: MetadataFieldServiceImpl.get:30-34 (sibling pattern with
   switchIfEmpty + NotFoundException)'
+- |-
+  **BATCH ZF** DataCollaborationController.java:41-49 (no switchIfEmpty
+  in the redirect chain) + DataCollaborationServiceImpl.java:72-77
+  (no switchIfEmpty in resolveMessageUrl) +
+  ReactiveMessageRepositoryImpl.java:171-185 (the Mono.empty-emitting
+  site — UUID.eq + CREATED_AT.eq composite predicate; non-v1 UUIDs
+  yield wrong timestamp, no matching row)
+- |-
+  **BATCH ZF** WebFetch 2026-05-25 of
+  /developer-guides/api-reference/data-collaboration (status 200) —
+  page does NOT document the 200-on-missing-id behaviour
 related_features:
 - F-001
+- F-009 (Data Collaboration — the redirect endpoint)
 related_pillar_features:
+- P-07
 - P-10
 related_concepts:
 - 'operation:list-integrations-wizard-registry'
 - 'entitie:integration-wizard-manifest-classpath-meta-inf-yaml'
+- 'invariant:rbac-read-endpoints-no-securityrule-authenticated-only-fall-through (DataCollab redirect compounds — message-existence-by-id oracle from the lack of RBAC plus the lack of NotFoundException)'
+triangulation_count: 2
+cross_batch: true
+cross_batch_refs:
+- batch-ZD (IntegrationController — initial 204 instance)
+- batch-ZF (DataCollaborationController.redirect — SECOND instance, 200/empty variant)
 notes: |-
   NEW invariant captured in batch 2026-05-25-ZD. Smallest fix is
   path (A) — a one-line change that aligns the wizard get
   path with the sibling service-tier conventions. DOC-NNN
   candidate either way to ensure the operator-visible behaviour
   is documented on the live API reference.
+
+  STRENGTHENED batch 2026-05-25-ZF — the DataCollab redirect
+  surfaces a SECOND instance of the class-of-bug. The DataCollab
+  variant is more concerning operationally because it COMPOSES
+  with the missing RBAC permission (per
+  `rbac-read-endpoints-no-securityrule-authenticated-only-fall-through`)
+  to create a message-existence-by-id ORACLE: ANY authenticated
+  user can probe IDs and distinguish 200/empty (does not exist)
+  from 302/slack-url (exists). The DataCollab fix should
+  PRIORITISE the switchIfEmpty addition over the OpenAPI spec
+  edit because the operator-visible UX (blank tab on click) is
+  more confusing than a typed 404.

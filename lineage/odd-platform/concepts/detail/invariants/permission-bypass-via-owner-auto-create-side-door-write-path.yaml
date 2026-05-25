@@ -40,12 +40,56 @@ description: |-
   constraint OR factor the auto-create into an explicit `createIfAbsent` method that
   checks the permission AND emits an audit signal. Same for `TitleService.getOrCreate`,
   `TagService.getOrCreateTagsByName`, `NamespaceService.getOrCreate`.
+
+  ## STRENGTHENED batch 2026-05-25-ZF — OwnerController CLASS-LEVEL roll-up identifies the THIRD service-tier callsite
+
+  Batch ZF's OwnerController class-level sidecar adds the controller-class
+  view of the OWNER_CREATE gate AND surfaces a new finding: the
+  `ownerService.getOrCreate` side-door has THREE confirmed service-tier
+  callsites (the original batch K + batch F enumerated TWO):
+
+    (1) `OwnershipServiceImpl.create` line 52 — Owner auto-create via
+        Ownership binding (REFACTOR-199, batch F + batch K primary
+        source; gated by DATA_ENTITY_OWNERSHIP_CREATE)
+    (2) `TermOwnershipServiceImpl.create` line 35 — Owner auto-create via
+        Term ownership binding (NEW batch ZF — third service-tier
+        callsite; gated by what permission? Per OwnerController class-
+        level sidecar, no SecurityRule covers /api/terms/{id}/ownership
+        POST except inheriting TERM_UPDATE; the gate set is narrower
+        than DATA_ENTITY_OWNERSHIP_CREATE)
+    (3) `OwnerAssociationRequestServiceImpl.createOwnerAssociationRequest`
+        line 57 — Owner auto-create via the self-service association
+        flow (NEW batch ZF — fourth class-of-bypass: a USER REQUESTING
+        ownership association with a novel owner_name effectively mints
+        an Owner row, bypassing OWNER_CREATE entirely; no permission
+        required for self-service association requests)
+
+  The OwnerController class-level sidecar (batch ZF) explicitly surfaces
+  this as a NEW finding distinct from the per-method observations
+  because the asymmetry is only visible at the class-level when the
+  reader sees the FULL OwnerService interface (6 methods — getOrCreate +
+  list + create + update + delete + getOwnerDtoById) and the controller's
+  consumption of FIVE of the six (NOT getOrCreate). The 6th method
+  (`getOrCreate`) is the side-door surface; the controller does NOT
+  expose it but THREE separate service-tier callers reach it.
+
+  The class-level sidecar also clarifies the LIVE DOCS GAP: the live
+  `/configuration-and-deployment/enable-security/authorization/owners`
+  page (WebFetched 2026-05-25, status 200) documents the Owner concept
+  but is SILENT on:
+    - the three service-tier callsites that bypass OWNER_CREATE
+    - the unauthenticated read of the Owner directory
+      (getOwnerList has NO SecurityRule per the second-NEW class-level
+      finding — surfaced as the
+      `get-list-unauthenticated-read-of-entire-owner-directory` concept)
+    - the soft-delete + partial-unique-index name-reuse story
 axes_present:
 - controllers
 - services
 nodes:
 - odd-platform java DataEntityController controller-method:createOwnership
 - odd-platform java OwnerController controller-method:createOwner
+- odd-platform java OwnerController controller-class:OwnerController
 - odd-platform java service service:OwnershipServiceImpl
 - odd-platform java service service:TermServiceImpl
 contributors:
@@ -71,6 +115,18 @@ contributors:
   bugs_limitations_corner_cases.[9] TAG_CREATE bypass via upsertTags +
   security.known_security_gaps.[3,4] (TAG_CREATE + NAMESPACE_CREATE
   bypasses). Predicted-by-the-invariant; NOW PRIMARY-SOURCE CONFIRMED.
+- |-
+  **BATCH ZF NEW** OwnerController.md (controller-class):
+  coherence_notes.[0] enclosing-class-triangulation +
+  coherence_notes.[2] rule-6-pre-emit-check (identifies THREE
+  service-tier callsites of getOrCreate: OwnershipServiceImpl,
+  TermOwnershipServiceImpl, OwnerAssociationRequestServiceImpl) +
+  understanding §"OwnerService.getOrCreate side-channel" +
+  concepts.invariants.[1] (the OwnerService 6-method interface;
+  controller exposes 5 of 6; getOrCreate is the side-door surface) +
+  dependencies_semantic.coupling (cross-references TermOwnershipServiceImpl
+  line 35 + OwnerAssociationRequestServiceImpl line 57 +
+  OwnershipServiceImpl line 52)
 evidence:
 - createOwnership.md:security.known_security_gaps.[0] (MEDIUM)
 - createOwnership.md:bugs_limitations_corner_cases.[0] (MEDIUM)
@@ -97,8 +153,21 @@ evidence:
 - |-
   TermServiceImpl.md:security.known_security_gaps.[4] NAMESPACE_CREATE
   bypass via TermServiceImpl.createTerm + updateTerm (lines 103, 138)
-triangulation_count: 4
+- |-
+  **BATCH ZF**: OwnerController.md:coherence_notes.[0,2] (controller-class
+  enclosure triangulation + rule-6 pre-emit check identifying THREE
+  service-tier callsites: OwnershipServiceImpl.java:52,
+  TermOwnershipServiceImpl.java:35,
+  OwnerAssociationRequestServiceImpl.java:57) +
+  understanding §getOrCreate side-channel +
+  dependencies_semantic.coupling (cross-links to all three callsites)
+triangulation_count: 5
 cross_batch: true
+cross_batch_refs:
+  - batch-F (createOwnership — initial controller-tier finding)
+  - batch-E (createOwner — the OWNER_CREATE gate)
+  - batch-K (OwnershipServiceImpl + TermServiceImpl — service-tier primary source for OwnershipServiceImpl + cross-confirmed TAG_CREATE + NAMESPACE_CREATE bypasses)
+  - batch-ZF (OwnerController.controller-class — third service-tier callsite confirmed: TermOwnershipServiceImpl + OwnerAssociationRequestServiceImpl)
 severity: MEDIUM
 severity_dim: security
 notes: |-
@@ -117,6 +186,19 @@ notes: |-
         at lines 103, 138 — NAMESPACE_CREATE bypass (NEW batch K,
         predicted by 2026-05-12F)
   Codebase-wide audit pattern is now CONFIRMED, not just suspected.
+
+  STRENGTHENED batch 2026-05-25-ZF — the OwnerController class-level
+  sidecar (5-layer F-019 triangulation roof) ENUMERATES THREE service-
+  tier callsites of `ownerService.getOrCreate` — bringing the bypass-
+  surface count to FIVE confirmed service-tier sites total (4 enumerated
+  at batch K + the NEW batch-ZF TermOwnershipServiceImpl.java:35 site).
+  The OwnerAssociationRequestServiceImpl callsite (line 57) is the
+  most concerning architecturally because the controller for that
+  service (POST /api/owner_association_request) has THREE ungated
+  endpoints itself per the
+  `owner-association-request-three-ungated-endpoints-create-providers-activity`
+  invariant — meaning a self-service association request can mint an
+  Owner row without ANY documented permission.
 
   The invariant's original analysis: pattern is structurally similar to
   the "Authorization is path-pattern wired in SecurityConstants.SECURITY_RULES"
@@ -144,10 +226,14 @@ notes: |-
   Three DOC-NNN candidates flow from this invariant:
     (a) /authorization/permissions page: name the four side-doors
         (Owner via Ownership; Title via Ownership; Tag via Term;
-        Namespace via Term) explicitly.
+        Namespace via Term) explicitly. **Batch ZF extension** — add
+        Owner via TermOwnership + Owner via Association-Request to
+        the side-door enumeration.
     (b) /authorization/owners page: clarify that Owner directory
-        entries can be created via TWO paths and which permissions
-        gate each.
+        entries can be created via THREE paths (POST /api/owners
+        gated by OWNER_CREATE; POST /api/dataentities/{id}/ownership
+        gated by DATA_ENTITY_OWNERSHIP_CREATE; POST /api/terms/{id}/ownership
+        and POST /api/owner_association_request — gated by what?).
     (c) Add a new /authorization/title-and-tag-vocabularies page (or
         a section on the existing permissions page) explaining that
         Title and Tag vocabularies grow via free-text mutation side-effects

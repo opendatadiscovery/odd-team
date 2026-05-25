@@ -1,0 +1,131 @@
+---
+probe_id: P-137
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__MetadataFieldController__controller-class__MetadataFieldController
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-013
+test_class: integration
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question: GET /api/metadata/fields claims pagination via MetadataFieldList.page_info
+  (components.yaml:2111-2120 includes a PageInfo block with `total` and `hasNext`), but the
+  SQL at ReactiveMetadataFieldRepositoryImpl.java:44-56 has NO LIMIT, NO OFFSET, NO ORDER BY,
+  and the mapper at MetadataFieldMapperImpl.java:29-33 hardcodes `total = pojos.size()` and
+  `hasNext = false` regardless of the actual database row count. Three behaviours to verify:
+
+  (1) **Unbounded return** — when the metadata_field table contains N INTERNAL non-deleted
+      rows matching the query, the endpoint returns ALL N. A caller that expects a paged
+      slice gets the entire (filtered) catalogue in one response. With 10 000 internal
+      metadata fields, the JVM must hold all 10 000 MetadataFieldPojo + MetadataField DTOs
+      simultaneously per call.
+
+  (2) **page_info lies** — the response's `page_info.total` equals the items.length, NOT
+      the true row count. The response's `page_info.hasNext` is always false. A caller
+      trusting page_info to drive a "load more" pager cannot detect overflow because the
+      mapper composes the same values regardless of true cardinality.
+
+  (3) **Database ORDER is unspecified** — no ORDER BY in the SELECT. The order operators
+      see in the autocomplete is whatever Postgres returns from the heap scan; on a vacuumed
+      table this is roughly insertion order, but it is NOT contractual. After heavy churn
+      (creates + soft-deletes), the order is unpredictable.
+
+  Hypothesis confirmed: this is the "PageInfo theatre" pattern — the response shape suggests
+  pagination but the implementation is "return all matching rows". The same shape appears in
+  other catalogue-read endpoints (Title, Tag — see batch ZD / cross-batch sidecars).
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: sql
+    query: |
+      -- Seed 1000 INTERNAL metadata fields with monotonically increasing names
+      INSERT INTO metadata_field (type, name, origin, deleted_at)
+      SELECT 'STRING', 'stress-internal-' || lpad(i::text, 4, '0'), 'INTERNAL', NULL
+      FROM generate_series(1, 1000) AS i;
+  - kind: sql
+    query: |
+      -- Seed 100 EXTERNAL metadata fields (these should NOT appear in the response)
+      INSERT INTO metadata_field (type, name, origin, deleted_at)
+      SELECT 'STRING', 'stress-external-' || lpad(i::text, 4, '0'), 'EXTERNAL', NULL
+      FROM generate_series(1, 100) AS i;
+  - kind: sql
+    query: |
+      -- Soft-delete the first 50 internal fields
+      UPDATE metadata_field
+      SET deleted_at = NOW()
+      WHERE name LIKE 'stress-internal-00%'
+        AND name <= 'stress-internal-0050';
+act:
+  - kind: rest
+    method: GET
+    path: /api/metadata/fields
+    capture_as: response_no_query
+  - kind: rest
+    method: GET
+    path: /api/metadata/fields?query=stress-internal
+    capture_as: response_substring
+  - kind: rest
+    method: GET
+    path: /api/metadata/fields?query=stress-external
+    capture_as: response_external_query
+observe:
+  - kind: sql
+    query: |
+      SELECT count(*) FROM metadata_field
+      WHERE origin = 'INTERNAL' AND deleted_at IS NULL
+    capture_as: db_count_active_internal
+  - kind: sql
+    query: |
+      SELECT count(*) FROM metadata_field
+      WHERE origin = 'INTERNAL' AND deleted_at IS NULL
+        AND lower(name) LIKE '%stress-internal%'
+    capture_as: db_count_substring_active_internal
+assert:
+  # (1) Unbounded return: response contains every active INTERNAL row, no LIMIT applied
+  - "response_no_query.items.length == db_count_active_internal  # = 950 (1000 seeded - 50 soft-deleted)"
+  - "response_substring.items.length == db_count_substring_active_internal  # = 950"
+  # (2) page_info theatre: total equals items.length (NOT a true count), hasNext always false
+  - "response_no_query.page_info.total == response_no_query.items.length"
+  - "response_no_query.page_info.has_next == false"
+  - "response_substring.page_info.total == response_substring.items.length"
+  - "response_substring.page_info.has_next == false"
+  # (3) EXTERNAL fields excluded from the response regardless of substring match
+  - "response_external_query.items.length == 0  # query 'stress-external' matches 100 EXTERNAL rows but listInternalMetadata filters them out"
+  # (4) Soft-deleted rows excluded
+  - "all(item.name not in ['stress-internal-0001', 'stress-internal-0050'] for item in response_substring.items)"
+  # (5) Ordering — observe but don't assert a specific contract (no ORDER BY in SQL → DB-defined order)
+  - "response_substring.items[0].name is not None  # smoke; document the observed order in realism_caveats"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM metadata_field
+      WHERE name LIKE 'stress-internal-%' OR name LIKE 'stress-external-%';
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__MetadataFieldController__controller-class__MetadataFieldController
+    - odd-platform__java__DataEntityController__controller-method__upsertDataEntityMetadataFieldValue
+    - odd-platform__java__TitleController__controller-class__TitleController
+  retrospectives: [LSN-019, LSN-020]
+realism_caveats: |
+  Assertion (1) pins the unbounded-return hypothesis with N=950. The amplification
+  factor scales linearly with directory cardinality; at N=10000 the JVM allocation
+  is ~10000 MetadataFieldPojo (jOOQ record + POJO copy + DTO) per request. The probe
+  does not measure wall-clock latency or JVM memory headroom — those are class-A
+  performance follow-ups. Assertion (2) pins the PageInfo-theatre hypothesis from
+  the mapper's hardcoded `total = pojos.size()` and `hasNext = false`. If a future
+  refactor adds genuine LIMIT/OFFSET, this probe MUST be re-run; the current claim
+  is correct only for the (pre-pagination) repository state at commit 4ec2b20.
+  Assertion (5) is observational, not contractual — Postgres heap-scan order is
+  influenced by VACUUM, page-fill, autovacuum frequency; the probe documents the
+  observed order rather than asserting a specific one.
+
+  The probe deliberately exercises a substring-only query ("stress-internal", lowercase
+  to match the substring filter's `containsIgnoreCase`); it does NOT cover the
+  pathological cases where `query` contains SQL wildcards (`%`, `_`) — those are
+  separate Category F follow-ups that would test whether the jOOQ `containsIgnoreCase`
+  helper escapes wildcards (it does, per the jOOQ `Field.contains` source) and whether
+  the operator could exfiltrate field-existence via crafted wildcard probing.

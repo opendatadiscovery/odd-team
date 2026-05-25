@@ -1,0 +1,247 @@
+---
+probe_id: P-146
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__IngestionController__controller-class__IngestionController
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-008
+test_class: security
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category D — auth gates at the IngestionController class level):
+  Verify the 4-mode auth disjointness across the 5 ingestion endpoints.
+
+  Specifically: under LOGIN_FORM auth mode, the configured permittedPaths
+  array contains ONLY `/ingestion/entities` + `/ingestion/datasources`
+  (LoginFormSecurityConfiguration.java:49-51). The other 3 nested ingestion
+  paths — `/ingestion/entities/datasets/stats`, `/ingestion/metrics`,
+  `/ingestion/dataentitygroups/{deg_oddrn}/entities` — should fall through
+  to `pathMatchers("/**").authenticated()` (line 57) and thus REQUIRE
+  LOGIN_FORM authentication.
+
+  Under OAUTH2 / LDAP, the AuthorizationCustomizer uses
+  SecurityConstants.WHITELIST_PATHS which contains `/ingestion/**`
+  (SecurityConstants.java:96) — so ALL ingestion paths are permitAll,
+  INCLUDING the 3 nested ones.
+
+  Hypothesis: under LOGIN_FORM, an unauthenticated POST to
+  `/ingestion/entities/datasets/stats` returns 401 (or redirect to /login);
+  under OAUTH2 the same call returns 201 Created (no auth required).
+  If confirmed, the 4-mode disjointness is asymmetric — LOGIN_FORM is
+  STRICTER than OAUTH2/LDAP for 3 of the 5 ingestion endpoints,
+  documenting the inconsistency in the platform's path-permit posture.
+
+  Failure mode (LOGIN_FORM behaviour matches OAUTH2): the LoginForm
+  permittedPaths array silently treats `/ingestion/*` as a prefix even
+  though the array contains literal exact-match strings — would indicate
+  a Spring Security path-matcher semantic the maintainer was unaware of.
+
+  Success (LOGIN_FORM is stricter): confirms the audit finding that
+  the 4 auth-mode behaviours are NOT uniform on this controller's
+  surface and that operators picking LOGIN_FORM get incidentally
+  better ingestion protection than operators picking OAUTH2/LDAP —
+  an architectural inconsistency worth surfacing in DOC/REFACTOR backlog.
+---
+arrange:
+  - kind: docker-compose-up
+    services: [postgres, odd-platform-api]
+    env_overrides:
+      AUTH_TYPE: "LOGIN_FORM"
+      AUTH_LOGIN_FORM_CREDENTIALS: "admin:admin"
+      AUTH_INGESTION_FILTER_ENABLED: "false"
+      AUTH_S2S_ENABLED: "false"
+  - kind: sql
+    description: "Seed a benign data source + data_entity_group + dataset_field row to enable each of the 5 endpoints to be probed meaningfully"
+    query: |
+      INSERT INTO data_source (id, oddrn, name, namespace_id, collector_id, token_id, active, created_at, updated_at)
+      VALUES (5000, '//probe-source/p146/test', 'p146_test_source', 1, 1, 1, true, NOW(), NOW())
+      ON CONFLICT DO NOTHING;
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, entity_class_ids, status, hollow, manually_created, exclude_from_search, created_at, updated_at)
+      VALUES (5001, '//probe-source/p146/deg', 'p146_test_deg', 5000, 7, ARRAY[2], 1, false, false, false, NOW(), NOW())
+      ON CONFLICT DO NOTHING;
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, entity_class_ids, status, hollow, manually_created, exclude_from_search, created_at, updated_at)
+      VALUES (5002, '//probe-source/p146/dataset', 'p146_test_dataset', 5000, 4, ARRAY[1], 1, false, false, false, NOW(), NOW())
+      ON CONFLICT DO NOTHING;
+act:
+  # Test 1: POST /ingestion/entities — should be permitted under LOGIN_FORM (in permittedPaths)
+  - kind: rest
+    description: "LOGIN_FORM: anonymous POST to /ingestion/entities — should succeed (200) because it IS in the LOGIN_FORM permittedPaths array"
+    method: POST
+    path: /ingestion/entities
+    headers:
+      Content-Type: "application/json"
+    body: |
+      {"data_source_oddrn": "//probe-source/p146/test", "items": [{"oddrn": "//probe-source/p146/test/entity1", "name": "e1", "type": "TABLE"}]}
+    capture_as: t1_entities_loginform
+  # Test 2: POST /ingestion/entities/datasets/stats — under LOGIN_FORM SHOULD return 401/302 (NOT in permittedPaths)
+  - kind: rest
+    description: "LOGIN_FORM: anonymous POST to /ingestion/entities/datasets/stats — HYPOTHESIS: 401 or 302 to /login (NOT in the LOGIN_FORM permittedPaths array)"
+    method: POST
+    path: /ingestion/entities/datasets/stats
+    headers:
+      Content-Type: "application/json"
+    body: |
+      {"items": [{"dataset_oddrn": "//probe-source/p146/dataset", "fields": {}}]}
+    capture_as: t2_stats_loginform
+  # Test 3: POST /ingestion/metrics — under LOGIN_FORM SHOULD return 401/302
+  - kind: rest
+    description: "LOGIN_FORM: anonymous POST to /ingestion/metrics — HYPOTHESIS: 401 or 302 to /login"
+    method: POST
+    path: /ingestion/metrics
+    headers:
+      Content-Type: "application/json"
+    body: |
+      {"items": []}
+    capture_as: t3_metrics_loginform
+  # Test 4: GET /ingestion/dataentitygroups/{deg_oddrn}/entities — under LOGIN_FORM SHOULD return 401/302
+  - kind: rest
+    description: "LOGIN_FORM: anonymous GET to nested DEG path — HYPOTHESIS: 401 or 302 to /login"
+    method: GET
+    path: "/ingestion/dataentitygroups/%2F%2Fprobe-source%2Fp146%2Fdeg/entities"
+    capture_as: t4_deg_loginform
+  # Now switch to OAUTH2 mode (with mock OAUTH provider) and re-run tests 2-4 — expect them to all succeed unauthenticated
+  - kind: docker-compose-down
+    destroy_volumes: false
+  - kind: docker-compose-up
+    services: [postgres, odd-platform-api]
+    env_overrides:
+      AUTH_TYPE: "OAUTH2"
+      AUTH_OAUTH2_CLIENT_OKTA_PROVIDER: "okta"
+      AUTH_OAUTH2_CLIENT_OKTA_CLIENT_ID: "test-client"
+      AUTH_OAUTH2_CLIENT_OKTA_CLIENT_SECRET: "test-secret"
+      AUTH_OAUTH2_CLIENT_OKTA_ISSUER_URI: "http://localhost:9099/realms/test"
+      AUTH_INGESTION_FILTER_ENABLED: "false"
+      AUTH_S2S_ENABLED: "false"
+  # Test 5-7: same 3 nested endpoints under OAUTH2 — should ALL succeed (open via /ingestion/**)
+  - kind: rest
+    description: "OAUTH2: anonymous POST to /ingestion/entities/datasets/stats — HYPOTHESIS: 201 Created (open because /ingestion/** wildcard permits)"
+    method: POST
+    path: /ingestion/entities/datasets/stats
+    headers:
+      Content-Type: "application/json"
+    body: |
+      {"items": [{"dataset_oddrn": "//probe-source/p146/dataset", "fields": {}}]}
+    capture_as: t5_stats_oauth2
+  - kind: rest
+    description: "OAUTH2: anonymous POST to /ingestion/metrics — HYPOTHESIS: 201 Created"
+    method: POST
+    path: /ingestion/metrics
+    headers:
+      Content-Type: "application/json"
+    body: |
+      {"items": []}
+    capture_as: t6_metrics_oauth2
+  - kind: rest
+    description: "OAUTH2: anonymous GET to nested DEG path — HYPOTHESIS: 200 OK"
+    method: GET
+    path: "/ingestion/dataentitygroups/%2F%2Fprobe-source%2Fp146%2Fdeg/entities"
+    capture_as: t7_deg_oauth2
+observe:
+  - kind: extract
+    from: t1_entities_loginform
+    field: "(status_code)"
+    capture_as: t1_status
+  - kind: extract
+    from: t2_stats_loginform
+    field: "(status_code)"
+    capture_as: t2_status
+  - kind: extract
+    from: t3_metrics_loginform
+    field: "(status_code)"
+    capture_as: t3_status
+  - kind: extract
+    from: t4_deg_loginform
+    field: "(status_code)"
+    capture_as: t4_status
+  - kind: extract
+    from: t5_stats_oauth2
+    field: "(status_code)"
+    capture_as: t5_status
+  - kind: extract
+    from: t6_metrics_oauth2
+    field: "(status_code)"
+    capture_as: t6_status
+  - kind: extract
+    from: t7_deg_oauth2
+    field: "(status_code)"
+    capture_as: t7_status
+assert:
+  - "t1_status == 200 # LOGIN_FORM: /ingestion/entities is in permittedPaths array — anonymous POST succeeds"
+  - "t2_status in [401, 302] # LOGIN_FORM: /ingestion/entities/datasets/stats NOT in permittedPaths — should require auth"
+  - "t3_status in [401, 302] # LOGIN_FORM: /ingestion/metrics NOT in permittedPaths — should require auth"
+  - "t4_status in [401, 302] # LOGIN_FORM: /ingestion/dataentitygroups/{...}/entities NOT in permittedPaths — should require auth"
+  - "t5_status == 201 # OAUTH2: /ingestion/** wildcard in WHITELIST_PATHS — anonymous POST stats succeeds"
+  - "t6_status == 201 # OAUTH2: same wildcard — anonymous POST metrics succeeds"
+  - "t7_status == 200 # OAUTH2: same wildcard — anonymous GET DEG entities succeeds"
+  - "if (t2_status == 200 OR t3_status == 200 OR t4_status == 200) then FAIL 'LOGIN_FORM permittedPaths matched as PREFIX, not EXACT — the 4-mode asymmetry is NOT real; ALL 4 modes uniformly permit the nested ingestion paths. This refutes the controller-class stress finding hypothesis and reveals a Spring Security path-matcher behavior the audit was unaware of'"
+  - "if (t5_status in [401, 302] OR t6_status in [401, 302] OR t7_status in [401, 302]) then FAIL 'OAUTH2 mode REJECTED an /ingestion/** call despite WHITELIST_PATHS — the audit finding that OAUTH2 is permissive for nested ingestion paths is WRONG; possibly the AuthorizationCustomizer applies a stricter path-matcher than the audit inferred'"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM data_entity WHERE id IN (5001, 5002);
+      DELETE FROM data_source WHERE id = 5000;
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__IngestionController__controller-class__IngestionController
+    - odd-platform__java__IngestionController__controller-method__postDataEntityList
+    - odd-platform__java__IngestionController__controller-method__postDataSetStatsList
+    - odd-platform__java__IngestionController__controller-method__ingestMetrics
+    - odd-platform__java__IngestionController__controller-method__getDataEntitiesByDEGOddrn
+    - odd-platform__java__IngestionController__controller-method__createDataSourceEntity
+    - odd-platform__java__auth__filter__IngestionDataEntitiesFilter
+  retrospectives:
+    - LSN-001
+  features:
+    - F-008
+  drift_classes:
+    - default-off-ingestion-auth
+    - ingestion-filter-path-coverage-incomplete
+    - auth-mode-disjointness-not-uniform
+realism_caveats: |
+  The probe verifies the 4-mode disjointness by running the SAME 5
+  endpoints under LOGIN_FORM and OAUTH2. LDAP is omitted as it
+  shares the AuthorizationCustomizer with OAUTH2 (LDAPSecurityConfiguration.java:145
+  uses the same `new AuthorizationCustomizer(permissionService, extractors)`)
+  — testing it would be redundant if the AuthorizationCustomizer is the
+  sole gating mechanism. If LDAP behaves differently from OAUTH2,
+  that's an additional finding outside this probe's scope.
+
+  The probe assumes:
+  - LOGIN_FORM mode can be exercised with anonymous (no cookie) POSTs;
+    Spring Security's default behaviour is 302-to-/login for protected
+    paths, OR 401 if the request signals it doesn't accept HTML redirects
+    (Accept: application/json). The probe accepts either status code as
+    "auth required".
+  - OAUTH2 mode requires a real OAuth provider; the probe uses a mock
+    Okta issuer URL — this MAY fail at platform startup if the issuer
+    URL discovery (.well-known/openid-configuration) is unreachable.
+    If the OAUTH2 stack cannot boot without a real provider, the probe
+    needs a Keycloak sidecar or a static mock-OIDC server (WireMock with
+    OIDC fixture).
+
+  The probe does NOT test:
+  - DISABLED mode (already known to permit everything; tested implicitly
+    by the existing test profile)
+  - The interaction with auth.ingestion.filter.enabled=true (the filter
+    matches /ingestion/entities exactly, so toggling it changes endpoint
+    1's behaviour but not 2-4)
+  - The interaction with auth.s2s.enabled=true (S2S adds the X-API-Key
+    filter which grants ADMIN but does not affect the whitelist;
+    confirmed by reading the 3 SecurityConfiguration classes)
+
+  If the probe PASSES (all 7 assertions match), the controller-class
+  sidecar's downstream_side_effects + stress_findings auth-gate matrix
+  is verified for LOGIN_FORM vs OAUTH2. The asymmetry IS real; LOGIN_FORM
+  is incidentally stricter for 3 of 5 ingestion endpoints. Route the
+  finding to a REFACTOR-NNN: "4-mode auth disjointness on /ingestion/*
+  is inconsistent — LOGIN_FORM uses an explicit permittedPaths array,
+  OAUTH2/LDAP use a wildcard in WHITELIST_PATHS; unify on one approach".
+
+  If the probe FAILS (any assertion mismatches), update the controller-
+  class sidecar's stress_findings.auth_gates question_1 with the actual
+  observed behaviour and lower the controller's confidence_per_field for
+  upstream_callers + security accordingly.

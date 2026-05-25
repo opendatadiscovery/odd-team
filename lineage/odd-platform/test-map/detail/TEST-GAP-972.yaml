@@ -1,0 +1,54 @@
+gap_id: TEST-GAP-972
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java IngestionController controller-class:IngestionController"
+pillars_affected: [P-10]
+surfaced_by:
+  - "IngestionController__controller-class.md:tests_coverage_semantic.uncovered_behaviours.[5]"
+  - "IngestionController__controller-class.md:concepts.invariants.[7]"
+behaviour: |-
+  **MEDIUM — Empty-payload guard asymmetry across the 3 mutating non-datasource handlers: postDataEntityList short-circuits on `CollectionUtils.isNotEmpty(del.getItems())` (line 41) and returns 400 BadUserRequestException; postDataSetStatsList and ingestMetrics have NO empty-payload guard (lines 84-86, 92-94 are plain `body.flatMap(service::method).thenReturn(...)`). The asymmetry has no comment defending it. NO test covers the `items: []` no-op-201 path or the `items: null` NPE-in-service path for the unguarded methods.**
+
+  Verified at primary source:
+  - `IngestionController.java:41` — `postDataEntityList` guards: `if (!CollectionUtils.isNotEmpty(del.getItems())) { throw new BadUserRequestException("Ingestion payload is empty"); }`.
+  - `IngestionController.java:84-86` — `postDataSetStatsList` has no guard.
+  - `IngestionController.java:92-94` — `ingestMetrics` has no guard.
+
+  **Operator-visible consequences**:
+  - **`items: []` case**: postDataEntityList returns 400 ("Ingestion payload is empty"); postDataSetStatsList and ingestMetrics return 201 (silently no-op). A collector sending an empty batch as a "heartbeat" gets inconsistent error semantics across the three endpoints.
+  - **`items: null` case**: postDataEntityList returns 400 (the guard fires before NPE); postDataSetStatsList and ingestMetrics throw NPE in service → propagate as 500 (per batch-Z postDataSetStatsList sidecar uncovered_behaviours[1]).
+  - **Forensic ambiguity**: a 201 from postDataSetStatsList with `items: []` is INDISTINGUISHABLE from a 201 from postDataSetStatsList with `items: [a, b, c]` from the operator's perspective — both succeed.
+
+  **Why MEDIUM**: not a security finding; semantic-correctness concern. But the inconsistency surfaces every time a collector implementation needs to decide "do I send empty batches or skip them?" — and the platform's answer differs across three sibling endpoints.
+
+  **Distinguishes**: no prior TEST-GAP covers this specific asymmetry. NET-NEW.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/BaseIngestionTest.java"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/IngestionControllerEmptyPayloadGuardAsymmetryTest.java"
+  name: "ingestionController_threeMutatingHandlers_emptyAndNullPayload_currentBehaviour_pinsAsymmetry"
+evidence:
+  - 'IngestionController.md says (tests_coverage_semantic.uncovered_behaviours.[5]): ''Empty / null payload paths: postDataSetStatsList and ingestMetrics have no empty-payload guard at the controller — NO test asserts the behaviour with items: [] (no-op 201) or items: null (NPE in service per batch-Z postDataSetStatsList sidecar uncovered[1])'' (criticality MEDIUM)'
+  - 'IngestionController.md says (concepts.invariants.[7]): ''Empty-payload-guard asymmetry: postDataEntityList short-circuits on CollectionUtils.isNotEmpty(del.getItems()) (line 41) — 400 BadUserRequestException. postDataSetStatsList and ingestMetrics have NO empty-payload guard (lines 84-86, 92-94 are plain body.flatMap(service::method).thenReturn(...)). The asymmetry has no comment defending it.'''
+  - "Verified at primary source: IngestionController.java:41 (the guard), 84-86 (no guard), 92-94 (no guard)"
+cross_references:
+  - "TEST-GAP-958 (CRITICAL — class-level reachability matrix)"
+  - "TEST-GAP-971 (sister — response-code drift)"
+  - "REFACTOR-NNN-candidate (consolidate empty-payload guards; OR document the intentional asymmetry)"
+  - "F-008 (Batch Ingestion)"
+related_features: [F-008]
+related_pillar_features: ["P-10:F-001 Batch Ingestion (S2S API)"]
+proposed_action: |-
+  Add `IngestionControllerEmptyPayloadGuardAsymmetryTest`:
+
+  1. `post_ingestionEntities_emptyItems_returnsBadRequest_pinsGuard` — POST `{items: []}` to `/ingestion/entities`; assert 400 with "Ingestion payload is empty".
+  2. `post_ingestionEntitiesDatasetsStats_emptyItems_returns201NoOp_pinsAsymmetry` — POST `{items: []}` to `/ingestion/entities/datasets/stats`; assert 201 (no-op silently succeeds).
+  3. `post_ingestionMetrics_emptyItems_returns201NoOp_pinsAsymmetry` — same shape; assert 201.
+  4. `post_ingestionEntities_nullItems_returnsBadRequest_pinsGuard` — POST `{items: null}`; assert 400.
+  5. `post_ingestionEntitiesDatasetsStats_nullItems_returns500NPE_pinsUnguardedPath` — POST `{items: null}`; assert 500 (NPE in DatasetFieldServiceImpl per the sister sidecar finding).
+  6. Pair with REFACTOR-NNN-candidate (consolidate guards) OR DOC-GAP-NNN-candidate (document the intentional asymmetry in the api-reference page).
+
+  Coherence note (LSN-018 Rule 6): NET-NEW.
+batch: 2026-05-25-ZF
+feature_id: F-008

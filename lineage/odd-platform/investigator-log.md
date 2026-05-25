@@ -2465,3 +2465,38 @@ DataSourceController is now class+method complete. High-value fully-dark control
 - 12 unfixable YAML quarantines surfaced this batch (up from 5 pre-ZE) — investigate next session whether the quarantine count grew due to ZE artifacts or due to a yaml_safe_fix.py false-positive widening.
 - Network outage during ZD + ZE push window — when network recovers, the next successful push will catch up commits d500330 (ZD batch) + 25e66b1 (ZD done) + 3dd0a63 (ZE in_progress) + (this ZE batch commit) + (next ZE done commit).
 
+
+---
+
+## Batch ZF — 2026-05-25 (Ingestion + Owner + MetadataField + DataCollaboration + EventApi)
+
+**Sprint**: feature/ontology-finalize-2026-05-25 (3rd batch).
+**Sidecars added** (5/5): IngestionController + OwnerController + MetadataFieldController + DataCollaborationController + EventApiController class-level — security goldmine batch.
+
+### Headlines
+1. **EventApiController** — Slack events endpoint UNAUTHENTICATED in all 4 auth modes + NO X-Slack-Signature verification + NO idempotency on at-least-once delivery. Forgeable, replayable, internet-reachable webhook. Operator-facing CRITICAL.
+2. **IngestionController class** — 4 of 5 endpoints unauthenticated in default deployment; even with `auth.ingestion.filter.enabled=true` 3 of 5 endpoints REMAIN unauthenticated due to filter exact-literal `/ingestion/entities` POST vs `/ingestion/**` in WHITELIST_PATHS.
+3. **DataCollaborationController** — redirect endpoint trusts Slack chat.getPermalink as 302 Location header (open-redirect class); returns 200/empty on missing messageId (message-existence oracle).
+4. **OwnerController** — GET /api/owners unauthenticated-read (no SecurityRule entry); OwnerService.getOrCreate BYPASSES OWNER_CREATE permission via 3 service-tier callsites (OwnerAssociationRequestServiceImpl + OwnershipServiceImpl + TermOwnershipServiceImpl).
+5. **MetadataFieldController** — PageInfo theatre (hasNext=false, total=size, no LIMIT) + cross-data-entity vocabulary leak (any authenticated user enumerates full custom-metadata schema).
+
+### Phase 2 reducer deltas
+- concept-merger: +4 NEW + 8 extended; 0 supersedes. Slack-events-no-signature-verification + open-redirect + slack-channels-cache + pageinfo-theatre concepts minted.
+- adr-archaeologist: +4 new ADRs (-216 Slack webhook unconditional whitelist BY DESIGN / -217 UUIDv1 message IDs / -218 PATH-anchored RBAC + getOrCreate side-channels / -219 metadata_field INTERNAL/EXTERNAL bifurcation) + 10 strengthened. +16 new REFACTORs (REFACTOR-633..648; 6 HIGH/7 MEDIUM/3 LOW). REFACTOR-636 strongest batch-ZF refactor (leverage 12).
+- doc-gap-finder: +3 new HIGH DOC-GAPs (290 Slack webhook security gap / 291 redirect compound defects / 292 PageInfo theatre — inverse of DOC-GAP-282) + 7 strengthens.
+- test-coverage-mapper: +18 new TEST-GAPs (958-975); **4 CRITICAL** (958 ingestion auth matrix / 959 Slack signature verification / 960 Slack idempotency / 961 URL challenge handshake). 30 strengthens.
+- feature-flow-builder: +1 NEW feature **F-038 Data Collaboration (P-07:F-006)** anchored on DataCollab + EventApi controllers, 15 drift facets across security/redirect/dedup/200-conflations/UX/doc — Slack webhook unsigned is the headline; +3 extended (F-008 ingestion 7 findings, F-019 owner 4 findings incl. getOrCreate side-door, F-013 custom-metadata 4 findings). Reducer WROTE files this time (orchestrator's explicit instruction landed).
+
+### Cumulative state after ZF
+- Direct enrichment: 179 → **184/395 (46.6%)**
+- Effective coverage: 338 → **353/395 (89.4%)** ← broke 89%
+- Features discovered: 37 → **38**
+- Stress-verified pct: 88.5% → tracked next pass
+- Total test-gaps: 957 → **972** (CRITICAL: 158 → **161**)
+- All 11 pillars feature-anchored; P-07 (Collaboration) now has F-038 + F-007 + F-009 + F-021 (4 features).
+
+### Follow-ups
+- Probe-id collision class continues (P-128 ZE; this batch had careful coordination but still drift-prone). Maintainer review of probe registry numbering at next session.
+- 16 unfixable YAML quarantines (unchanged from ZE).
+- Coherence sweep: 98677 generic candidates (regex-noise baseline; per-reducer coherence already vetted).
+

@@ -1,0 +1,305 @@
+name: |-
+  MetadataField catalogue listing is theatre-paginated — PageInfo block lies (total=size, hasNext=false), no LIMIT/OFFSET/ORDER BY, unbounded return (batch ZF)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-04
+  - P-11
+description: |-
+  **NEW MEDIUM-severity INVARIANT, batch 2026-05-25-ZF** — the
+  `GET /api/metadata/fields` endpoint at MetadataFieldController is
+  the read surface for the custom-metadata field catalogue
+  (populated as a side effect of every Data Entity custom-metadata
+  creation via `MetadataFieldServiceImpl.getOrCreateMetadataFields`).
+  The endpoint's response shape advertises pagination via
+  `MetadataFieldList = {items, page_info: {total, has_next}}`
+  (`components.yaml:2111-2120`) but THREE composing behaviours
+  make the pagination theatre:
+
+  (1) **No LIMIT / no OFFSET / no ORDER BY in the SQL** — the
+      JOOQ chain at `ReactiveMetadataFieldRepositoryImpl.java:44-56`
+      is `DSL.selectFrom(METADATA_FIELD).where(conditions)` with
+      no pagination call and no order specification. Postgres
+      returns rows in heap-scan order. The wire response carries
+      the ENTIRE filtered set in one payload.
+
+  (2) **PageInfo values are constant-mocked** —
+      `MetadataFieldMapperImpl.java:30-33` constructs
+      `new PageInfo().total((long) pojos.size()).hasNext(false)`.
+      `total` equals `items.length` ALWAYS; `hasNext` is the
+      constant `false` ALWAYS. A caller using `page_info` to
+      drive pagination cannot detect overflow; the values
+      describe the response, not the catalogue.
+
+  (3) **Unbounded return** — no LIMIT means an installation with
+      10K+ INTERNAL metadata fields returns ALL of them in one
+      response. The UI's autocomplete (`MetadataCreateFormItem.tsx:43-51`,
+      500ms debounce) fires this on EVERY keystroke; the
+      amplification scales linearly with directory cardinality.
+
+  ## THE THIRD DISTINCT PageInfo SHAPE
+
+  The codebase now exhibits THREE distinct PageInfo-drift shapes:
+
+    (A) `has-next-true-contract-bug-pagination-loop` (batch ZE) —
+        `DataEntityList.pageInfo.hasNext` is HARDCODED `true`
+        regardless of remaining rows. Third-party consumers
+        pagination-loop infinitely.
+
+    (B) `pagination-parameters-declared-but-unconstrained-at-spec-and-controller-layers`
+        (cross-batch) — the page/size query params on paginated
+        endpoints have no upper bound; a caller can request
+        size=10000000.
+
+    (C) **`metadata-fields-pageinfo-theatre-no-pagination-no-order-unbounded`**
+        (this invariant, batch ZF) — the endpoint advertises
+        pagination via PageInfo but DOES NOT PAGINATE at all;
+        every call returns the entire filtered set with a
+        constant-mocked PageInfo. Distinct from (A) because
+        hasNext is FALSE (not TRUE), and distinct from (B)
+        because there is no page/size param at all.
+
+  The three shapes share an architectural pattern: the OpenAPI
+  spec uses the same PageInfo type across many endpoints, but
+  the implementation behaviour diverges in three different ways
+  at three different endpoints. A consumer reading the spec sees
+  uniform pagination; the runtime ships three different
+  realities.
+
+  ## THE PRIMARY-SOURCE EVIDENCE
+
+  MetadataFieldController.java:18-24 (the controller body):
+    @Override
+    public Mono<ResponseEntity<MetadataFieldList>> getMetadataFieldList(
+            final String query,
+            final ServerWebExchange exchange) {
+      return metadataFieldService.listInternalMetadata(query)
+          .map(MetadataFieldList::new)
+          .map(ResponseEntity::ok);
+    }
+
+  No page/size params; no pagination at the controller layer.
+
+  ReactiveMetadataFieldRepositoryImpl.java:44-56 (the SQL):
+    return jooqReactiveOperations
+        .flux(DSL
+            .selectFrom(METADATA_FIELD)
+            .where(conditions))
+        ...
+
+  No `.limit(...)`, no `.offset(...)`, no `.orderBy(...)` —
+  verified by reading the method body end-to-end.
+
+  MetadataFieldMapperImpl.java:30-33 (the mapper):
+    return new MetadataFieldList()
+        .items(items)
+        .pageInfo(new PageInfo()
+            .total((long) pojos.size())
+            .hasNext(false));
+
+  `total = pojos.size()` (the materialised list length); `hasNext
+  = false` (constant). The mapper has no access to the actual
+  table cardinality; it cannot honestly populate PageInfo even
+  if it wanted to.
+
+  ## THE UI'S WORKAROUND
+
+  The React `searchMetadata` thunk
+  (`<odd-platform-ui>/src/redux/thunks/metadata.thunks.ts:78-88`)
+  DISCARDS `page_info` entirely (line 84-85: `const { items } = ...`)
+  and propagates only the `items` array into the Redux store. The
+  UI knows (operationally, not by spec) that PageInfo is dead
+  weight on the wire for this endpoint. Direct API consumers
+  reading the OpenAPI spec do NOT have this knowledge.
+
+  ## CONTRAST WITH SIBLING PAGINATED ENDPOINTS
+
+  Genuinely-paginated endpoints in the codebase use a different
+  shape — they call `ReactiveAbstractCRUDRepository.list(page,
+  size, query)` which constructs a query with `LIMIT` + `OFFSET`
+  AND uses a `count().over()` window to populate PageInfo.total
+  honestly. Examples:
+    - GET /api/owners (OwnerController.getOwnerList — paginated)
+    - GET /api/titles (TitleController.getTitleList — paginated)
+    - GET /api/datasources (DataSourceController.getDataSources — paginated)
+
+  The MetadataField endpoint OPTS OUT of this convention — it
+  doesn't accept page/size params at the API layer (verified by
+  reading the OpenAPI spec for `/api/metadata/fields`) AND
+  doesn't call the generic CRUD repository's `list` method. The
+  endpoint is the OUTLIER.
+
+  ## CONTRAST WITH THE LIVE DOCS
+
+  No live doc page documents the Custom Metadata feature
+  end-to-end (verified WebFetch 2026-05-25):
+    - `/active-platform-features/metadata` — 404
+    - `/active-platform-features/custom-metadata` — 404
+    - `/features/data-discovery/custom-metadata` — not in sitemap
+    - `/active-platform-features` (lists Activity Feed / GenAI /
+      Alerting / Notifications — does NOT include custom metadata)
+
+  The only metadata-related page is `/features/data-discovery/metadata-stale.md`
+  which documents the staleness indicator only — explicitly
+  silent on the catalogue, on INTERNAL vs EXTERNAL origin, on
+  the autocomplete behaviour, and on the auto-create-on-miss
+  semantics.
+
+  The OpenAPI response schema (`components.yaml:2111-2120`)
+  embeds PageInfo and ADVERTISES the standard paginated shape;
+  the doc-side reality reinforces the OpenAPI-spec drift. An
+  integrator with no UI access reading the docs+spec cannot
+  infer that the endpoint is theatre-paginated.
+
+  ## SEVERITY MEDIUM
+
+  Functional impact:
+    - SDK author implementing a load-more UI based on `hasNext`
+      cannot detect overflow (`hasNext` is constant `false`)
+    - Operator reading `page_info.total` cannot use it as a
+      catalogue-size indicator (it equals the array length they
+      already counted)
+    - At scale (10K+ INTERNAL metadata fields): 10K MetadataFieldPojo
+      + 10K MetadataField DTOs + wire payload per autocomplete-open
+      keystroke. The auto-create-on-miss pattern at
+      `MetadataFieldServiceImpl.getOrCreateMetadataFields` guarantees
+      monotonic catalogue growth over deployment lifetime; the
+      severity ceiling rises with deployment age.
+    - No security impact (read-only catalogue)
+    - No data-loss
+nodes:
+  - odd-platform java MetadataFieldController controller-class:MetadataFieldController
+contributors:
+  - |-
+    **BATCH ZF PRIMARY SOURCE** MetadataFieldController.md
+    (controller-class):
+    understanding §"the response shape advertises pagination
+    (MetadataFieldList = {items, page_info: {total, hasNext}})
+    but the SQL has NO LIMIT / OFFSET / ORDER BY and the mapper
+    hardcodes total = items.length and hasNext = false. Every
+    call returns the ENTIRE filtered non-deleted INTERNAL
+    catalogue, in Postgres-heap order, with a page_info block
+    that is theatre rather than truth" +
+    concepts.invariants.[2] (No LIMIT, no OFFSET, no ORDER BY at
+    the SQL layer) +
+    concepts.invariants.[3] (MetadataFieldList.page_info is
+    theatre — total equals items.length, hasNext is hardcoded
+    false) +
+    bugs_limitations_corner_cases.[0] (PageInfo is theatre —
+    HIGH severity at the contract level, MEDIUM at the SDK-author
+    class) +
+    bugs_limitations_corner_cases.[1] (Unbounded return — MEDIUM
+    severity at scale, LOW at typical deployment size) +
+    bugs_limitations_corner_cases.[2] (No ORDER BY — LOW severity
+    UX-shaped) +
+    docs_link_semantic.doc_drift_findings.[1] (PageInfo block
+    documented in OpenAPI spec but lies on the wire)
+evidence:
+  - |-
+    **BATCH ZF** MetadataFieldController.md:concepts.invariants.[2,3]
+    + bugs_limitations_corner_cases.[0,1,2] +
+    docs_link_semantic.doc_drift_findings.[1]
+  - |-
+    **BATCH ZF** Direct file evidence:
+    ReactiveMetadataFieldRepositoryImpl.java:44-56 (the SELECT
+    body — no LIMIT, no OFFSET, no ORDER BY) +
+    MetadataFieldMapperImpl.java:29-33 (the mapper —
+    total = pojos.size() and hasNext = false hardcoded) +
+    components.yaml:2111-2120 (the OpenAPI schema embedding
+    PageInfo) + MetadataFieldController.java:18-24 (no page/size
+    params at the controller layer)
+  - |-
+    **BATCH ZF**
+    <odd-platform-ui>/src/redux/thunks/metadata.thunks.ts:78-88
+    (the UI's workaround — discards page_info entirely; sole
+    caller of the endpoint via OpenAPI-generated metadataApi)
+  - |-
+    **BATCH ZF** WebFetch 2026-05-25 of
+    /active-platform-features/metadata (404), /active-platform-features/custom-metadata
+    (404), /active-platform-features (no custom-metadata listing) —
+    no live doc covers the feature; the OpenAPI spec's PageInfo
+    advertisement is the SOLE contract source, and it lies
+axes_present:
+  - controllers
+  - services
+  - openapi_schemas
+related_features:
+  - F-013 (Custom Metadata)
+related_pillar_features:
+  - P-04
+related_concepts:
+  - 'invariant:has-next-true-contract-bug-pagination-loop (sibling — second of three distinct PageInfo-drift shapes; hasNext-always-true variant)'
+  - 'invariant:pagination-parameters-declared-but-unconstrained-at-spec-and-controller-layers (sibling — third of three distinct shapes; page/size unbounded variant)'
+  - 'invariant:metadata-field-asymmetric-uniqueness-by-origin (cross-link — INTERNAL vs EXTERNAL origin partition surfaces on this same endpoint)'
+  - 'entitie:custom-metadata-field-value (the cross-pillar entity this endpoint surfaces)'
+triangulation_count: 1
+cross_batch: true
+cross_batch_refs:
+  - batch-ZF (MetadataFieldController.controller-class — PRIMARY SOURCE)
+severity: MEDIUM
+severity_dim: documentation
+mitigations_unimplemented:
+  - |-
+    Direction A (align spec to code): edit components.yaml:2111-2120
+    to declare MetadataFieldList = {items: MetadataField[]} WITHOUT
+    the embedded PageInfo block. Removes the misleading pagination
+    advertisement. Requires SDK regeneration for downstream
+    consumers.
+  - |-
+    Direction B (align code to spec): edit
+    MetadataFieldController.getMetadataFieldList signature to
+    accept page/size params; pass through to
+    ReactiveAbstractCRUDRepository.list(page, size, query). Mapper
+    populates PageInfo honestly from Page<T>.total() and hasNext().
+    Requires sign-off because the autocomplete UX assumes
+    unpaginated access.
+  - |-
+    Direction C (close the unbounded-return amplification, retain
+    spec): add a hard LIMIT (e.g., 1000) at the SQL layer; if
+    the catalogue grows past 1000, the autocomplete returns the
+    first 1000 and silently truncates. Honest about scale
+    limits; lies about pagination still.
+  - |-
+    Add ORDER BY name to the SELECT (one-line jOOQ change). UX
+    improvement: autocomplete results are stable across calls.
+    Independent of the pagination fix.
+  - |-
+    Add a live doc page documenting the Custom Metadata feature
+    end-to-end: catalogue semantics, INTERNAL vs EXTERNAL origin,
+    auto-create-on-miss, the autocomplete UI, the API surface,
+    and (whichever fix direction is chosen) the actual response
+    shape.
+notes: |-
+  NEW MEDIUM-severity invariant captured in batch 2026-05-25-ZF
+  from MetadataFieldController class-level primary-source
+  evidence at the controller + repository + mapper sites. The
+  finding is the THIRD distinct PageInfo-drift shape in the
+  codebase; the trio (hasNext-true, params-unbounded, theatre-
+  paginated) suggests a CODEBASE-WIDE AUDIT candidate to
+  enumerate every endpoint that uses PageInfo and validate its
+  pagination contract honesty.
+
+  The CUSTOM METADATA feature is otherwise undocumented on the
+  live site — surface as a DOC-NNN candidate as well.
+
+  Cross-cutting connections:
+    - Pairs with three sibling pagination-shape invariants (above)
+    - Pairs with `metadata-field-asymmetric-uniqueness-by-origin`
+      (the partial-unique-index story; same table)
+    - Pairs with the (broader) auto-create-on-miss /
+      `permission-bypass-via-owner-auto-create-side-door-write-path`
+      pattern — the catalogue grows as a side-effect of writes
+      and is enumerable by ANY authenticated user (see
+      `rbac-read-endpoints-no-securityrule-authenticated-only-fall-through`
+      batch ZF strengthening for the read-side unauth context)
+
+  Three DOC-NNN candidates flow from this invariant:
+    (a) Add a live doc page documenting the Custom Metadata
+        feature end-to-end (catalogue, autocomplete, partition,
+        API)
+    (b) Document the chosen pagination-fix direction once the
+        code/spec lands
+    (c) Cross-link the THREE distinct PageInfo-drift shapes on a
+        single "PageInfo semantics in ODD's OpenAPI" reference
+        page — operators and SDK authors get a single source of
+        truth for which endpoints actually paginate

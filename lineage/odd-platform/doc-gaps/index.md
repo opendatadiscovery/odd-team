@@ -2206,3 +2206,109 @@ The coordination is one maintainer-pass across 6-7 doc pages (plus 2-3 new pages
 - The catalog-wide cross-owner enumeration cluster is now 4-PILLAR triangulated (P-01 Discovery + P-02 Modelling + P-04 Alerts + P-08 Activity). The proposed META `visibility-model.md` page from DOC-GAP-287 is the cross-cutting doc-product fix; the next batch's META reducer should sequence this.
 - The bearer-token-shaped session UUID cluster is now 4-FEATURE wide (Search + Term + QueryExample + ReferenceData per DOC-GAP-161-batch-ZE-append's cross-feature widening). The unfiled findings on QueryExampleController + ReferenceDataController would close the cluster.
 - The boot-time-config-binding META (DOC-GAP-284 + DOC-GAP-285) opens a new doc-product axis: "Configuration sources and their hot-reload behaviour" — likely a single META admonition on the configuration-and-deployment hub.
+## Batch ZF append (2026-05-25 — Ingestion + Owner + MetadataField + DataCollaboration + EventApi controller-class tier)
+
+**Sidecars consumed (5 NEW)**:
+- `odd-platform__java__IngestionController__controller-class__IngestionController.md` (P-10:F-001 Batch Ingestion class-level consolidation — the 5-method S2S surface)
+- `odd-platform__java__OwnerController__controller-class__OwnerController.md` (P-09 Owner directory — 4-method CRUD class-level consolidation)
+- `odd-platform__java__MetadataFieldController__controller-class__MetadataFieldController.md` (P-01 Custom Metadata read-only catalogue surface — single-method controller)
+- `odd-platform__java__DataCollaborationController__controller-class__DataCollaborationController.md` (P-07 Discussions — 3-method class-level consolidation)
+- `odd-platform__java__EventApiController__controller-class__EventApiController.md` (P-07 Discussions inbound webhook — 1-method controller)
+
+**Live URLs verified this session** (Rule 1 — no inheritance for the load-bearing claims):
+- `https://docs.opendatadiscovery.org/active-platform-features/data-collaboration` → **404** (re-confirmed; legacy URL still broken)
+- `https://docs.opendatadiscovery.org/features/active-platform-features` → **200** (sidebar lists 5 sub-pages: Alerting + Notifications + Activity Feed + Data Collaboration + GenAI assistant — confirming the canonical home now exists)
+- `https://docs.opendatadiscovery.org/features/active-platform-features/data-collaboration` → **200** (canonical Discussions page exists with text "lets users start in-app discussions about a specific data entity"; silent on webhook signing + idempotency)
+- `https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` → **200** ("Enable Data Collaboration" section verified verbatim; silent on Slack signing-secret / X-Slack-Signature / HMAC / idempotency — the WebFetch model returned "Not found" for those terms)
+- `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security` → **200** (re-verified; the security page enumerates `/ingestion/alert/alertmanager`, `/ingestion/entities/degs/children`, `/ingestion/entities/datasets/stats` as paths "outside the ingestion filter's coverage" but does NOT name `/ingestion/metrics` — confirming the DOC-GAP-240 omission stands)
+
+---
+
+## NEW findings (3)
+
+### DOC-GAP-290 (HIGH) — see `detail/DOC-GAP-290.md`
+
+`POST /api/slack/events` is an UNAUTHENTICATED + UN-SIGNATURE-VERIFIED + REPLAY-VULNERABLE inbound webhook on the public internet. Slack's Events API protocol requires HMAC-SHA256 verification of `X-Slack-Signature` against `signing_secret` — the entire codebase has ZERO matches for `X-Slack-Signature`, `signing.secret`, `HMAC.SHA256`. The path is whitelisted from all four auth modes (DISABLED / LOGIN_FORM / OAUTH2 / LDAP). The `message_provider_event` table has no UNIQUE constraint on `(provider, event_id)`; duplicate Slack at-least-once retries insert duplicate rows. The live `/configuration-and-deployment/odd-platform#enable-data-collaboration` page publishes the Slack app manifest WITH `request_url: https://<ODD_PLATFORM_BASE_URL>/api/slack/events` + scope `channels:history` but is verbatim silent on signing / signature / HMAC / idempotency. Operators following the docs deploy an internet-reachable forgeable webhook. Distinct from DOC-GAP-234 (outbound generic-webhook signing); same class, opposite direction. Cross-references: DOC-GAP-032 / DOC-GAP-033 / DOC-GAP-035 / DOC-GAP-038 / DOC-GAP-178 / DOC-GAP-234 / DOC-GAP-082 META / LSN-001 / LSN-002 / REFACTOR-185.
+
+### DOC-GAP-291 (HIGH) — see `detail/DOC-GAP-291.md`
+
+`GET /api/messages/{message_id}/url` carries THREE compound contract bugs: (a) returns HTTP 200 with empty body when `message_id` does NOT exist (instead of 404) — REST-convention violation; (b) UNCONDITIONAL 302 redirect to whatever Slack's `chat.getPermalink` returned — no host check, no scheme check, no allowlist (open-redirect-class surface); (c) HTTP 302 hard-coded but OpenAPI declares 301 (three sources of truth disagree: code/spec/live api-reference doc). Combined with no RBAC on `/api/messages/**` (no SECURITY_RULES entry; falls through to authenticated-only via `AuthorizationCustomizer.java:29-30`), ANY authenticated user has a message-existence-by-id oracle — combined with UUIDv1 timestamp embedding, the platform's Discussions topology is brute-force enumerable across organisational boundaries. Distinct from DOC-GAP-278 (similar Mono.empty→204 on integrations) and DOC-GAP-282 (search hasNext lying constant) — same family of compound contract bugs, different endpoint surface. Distinct from DOC-GAP-224 (login-form-redirect open-redirect); same class-of-bug different surface. Cross-references: DOC-GAP-032 / DOC-GAP-033 / DOC-GAP-035 / DOC-GAP-074 META / DOC-GAP-224 / DOC-GAP-278 / DOC-GAP-082 META / DOC-GAP-290 / LSN-001 / LSN-002.
+
+### DOC-GAP-292 (HIGH) — see `detail/DOC-GAP-292.md`
+
+`MetadataFieldList.page_info` is THEATRE — `total = items.length` + `hasNext = false` HARD-CODED at `MetadataFieldMapperImpl.java:30-33`; the underlying SQL has NO LIMIT/OFFSET/ORDER BY; the entire INTERNAL-origin catalogue is returned per call. This is the INVERSE drift shape of DOC-GAP-282 (where `hasNext = true` is constant signalling forever-loop) — here `hasNext = false` is constant signalling "no pagination at all". Same class — pagination contract field LIES via constant — but opposite polarity. Combined with the auto-create-on-miss semantics (per DOC-GAP-193) the catalogue grows unboundedly with no curation affordance; combined with the UI's autocomplete firing every 500ms-debounced keystroke, the unbounded-return amplifies linearly. The two sibling findings (DOC-GAP-282 + this one) make the platform's PageInfo block theatre in BOTH directions on different controllers — META candidate. Cross-references: DOC-GAP-022 / DOC-GAP-074 META / DOC-GAP-099 META / DOC-GAP-126 / DOC-GAP-191 / DOC-GAP-193 / DOC-GAP-282 / LSN-001 / LSN-002.
+
+---
+
+## STRENGTHENS (6 existing entries)
+
+### DOC-GAP-035 STRENGTHENS — fresh 2026-05-25 verification confirms legacy URL still 404; canonical URL now resolves at `/features/active-platform-features/data-collaboration` (status 200)
+
+Two new sidecars (`DataCollaborationController` controller-class + `EventApiController` controller-class) each carry `docs_link_semantic.inferred_docs` with the legacy `/active-platform-features/data-collaboration` URL marked status 404. Fresh WebFetch this session (2026-05-25) confirms the legacy URL is STILL 404. NEW EVIDENCE: the CANONICAL URL `/features/active-platform-features/data-collaboration` now resolves at 200 with prose "lets users start in-app discussions about a specific data entity"; the sidebar at `/features/active-platform-features` (200) lists the page among the five active-platform sub-features. The doc-page-coverage gap is now half-closed — operators landing on the canonical URL find the feature page, but operators landing on the legacy URL (via Google cache, blog posts, internal wikis) still 404. The DOC-GAP-035 doc-action remains: implement GitBook redirect from legacy to canonical OR ensure SUMMARY.md ships the legacy alias. See also batch-ZF context: the live api-reference page documents the THREE Data Collaboration endpoints but is SILENT on the message-existence-oracle compound (now captured at DOC-GAP-291) and the Slack-events webhook signature absence (now captured at DOC-GAP-290).
+
+### DOC-GAP-032 STRENGTHENS — controller-class layer corroborates the no-RBAC class-wide surface
+
+The new `DataCollaborationController` controller-class sidecar provides class-level enumeration: ALL THREE endpoints share the no-RBAC posture (no SECURITY_RULES entry for `/api/datacollaboration/**` or `/api/messages/**`; both fall through to `pathMatchers("/**").authenticated()`); the DISABLED-mode anonymous reachability extends to all three endpoints uniformly. The original DOC-GAP-032 anchored on the per-method `postMessageInSlack` sidecar; the class-level evidence MAKES THE PATTERN STRUCTURAL rather than per-endpoint. Sidecar bugs_limitations[8] (HIGH) and [9] (HIGH) cover the class-level enumeration. The class-level view ALSO surfaces an addl dimension: NO `log.info(...)` calls on any of the three endpoints' code paths despite the @Slf4j annotation, AND the redirect endpoint has NO audit-log of who-redirected-to-which-message — combined with the missing-404 (DOC-GAP-291), this is a forensic-silent + RBAC-silent surface for any authenticated user. The doc-action proposed at DOC-GAP-032 should now include a class-level table (3 endpoints × {auth requirement, ownership check, audit log, rate-limit}) rather than per-endpoint admonitions.
+
+### DOC-GAP-038 STRENGTHENS — IngestionController class-level evidence: 5×2×4 = 40-cell auth matrix at primary source
+
+The new `IngestionController` controller-class sidecar provides the COMPLETE class-level enumeration: 5 endpoints × 2 filter classes × 4 auth modes = 40 cells of auth behaviour. The class-level view confirms (and STRENGTHENS) what prior batches surfaced at per-method tier:
+- `createDataSource` is the ONLY unconditionally-authenticated endpoint (IngestionDataSourceFilter is `@Component` with no `@ConditionalOnProperty`).
+- 4 of 5 endpoints (postDataEntityList, postDataSetStatsList, ingestMetrics, getDataEntitiesByDEGOddrn) are unauthenticated in 3 of 4 auth modes (DISABLED, OAUTH2, LDAP) by default.
+- Only `postDataEntityList` becomes authenticated when `auth.ingestion.filter.enabled=true`; the other 3 unauthenticated handlers REMAIN unauthenticated even with the toggle (IngestionDataEntitiesFilter exact-matches `/ingestion/entities` POST only).
+- Under LOGIN_FORM the `permittedPaths` array (LoginFormSecurityConfiguration.java:50) NARROWS to `/ingestion/entities` + `/ingestion/datasources` only; the OTHER 3 endpoints fall through to `pathMatchers("/**").authenticated()`. The LOGIN_FORM mode is STRICTER for the 3 nested paths than OAUTH2/LDAP — a previously-undocumented asymmetry (PROBE-NEEDED: P-146 in sidecar).
+
+The class-level sidecar also surfaces the structural-fix-cheap framing: a single PR broadening `IngestionDataEntitiesFilter`'s path matcher to `/ingestion/**` for ALL HTTP methods closes the cluster's coverage gap at the path-matcher level. Combined with the DOC-GAP-240 sibling enumeration, the cluster is now formally complete at the controller-class tier; the doc-action proposed at DOC-GAP-038 should now publish the 40-cell matrix (or a coarser 5-endpoint × {covered-by-filter, covered-by-whitelist} table) as the canonical operator reference.
+
+### DOC-GAP-178 STRENGTHENS — class-level evidence consolidates the two-filter asymmetric architecture
+
+The new `IngestionController` controller-class sidecar provides the class-level view of the 3-filter architecture (IngestionDataSourceFilter unconditional + IngestionDataEntitiesFilter conditional + NO filter for the other 3 paths). The class-level enumeration consolidates the per-method findings at DOC-GAP-178 (per-method on createDataSource) + DOC-GAP-038 (per-method on postDataEntityList) + DOC-GAP-240 (per-method on ingestMetrics) + DOC-GAP-238 (per-method on getDEG) + DOC-GAP-239 (per-method on stats) into ONE class-level statement: "the IngestionController is the canonical evidence anchor for the multi-filter auth architecture; the architecture is consistent at design-level but inconsistent at name-level (the property `auth.ingestion.filter.enabled` reads as global ingestion auth; its actual scope is one endpoint)". The doc-action proposed at DOC-GAP-178 (extend the S2S doc with a per-endpoint coverage table) remains; the class-level sidecar additionally surfaces the `@Slf4j` dead-annotation finding (zero log calls in the controller body) which strengthens DOC-GAP-178's observability-related sub-finding — the auth-coverage gap is ALSO an audit-trail gap.
+
+### DOC-GAP-193 STRENGTHENS — MetadataFieldController controller-class confirms the doc-coverage gap at the read-tier
+
+The new `MetadataFieldController` controller-class sidecar provides the CONTROLLER-TIER primary source (previously the doc-gap was surfaced at the REPOSITORY tier in DOC-GAP-193's batch R). The controller-tier evidence consolidates: a single read endpoint (`GET /api/metadata/fields`) with no RBAC, no pagination (DOC-GAP-292 NEW), no ordering, no auto-create-on-miss safeguard, exposing the catalogue's INTERNAL-origin field names verbatim to any authenticated user. The class-level sidecar also surfaces the **ServerWebExchange wired but unused** finding (line 20-22 declares the param but never reads it) — an architectural signal that an OWNER-scoped variant was contemplated but never built; this is the cross-link to the future "show me only custom-metadata fields used on Data Entities I own" feature DOC-GAP-193 anticipates. The controller-tier sidecar also surfaces the auto-create-on-miss cross-data-entity exposure (per bugs_limitations[4]) which DOC-GAP-193 already names but the class-level view makes structural: the read-endpoint exposes the WRITE-endpoint's side-effect, completing the circle. The doc-action proposed at DOC-GAP-193 (create `features/data-discovery/custom-metadata.md`) is unchanged; this batch adds the controller-tier evidence to the cluster's evidence chain.
+
+### DOC-GAP-212 STRENGTHENS — OwnerController controller-class adds the ungated-getOwnerList + getOrCreate-bypass class-level enumeration
+
+The new `OwnerController` controller-class sidecar provides class-level evidence of TWO operator-facing surfaces that DOC-GAP-212 already names per-method but had not consolidated at the class tier:
+- **`GET /api/owners` ungated read** (per sidecar bugs_limitations[0], MEDIUM) — `SecurityConstants.SECURITY_RULES[143-147]` contains rules for POST/PUT/DELETE ONLY; `getOwnerList` has NO permission gate. Any authenticated user enumerates the entire Owner directory including PII-bearing names (e.g. `alice@acme.com`). The live `/owners` permissions page is SILENT on this read posture (per sidecar's verbatim direct fetch 2026-05-25). DOC-GAP-212 surfaced the audit-trail-read ungated surface (`/api/owner_association_request/activity`); this batch adds the SISTER ungated read on the directory itself.
+- **`OwnerService.getOrCreate` BYPASSES the OWNER_CREATE gate** (per sidecar bugs_limitations[1], HIGH) — the service-tier method is reached from THREE separate callers each gated by a DIFFERENT permission: (a) OwnerAssociationRequestServiceImpl.java:57 via `POST /api/owner_association_request` (ungated POST); (b) OwnershipServiceImpl.java:52 via `POST /api/dataentities/{id}/ownerships` gated by DATA_ENTITY_OWNERSHIP_CREATE; (c) TermOwnershipServiceImpl.java:35 via `POST /api/terms/{term_id}/ownerships`. A caller without OWNER_CREATE can spam the directory by repeatedly calling any of these three permissioned endpoints with a never-seen `ownerName`. The live `/permissions` page documents OWNER_CREATE but is SILENT on the three side-channel callers. This is the canonical evidence anchor for the F-019 + DOC-GAP-212 + REFACTOR-222 cluster.
+
+The class-level sidecar ALSO carries the 201-vs-200 OpenAPI/impl drift on createOwner + updateOwner (cross-link DOC-GAP-074 + DOC-GAP-184) AND the no-`@Slf4j` observability-silent finding. The doc-action proposed at DOC-GAP-212 (6-flow narrative replacing the doc's 2-flow narrative) is unchanged; this batch's class-level sidecar adds the directory-read posture + the getOrCreate side-channel as additional sub-points of the same operator-trap cluster.
+
+### DOC-GAP-074 STRENGTHENS — class-level evidence on IngestionController consolidates the 5-handler status-code drift (200/201/201/200/200) in one place
+
+The new `IngestionController` controller-class sidecar enumerates ALL THREE mutating handlers' response code postures in one place: `postDataEntityList` → 200 (line 44, spec says 201 — DRIFT); `postDataSetStatsList` → 201 (line 86, ALIGNED); `ingestMetrics` → 201 (line 94, ALIGNED); `createDataSource` → 200 (line 72); `getDataEntitiesByDEGOddrn` → 200 read. Per existing batch-Z 9+-endpoint cluster framing, the IngestionController's postDataEntityList is the SOLE 201-vs-200 instance on the ingestion surface — the class-level evidence MAKES THE DRIFT VISIBLE AT A GLANCE (a reviewer reading the file sees `ok()` at line 44 vs `CREATED` at line 86 + 94 within ~50 lines of each other). The class-level view also confirms the spec authoring intent: 201 was supposed to be the platform-wide convention for the create-side ingestion responses, and the SOLE drifter is postDataEntityList. The doc-action proposed at DOC-GAP-074 META (spec-side alignment from 201 → 200 OR impl-side alignment from 200 → 201, single PR) is unchanged; this batch confirms the ingestion-surface dimension at primary source.
+
+---
+
+## Coherence (LSN-018 Rule 6 pre-emit summary)
+
+| Check | Count |
+|---|---|
+| Same-polarity STRENGTHENS (new evidence corroborates existing finding) | 7 (DOC-GAP-035 + DOC-GAP-032 + DOC-GAP-038 + DOC-GAP-178 + DOC-GAP-074 + DOC-GAP-193 + DOC-GAP-212) |
+| SUPERSEDES (new evidence contradicts existing finding with stronger grounding) | 0 |
+| CONTRADICTS surfaced for triage (not emitted) | 0 |
+| NEW findings minted | 3 (DOC-GAP-290 + DOC-GAP-291 + DOC-GAP-292) |
+| Back-links emitted to feature-flows / refactor / implicit-ADRs | Per each detail file's cross-references block |
+
+Cross-registry coherence sweeps performed:
+- `feature-flows/index.yaml` — searched `slack signing`, `Custom Metadata`, `data-collaboration`, `IngestionController class-level`, `OwnerController class-level`; no contradictions; back-link candidates F-008 + F-009 + F-011 + P-07:F-* + P-09:F-* + P-10:F-001 reflected in the new detail files.
+- `concepts/index.yaml` — searched the same anchors; no contradictions; `entities[Slack collaboration app]` + `entities[Custom Metadata Field]` + `entities[Owner]` + `entities[Ingestion Filter]` are cited.
+- `test-map/index.yaml` — searched; the test-coverage gaps the new sidecars surface (40-cell auth matrix untested at IngestionController; redirect-endpoint 404 path untested; etc.) are noted in cross-references; the new doc-gap detail files do NOT emit test-map entries directly (separate registry).
+- `refactoring-scopes/index.md` — searched; REFACTOR-185 (DISABLED auth bypass) + REFACTOR-073 (ingestion-filter path coverage) + REFACTOR-222 (Owner auto-create) + REFACTOR-024 (cross-owner read posture) are reflected as related_refactoring_scopes on the upstream sidecars; no contradictions.
+- `implicit-adrs/index.md` — searched; ADR-CANDIDATE-142 + ADR-CANDIDATE-143 cited in the IngestionController class-level sidecar; no contradictions.
+
+No `state/coherence-conflicts-batch-ZF.md` entries were created; the batch commits cleanly.
+
+---
+
+## Per-finding context budget audit
+
+| Finding | Sidecars read | WebFetches | Graph-search results | Detail file size | Within budget? |
+|---|---|---|---|---|---|
+| DOC-GAP-290 | 1 (EventApiController) | 4 (data-collab 404 + odd-platform conf + active-platform-features + features list) | 3 (slack signing + EventApi dedup + slack permalink open-redirect) | ~13 KB | YES |
+| DOC-GAP-291 | 1 (DataCollaborationController) | inherited from sidecar's 2026-05-25 fetches | 2 (redirect 302 + Mono.empty) | ~13 KB | YES |
+| DOC-GAP-292 | 1 (MetadataFieldController) | inherited (DOC-GAP-193's batch R 2026-05-20 verifications within 11-day stale-probe window) | 2 (metadataFieldList page_info + custom-metadata feature) | ~12 KB | YES |
+| 7 STRENGTHENS | 4 (IngestionController class + OwnerController class + MetadataFieldController class + DataCollaborationController class) — already read for NEW findings | 0 fresh (inherited within stale-probe cadence) | already-loaded from above | ~5 KB combined | YES |
+| **Batch total** | 5 sidecars | 4 fresh WebFetches + inherited | 9 graph-search queries | ~46 KB total | **YES — under 200 KB per-batch budget** |

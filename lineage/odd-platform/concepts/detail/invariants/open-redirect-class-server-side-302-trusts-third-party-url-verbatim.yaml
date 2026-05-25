@@ -1,0 +1,270 @@
+name: |-
+  Open-redirect class — server-side 302 trusts third-party URL verbatim (DataCollab redirect, batch ZF)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-07
+  - P-09
+description: |-
+  **NEW MEDIUM-severity INVARIANT, batch 2026-05-25-ZF** — the
+  `GET /api/messages/{message_id}/url` endpoint in
+  DataCollaborationController is a server-side redirect that
+  consumes a URL string returned by Slack's `chat.getPermalink`
+  API and emits it VERBATIM as the `Location:` header in a 302
+  Found response. The controller performs ZERO validation of the
+  URL before redirecting:
+    - No host check (could be ANY host)
+    - No scheme check (could be `javascript:`, `data:`, `file:`)
+    - No allowlist of known-good URL prefixes (e.g.,
+      `https://*.slack.com/archives/`)
+    - No malformed-URI handler (`URI.create` throws on malformed
+      input → propagates as 5xx)
+
+  ## THE PRIMARY-SOURCE EVIDENCE
+
+  DataCollaborationController.java:41-49 (the redirect handler):
+    public Mono<ResponseEntity<Void>> redirect(
+        final UUID messageId,
+        final ServerWebExchange exchange) {
+      return dataCollaborationService.resolveMessageUrl(messageId)
+          .map(providerUrl -> ResponseEntity.status(FOUND)
+              .headers(h -> h.setLocation(URI.create(providerUrl)))
+              .build());
+    }
+
+  The chain that produces `providerUrl`:
+    DataCollaborationController.redirect
+      → DataCollaborationServiceImpl.resolveMessageUrl
+        (DataCollaborationServiceImpl.java:72-77)
+      → MessageProviderClientFactory.getOrFail(provider)
+            .resolveMessageUrl(channelId, messageTs)
+      → SlackMessageProviderClient.resolveMessageUrl
+        (SlackMessageProviderClient.java:64-66)
+      → SlackAPIClientImpl.exchangeForUrl
+        (SlackAPIClientImpl.java:83-95)
+      → calls Slack chat.getPermalink → returns
+        `response.getPermalink()` STRING VERBATIM
+
+  No validation, no host check, no allowlist anywhere in the
+  chain. The trust assumption is "Slack returns slack.com URLs"
+  — enforced NOWHERE in the platform code.
+
+  ## THE TRUST CHAIN
+
+  The implicit trust chain that justifies the missing validation:
+    (1) Slack API is the authoritative source for permalinks
+    (2) Slack API responses come from slack.com
+    (3) slack.com responses are honest
+    (4) Therefore: `URI.create(providerUrl)` will always be a
+        slack.com URL
+
+  The chain has TWO weak links:
+    - Link (1)→(2): the Slack OAuth bot token is the sole secret;
+      if the token is compromised (and there is no defence-in-depth
+      against token leak per
+      `slack-bot-token-single-secret-blast-radius` if surfaced as
+      a sibling concept), an attacker can configure Slack to
+      return arbitrary URLs to the platform via crafted message
+      delivery + permalink response interception
+    - Link (3): Slack itself could in principle return any string
+      via the chat.getPermalink response — the API documents say
+      "permalink URL" but the response shape is a free-form string
+
+  Either weak link breaking → the platform becomes a redirector
+  for attacker-controlled URLs. The class-of-bug is OWASP A01
+  "Broken Access Control / Open Redirect" — generic-enough that
+  many security scanners would flag it on first encounter.
+
+  ## THE COMPOUND ATTACK SURFACE
+
+  Three composable gaps surface at this endpoint:
+    (1) NO URL validation before redirect (this invariant)
+    (2) NO RBAC permission on the endpoint
+        (per `rbac-read-endpoints-no-securityrule-authenticated-only-fall-through`
+        — any authenticated user can call redirect)
+    (3) NO Mono.empty → 404 path
+        (per `integration-wizard-204-on-missing-id-not-404-silent-empty`
+        — Mono.empty returns 200 OK with no body, no Location header)
+
+  An attacker who controls a Slack workspace can:
+    - Send a message to an ODD-tracked Slack channel
+    - When the platform processes the message via EventApiController
+      → DataCollaborationMessageEventProcessor, a child message row
+      is created with a `provider_message_id` corresponding to the
+      Slack message TS
+    - When ANY authenticated user clicks "Open in Slack" on that
+      message in the ODD UI, the platform redirects to the URL
+      Slack returns from chat.getPermalink — which for the workspace
+      the attacker controls, IS the attacker's domain
+
+  The same workflow lets an attacker phish ODD users through
+  ODD's own infrastructure. The URL the user sees in the browser
+  before the redirect is `https://<odd-platform>/api/messages/{uuid}/url`
+  — looks legitimate; the post-redirect URL is whatever the
+  attacker's Slack workspace returned.
+
+  ## CONTRAST WITH SIBLING REDIRECTS IN THE CODEBASE
+
+  Grep across the codebase 2026-05-25 for `URI.create` usages in
+  controllers / services:
+    - 2 hits in DataCollaborationController (line 45 — this
+      finding) + DataCollaborationServiceImpl (transitively)
+    - 0 hits elsewhere in any controller
+
+  This is the ONLY server-side redirect endpoint in the codebase.
+  No other controller emits `Location:` headers; no other endpoint
+  has the same trust-the-string-verbatim shape. The class-of-bug
+  surfaces here alone.
+
+  ## CONTRAST WITH THE LIVE DOCS
+
+  Live api-reference page
+  (`https://docs.opendatadiscovery.org/developer-guides/api-reference/data-collaboration`,
+  WebFetched 2026-05-25, status 200) describes the endpoint as
+  "302 Found redirect to the provider's deep-link for the message"
+  but does NOT describe:
+    - The lack of URL validation
+    - The trust assumption (Slack returns slack.com URLs)
+    - The compound surface with the missing RBAC + the missing 404
+    - The phishing-via-Slack-workspace-control class
+
+  Operators reading the docs assume the redirect is bounded to
+  slack.com (the docs say "Slack permalink"); the implementation
+  is bounded only by what Slack returns.
+
+  ## THE FIX SURFACE — what a small remediation looks like
+
+  A single change at DataCollaborationController.redirect that:
+    (a) Parses `URI.create(providerUrl)` in a try/catch (catch
+        IllegalArgumentException → 502 Bad Gateway: "Slack
+        returned malformed permalink")
+    (b) Validates `uri.getScheme().equals("https")` (reject
+        javascript:, data:, file:, etc.)
+    (c) Validates `uri.getHost().endsWith(".slack.com")` OR is
+        exactly `slack.com` (reject any other host)
+    (d) Optionally validates `uri.getPath().startsWith("/archives/")`
+        (Slack's standard permalink shape)
+    (e) On any validation failure, return 502 Bad Gateway with
+        a structured error body instead of 302 to attacker URL
+
+  Estimated 15-25 lines of code (validator method + call). The
+  operator-visible change is zero (legitimate Slack permalinks
+  pass validation). The doc-side cost is a documentation update
+  noting the validation rules.
+
+  ## SEVERITY MEDIUM
+
+  Depends on Slack's API integrity AND on the bot OAuth token not
+  being compromised. Slack's reputation for not returning
+  attacker-controlled permalinks is the SOLE current defence. The
+  class-of-bug is a textbook security gap that any defence-in-depth
+  policy would close.
+nodes:
+  - odd-platform java DataCollaborationController controller-class:DataCollaborationController
+contributors:
+  - |-
+    **BATCH ZF PRIMARY SOURCE** DataCollaborationController.md
+    (controller-class):
+    bugs_limitations_corner_cases.[0] (Open-redirect-class surface
+    on redirect: the controller emits ResponseEntity.status(FOUND).headers(...)
+    where providerUrl comes from Slack's chat.getPermalink response
+    UNCONDITIONALLY. No host check, no scheme check, no allowlist
+    of known-good URL prefixes — severity MEDIUM, depends on
+    Slack's API integrity) +
+    concepts.invariants.[4] (The redirect endpoint trusts Slack's
+    chat.getPermalink response verbatim — URI.create(providerUrl)
+    consumes whatever string Slack returns; no host / scheme /
+    structure validation in the controller or in
+    DataCollaborationServiceImpl.resolveMessageUrl or in
+    SlackMessageProviderClient.resolveMessageUrl or in
+    SlackAPIClientImpl.exchangeForUrl) +
+    docs_link_semantic.doc_drift_findings (live api-reference page
+    describes the redirect endpoint but does not surface the URL
+    validation gap) +
+    stress_findings.auth_gates (the open-redirect compounds with the
+    catch-all-authenticated only-gate of /api/messages/**)
+evidence:
+  - |-
+    **BATCH ZF**
+    DataCollaborationController.md:bugs_limitations_corner_cases.[0]
+    (Open-redirect class — MEDIUM)
+    — evidence: DataCollaborationController.java:42-48 (no URI
+    validation) + DataCollaborationServiceImpl.java:72-77 (no
+    validation) + SlackMessageProviderClient.java:64-66 (no
+    validation) + SlackAPIClientImpl.java:83-95 (returns the Slack
+    response permalink verbatim via response.getPermalink())
+  - |-
+    **BATCH ZF**
+    DataCollaborationController.md:concepts.invariants.[4]
+    (The redirect endpoint trusts Slack's chat.getPermalink
+    response verbatim)
+  - |-
+    **BATCH ZF** Grep across codebase 2026-05-25 — `URI.create` usages:
+    only 2 hits (DataCollaborationController + sibling); no other
+    controller emits Location: headers; this is the only server-side
+    redirect endpoint in the codebase
+  - |-
+    **BATCH ZF** WebFetch 2026-05-25 of
+    /developer-guides/api-reference/data-collaboration (status 200)
+    — page describes "302 Found redirect to the provider's deep-link"
+    but does not describe URL validation, trust assumptions, or
+    compound surface
+axes_present:
+  - controllers
+related_features:
+  - F-009 (Data Collaboration)
+related_pillar_features:
+  - P-07
+  - P-09
+related_concepts:
+  - 'invariant:additional-links-no-rel-noopener-and-no-url-validation (sibling — same class-of-bug but at the rendering-side rather than redirect-emission-side)'
+  - 'invariant:rbac-read-endpoints-no-securityrule-authenticated-only-fall-through (compounds — any authenticated user can call redirect)'
+  - 'invariant:integration-wizard-204-on-missing-id-not-404-silent-empty (compounds — Mono.empty returns 200 OK with no Location header, creating a unique response shape that doubles as a message-existence oracle)'
+triangulation_count: 1
+cross_batch: true
+cross_batch_refs:
+  - batch-ZF (DataCollaborationController.controller-class — PRIMARY SOURCE)
+severity: MEDIUM
+severity_dim: security
+mitigations_unimplemented:
+  - |-
+    Add a URI validator to DataCollaborationController.redirect that:
+    (a) parses providerUrl in a try/catch (catch IllegalArgumentException
+    → 502 Bad Gateway), (b) validates scheme is https,
+    (c) validates host ends with .slack.com OR equals slack.com,
+    (d) optionally validates path starts with /archives/. Reject
+    with structured 502 on any validation failure. 15-25 lines of code.
+  - |-
+    Add a deny-list of forbidden schemes (javascript:, data:, file:)
+    as a first-pass defence-in-depth. Cheaper than (a)-(d) above
+    but only catches the most-egregious attacker scenarios.
+  - |-
+    Document the URL validation rules on the live api-reference
+    page. Operator-visible signal that the redirect is bounded;
+    raises operator confidence in the endpoint's safety.
+  - |-
+    Add a security-test case asserting that a mocked SlackAPIClient
+    returning a non-slack.com URL produces a 502 (not 302). Pin
+    the validation behaviour in CI.
+notes: |-
+  NEW MEDIUM-severity invariant captured in batch 2026-05-25-ZF
+  from DataCollaborationController class-level primary-source
+  evidence at the redirect handler site. The finding is one of
+  three composable security gaps at this endpoint; the other
+  two are:
+    - missing RBAC (any authenticated user can call) —
+      `rbac-read-endpoints-no-securityrule-authenticated-only-fall-through`
+    - missing Mono.empty → 404 path —
+      `integration-wizard-204-on-missing-id-not-404-silent-empty`
+
+  The three together compose into a message-existence-by-id
+  oracle PLUS a phishing-via-Slack-workspace-control class. A
+  single bug-class scanner would flag the open-redirect immediately;
+  the platform has been shipping this surface for as long as the
+  Data Collaboration feature has existed.
+
+  Two DOC-NNN candidates flow from this invariant:
+    (a) Document the URL validation rules on the api-reference
+        page once the fix ships
+    (b) Document operator-side mitigation (e.g., reverse-proxy
+        with allowlist) pending the fix

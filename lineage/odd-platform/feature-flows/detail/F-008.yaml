@@ -1078,6 +1078,160 @@ batch_extensions:
     Asymmetry canonicalisation candidate gains 2 new corroborating
     sidecars (IngestionServiceImpl @Slf4j-unused + getDataEntitiesByDEGOddrn
     no-audit-on-read); F-016 + F-030 (this batch) both cross-link.
+- batch: ZF
+  entry_point_added: |-
+    controller-class:IngestionController — the CLASS-LEVEL ENCLOSING
+    ROOF of the entire 5-method S2S ingestion surface. F-008 has
+    accumulated per-method evidence across batches O / P / Q / R / S /
+    T / W / X / Z. The class-level sidecar adds the SINGLE-FILE
+    5-method-by-5-fact MATRIX view that no method-level sidecar
+    individually produces: the 5 endpoints x 4 auth modes x 2 filter
+    toggles x 2 s2s toggles = 40-cell auth matrix; the 3 mutating
+    endpoints' three different response codes; the 5 handlers' two
+    entirely different identity-resolution mechanisms (one WebSession-
+    attribute, four payload-driven); the 3 mutating service paths'
+    disagreement on @ReactiveTransactional boundary placement.
+  contributing_nodes_added:
+  - odd-platform java IngestionController controller-class:IngestionController
+  notes: |-
+    SEVEN findings surface from the class-level scope — 3 NEW + 4
+    STRENGTHENS-BY-CONSOLIDATION on existing batches. Listed in
+    descending architectural leverage:
+
+    (1) 5-ENDPOINT FILTER-COVERAGE MATRIX CONSOLIDATED — 3 OF 5
+    UNAUTHENTICATED EVEN UNDER MAXIMAL HARDENING (HIGH severity,
+    CLASS-LEVEL CONSOLIDATION). IngestionController.java:31-103
+    exposes 5 methods; filter coverage matrix:
+    `POST /ingestion/datasources` covered by IngestionDataSourceFilter
+    (UNCONDITIONAL `@Component` per IngestionDataSourceFilter.java:15);
+    `POST /ingestion/entities` covered by IngestionDataEntitiesFilter
+    (CONDITIONAL on `auth.ingestion.filter.enabled=true`, default
+    `false` per application.yml:48);
+    `POST /ingestion/entities/datasets/stats` — COVERED BY NO FILTER;
+    `POST /ingestion/metrics` — COVERED BY NO FILTER;
+    `GET /ingestion/dataentitygroups/{deg_oddrn}/entities` — COVERED
+    BY NO FILTER. The IngestionDataEntitiesFilter.java:28 exact-literal
+    `/ingestion/entities` matcher does NOT cover the nested paths.
+    Combined with SecurityConstants.WHITELIST_PATHS containing
+    `/ingestion/**` (lines 95-96) — which exempts the entire namespace
+    from UI-mode authorization (LOGIN_FORM/OAUTH2/LDAP) — the
+    class-level posture is: under DEFAULT deployment, 4 of 5 endpoints
+    accept unauthenticated POSTs from ANY caller able to reach port
+    8080; under MOST-HARDENED deployment (OAUTH2 + s2s.enabled=true +
+    ingestion.filter.enabled=true), 3 of 5 endpoints REMAIN
+    unauthenticated. The property name `auth.ingestion.filter.enabled`
+    reads "lock down ingestion globally"; its actual scope is ONE
+    endpoint. The 5x2 path-coverage matrix is NOT documented anywhere
+    in the repo (Grep across source + docs returns 6 source files +
+    3 docs pages — none present the matrix). The live docs at
+    `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security`
+    (WebFetched 2026-05-25 status 200) DO flag the gap explicitly —
+    DOCS ARE AHEAD OF CODE'S SELF-DOCUMENTATION. STRENGTHENS batch O
+    `ingestion_filter_path_coverage_incomplete_alertmanager_uncovered`
+    + batch P `asymmetric_auth_between_ingestion_filters` + batch Z
+    `auth_ingestion_filter_enabled_false_sense_of_security_extends_to_get_deg_oddrn`.
+
+    (2) TAG-NAMESPACE SIDE-CHANNEL VIA postDataSetStatsList — UNGATED
+    TAG-CREATE FROM AN UNAUTHENTICATED ENDPOINT (HIGH severity, NEW
+    FINDING via class-level enumeration). postDataSetStatsList (lines
+    81-87) accepts DatasetStatisticsList payloads which carry per-field
+    `tags` arrays; the downstream DatasetFieldServiceImpl.updateStatistics
+    (line 202 per batch L) invokes `tagService.getOrCreateTagsByName(...)`
+    which CREATES new `tag` rows for any never-seen tag name. The
+    UI-side `POST /api/tags` is gated by TAG_CREATE permission
+    (SecurityConstants.java:138). The S2S
+    `/ingestion/entities/datasets/stats` is gated by NO filter (per
+    finding 1) AND no SecurityRule. Under default deployment ANY
+    ANONYMOUS CALLER can pump arbitrary tag names into the catalog by
+    submitting crafted DatasetStatisticsList payloads. Cross-link to
+    F-018 (Tag Lifecycle) — the tag-create permission gap is documented
+    at the controller layer but NOT at the ingestion side-channel
+    layer. NEW drift facet:
+    `tag_create_permission_bypass_via_ingestion_datasets_stats_tags_field_class_level_consolidation`.
+
+    (3) SESSION-vs-PAYLOAD IDENTITY BIFURCATION ACROSS 5 SIBLING
+    HANDLERS (MEDIUM severity, CLASS-LEVEL CONSOLIDATION). createDataSource
+    (lines 47-73) is the SOLE handler that reads the WebSession (lines
+    50-58, COLLECTOR_ID_SESSION_KEY); the other 4 handlers identify
+    the target via PAYLOAD fields (postDataEntityList: `dataSourceOddrn`
+    in body; postDataSetStatsList: per-`DataSetStatistics.datasetOddrn`
+    in body; ingestMetrics: per-`MetricSet.oddrn` in body;
+    getDataEntitiesByDEGOddrn: `degOddrn` in URL path). Two entirely
+    different identity-resolution mechanisms on the same controller
+    class with NO comment explaining the asymmetry. The session-attribute
+    approach is the ONLY one that fails-loud on missing identity
+    (IllegalStateException at line 54 → HTTP 500); the payload-driven
+    approaches silently accept untrusted ODDRNs from the body and
+    resolve at the service tier without ANY cross-check between the
+    authenticating token and the target datasource. STRENGTHENS batch
+    P `collector_id_websession_attribute_stringly_typed` — that batch
+    identified the stringly-typed key contract for ONE endpoint; this
+    class-level view shows the asymmetry is structurally encoded
+    across the 5-handler shape. NEW drift facet:
+    `session_vs_payload_identity_bifurcation_across_5_sibling_handlers_no_cross_check`.
+
+    (4) RESPONSE-CODE DRIFT IS CLASS-WIDE ON 3 MUTATING HANDLERS
+    (LOW severity, CLASS-LEVEL CONSOLIDATION). postDataEntityList
+    returns 200 OK (line 44); postDataSetStatsList returns 201 Created
+    (line 86); ingestMetrics returns 201 Created (line 94);
+    createDataSource returns 200 OK (line 72). The class-level
+    enumeration makes the inconsistency impossible to miss. Per batch
+    F invariants, OpenAPI declares 201 for postDataEntityList; the
+    impl returns 200 — drift locked in by
+    `BaseIngestionTest.java:79`. STRENGTHENS F-029's class-wide
+    `openapi-200-vs-201-status-code-drift` concept; NEW evidence
+    anchor at the class-level enumeration.
+
+    (5) TRANSACTION-BOUNDARY DISAGREEMENT ACROSS 3 MUTATING SERVICE
+    PATHS (MEDIUM severity, NEW FINDING via class-level enumeration).
+    postDataEntityList → IngestionServiceImpl.ingest is
+    @ReactiveTransactional at the IMMEDIATE service tier
+    (IngestionServiceImpl.java:66). createDataSource →
+    DataSourceIngestionServiceImpl.createDataSources is
+    @ReactiveTransactional at the IMMEDIATE service tier
+    (DataSourceIngestionServiceImpl.java:40). postDataSetStatsList →
+    IngestionServiceImpl.ingestStats is NOT annotated; the boundary
+    is deferred TWO frames downstream to
+    DatasetFieldServiceImpl.updateStatistics (line 159). ingestMetrics
+    similarly defers downstream. The split has NO COMMENT explaining
+    the choice. The two immediate-boundary handlers offer the
+    strongest rollback guarantee; the two deferred-boundary handlers
+    expose multi-step pipelines where a partial failure can leave the
+    catalog in a mixed state. Operators auditing the S2S surface
+    have no way to tell from THIS file which handlers carry
+    transactional atomicity and which do not. NEW drift facet:
+    `transaction_boundary_disagreement_across_3_mutating_service_paths_no_comment_explaining_choice`.
+
+    (6) validateDataSources IS DEFENSIVE ON TWO FIELDS, IGNORES OTHERS
+    (LOW severity, NEW FINDING via class-level enumeration). The
+    helper at lines 97-102 asserts every DataSource has non-empty
+    `name` and `oddrn`; ignores description, connection_url, type,
+    namespace_name. A payload with valid name+oddrn but a malformed
+    connection_url flows through verbatim into `data_source.connection_url`
+    and is rendered in the UI's Datasources tab. If ever rendered as
+    a hyperlink, the field carries attacker-controlled text into the
+    UI. Missing description / type / namespace — all silently
+    accepted as null/empty. NEW drift facet:
+    `validate_datasources_two_field_defensive_other_fields_silently_accepted`.
+
+    (7) @Slf4j ANNOTATION DEAD CODE — ZERO LOGGING ACROSS THE 5
+    HANDLERS (LOW severity, NEW FINDING). The class is annotated
+    @Slf4j at line 30 but contains zero `log.{info,warn,error,debug}`
+    calls in any handler body. Auditability at the controller layer
+    is ZERO. Combined with the no-@ActivityLog pattern at the service
+    layer (per batches L / S / Z), the entire S2S surface is
+    forensically silent at every observability layer except the
+    default Spring access log. STRENGTHENS the cross-pillar Audit-log
+    Presence Asymmetry canonicalisation candidate.
+
+    Coherence: STRENGTHENS batches O / P / Q / R / S / T / W / X / Z
+    (every previous F-008 batch contributes; this batch consolidates
+    at the controller-class level). NO contradictions surfaced. NO
+    supersedes — all prior batch findings remain accurate. Pre-emit
+    Rule-6 cross-registry coherence check (concepts / refactoring-scopes
+    / test-map / doc-gaps): findings 1+2+3+5+6+7 are NEW (no
+    STRENGTHENS to existing items — these become candidates for
+    downstream refactor / test-gap / doc-gap reducers).
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: Ingestion-replace destruction surface

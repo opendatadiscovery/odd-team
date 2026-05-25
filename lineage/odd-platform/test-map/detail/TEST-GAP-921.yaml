@@ -1,0 +1,59 @@
+gap_id: TEST-GAP-921
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform ts jotai-store store:DataQualityStore"
+  - "odd-platform ts react-component component:DataQuality"
+pillars_affected: [P-04]
+surfaced_by:
+  - "odd-platform__ts__jotai-store__store__DataQualityStore.md:tests_coverage_semantic.uncovered_behaviours.[2] (the store resets to all-empty when the /data-quality route unmounts and remounts (per-Provider-mount scope))"
+  - "odd-platform__ts__jotai-store__store__DataQualityStore.md:bugs_limitations_corner_cases.[1] (The filter selection does not survive navigating away from /data-quality and back — severity MEDIUM)"
+  - "odd-platform__ts__react-component__component__DataQuality.md:tests_coverage_semantic.uncovered_behaviours.[2] (The jotai Provider isolates filter atoms per mount — re-entering /data-quality starts with cleared/default filters)"
+  - "odd-platform__ts__jotai-store__store__DataQualityStore.md:stress_findings.probes_emitted.P-120"
+behaviour: |-
+  **MEDIUM — the operator's filter selection does NOT survive navigating away from `/data-quality` and back: the `<DataQualityAtomProvider>` (`DataQualityProvider.tsx:4-6`) is the dashboard's jotai `<Provider>` scope; React Router unmounts the route element on navigation away, destroys the Provider + its store, and the next mount starts a fresh all-empty `formFiltersAtom` (`DataQualityStore.ts:11-22`). The operator loses their filter slice with no warning. The URL search params (written by `DataQualityFilters`' second `useEffect`, see TEST-GAP-913) are the ONLY persistence channel — and the URL bar typically gets cleared on a tab navigation away from `/data-quality`. No test pins the per-mount-reset behaviour, so a regression that accidentally widens the Provider scope (e.g. lifts it to App.tsx) silently changes the UX from "fresh-per-visit" to "sticky-across-visits".**
+
+  **The contract** (statically certain):
+  - `App.tsx:73` mounts `<Route path={dataQualityPath()} element={<DataQuality />} />` — a SINGLE non-wildcard Route. React Router unmounts `element` on navigation away.
+  - `<DataQuality>` mounts `<DataQualityAtomProvider>` as its OUTERMOST element (`DataQuality.tsx:8-17`).
+  - `DataQualityAtomProvider` is a thin pass-through over jotai's `<Provider>` (`DataQualityProvider.tsx:4-6`) — creating a fresh atom store per mount.
+  - On unmount: the Provider's store is GC'd; the next mount creates a new store with `formFiltersAtom = {all-empty}`.
+  - The URL is the only filter-persistence channel; the rest of the app does not preserve `/data-quality` query params on navigation.
+
+  **What can silently break**:
+  - A maintainer "fixes" the per-mount reset by lifting `<DataQualityAtomProvider>` to App.tsx (so the store outlives the route). Operator UX silently changes from "fresh visit" to "sticky selection" — could be desirable, but the doc-side silence (live `dashboard.md` does not document either) means the operator has no signal which to expect.
+  - A maintainer adds a second `<Route path={dataQualityPath()}>` (e.g. for a sub-route) and the routing matches both, but only one renders — the Provider mounts/unmounts depending on which route matches first.
+
+  **No test pins this**. The doc-side is silent (DataQualityStore.md:docs_link_semantic.doc_drift_findings.[0]).
+
+  **Test gap shape**: integration test using a `<MemoryRouter>` with multiple navigation entries. Step 1: mount at `/data-quality`; select filter chips; assert the atom holds them. Step 2: navigate to `/`; assert the route unmounts. Step 3: navigate back to `/data-quality`; assert the atom is FRESH (all-empty). PINS the per-Provider-mount reset.
+test_class: missing-integration
+criticality_rationale: |-
+  MEDIUM per Rule 3: sidecar self-classifies MEDIUM (DataQualityStore.md:bugs_limitations_corner_cases.[1] + tests_coverage_semantic.uncovered_behaviours.[2]). Per-mount reset is a UX contract; no security or data loss; single-pillar (P-04). MEDIUM stands.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-ui/src/components/DataQuality/__tests__/DataQualityPerMountStoreReset.test.tsx"
+  name: "filterSelectionDoesNotSurviveNavigateAwayAndBack_pinsPerProviderMountReset"
+evidence:
+  - "DataQualityStore.md says (tests_coverage_semantic.uncovered_behaviours.[2]): 'the store resets to all-empty when the /data-quality route unmounts and remounts (per-Provider-mount scope). navigate-away-and-back behaviour; requires a mounted router — see stress_findings Category E / probe P-120.' test_class: integration; criticality: HIGH"
+  - "DataQualityStore.md says (bugs_limitations_corner_cases.[1]): 'The filter selection does not survive navigating away from /data-quality and back: the route mounts <DataQuality> via a single non-wildcard <Route path={dataQualityPath()} element={<DataQuality />} /> (App.tsx:73), React Router unmounts the element on navigation away, that destroys <DataQualityAtomProvider> and its jotai <Provider>, and the next mount starts a fresh store at the all-empty formFiltersAtom default — the operator loses their filter slice with no warning.' severity: MEDIUM"
+  - "DataQuality.md says (tests_coverage_semantic.uncovered_behaviours.[2]): 'The jotai Provider isolates filter atoms per mount — re-entering /data-quality starts with cleared/default filters, no leak from a prior visit. DataQualityAtomProvider creates a fresh atom scope per mount; no test asserts the no-leak property.' test_class: integration; criticality: LOW"
+  - "Verified at primary source via sidecar: DataQualityProvider.tsx:4-6 + DataQuality.tsx:8-17 + App.tsx:73 + DataQualityStore.ts:11-22"
+cross_references:
+  - "F-032 (P-04:F-002 Catalog-wide Data Quality Dashboard) — drift_class per_mount_filter_reset_loses_operator_slice is enumerated in F-032.drift_class_summary"
+  - "TEST-GAP-913 (this batch — URL deep-link round-trip — the URL is the only persistence channel for filter selection; TEST-GAP-921 pins that JOTAI state doesn't persist, TEST-GAP-913 pins that URL state does)"
+  - "probe P-120 (lineage/odd-platform/probes/P-120.yaml — Does the operator's filter selection survive navigating away from /data-quality and back?)"
+  - "DOC-GAP-NNN (proposed): document on documentation/docs/features/data-quality/dashboard.md that filter selection is per-visit (cleared on navigate-away) BUT the URL can be bookmarked"
+related_features: [F-032]
+related_pillar_features: ["P-04:F-002"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `DataQualityPerMountStoreResetTest` under `odd-platform-ui/src/components/DataQuality/__tests__/`. Use Vitest + React Testing Library + <MemoryRouter>. Three pinning methods:
+  (a) `filterChipsPersistDuringMount_butResetOnUnmountRemount_pinsPerProviderScope`: mount <App> at /data-quality; select a filter chip via the UI; rerender at / (navigating away); rerender at /data-quality (navigating back); assert the filter chip is GONE (the atom is all-empty).
+  (b) `filterChipsPersistAcrossInternalRerenders_pinsAtomDoesNotResetOnReactRerender`: mount at /data-quality; select chips; trigger a forced rerender of the parent (without unmounting the Provider); assert the chips are STILL present. PINS the distinction between "React rerender" and "Provider unmount".
+  (c) `urlPersistenceSurvivesNavigateAwayWhenUrlPreserved_butAtomResets`: select chips; capture the URL (TEST-GAP-913 contract); navigate away; navigate back to the EXACT URL captured; assert the chips re-appear (URL-sync fills the atom). PINS the URL-as-only-persistence behaviour.
+
+  Add a `// REGRESSION-PIN — DataQualityProvider.tsx:4-6 + DataQuality.tsx:8 + App.tsx:73 — the dashboard's filter atom store is per-Provider-mount. Navigating away unmounts the Provider, destroys the store, and the next mount starts fresh. The URL is the only persistence channel (TEST-GAP-913). If you lift the Provider to App.tsx for "sticky" behaviour, this test breaks AND documentation/docs/features/data-quality/dashboard.md must be updated to disclose the new persistence model.` block. Pair with DOC-GAP-NNN documenting the per-visit reset.
+batch: 2026-05-22-ZC
+feature_id: F-032

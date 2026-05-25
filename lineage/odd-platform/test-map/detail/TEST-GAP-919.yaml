@@ -1,0 +1,52 @@
+gap_id: TEST-GAP-919
+category: missing-unit
+criticality: MEDIUM
+node_ids:
+  - "odd-platform ts react-component component:TestCategoryResults"
+pillars_affected: [P-04]
+surfaced_by:
+  - "odd-platform__ts__react-component__component__TestCategoryResults.md:tests_coverage_semantic.uncovered_behaviours.[1] (sortedResults produces tiles in fixed DataEntityRunStatus enum order regardless of the order the backend serialised results)"
+  - "odd-platform__ts__react-component__component__TestCategoryResults.md:implicit_adrs.[0] (Fixed-position status tiles via enum-order re-sort, not server-order rendering)"
+behaviour: |-
+  **MEDIUM — `TestCategoryResults.sortedResults` (`TestCategoryResults.tsx:19-25`) is the component's one non-trivial behaviour: it rebuilds the per-status tile array by iterating `Object.values(DataEntityRunStatus)` in enum-declaration order (SUCCESS, FAILED, SKIPPED, BROKEN, ABORTED, UNKNOWN), so every category row's tiles appear in the SAME horizontal slots. This is what makes the dashboard's category rows visually comparable column-by-column. A regression (e.g. a maintainer simplifying to `results.map`) silently makes column position track backend serialisation order — a category's FAILED tile would land in a different slot than its neighbours' FAILED tiles. No test pins the enum-order tile stabilisation.**
+
+  **The contract** (statically certain):
+  - Per-category row layout: a category heading + a large total + a horizontal row of count tiles, one per status (`TestCategoryResults.tsx:27-45`).
+  - The tile order MUST be the enum-declaration order across all rendered category rows so that "the FAILED tile is always in slot 2", "the SKIPPED tile is always in slot 3", etc. — making the dashboard a comparable matrix.
+  - `sortedResults` enforces this by `Object.values(DataEntityRunStatus).map(status => results.find(result => result.status === status)).flatMap(f => (f ? [f] : []))` (`TestCategoryResults.tsx:19-25`).
+  - The same enum-iteration pattern is used for the shared dashboard legend in the sibling `DataQualityContent.tsx:83-89` — so legend slot ↔ tile slot alignment is guaranteed.
+
+  **What can silently break**:
+  - A refactor replaces `sortedResults` with `categoryResults.results` (the raw prop). Backend serialisation order leaks through. Today the backend `DataQualityCategoryMapperImpl.java:21-43` does not guarantee any specific order; under load or with a small SQL change, neighbouring category rows could have their FAILED tiles in different visual slots.
+  - A refactor changes the iteration to `Object.keys(DataEntityRunStatus)` — at TS string enums, `Object.keys` returns the same as `Object.values` only if there are no reverse mappings, but a future enum addition could subtly differ.
+
+  **No test pins this**: the entire DataQuality subtree has zero tests (verified by `find odd-platform-ui/src/components/DataQuality -type f` — 21 source files, 0 test files, 2026-05-22).
+
+  **Test gap shape**: unit test rendering `<TestCategoryResults>` with a `categoryResults.results` whose statuses arrive in REVERSE enum order (UNKNOWN, ABORTED, BROKEN, SKIPPED, FAILED, SUCCESS). Assert the rendered tiles appear in the FORWARD enum order (SUCCESS, FAILED, SKIPPED, BROKEN, ABORTED, UNKNOWN). PINS the override of backend order.
+test_class: missing-unit
+criticality_rationale: |-
+  MEDIUM per Rule 3: sidecar self-classifies MEDIUM (TestCategoryResults.md:tests_coverage_semantic.uncovered_behaviours.[1]). This is the component's "one non-trivial behaviour"; a regression silently misaligns columns across the dashboard — operator-visible but the visual disruption is subtle. Single-pillar (P-04). MEDIUM stands.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-ui/src/components/DataQuality/__tests__/TestCategoryResultsSortedResults.test.tsx"
+  name: "tilesRenderInEnumDeclarationOrder_regardlessOfApiOrder_pinsColumnAlignmentContract"
+evidence:
+  - "TestCategoryResults.md says (tests_coverage_semantic.uncovered_behaviours.[1]): 'sortedResults produces tiles in fixed DataEntityRunStatus enum order regardless of the order the backend serialised results. This is the component's one non-trivial behaviour — it exists to make tile position stable. A regression (e.g. switching to a plain results.map) silently makes column position track backend serialisation order, so a category's FAILED tile could land in a different slot than its neighbours' FAILED tiles. No test pins it.' test_class: unit; criticality: MEDIUM"
+  - "TestCategoryResults.md says (implicit_adrs.[0]): 'Fixed-position status tiles via enum-order re-sort, not server-order rendering. sortedResults deliberately discards the order the backend serialised results in and rebuilds the array by iterating Object.values(DataEntityRunStatus) and find-ing each status (TestCategoryResults.tsx:19-25). The decision is visible in the code shape: a plain results.map(...) would have been shorter; the developer chose the enum-driven re-sort specifically so every category row shows its SUCCESS / FAILED / SKIPPED / BROKEN / ABORTED / UNKNOWN tiles in the same horizontal slots, making the dashboard columns visually comparable across category rows.' confidence: HIGH"
+  - "Verified at primary source via sidecar: TestCategoryResults.tsx:19-25 (the enum-map-then-flatMap re-sort) + DataQualityContent.tsx:83-89 (the legend using the identical enum iteration)"
+cross_references:
+  - "F-032 (P-04:F-002 Catalog-wide Data Quality Dashboard)"
+  - "TEST-GAP-927 (this batch — the META cross-cutting zero-tests gap on the DataQuality subtree)"
+related_features: [F-032]
+related_pillar_features: ["P-04:F-002"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `TestCategoryResultsSortedResultsTest` under `odd-platform-ui/src/components/DataQuality/__tests__/`. Three pinning methods:
+  (a) `tilesRenderInForwardEnumOrder_evenWhenResultsArriveReversed`: render <TestCategoryResults categoryResults={category:'Test', results:[{status:UNKNOWN,count:1},{status:ABORTED,count:2},{status:BROKEN,count:3},{status:SKIPPED,count:4},{status:FAILED,count:5},{status:SUCCESS,count:6}]}/>. Assert the rendered count tiles are in order 6, 5, 4, 3, 2, 1 (SUCCESS→UNKNOWN) — PINS the enum-order override.
+  (b) `tilesRenderInForwardEnumOrder_whenSomeStatusesAreMissing`: render with `results` containing only [SUCCESS, FAILED]; assert ONLY 2 tiles render, in order SUCCESS then FAILED, with NO placeholder for the missing 4. PINS the present-only flatMap drop branch (TestCategoryResults.tsx:22-23).
+  (c) `tilesPositionAlignsAcrossCategoryRows_pinsMatrixContract`: render TWO <TestCategoryResults> instances side-by-side with different `results` orders; assert that for both, the SUCCESS tile is in DOM position 0, FAILED in position 1, etc. — PINS the cross-row column alignment that makes the dashboard a comparable matrix.
+
+  Add a `// REGRESSION-PIN — TestCategoryResults.tsx:19-25 — the enum-order re-sort is the only thing making category-row tiles visually comparable column-by-column. The same enum-iteration pattern is used for the shared dashboard legend (DataQualityContent.tsx:83-89) — so legend slot ↔ tile slot alignment is also coupled to this contract. If you refactor either iteration, both must be updated together.` block.
+batch: 2026-05-22-ZC
+feature_id: F-032

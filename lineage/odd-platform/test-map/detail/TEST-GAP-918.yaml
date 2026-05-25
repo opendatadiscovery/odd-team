@@ -1,0 +1,58 @@
+gap_id: TEST-GAP-918
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform ts react-component component:DataQualityFilters"
+pillars_affected: [P-04]
+surfaced_by:
+  - "odd-platform__ts__react-component__component__DataQualityFilters.md:docs_link_semantic.doc_drift_findings.[1] (DOC DRIFT — the Namespace filter's datasource-inheritance widening is undocumented — severity MEDIUM)"
+  - "odd-platform__ts__react-component__component__DataQualityFilters.md:stress_findings.request_inputs.NamespaceFilter Q3 (TRANSLATES_SILENTLY — the SQL matches the entity's OWN namespace OR its DATASOURCE's namespace; the OR-clause silently widens the match)"
+behaviour: |-
+  **MEDIUM — the Data Quality dashboard's Namespace filter (`namespaceIds` / `deNamespaceIds`) silently WIDENS the match beyond what the bare "Namespace" label implies: the SQL joins `NAMESPACE.ID.in(namespaceIds)` against `DATA_ENTITY.NAMESPACE_ID` **OR** `DATA_SOURCE.NAMESPACE_ID` (`ReactiveDataQualityRunsRepositoryImpl.java:288-293`). An operator who selects "namespace X" sees BOTH entities directly in namespace X AND entities whose DATASOURCE carries namespace X — a wider result set than "Namespace" alone implies. No test pins the widening; the live `dashboard.md` (WebFetched 2026-05-22 status 200) does not document it.**
+
+  **The widening chain** (statically certain):
+  - Operator selects "namespace X" in the Namespace filter → `formFiltersAtom.namespaceIds = [{id:X, name:"X"}]`.
+  - `filtersAtom` projects to `request.namespaceIds = [X]` → `GET /api/dataqatests/runs?namespaceIds=X`.
+  - `DataQualityRunsController.java:19-32` binds.
+  - `DataQualityTestFiltersMapper` 1:1 pass.
+  - `ReactiveDataQualityRunsRepositoryImpl.java:288-293` builds:
+    `NAMESPACE.ID.in(namespaceIds).and(NAMESPACE.ID.eq(DATA_ENTITY.NAMESPACE_ID).OR(NAMESPACE.ID.eq(DATA_SOURCE.NAMESPACE_ID)))`.
+  - The OR-clause widens: entity E is in the result if EITHER `E.NAMESPACE_ID = X` (direct membership) OR `E.DATA_SOURCE.NAMESPACE_ID = X` (datasource inheritance).
+
+  **What the operator sees vs expects**:
+  - Expectation: "Namespace X" → entities whose direct namespace is X.
+  - Reality: "Namespace X" → entities whose direct namespace is X PLUS entities with no namespace (or a different one) whose datasource is in namespace X.
+  - The operator's count is WIDER than they think. On a catalog where most entities inherit their datasource's namespace, the two are nearly the same; on a catalog where entities are individually re-namespaced, the two diverge.
+
+  **The drift class** is the same FAMILY as the Title-filter LSN-020 (TEST-GAP-912) but a different MECHANISM: this is an OVER-INCLUSION drift (the column matches partially correctly, but an OR-clause silently widens), where LSN-020 is a MIS-BINDING drift (the column matches the wrong concept entirely). The sidecar classifies this as MEDIUM (datasource-inheritance widening) where Title is HIGH (full mis-binding).
+
+  **Test gap shape**: integration test seeding (a) entity E1 with namespace X directly, (b) entity E2 with no namespace but datasource DS-X (with namespace X), (c) entity E3 with namespace Y and datasource DS-Y. POST `/api/dataqatests/runs?namespaceIds={X.id}`; assert the tablesDashboard aggregates cover BOTH E1 AND E2 (PINS the widening) but NOT E3.
+test_class: missing-integration
+criticality_rationale: |-
+  MEDIUM per Rule 3: sidecar self-classifies MEDIUM (DataQualityFilters.md:docs_link_semantic.doc_drift_findings.[1]). Operator gets WIDER results than expected — not wrong data, not exposure, but a misleading filter. Single-pillar (P-04). MEDIUM stands.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DataQualityRunsNamespaceFilterWideningIntegrationTest.java"
+  name: "namespaceIdsFilterMatchesEntityOwnNamespaceOR_DatasourceInheritedNamespace_pinsORWidening"
+evidence:
+  - "DataQualityFilters.md says (docs_link_semantic.doc_drift_findings.[1]): 'DOC DRIFT — the Namespace filter's datasource-inheritance widening is undocumented. The dashboard page does not state that the Namespace filter also matches datasource-level namespaces. The SQL joins NAMESPACE.ID.in(namespaceIds) against DATA_ENTITY.NAMESPACE_ID OR DATA_SOURCE.NAMESPACE_ID (ReactiveDataQualityRunsRepositoryImpl.java:288-293). A namespace selected in the filter therefore matches both entities directly assigned to it and entities whose datasource carries it — a wider result set than Namespace alone implies.' severity: MEDIUM"
+  - "DataQualityFilters.md says (stress_findings.request_inputs.NamespaceFilter Q3): 'TRANSLATES_SILENTLY — the SQL matches the entity's OWN namespace OR its DATASOURCE's namespace. Namespace implies the entity's namespace; the OR-clause silently widens the match to datasource-inherited namespaces. The dashboard doc does not disclose this widening.' drift_class: DRIFT_INPUT_NAME_VS_IMPLEMENTATION"
+  - "DataQualityFilters.md says (stress_findings.request_inputs.NamespaceFilter Q4): 'An operator filtering by namespace X sees MORE entities than expected: every entity whose datasource is in namespace X is included even if the entity itself has no namespace or a different one. Result counts in the rings are wider than entities in namespace X.'"
+  - "Verified at primary source via sidecar: ReactiveDataQualityRunsRepositoryImpl.java:288-293 (the OR-clause)"
+cross_references:
+  - "F-032 (P-04:F-002 Catalog-wide Data Quality Dashboard) — drift_class namespace_filter_datasource_inheritance_widening is enumerated in F-032.drift_class_summary"
+  - "TEST-GAP-912 (this batch — Title-filter MIS-BINDING — sister drift class, different mechanism)"
+  - "DOC-GAP-NNN (proposed): document the namespace-widening on documentation/docs/features/data-quality/dashboard.md — state that Namespace also matches datasource-inherited namespace"
+related_features: [F-032]
+related_pillar_features: ["P-04:F-002"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `DataQualityRunsNamespaceFilterWideningIntegrationTest` extending `@SpringBootTest` + Testcontainers. Two pinning methods:
+  (a) `namespaceIdsFilter_matchesEntityOwnNamespace_pinsLiteralMatch`: seed entity E1 with NAMESPACE.ID=X directly. WebTestClient `GET /api/dataqatests/runs?namespaceIds={X}`; assert E1 is in the result.
+  (b) `namespaceIdsFilter_matchesDatasourceInheritedNamespace_pinsORWidening`: seed entity E2 with NAMESPACE_ID=NULL but DATA_SOURCE.NAMESPACE_ID=X. Same WebTestClient call; assert E2 is also in the result. PINS the OR-clause widening.
+  (c) `namespaceIdsFilter_doesNotMatchUnrelatedNamespace`: seed E3 with NAMESPACE_ID=Y. Same call; assert E3 is NOT in the result.
+
+  Add a `// REGRESSION-PIN — ReactiveDataQualityRunsRepositoryImpl.java:288-293 — namespaceIds matches DATA_ENTITY.NAMESPACE_ID OR DATA_SOURCE.NAMESPACE_ID. The OR widens beyond Namespace alone. If you tighten to direct-only, this test breaks AND documentation/docs/features/data-quality/dashboard.md must be updated to disclose the new behaviour.` block.
+batch: 2026-05-22-ZC
+feature_id: F-032

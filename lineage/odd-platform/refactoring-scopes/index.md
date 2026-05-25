@@ -3598,3 +3598,126 @@ The orchestrator re-ranks the global `## Top 20 by leverage` head over the COMBI
 **Full detail**: `detail/REFACTOR-591.md`
 
 ---
+
+## Refresh note — batch ZC (2026-05-22 — `/data-quality` standalone Data Quality Dashboard, the 5 UI-axis sidecars for F-032)
+
+14 new refactoring scopes (REFACTOR-592..605) added from 5 new sidecars (`DataQuality`, `DataQualityContent`, `DataQualityFilters`, `DataQualityStore`, `TestCategoryResults`). Zero existing scopes strengthened (the F-032 feature is the first DQ-Dashboard surface in the catalog; previous DQ work was on the per-dataset Test reports tab F-022 which has a distinct codebase). The batch is the expected GAP-heavy shape for a UI-feature-deepening pass.
+
+The 14 scopes split as: **2 HIGH** (the latent-crash + the LSN-020 Title drift), **8 MEDIUM** (the operator-UX cluster), **4 LOW** (the polish cluster — many consolidated into REFACTOR-605 to keep the catalog disciplined).
+
+**Cross-cutting findings**:
+- (a) The dashboard subtree has ZERO test coverage (21 source / 0 test) — every other scope in the batch is silently re-introducible because there is no regression suite. **REFACTOR-604 is the multiplier for every other gap in this batch.**
+- (b) The live `dashboard.md` documentation page is OUT OF SYNC with the implementation on 9 axes (3-vs-6 statuses, Healthy/Warning/Error vs success/failed/broken, Unknown casing, empty-state silence, per-category row silence, filter-interaction silence, Title binding undocumented, namespace widening undocumented, access-control silence). **REFACTOR-600 consolidates the cluster** as one DOC-NNN tranche to ship together.
+- (c) The dashboard's URL-as-source-of-truth pattern (per ADR-CANDIDATE-091 STRENGTHENED batch ZC) repeats the same JSON.parse-no-try/catch crash class that REFACTOR-286 surfaced on LineageGraph (REFACTOR-603). The pattern's "validation obligation" needs a codified primitive — per-call-site discipline has now failed independently on two surfaces.
+- (d) The autocomplete UX has TWO compound performance gaps (REFACTOR-597 no-debounce + REFACTOR-598 no-pagination + REFACTOR-602 stale-closure) all in the shared `MultipleFilterItemAutocomplete` component — one consolidated component-polish pass addresses all three for the dashboard AND any other autocomplete consumer.
+- (e) The dashboard's dispatch chain has a compound performance gap (REFACTOR-597 + REFACTOR-599) — building a typical 4-chip filter slice fires ~24 list-API GETs + 4 dashboard GETs where ~5 + 1 would suffice; ~5x request amplification on the most common workflow.
+
+**The 5 highest-leverage 2026-05-22ZC additions**:
+
+- **REFACTOR-592 (HIGH — buggy-default / latent-crash)**: `palette.runStatus[status].color ?? palette.dataQualityDashboard.unknown` at `DataQualityContent.tsx:48` throws an uncaught TypeError and BLANKS the whole `/data-quality` dashboard if the backend ever returns a `DataEntityRunStatus` outside the 6-enum. The `??` fallback is mis-parenthesised (guards a missing `.color` on a present entry, not a missing entry). Activation pre-condition: any future spec-side enum addition without coordinated frontend regen — a routine evolution change. **The LSN-001 shape (latent activation, full-page operator failure).**
+
+- **REFACTOR-593 (HIGH — name-behaviour-drift, LSN-020 class)**: the 'Title' filter (`titleIds` / `deTitleIds`) binds to `OWNERSHIP.TITLE_ID` (ownership role) at `ReactiveDataQualityRunsRepositoryImpl.java:301, 309` — NOT to any dataset title/name. The bare `t('Title')` label invites the wrong mental model. Same shape as the catalog-wide LSN-020 family (REFACTOR-567 `findMyActivities` axis-mismatch, REFACTOR-496 `getPopularTagList` IdsParam drift). Pair-fix in a single LSN-020 sweep recommended.
+
+- **REFACTOR-600 (MEDIUM — doc-code-drift consolidated)**: the live `dashboard.md` page is out of sync on 9 axes. Consolidated as one DOC-NNN tranche covering: 6-status enum vs 3-status doc; Healthy/Warning/Error labels; Unknown casing; empty-state silence; per-category row silence; filter-panel interaction silence; Title binding undocumented; namespace widening undocumented; access-control posture undocumented (links to ADR-003 STRENGTHENS). The dashboard's primary user-facing doc has not had a Gate-6 audit since the implementation evolved.
+
+- **REFACTOR-595 (MEDIUM — ux-bug / per-mount-reset-lossy)**: navigating away from `/data-quality` resets ALL 10 dashboard filters; the per-mount jotai `<Provider>` destroys `formFiltersAtom` on route unmount, and only URL search-params (a partial channel — does NOT survive the tab-click navigation) persist. Composes with ADR-CANDIDATE-207 (per-mount-reset is the deliberate property) + ADR-CANDIDATE-091 (URL persistence is the deliberate channel) — the UX HOLE is in the seam between the two locally-correct decisions.
+
+- **REFACTOR-604 (MEDIUM — missing-test)**: entire `components/DataQuality/` subtree has ZERO test files (21 source files, 0 test files). The dashboard ships with no automated regression coverage at any test_class. **Multiplier for every other gap in this batch.**
+
+**Remaining REFACTOR entries (full list)**:
+
+| ID | Sev | Cat | One-liner |
+|---|---|---|---|
+| REFACTOR-592 | HIGH | buggy-default | line-48 status-color TypeError blanks whole dashboard on out-of-enum status |
+| REFACTOR-593 | HIGH | name-behaviour-drift | 'Title' filter silently binds OWNERSHIP.TITLE_ID (LSN-020 class) |
+| REFACTOR-594 | MEDIUM | name-behaviour-drift | 'Namespace' filter silently widens to DATA_SOURCE.NAMESPACE_ID |
+| REFACTOR-595 | MEDIUM | ux-bug | per-mount Provider reset loses 10 filters; URL persistence partial |
+| REFACTOR-596 | MEDIUM | error-mapping | no error UI; failed `/api/dataqatests/runs` indistinguishable from empty catalog |
+| REFACTOR-597 | MEDIUM | performance-no-debounce | autocomplete keystroke = list-API GET (10 chars = 10 GETs; 10 autocompletes total) |
+| REFACTOR-598 | MEDIUM | missing-pagination | autocomplete first-30-only; no truncation indicator |
+| REFACTOR-599 | MEDIUM | performance-no-debounce | every chip toggle fires full dashboard refetch (no Apply gate) |
+| REFACTOR-600 | MEDIUM | doc-code-drift | consolidated 9-facet doc-drift on `dashboard.md` (statuses + labels + silences) |
+| REFACTOR-601 | MEDIUM | ux-bug | category panels alphabetical, not severity-descending |
+| REFACTOR-602 | LOW | race-condition | MultipleFilterItemAutocomplete stale-closure; stuck spinner on failed list-API |
+| REFACTOR-603 | LOW | missing-validation | URL-sync `JSON.parse` no try/catch (twin of REFACTOR-286 LineageGraph) |
+| REFACTOR-604 | MEDIUM | missing-test | entire `components/DataQuality/` subtree: 21 source / 0 test |
+| REFACTOR-605 | LOW | polish-cluster | consolidated 10-facet polish (locale-dep, dead guards, unused atom factory, etc.) |
+
+**Suggested sprint groupings**:
+
+- **Quality Dashboard hardening sprint** — REFACTOR-592 / 593 / 594 / 595 / 596 / 597 / 598 / 599 / 601 / 602 / 605. The bug-fix + UX-polish surface; one focused sprint covering the dashboard subtree end-to-end.
+- **Quality Dashboard test bootstrap** — REFACTOR-604 (standalone sprint or sub-sprint of hardening). Pair the integration tests directly with the REFACTOR-592 regression to pin the line-48 crash.
+- **DOC-NNN dashboard.md tranche** — REFACTOR-600 (doc-side companion). One focused authoring session over the dashboard doc page covering all 9 facets.
+- **LSN-020 cross-codebase sweep** — REFACTOR-593 (with REFACTOR-567 / REFACTOR-496). All three are instances of the input-name-vs-implementation pattern; a single audit pass over every user-facing form field whose label is a generic word.
+- **URL-as-source-of-truth codified validation primitive** — REFACTOR-603 (with REFACTOR-286). Closes both crash sites and provides the foundation for any third instance of the pattern.
+- **Autocomplete hygiene cross-cutting** — REFACTOR-597 + REFACTOR-598 + REFACTOR-602 in the shared `MultipleFilterItemAutocomplete` component. Benefits dashboard AND every other autocomplete consumer.
+
+## REFACTOR-592 — `palette.runStatus[status].color` (`DataQualityContent.tsx:48`) throws an uncaught TypeError and BLANKS the whole `/data-quality` dashboard if the backend ever returns a `DataEntityRunStatus` outside the 6-member enum
+
+**Severity**: HIGH | **Category**: buggy-default / latent-crash | **Pillar**: P-04 | **Batch**: ZC
+**Full detail**: `lineage/odd-platform/refactoring-scopes/detail/REFACTOR-592.md`
+
+## REFACTOR-593 — Dashboard 'Title' filter (`titleIds` / `deTitleIds`) silently filters by OWNERSHIP ROLE (`OWNERSHIP.TITLE_ID`), not by dataset title/name — bare `t('Title')` label invites the wrong mental model (LSN-020 class)
+
+**Severity**: HIGH | **Category**: name-behaviour-drift (LSN-020) | **Pillar**: P-04 + P-08 | **Batch**: ZC
+**Full detail**: `lineage/odd-platform/refactoring-scopes/detail/REFACTOR-593.md`
+
+## REFACTOR-594 — Dashboard 'Namespace' filter silently widens to datasource-inherited namespaces (`NAMESPACE.ID = DATA_ENTITY.NAMESPACE_ID OR NAMESPACE.ID = DATA_SOURCE.NAMESPACE_ID`)
+
+**Severity**: MEDIUM | **Category**: name-behaviour-drift | **Pillar**: P-04 | **Batch**: ZC
+**Full detail**: `lineage/odd-platform/refactoring-scopes/detail/REFACTOR-594.md`
+
+## REFACTOR-595 — Navigating away from `/data-quality` resets ALL 10 dashboard filters; per-mount jotai `<Provider>` destroys `formFiltersAtom` on route unmount, URL search-params are a partial channel
+
+**Severity**: MEDIUM | **Category**: ux-bug / per-mount-reset-lossy | **Pillar**: P-04 | **Batch**: ZC
+**Full detail**: `lineage/odd-platform/refactoring-scopes/detail/REFACTOR-595.md`
+
+## REFACTOR-596 — Dashboard has no error UI; failed `GET /api/dataqatests/runs` indistinguishable from empty catalog (`useGetDataQualityDashboard` destructures only `{ data, isSuccess }`)
+
+**Severity**: MEDIUM | **Category**: error-mapping / no-error-handler | **Pillar**: P-04 | **Batch**: ZC
+**Full detail**: `lineage/odd-platform/refactoring-scopes/detail/REFACTOR-596.md`
+
+## REFACTOR-597 — Dashboard filter autocompletes have NO debounce — every keystroke triggers a list-API GET; 10 chars = 10 GETs; 5 filters × 2 sides = 10 autocompletes; request burst
+
+**Severity**: MEDIUM | **Category**: performance-no-debounce | **Pillar**: P-04 + P-01 | **Batch**: ZC
+**Full detail**: `lineage/odd-platform/refactoring-scopes/detail/REFACTOR-597.md`
+
+## REFACTOR-598 — Dashboard filter autocompletes capped at first 30 options per search prefix; no pagination, no infinite-scroll, no truncation indicator
+
+**Severity**: MEDIUM | **Category**: size-limit-silent-trunc / missing-pagination | **Pillar**: P-04 | **Batch**: ZC
+**Full detail**: `lineage/odd-platform/refactoring-scopes/detail/REFACTOR-598.md`
+
+## REFACTOR-599 — Every dashboard filter chip toggle fires a full `GET /api/dataqatests/runs` (multi-CTE multi-join SQL) — no debounce, no Apply gate; 4-chip filter = 4 backend fetches when 1 would suffice
+
+**Severity**: MEDIUM | **Category**: performance-redundant-work | **Pillar**: P-04 | **Batch**: ZC
+**Full detail**: `lineage/odd-platform/refactoring-scopes/detail/REFACTOR-599.md`
+
+## REFACTOR-600 — Live `dashboard.md` is out of sync on 9 axes (consolidated DOC-DRIFT) — 3/6 statuses, Healthy/Warning/Error labels, Unknown casing, empty-state, per-category row, filter interaction, Title binding, namespace widening, access-control silence
+
+**Severity**: MEDIUM | **Category**: doc-code-drift (consolidated cross-facet) | **Pillar**: P-04 | **Batch**: ZC
+**Full detail**: `lineage/odd-platform/refactoring-scopes/detail/REFACTOR-600.md`
+
+## REFACTOR-601 — Per-category panels render alphabetical, not severity-descending — operator opening `/data-quality` to triage "which category failing worst" must scan all panels; panel order conveys nothing about quality
+
+**Severity**: MEDIUM | **Category**: ux-bug / ordering-not-meaningful | **Pillar**: P-04 | **Batch**: ZC
+**Full detail**: `lineage/odd-platform/refactoring-scopes/detail/REFACTOR-601.md`
+
+## REFACTOR-602 — `MultipleFilterItemAutocomplete` options-loading effect has stale-closure + stuck-spinner; `hookResult` missing from deps; failed list-API shows blank spinner forever
+
+**Severity**: LOW | **Category**: race-condition / stale-closure | **Pillar**: P-04 + cross-cutting autocomplete consumers | **Batch**: ZC
+**Full detail**: `lineage/odd-platform/refactoring-scopes/detail/REFACTOR-602.md`
+
+## REFACTOR-603 — Dashboard URL-sync mount effect calls `JSON.parse(value)` with NO try/catch — hand-edited `/data-quality?foo=bar` crashes React tree (twin of REFACTOR-286 LineageGraph)
+
+**Severity**: LOW | **Category**: missing-validation / fragile-parsing | **Pillar**: P-04 + P-05 (cross-cutting URL-source-of-truth) | **Batch**: ZC
+**Full detail**: `lineage/odd-platform/refactoring-scopes/detail/REFACTOR-603.md`
+
+## REFACTOR-604 — Entire `components/DataQuality/` subtree has ZERO test files (21 source / 0 test); dashboard ships with no automated regression coverage at any test_class — the multiplier for every other gap in this batch
+
+**Severity**: MEDIUM | **Category**: missing-test | **Pillar**: P-04 | **Batch**: ZC
+**Full detail**: `lineage/odd-platform/refactoring-scopes/detail/REFACTOR-604.md`
+
+## REFACTOR-605 — Quality Dashboard LOW-severity polish cluster (10 facets) — locale-dep ordering, dead `!data` guards, unused `getFieldFilterAtom`, whole-atom subscription, `capitalizeFirstLetter` empty-string, missing i18n, negative-count display, no `staleTime`, `toSorted`-outside-`useMemo`, present-only flatMap silent drop, swappable `filterKey` props
+
+**Severity**: LOW (consolidated) | **Category**: code-hygiene / polish / multi-facet | **Pillar**: P-04 | **Batch**: ZC
+**Full detail**: `lineage/odd-platform/refactoring-scopes/detail/REFACTOR-605.md`

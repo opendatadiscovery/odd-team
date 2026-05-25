@@ -1,0 +1,190 @@
+name: Aggregate catalog-wide data-quality (single-fetch dashboard projection)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-04
+description: |-
+  The dashboard data-fetch operation behind the /data-quality page: one
+  HTTP GET /api/dataqatests/runs (operationId `getDataQualityTestsRuns`)
+  serves all three rings (Table Health, Test Results Breakdown, Monitored
+  Tables) and every per-category card. Owned by `DataQualityRunsController`
+  on the backend, returning the `DataQualityResults` DTO
+  (`testResults[]` per-category run-status counts + `tablesDashboard`
+  table-health and monitored-tables aggregates). NEW operation, batch ZC
+  (2026-05-22).
+
+  Backend fans out to THREE repository queries
+  (`getLatestDataQualityRunsResults` / `getLatestTablesHealth` /
+  `getMonitoredTables`) zipped server-side into one DataQualityResults
+  DTO (`DataQualityRunsServiceImpl.java:36-43`). The dashboard is a
+  single atomic snapshot — all rings reflect the same filter application
+  at the same instant, no partial-load skew.
+
+  Frontend wraps the call in `useGetDataQualityDashboard` (a
+  `@tanstack/react-query` `useQuery`, dataQuality.ts:74-82) with
+  `initialData` always set (an all-zero `DataQualityResults` placeholder
+  with the six known categories) — so `data` is never undefined after
+  the first render. The `!data` guards scattered in DataQualityContent
+  are effectively dead under this contract.
+
+  DISTINCT from F-022's per-dataset operations
+  (`aggregate-test-status-counts-for-dataset` — `getDatasetTestReport`,
+  per-dataset DataSetTestReport DTO). No code is shared between the two
+  surfaces; both consume the DataEntityRunStatus enum but the request /
+  response shapes are independent.
+
+  vocabulary_status: codebase-anchored, doc-side-partially-covered. The
+  live https://docs.opendatadiscovery.org/features/data-quality/dashboard
+  (WebFetched 2026-05-22 status 200) describes the three rings the
+  operation feeds and the two-set filter sidebar that shapes its query;
+  the doc does NOT name the operation, the endpoint, or the three-query
+  server-side fan-out.
+vocabulary_status: codebase-anchored, doc-side-partially-covered
+axes_present:
+  - react_components
+  - openapi_specs
+nodes:
+  - odd-platform ts react-component component:DataQualityContent
+contributors:
+  - |-
+    DataQualityContent (dashboard body) batch ZC:
+      operations[fetch-aggregate-dashboard, aggregate-test-results-breakdown,
+      project-table-health-to-donut, project-monitored-tables-to-donut,
+      sort-categories-alphabetically, render-category-cards];
+      entities[DataQualityResults — the single dashboard DTO; testResults[],
+      tablesDashboard];
+      invariants[empty-data guard, initialData makes data never-undefined,
+      DonutChart self-handles zero-total case, category ordering is Unicode
+      collation of category label];
+      implicit_adrs[single-fetch projection — one GET serves all five visual blocks,
+      read-only owner-unscoped catalog-wide view with no per-component permission
+      gate, category labels treated as opaque backend strings]
+evidence:
+  - DataQualityContent.md:concepts.operations.[1-7]
+  - DataQualityContent.md:concepts.entities.[0,3,4] (DataQualityResults, TablesHealthDashboard, MonitoredTablesDashboard)
+  - DataQualityContent.md:concepts.invariants.[0-1] (empty-data guard, initialData)
+  - DataQualityContent.md:implicit_adrs.[0] (single-fetch projection)
+  - DataQualityContent.md:performance.hot_paths.[0] (one GET, three server-side queries zipped)
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
+    - DISABLED
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: UNKNOWN
+    detail: |-
+      At the FRONTEND tier: ungated — the component issues a bare GET with no
+      WithPermissionsProvider wrapper around the route (App.tsx:73). At the
+      BACKEND tier (DataQualityRunsController): PROBE-NEEDED (P-090), not
+      enrichable from the UI sidecars. The hypothesis under P-090 is that the
+      backend mirrors the read-collaborative posture of the related per-dataset
+      DataQualityController (four read endpoints unscoped, severity-set PUT
+      owner-scoped) — consistent with ODD's read-collaborative catalog stance.
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      No principal-derived scope at the UI layer; the SQL joins OWNERSHIP only
+      when the operator supplies owner/title filter IDs (user-driven filter,
+      NOT security scope). The dashboard fetches and renders catalog-wide
+      aggregates — table-health counts, monitored/unmonitored counts,
+      per-category run-status counts across ALL datasets.
+  strengths:
+    - |-
+      One GET, idempotent, no mutation surface. The operation is fully
+      idempotent and side-effect-free.
+    - |-
+      react-query dedupes concurrent identical-key requests; a filter change
+      creates a new queryKey and triggers one refetch.
+  weaknesses:
+    - |-
+      Operator-visible exposure of catalog-wide quality aggregates to any
+      authenticated user (and to anonymous callers under auth.type=DISABLED)
+      without a documented "read-collaborative" disclosure on the live
+      Data Quality doc pages. Severity MEDIUM — captured under the parent
+      Data Quality Dashboard entity and the
+      `dq-dashboard-doc-silent-on-access-control` invariant.
+    - |-
+      The component destructures only `{ data, isSuccess }` from the fetch hook
+      — never `isError`/`error`. A 4xx/5xx from the backend is presented as
+      three grey 'No data' donuts, indistinguishable from a genuinely empty
+      catalog. Captured as its own invariant
+      (`react-query-no-error-destructure-empty-state-masks-backend-failure`).
+  cross_file_inconsistencies: []
+  contributing_files:
+    - DataQualityContent.md
+  evidence:
+    - DataQualityContent.md:security.known_security_gaps.[0]
+    - DataQualityContent.md:bugs_limitations_corner_cases.[5] (no error UI)
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+    - |-
+      Component issues exactly one GET /api/dataqatests/runs per /data-quality
+      mount and a refetch on filter change / window-focus (react-query default
+      staleTime 0). Backend resolves it as THREE repository queries zipped
+      server-side. DataQualityContent.tsx:24 + DataQualityRunsServiceImpl.java:36-39
+    - |-
+      Per-render client cost is three useMemo reductions over `testResults` —
+      cheap, bounded by the number of categories (~6) times statuses (~6).
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: |-
+      Single aggregate fetch — no per-ring or per-category lazy loading; all
+      three rings + all category cards come from one DTO. No bulk / batch
+      variant. react-query dedupes concurrent identical-key requests.
+  scaling_shape:
+    verdict: UNPAGINATED
+    detail: |-
+      The endpoint declares no page/size params (openapi.yaml:1973-2087);
+      testResults is the full category set. Bounded in practice — the
+      category count is small and backend-bounded (~6) — so this is not
+      a scaling failure, but the contract has no pagination.
+  strengths:
+    - |-
+      Single atomic fetch — all three rings reflect the same filter application
+      at the same instant; no partial-load skew across the dashboard.
+    - |-
+      Server-side zip of three queries means client never sees partial state;
+      no client-side composition cost.
+    - |-
+      Bounded category cardinality (~6) means client memoisations are O(36)
+      worst case (6 categories x 6 statuses) — trivially cheap.
+  weaknesses:
+    - |-
+      No staleTime / gcTime configured on `useGetDataQualityDashboard` —
+      react-query default staleTime 0 means the dashboard re-runs all three
+      backend queries on every remount and every window-focus. A modest
+      staleTime would cut redundant fetches with no correctness loss (DQ
+      aggregates do not change second-to-second). Severity LOW.
+    - |-
+      A deeplink open (/data-quality?deNamespaceIds=...) double-fires the
+      fetch: 1 on plain mount (default `{}` filters) + 1 after
+      DataQualityFilters mount-useEffect hydrates from searchParams (LSN-017
+      class). Probe P-101 pins the exact multiplicity.
+    - |-
+      `data.testResults.toSorted(...)` is computed OUTSIDE a useMemo at
+      DataQualityContent.tsx:75-77 — re-sorts on every parent re-render even
+      when `data` is unchanged. Cheap at N=6, inconsistent with the surrounding
+      useMemo-wrapped derivations. Severity LOW.
+  cross_file_inconsistencies: []
+  contributing_files:
+    - DataQualityContent.md
+  evidence:
+    - DataQualityContent.md:performance.known_performance_gaps.[0-1]
+    - DataQualityContent.md:performance.throughput_characteristics
+    - DataQualityContent.md:upstream_callers.[1] (deeplink double-fire)
+related_features:
+  - F-032
+related_pillar_features:
+  - "P-04:F-002"
+notes: |-
+  This operation is the SINGLE backend contract behind the entire dashboard.
+  The pattern (one aggregate endpoint serving multiple visual blocks via a
+  single composite DTO) is a deliberate architectural choice — recorded under
+  the `single-fetch-aggregate-dashboard-projection` invariant. Sibling
+  per-dataset operations (`aggregate-test-status-counts-for-dataset`) under
+  F-022 have a different shape (per-entity scoped, one endpoint per surface).
+maintainer_curated: false

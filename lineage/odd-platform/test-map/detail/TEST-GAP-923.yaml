@@ -1,0 +1,62 @@
+gap_id: TEST-GAP-923
+category: missing-unit
+criticality: MEDIUM
+node_ids:
+  - "odd-platform ts react-component component:DataQualityFilters"
+pillars_affected: [P-04]
+surfaced_by:
+  - "odd-platform__ts__react-component__component__DataQualityFilters.md:tests_coverage_semantic.uncovered_behaviours.[3] (autocomplete options-loading state — assert optionsLoading returns to false after the list query resolves, for the success AND error paths)"
+  - "odd-platform__ts__react-component__component__DataQualityFilters.md:bugs_limitations_corner_cases.[2] (MultipleFilterItemAutocomplete's options-loading effect has a stale-closure / stuck-spinner bug — severity MEDIUM)"
+behaviour: |-
+  **MEDIUM — `MultipleFilterItemAutocomplete`'s options-loading effect (`MultipleFilterItemAutocomplete.tsx:91-104`) has a stale-closure / stuck-spinner bug: `setOptionsLoading(true)` runs unconditionally; `setOptionsLoading(false)` runs ONLY inside `if (hookResult.isSuccess)`; the effect's dependency array is `[searchText, autocompleteOpen]` — `hookResult` is NOT in it. Consequences: (a) if the list query is pending or has errored when the effect runs, `optionsLoading` stays `true` forever and the `noOptionsText` renders empty-string (`MultipleFilterItemAutocomplete.tsx:162`) — neither options nor a "No options" message; (b) because `hookResult` is excluded from deps, the effect does not re-run when the query later resolves, so freshly-arrived options are not flushed into `options` until the next `searchText`/`autocompleteOpen` change.**
+
+  **The bug** (statically certain):
+  - Effect at `MultipleFilterItemAutocomplete.tsx:91-104`:
+    ```
+    useEffect(() => {
+      setOptionsLoading(true);
+      if (hookResult.isSuccess) {
+        setOptions(getFilterOptions(...));
+        setOptionsLoading(false);
+      }
+    }, [searchText, autocompleteOpen]);
+    ```
+  - `hookResult` is `useGetNamespaceList({...})` or one of the four siblings — a react-query result with `isSuccess`, `isError`, `isPending`.
+  - Two failure modes:
+    1. The effect fires (searchText change). `hookResult.isPending` is true. `setOptionsLoading(true)` runs; the `if` skips. `optionsLoading` stays true. The query later resolves — but the effect does NOT re-run (no `hookResult` in deps). The Autocomplete shows nothing until the user types another character.
+    2. The query rejects (network error / 500). `hookResult.isError = true`, `isSuccess = false`. Same outcome: `optionsLoading` stays true; the `noOptionsText` is empty; user sees a blank Autocomplete with no error signal.
+
+  **What an operator sees on a failed list-API call**: they open the Namespace autocomplete; the spinner stays forever; no options appear; no "No options" message; no error banner. They are stuck. The only escape is to type a character, which re-fires the effect — but the same failure path repeats unless the API recovers.
+
+  **No test pins this**: the entire DataQuality subtree has zero tests.
+
+  **Test gap shape**: unit test using React Testing Library + MSW. Three scenarios: (a) successful query → assert optionsLoading transitions true→false. (b) pending query → assert optionsLoading transitions true→true (FAILS today on this assertion because the effect never re-runs). (c) errored query → assert optionsLoading transitions to false AND a "Failed to load" message renders (FAILS today — this is a FIX-REQUIRED case).
+test_class: missing-unit
+criticality_rationale: |-
+  MEDIUM per Rule 3: sidecar self-classifies MEDIUM (DataQualityFilters.md:bugs_limitations_corner_cases.[2]). Affects 5 filter dimensions × 2 sides = 10 autocompletes. Operator-visible "stuck spinner" UX defect. Single-pillar (P-04). MEDIUM stands.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-ui/src/components/DataQuality/DataQualityFilters/FilterItem/MultipleFilterItem/MultipleFilterItemAutocomplete/__tests__/optionsLoadingStaleClosure.test.tsx"
+  name: "optionsLoading_returnsToFalseOnSuccessAndError_pinsStaleClosureFix"
+evidence:
+  - "DataQualityFilters.md says (bugs_limitations_corner_cases.[2]): 'MultipleFilterItemAutocomplete's options-loading effect has a stale-closure / stuck-spinner bug. The effect at MultipleFilterItemAutocomplete.tsx:91-104 sets setOptionsLoading(true) unconditionally, then sets it back to false ONLY inside if (hookResult.isSuccess). Its dependency array is [searchText, autocompleteOpen] — hookResult is NOT in it. Consequences: (a) if the list query is still pending or has errored when the effect runs, optionsLoading stays true and the noOptionsText renders empty-string forever (MultipleFilterItemAutocomplete.tsx:162), so a failed list call shows neither options nor a No options message; (b) because hookResult is excluded from deps, the effect does not re-run when the query later resolves, so freshly-arrived options are not flushed into options until the next searchText/autocompleteOpen change.' severity: MEDIUM"
+  - "DataQualityFilters.md says (tests_coverage_semantic.uncovered_behaviours.[3]): 'autocomplete options-loading state — assert optionsLoading returns to false after the list query resolves, for the success AND error paths. MultipleFilterItemAutocomplete.tsx:91-104 sets optionsLoading true then false only inside the isSuccess branch.' test_class: unit; criticality: MEDIUM"
+  - "Verified at primary source via sidecar: MultipleFilterItemAutocomplete.tsx:91-104 (effect body + dep array) + MultipleFilterItemAutocomplete.tsx:162 (noOptionsText={optionsLoading ? '' : 'No options'})"
+cross_references:
+  - "F-032 (P-04:F-002 Catalog-wide Data Quality Dashboard)"
+  - "TEST-GAP-917 (this batch — DataQualityContent failed-fetch indistinguishable from empty — sister class: failed-call presentation is broken in this UI tree at multiple points)"
+related_features: [F-032]
+related_pillar_features: ["P-04:F-002"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `optionsLoadingStaleClosureTest` under `odd-platform-ui/src/components/DataQuality/DataQualityFilters/FilterItem/MultipleFilterItem/MultipleFilterItemAutocomplete/__tests__/`. Use Vitest + React Testing Library + MSW. Three pinning methods:
+  (a) `optionsLoading_returnsToFalseAfterSuccessfulListQuery_pinsHappyPath`: render <MultipleFilterItemAutocomplete> with a useGetNamespaceList stub that resolves with [{id:1, name:'prod'}]; assert optionsLoading transitions to false; assert the option renders.
+  (b) `optionsLoading_returnsToFalseAfterErroredListQuery_pinsErrorPath_EXPECTED_FAIL`: stub the list query to reject; assert optionsLoading transitions to false AND a "Failed to load options" message renders. EXPECTED TO FAIL today — pins the bug fix.
+  (c) `optionsLoading_doesNotRemainTrueAfterPendingQueryResolves_pinsHookResultInDeps_EXPECTED_FAIL`: stub the list query to be pending initially; trigger the effect (mount with a searchText); resolve the query; assert that without any further searchText / autocompleteOpen change, optionsLoading transitions to false and options appear. EXPECTED TO FAIL today (because hookResult is missing from the dep array) — pins the bug fix.
+
+  Add a `// FIX-REQUIRED — MultipleFilterItemAutocomplete.tsx:91-104 — add hookResult.isPending and hookResult.isError to the effect's dependency array; flip setOptionsLoading(false) on both success and error; render an error message in the noOptionsText for the error case. This test PINS the desired behaviour and FAILS until the fix lands.` block.
+
+  Backlog this gap as a bug-fix item (the desired behaviour is missing from the production code) AND as a test-gap.
+batch: 2026-05-22-ZC
+feature_id: F-032

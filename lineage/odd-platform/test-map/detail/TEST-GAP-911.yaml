@@ -1,0 +1,72 @@
+gap_id: TEST-GAP-911
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform ts react-component component:DataQuality"
+  - "odd-platform ts react-component component:DataQualityContent"
+pillars_affected: [P-04, P-09]
+surfaced_by:
+  - "odd-platform__ts__react-component__component__DataQuality.md:tests_coverage_semantic.uncovered_behaviours.[1] (The /data-quality page is reachable by any authenticated user — no permission guard)"
+  - "odd-platform__ts__react-component__component__DataQuality.md:bugs_limitations_corner_cases.[0] (The /data-quality route has no client-side permission guard — severity MEDIUM)"
+  - "odd-platform__ts__react-component__component__DataQuality.md:security.known_security_gaps.[0] (no WithPermissionsProvider, contrast /lookup-tables — severity MEDIUM)"
+  - "odd-platform__ts__react-component__component__DataQualityContent.md:security.known_security_gaps.[0] (the /data-quality route has no WithPermissionsProvider and the component issues a bare GET — severity MEDIUM)"
+  - "odd-platform__ts__react-component__component__DataQuality.md:stress_findings.probes_emitted.P-090 (Is the catalog-wide /data-quality dashboard endpoint readable by any authenticated user?)"
+behaviour: |-
+  **HIGH — the catalog-wide `/data-quality` Data Quality dashboard is mounted UNGATED at `App.tsx:73` — the frontend route has NO `WithPermissionsProvider` wrapper, the toolbar tab is rendered unconditionally, and NO test pins the deliberate any-authenticated-user posture so a future tightening (or a future loosening that opens the route to anonymous) has no regression detector.**
+
+  **The current posture (statically certain at the frontend layer)**:
+  - `App.tsx:73` mounts the route as `<Route path={dataQualityPath()} element={<DataQuality />} />` — a BARE route, no permission wrapper.
+  - **Contrast**: the IMMEDIATELY ADJACENT `/lookup-tables` route at `App.tsx:75-88` IS wrapped in `WithPermissionsProvider` with explicit `allowedPermissions: [LOOKUP_TABLE_CREATE, LOOKUP_TABLE_UPDATE, LOOKUP_TABLE_DELETE]`. The contrast makes the absence visible — it is an unexplained exception in a code path that knows how to gate routes.
+  - `ToolbarTabs.tsx:45-49` renders the "Data Quality" top-bar tab UNCONDITIONALLY — no `Permission` check, no conditional render. Any authenticated user sees the tab.
+  - Under `auth.type=DISABLED`, the SPA is anonymous, and so is `/data-quality`.
+
+  **What the dashboard exposes if reached** (the catalog-wide aggregate quality view via the sibling `DataQualityContent`'s `useGetDataQualityDashboard` → `GET /api/dataqatests/runs`):
+  - Tables Health aggregate: count of `healthyTables`, `warningTables`, `errorTables` across the WHOLE catalog.
+  - Monitored Tables aggregate: count of `monitoredTables`, `notMonitoredTables` across the WHOLE catalog.
+  - Test Results Breakdown: catalog-wide per-status (SUCCESS/FAILED/SKIPPED/BROKEN/ABORTED/UNKNOWN) test-run counts.
+  - Per-category result rows for all 6 `DataQualityCategory` values with per-status counts.
+
+  **The cross-pillar risk** (P-04 × P-09):
+  - This is the UI half. Whether the backend `GET /api/dataqatests/runs` endpoint (owned by `DataQualityRunsController`, not yet enriched) is ALSO ungated decides whether the catalog-wide aggregate health of every dataset is visible to every authenticated principal. P-090 probe pins the backend half.
+  - If the backend ALSO omits a permission check (the hypothesis from F-032's `drift_class_summary: ungated_dashboard_route_no_permission_guard`), the dashboard exposes whole-catalog DQ health to any authenticated principal, INCLUDING a minimum-privilege user with zero `Permission`s and zero ownership associations.
+  - **DOC-side silence amplifies the gap**: the live `documentation/docs/features/data-quality/dashboard.md` page (WebFetched 2026-05-22 status 200) makes NO statement about access control. An operator reading the docs to understand "who can see this dashboard" finds no answer. So the posture is BOTH undocumented AND unguarded by a regression test — the exact "double jeopardy" Rule 4 of the contract surfaces.
+
+  **No test pins this** at any layer. A test asserting either "every authenticated user can render `<DataQuality>`" OR "users without `DATA_QUALITY_READ` are redirected" would pin the deliberate posture — TODAY a regression that adds an accidental guard, or a regression that opens the route to unauthenticated callers, ships green.
+
+  **Test gap shape**: two paired tests asserting (a) the CURRENT bare-route posture: render `<App>` in a memory router with an authenticated minimal-privilege user; navigate to `/data-quality`; assert `<DataQuality>` renders fully (mounts the filter sidebar + content). PINS the read-collaborative posture for future regression detection. (b) The CONTRAST: render `<App>` at `/lookup-tables` with the same minimal-privilege user; assert the page does NOT render (the existing `WithPermissionsProvider` gates it). PINS the asymmetry so anyone who later wraps `/data-quality` in a permission gate must update BOTH tests — forcing the doc-side disclosure to ship alongside.
+test_class: missing-security
+criticality_rationale: |-
+  Sidecars self-rate this MEDIUM. Bumped to HIGH per Rule 3 cross-pillar amplification (`pillars_affected: [P-04, P-09]` — len >= 2; the gap spans the Data Quality pillar's READ surface AND the Auth & Access pillar's permission-gating responsibility; the contract Rule 3 caps cross-pillar bumps at CRITICAL). Also: the SIDECAR-recorded `drift_class_summary: ungated_dashboard_route_no_permission_guard` is the PRIMARY drift class for F-032 (`feature-flows/detail/F-032.yaml:9`) — meaning the feature-flow surface itself flags this as the most architecturally-significant defect of the dashboard. Not CRITICAL because (a) no data-LOSS or credential-leak vector, (b) the posture is consistent with ODD's documented read-collaborative catalog stance (F-002 backend pillar invariant). HIGH stands.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-ui/src/components/DataQuality/__tests__/DataQualityRoutePermissionPosture.test.tsx"
+  name: "dataQualityRouteIsReachableByAnyAuthenticatedUser_AND_lookupTablesIsGated_pinsAsymmetry"
+evidence:
+  - "DataQuality.md says (security.known_security_gaps.[0]): 'The /data-quality route is mounted with NO client-side permission guard (App.tsx:73, a bare <Route>), unlike the sibling /lookup-tables route which IS wrapped in WithPermissionsProvider (App.tsx:75-88). The Data Quality tab is shown to every authenticated user unconditionally (ToolbarTabs.tsx:45-49).' severity: MEDIUM"
+  - "DataQuality.md says (bugs_limitations_corner_cases.[0]): 'App.tsx:73 mounts the route as a bare <Route path={dataQualityPath()} element={<DataQuality />} />. The sibling /lookup-tables route directly below it (App.tsx:75-88) IS wrapped in WithPermissionsProvider with explicit allowedPermissions. The Data Quality top-bar tab is also rendered unconditionally (ToolbarTabs.tsx:45-49). ... If the backend endpoint also has no gate (the hypothesis under P-090), the catalog-wide aggregate health of every dataset is visible to every authenticated principal.' severity: MEDIUM"
+  - "DataQuality.md says (tests_coverage_semantic.uncovered_behaviours.[1]): 'No test asserts the route is OR is not gated. The absence of WithPermissionsProvider (contrast LookupTables, App.tsx:75-88) is the intended state per the code, but a future tightening to gate the dashboard would have no test to break.' test_class: security; criticality: MEDIUM"
+  - "DataQualityContent.md says (security.known_security_gaps.[0]): 'The /data-quality route has no WithPermissionsProvider and the component issues a bare GET — there is no UI-side permission gate.' severity: MEDIUM"
+  - "Verified at primary source via sidecars: App.tsx:73 (bare route) + App.tsx:75-88 (gated sibling, for direct contrast) + ToolbarTabs.tsx:45-49 (unconditional tab)"
+  - "WebFetch verification (2026-05-22 status 200): documentation/docs/features/data-quality/dashboard.md page is silent on access control — verbatim from DataQuality.md:docs_link_semantic.doc_drift_findings.[0]"
+  - "F-032 feature-flow declares primary_drift_class: ungated_dashboard_route_no_permission_guard — confirms architectural significance"
+cross_references:
+  - "F-032 (P-04:F-002 Catalog-wide Data Quality Dashboard) — primary_drift_class is THIS gap"
+  - "probe P-090 (lineage/odd-platform/probes/P-090.yaml — Is the catalog-wide /data-quality dashboard endpoint readable by any authenticated user?) — pins the BACKEND half"
+  - "TEST-GAP-243 (existing — under auth.type=DISABLED, the PermissionController returns empty Flux for any resource; sister class — same DISABLED-mode anonymous reach, different surface)"
+  - "TEST-GAP-088 (existing — POST /api/datacollaboration/providers/slack/messages has no authorization gate; sister class — same ungated-route pattern, different surface)"
+  - "DOC-GAP-NNN (proposed): document the read-collaborative posture on documentation/docs/features/data-quality/dashboard.md explicitly — 'visible to any authenticated user' so operators are not surprised"
+related_features: [F-032]
+related_pillar_features: ["P-04:F-002"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `DataQualityRoutePermissionPostureTest` under `odd-platform-ui/src/components/DataQuality/__tests__/`. Use Vitest + React Testing Library + a `<MemoryRouter>` to drive the full `<App>` route tree. Three pinning methods:
+  (a) `dataQualityRoute_isReachableByMinimumPrivilegeUser_pinsCurrentUngatedPosture`: mount `<App>` with an authenticated user carrying ZERO `Permission`s and zero ownership associations; navigate to `/data-quality`; assert `<DataQuality>` renders fully (the sidebar + content panes mount; the DonutChart placeholders appear). PINS the current any-authenticated posture.
+  (b) `lookupTablesRoute_isGated_pinsContrastAsymmetry`: same minimum-privilege user; navigate to `/lookup-tables`; assert the page does NOT mount the LookupTables editor (the `WithPermissionsProvider` blocks it). The two tests together PIN the deliberate asymmetry: a regression that adds a guard to `/data-quality` OR removes the guard from `/lookup-tables` breaks one of the two.
+  (c) `dataQualityTopBarTab_isShownToMinimumPrivilegeUser_pinsToolbarUnconditionalRender`: assert the "Data Quality" tab text is present in the rendered toolbar for the minimum-privilege user. Pins `ToolbarTabs.tsx:45-49`'s unconditional render.
+
+  Add a `// REGRESSION-PIN — App.tsx:73 — /data-quality is INTENTIONALLY ungated (read-collaborative posture). If you want to gate this dashboard, you must (1) update this test, (2) update documentation/docs/features/data-quality/dashboard.md to document the new gate, (3) update F-032's drift_class_summary to remove ungated_dashboard_route_no_permission_guard, and (4) coordinate with the backend half (probe P-090) to keep the frontend gate and the backend gate aligned.` block.
+
+  Pair with DOC-GAP-NNN that fixes the doc-side silence (the `dashboard.md` page should say "visible to any authenticated user — catalog-wide quality posture is a read-collaborative surface").
+batch: 2026-05-22-ZC
+feature_id: F-032

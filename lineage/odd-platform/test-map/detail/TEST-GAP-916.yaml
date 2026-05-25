@@ -1,0 +1,56 @@
+gap_id: TEST-GAP-916
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform ts react-component component:DataQualityContent"
+  - "odd-platform ts react-component component:DataQualityFilters"
+pillars_affected: [P-04]
+surfaced_by:
+  - "odd-platform__ts__react-component__component__DataQualityContent.md:tests_coverage_semantic.uncovered_behaviours.[3] (dashboard fetches exactly once on plain /data-quality open and does not over-fetch on no-op filter churn)"
+  - "odd-platform__ts__react-component__component__DataQualityContent.md:upstream_callers.[1] (multiplicity_per_trigger: 1 on plain open; 2 on open with a filter pre-set in the URL query string — LSN-017 class)"
+  - "odd-platform__ts__react-component__component__DataQualityContent.md:stress_findings.probes_emitted.P-101"
+behaviour: |-
+  **MEDIUM — the dashboard's `GET /api/dataqatests/runs` fetch multiplicity is unverified at every common operator action: plain `/data-quality` open should fire exactly 1 fetch; deep-linked open (`/data-quality?deNamespaceIds=[1]`) should fire EITHER 1 (if the mount-sync useEffect runs synchronously before first render) OR 2 (if it runs after — LSN-017 class). No filter change should fire MORE than 1 fetch.**
+
+  **The multiplicity surfaces** (statically traced):
+  - Plain open: `<DataQualityContent>` mounts, reads `filtersAtom` (empty), `useGetDataQualityDashboard({})` calls react-query's `useQuery` with keyed `['dataQualityDashboard', {}]` — 1 fetch.
+  - Deep-linked open (`/data-quality?deNamespaceIds=[1]`): `<DataQualityContent>` mounts and renders FIRST (since the sidebar's mount-sync useEffect at `DataQualityFilters.tsx:28-43` runs AFTER the first render in React's mount order). The first render uses `filtersAtom = {}` → 1 fetch. THEN the useEffect fires, sets `formFiltersAtom` from URL → derived `filtersAtom` recomputes → react-query sees a new key → SECOND fetch. **2 fetches per deep-link open** (LSN-017 multiplicity class).
+  - Filter change: operator selects a chip → `formFiltersAtom` write → `filtersAtom` re-derives → react-query sees a new key → 1 fetch (correct).
+  - No-op filter churn: clicking the same already-selected chip should NOT fire a new fetch (`filtersAtom` value is identity-equal). React-query dedupes — but this is a TEST gap because no test pins the dedup behaviour.
+
+  **Why this matters**: the dashboard's backend resolves each fetch into THREE repository queries with multi-CTE multi-join SQL (`DataQualityRunsServiceImpl.java:36-39` zips `getLatestDataQualityRunsResults` / `getLatestTablesHealth` / `getMonitoredTables`). Doubling fetches doubles DB load on a deep-link click. For a SOC dashboard left open and tabbed-in / tabbed-out 50 times per day, the multiplicity matters.
+
+  **Why MEDIUM**: the multiplicity is correctness-adjacent (the data is still correct on the second fetch), but a performance / cost regression — sidecar self-rates MEDIUM. No security or data loss; single-pillar. MEDIUM stands.
+
+  **Test gap shape**: integration test that spies on react-query's `useQuery` fetch count (or mocks `dataQualityRunsApi.getDataQualityTestsRuns` and counts calls). Three scenarios: plain open (assert 1), deep-link open (assert 1 or 2 — PINS the current state), filter chip toggle (assert exactly 1 new fetch).
+test_class: missing-integration
+criticality_rationale: |-
+  MEDIUM per Rule 3: sidecar self-classifies MEDIUM (DataQualityContent.md:tests_coverage_semantic.uncovered_behaviours.[3]). Performance / cost concern, not correctness or security. Single-pillar (P-04). MEDIUM stands.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-ui/src/components/DataQuality/__tests__/DataQualityFetchMultiplicity.test.tsx"
+  name: "dashboardFiresOneFetchOnPlainOpen_andDoesNotOverFetchOnNoopFilterChurn_pinsLSN017Multiplicity"
+evidence:
+  - "DataQualityContent.md says (tests_coverage_semantic.uncovered_behaviours.[3]): 'dashboard fetches exactly once on plain /data-quality open and does not over-fetch on no-op filter churn. Rule 6 multiplicity — probe P-101.' test_class: integration; criticality: MEDIUM"
+  - "DataQualityContent.md says (upstream_callers.[1]): 'multiplicity_per_trigger: 1 on plain open; 2 on open with a filter pre-set in the URL query string. DataQualityContent.tsx:24 calls useGetDataQualityDashboard(filterState) once per render; react-query dedupes by queryKey so a plain open yields 1 fetch. On a deeplink open (/data-quality?deNamespaceIds=[1]), DataQualityFilters.tsx:28-43 mount useEffect sets formFiltersAtom from searchParams AFTER the first render — the derived filtersAtom then recomputes and a second fetch fires with the URL filters. Probe P-101 pins this; LSN-017 class.'"
+  - "Verified at primary source via sidecar: DataQualityContent.tsx:24 + dataQuality.ts:74-82 + DataQualityFilters.tsx:28-43"
+cross_references:
+  - "F-032 (P-04:F-002 Catalog-wide Data Quality Dashboard) — drift_class ui_deeplink_double_fetch is enumerated in F-032.drift_class_summary"
+  - "probe P-101 (lineage/odd-platform/probes/P-101.yaml — How many times does GET /api/dataqatests/runs fire per /data-quality open and per filter change?)"
+  - "LSN-017 (the canonical multiplicity case-law — useEffect dep-array fires twice)"
+  - "TEST-GAP-417 (existing LSN-017 instance on DataEntityDetails — useEffect dep-array must dispatch exactly once per mount)"
+  - "TEST-GAP-419 (existing LSN-017 instance — 4 mount-only ancillary fetches in DataEntityDetails)"
+related_features: [F-032]
+related_pillar_features: ["P-04:F-002"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `DataQualityFetchMultiplicityTest` under `odd-platform-ui/src/components/DataQuality/__tests__/`. Four pinning methods:
+  (a) `plainOpen_firesExactlyOneFetch`: mount <DataQuality> at /data-quality with no query params; spy on dataQualityRunsApi.getDataQualityTestsRuns; assert called exactly once.
+  (b) `deeplinkOpen_firesAtMostTwoFetches_pinsLSN017Multiplicity`: mount <DataQuality> at /data-quality?deNamespaceIds=[{id:1,name:"prod"}]; assert called 1 or 2 times (current state may legitimately be either). If 2, also assert the FIRST call had params={} and the SECOND call had params={deNamespaceIds:[1]} — PINS the order-of-effects.
+  (c) `filterChipToggle_firesExactlyOneAdditionalFetch`: mount with empty URL; spy.resetHistory; select a chip; assert exactly 1 additional fetch.
+  (d) `noopFilterChurn_doesNotFireAdditionalFetch`: mount with one chip selected; spy.resetHistory; "re-select" the same chip (write the same value into the atom); assert ZERO additional fetches (react-query dedupes identical keys).
+
+  Add a `// REGRESSION-PIN — DataQualityContent.tsx:24 + DataQualityFilters.tsx:28-43 — the dashboard fetch multiplicity. Plain open = 1; deeplink open = 1 or 2 (LSN-017 class — pin the current state); filter toggle = +1; no-op = +0. If you refactor the mount useEffect to run BEFORE first render, the deeplink case becomes 1 — that is a perf improvement, but this test forces the maintainer to acknowledge the change.` block.
+batch: 2026-05-22-ZC
+feature_id: F-032

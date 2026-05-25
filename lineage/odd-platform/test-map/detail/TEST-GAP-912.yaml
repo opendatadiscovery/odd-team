@@ -1,0 +1,70 @@
+gap_id: TEST-GAP-912
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform ts react-component component:DataQualityFilters"
+pillars_affected: [P-04, P-08]
+surfaced_by:
+  - "odd-platform__ts__react-component__component__DataQualityFilters.md:tests_coverage_semantic.uncovered_behaviours.[4] (Title-filter scope — assert that selecting a value in the 'Title' filter narrows the dashboard by ownership title, not by dataset name)"
+  - "odd-platform__ts__react-component__component__DataQualityFilters.md:bugs_limitations_corner_cases.[0] (The 'Title' filter binds to OWNERSHIP.TITLE_ID — ownership role, not dataset title — severity HIGH)"
+  - "odd-platform__ts__react-component__component__DataQualityFilters.md:docs_link_semantic.doc_drift_findings.[0] (DOC DRIFT — the 'Title' filter is undocumented and its name is misleading — severity HIGH)"
+  - "odd-platform__ts__react-component__component__DataQualityFilters.md:stress_findings.request_inputs.[TitleFilter] (DRIFT_INPUT_NAME_VS_IMPLEMENTATION — the label 'Title' implies dataset name; the implementation filters by OWNERSHIP.TITLE_ID — LSN-020 class)"
+  - "odd-platform__ts__react-component__component__DataQualityFilters.md:stress_findings.probes_emitted.P-110"
+behaviour: |-
+  **HIGH — the Data Quality dashboard's "Title" filter (`titleIds` / `deTitleIds`) is the LSN-020 input-name-vs-implementation drift class instantiated on the dashboard: the UI label says "Title" (implying dataset title/name) but the SQL binds to `OWNERSHIP.TITLE_ID` (ownership ROLE — "Data Steward", "Owner", etc.). No test pins what the filter actually filters by, so the drift is invisible to CI and to any operator reading the label.**
+
+  **The drift chain** (statically traced end-to-end):
+  - UI label: `t('Title')` — a bare i18n key with no scope qualifier (`TitleFilter.tsx:29`).
+  - filter atom write: `DataQualityFilters.tsx:73, 88` writes to `formFiltersAtom[titleIds]` / `formFiltersAtom[deTitleIds]`.
+  - derived request shape: `filtersAtom` maps `FilterOption[]` → `number[]` and passes the ids verbatim into `DataQualityRunsApiGetDataQualityTestsRunsRequest.titleIds` / `.deTitleIds` (`DataQualityStore.ts:32-42`).
+  - request issued: `DataQualityContent.tsx:23-24` calls `useGetDataQualityDashboard(filterState)` → `dataQualityRunsApi.getDataQualityTestsRuns(params)` → HTTP `GET /api/dataqatests/runs?titleIds=...`.
+  - controller: `DataQualityRunsController.java:19-32` binds `titleIds: List<Long>`.
+  - service + mapper: `DataQualityRunsServiceImpl.java:22-43` → `DataQualityTestFiltersMapper.java:9-26` 1:1 pass-through into `DataQualityTestFiltersDto`.
+  - **SQL bind site**: `ReactiveDataQualityRunsRepositoryImpl.java:301, 309` builds `OWNERSHIP.TITLE_ID.in(titleIds)` — joining the `OWNERSHIP` table on `TITLE_ID`, the ownership ROLE foreign key (FK to the `TITLE` table — values like "Data Steward", "Data Owner").
+
+  **What the operator sees vs what they expect**:
+  - Expectation (reading "Title"): "narrow the dashboard to a named dataset" — the human-readable entity name. In a data catalog, "Title" maps most strongly to the entity's display name.
+  - Reality: the dashboard narrows to entities where SOME owner holds the selected ownership ROLE. A completely different, far WIDER slice.
+  - PARTIAL MITIGATION: a careful operator who opens the dropdown sees role names (the autocomplete is populated by `useGetTitleList`, which lists `TITLE` rows — `TitleFilter.tsx:4`), and can infer the meaning. The bare LABEL alone misleads; the open dropdown corrects.
+  - **Compounding drift** (per sidecar): when BOTH Owner and Title are selected, the SQL puts them in ONE OWNERSHIP join with AND (`ReactiveDataQualityRunsRepositoryImpl.java:297-302`) — the result is entities where THAT owner holds THAT title, NOT "owned by Alice AND tagged with title X". An operator expecting two independent filters may get an empty dashboard if Alice's ownership row has a different title.
+
+  **DOC-side silence amplifies the gap**: the live `documentation/docs/features/data-quality/dashboard.md` (WebFetched 2026-05-22 status 200) lists "Title" as one of the five filter dimensions but explicitly does NOT explain what it filters by. So an operator has no documentation that disambiguates — only the autocomplete dropdown content disambiguates, which is post-hoc.
+
+  **The LSN-020 cross-surface family** (each instance is the SAME class on a DIFFERENT surface):
+  - LSN-020 itself: Activity Feed `userIds` parameter binds to `OWNER_ID` (the original case).
+  - TEST-GAP-893: `TagController.getPopularTagList` `ids` parameter described as "Entity ids" but binds to TAG id.
+  - TEST-GAP-912 (THIS): Dashboard "Title" filter binds to `OWNERSHIP.TITLE_ID`, not dataset title.
+
+  **Test gap shape**: integration test against the full chain. Seed dataset D with owner O carrying title T1. Seed another dataset D' with no owners. POST `/api/dataqatests/runs?titleIds={T1.id}` and assert the response's `tablesDashboard` counts include D but NOT D'. Then assert that filtering by `titleIds={existing-dataset-title-string-as-id}` (if such ID exists in DATA_ENTITY's name columns) returns EITHER empty OR the dataset whose ownership row has that exact title-id — pinning that the bind is the OWNERSHIP table, not the entity-name columns.
+test_class: missing-integration
+criticality_rationale: |-
+  HIGH per Rule 3 cross-pillar bump: `pillars_affected: [P-04, P-08]` — len 2 → criticality nudge per the contract Rule 3 (cross-pillar gaps are higher-leverage; integration-boundary gaps spanning pillars are bumped). P-04 = Data Quality (the dashboard surface); P-08 = Management (the TITLE/OWNERSHIP entities). Sidecar self-classifies HIGH (DataQualityFilters.md:bugs_limitations_corner_cases.[0]) — LSN-020 class drift is the canonical input-name-vs-implementation defect class with documented operator harm precedent. Not CRITICAL (no security or data-loss; the silent drift produces wrong results but not exposure of unauthorised data). HIGH stands.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DataQualityRunsTitleFilterScopeIntegrationTest.java"
+  name: "titleIdsFilterBindsToOwnershipTitleId_NOT_dataEntityTitle_pinsLSN020Drift"
+evidence:
+  - "DataQualityFilters.md says (bugs_limitations_corner_cases.[0]): 'The Title filter (titleIds / deTitleIds) binds to OWNERSHIP.TITLE_ID — ownership role, not dataset title — with no UI signal of the translation. The label is the bare t(Title) (TitleFilter.tsx:29). Traced through filtersAtom → getDataQualityTestsRuns → DataQualityRunsServiceImpl → DataQualityTestFiltersMapper → ReactiveDataQualityRunsRepositoryImpl.getConditionsForFilters, titleIds binds to OWNERSHIP.TITLE_ID.in(titleIds) (ReactiveDataQualityRunsRepositoryImpl.java:301, 309). OWNERSHIP.TITLE_ID references the TITLE table — the ownership role assigned alongside an owner (e.g. Data Steward). An operator who selects a value in the Title filter expecting to narrow the dashboard to a named dataset narrows it instead to datasets where someone holds that ownership title. This is the LSN-020 input-name-vs-implementation drift class, instantiated on the dashboard.' severity: HIGH"
+  - "DataQualityFilters.md says (tests_coverage_semantic.uncovered_behaviours.[4]): 'Title-filter scope — assert that selecting a value in the Title filter narrows the dashboard by ownership title, not by dataset name (the Category-F drift). no test pins what the Title filter actually filters by; the SQL bind is OWNERSHIP.TITLE_ID.' test_class: integration; criticality: HIGH"
+  - "DataQualityFilters.md says (docs_link_semantic.doc_drift_findings.[0]): 'DOC DRIFT — the Title filter is undocumented and its name is misleading. The live dashboard page (WebFetched 2026-05-22 status 200) lists Title as one of the five filter dimensions but explicitly does NOT explain what it filters by. ... An operator reading Title will reasonably expect to filter by a dataset title/name and instead filters by ownership role; the docs offer no correction. Severity: HIGH — same shape as LSN-020 (userIds → OWNER_ID).'"
+  - "DataQualityFilters.md says (stress_findings.request_inputs.TitleFilter Q3): 'TRANSLATES_SILENTLY — the label Title implies dataset name; the implementation filters by OWNERSHIP.TITLE_ID (ownership role). This is the LSN-020 class.' drift_class: DRIFT_INPUT_NAME_VS_IMPLEMENTATION"
+  - "Verified at primary source via sidecar: TitleFilter.tsx:29 (label) + DataQualityFilters.tsx:73, 88 (filterKey wiring) + DataQualityStore.ts:32-42 (filtersAtom projection) + DataQualityContent.tsx:23-24 (request issue) + ReactiveDataQualityRunsRepositoryImpl.java:296-311 (the OWNERSHIP.TITLE_ID.in(...) bind)"
+cross_references:
+  - "F-032 (P-04:F-002 Catalog-wide Data Quality Dashboard) — drift_class input_name_vs_implementation_title_filter is enumerated in F-032.drift_class_summary"
+  - "TEST-GAP-893 (existing — TagController.getPopularTagList ids parameter described as Entity ids but binds to TAG id — sister LSN-020 instance, different surface)"
+  - "LSN-020 (the canonical input-name-vs-implementation drift case-law — Activity Feed userIds → OWNER_ID)"
+  - "probe P-110 (lineage/odd-platform/probes/P-110.yaml — Does the Title filter narrow the dashboard by ownership title, not by dataset name?)"
+  - "DOC-GAP-NNN (proposed): rename the UI label to t('Ownership Title') or t('Ownership Role') AND update documentation/docs/features/data-quality/dashboard.md to disambiguate"
+related_features: [F-032]
+related_pillar_features: ["P-04:F-002"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `DataQualityRunsTitleFilterScopeIntegrationTest` extending `@SpringBootTest` + Testcontainers (Postgres). Three pinning methods:
+  (a) `titleIdsFilter_bindsToOwnershipTitleId_returnsEntitiesByOwnershipRole`: seed two `TITLE` rows (T1='Data Steward', T2='Data Owner'); seed three data entities; create OWNERSHIP rows attaching one owner with T1 to D1 and D2, one owner with T2 to D3. WebTestClient `GET /api/dataqatests/runs?titleIds={T1.id}`; assert `tablesDashboard.healthyTables + warningTables + errorTables` count covers exactly D1 and D2 (not D3). PINS that titleIds binds to the OWNERSHIP role.
+  (b) `titleIdsFilter_doesNotBindToDataEntityName_returnsEmptyForEntityIdValue`: WebTestClient `GET /api/dataqatests/runs?titleIds={D1.id}` (passing a data-entity id where the spec rendered as "Title" might imply a dataset title). Assert empty `tablesDashboard` aggregates — PINS that titleIds does NOT match by DATA_ENTITY.NAME or the entity id; the only thing that matches is a TITLE row id.
+  (c) `titleIdsAndOwnerIdsCombined_areConjoinedInSingleOwnershipJoinWithAND`: seed owner OwnerA holding T1 on D1, owner OwnerB holding T2 on D2. WebTestClient `GET /api/dataqatests/runs?titleIds={T1.id}&ownerIds={OwnerB.id}`; assert the result is EMPTY (neither D1 has OwnerB nor does D2 have T1 — the single OWNERSHIP join with AND is unsatisfiable). PINS the compounding drift documented in DataQualityFilters.md:bugs_limitations_corner_cases.[0] — the AND-on-same-OWNERSHIP-row semantics.
+
+  Add a `// REGRESSION-PIN — ReactiveDataQualityRunsRepositoryImpl.java:296-311 — titleIds binds OWNERSHIP.TITLE_ID, NOT a dataset name column. The UI label is the bare i18n key t('Title'); the bind is to the ownership ROLE. This test pins the SQL bind; if the maintainer relabels the UI or rebinds the SQL, this test must be updated AND documentation/docs/features/data-quality/dashboard.md must be updated to disambiguate.` block. Pair with DOC-GAP-NNN (rename the UI label and disambiguate the doc).
+batch: 2026-05-22-ZC
+feature_id: F-032

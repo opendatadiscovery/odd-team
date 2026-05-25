@@ -1,0 +1,97 @@
+---
+probe_id: P-101
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__DataQualityContent.md
+emitted_at: 2026-05-22T00:00:00Z
+status: pending-stress-protocol
+feature_id: null  # P-04:F-002 "Quality Dashboard"
+test_class: integration
+verified_against_commit: ede5d277
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Rule 6 upstream_callers multiplicity, LSN-017 class): how many times
+  does GET /api/dataqatests/runs fire per one operator open of the /data-quality page,
+  and per one filter change?
+
+  DataQualityContent.tsx:24 calls useGetDataQualityDashboard(filterState) where
+  filterState is a jotai DERIVED atom (filtersAtom, DataQualityStore.ts:32-42) recomputed
+  from formFiltersAtom. The hook (lib/hooks/api/dataQuality.ts:74-82) wraps useQuery with
+  queryKey ['dataQualityDashboard', params]. React-Query dedupes by queryKey, so a
+  stable filterState object SHOULD produce exactly one network call per distinct key.
+
+  Two doubling risks to pin:
+  (H1 — derived-atom identity churn): filtersAtom returns a NEW object literal on every
+  recomputation (DataQualityStore.ts:34-41 builds a fresh `{}` via reduce). React-Query
+  serialises the queryKey, so a structurally-equal-but-referentially-new params object
+  is the SAME key after serialisation and should NOT refetch. Confirm no refetch on a
+  no-op formFiltersAtom write.
+  (H2 — mount-time searchParams sync double-write): DataQualityFilters.tsx:28-43 has a
+  useEffect that, on mount, reads searchParams and may setFormFilters once; a second
+  useEffect (lines 46-54) writes searchParams back. If the page is opened with a filter
+  already in the URL, the mount sequence is: initial render (fetch #1 with empty
+  filters) -> searchParams-sync effect sets formFilters -> filtersAtom recomputes ->
+  fetch #2 with the URL filters. That is a legitimate 2x for the URL-deeplink case, not
+  a bug, but it MUST be recorded as multiplicity_per_trigger=2 for the
+  "open /data-quality?deNamespaceIds=[1]" entry-point variant.
+---
+arrange:
+  - kind: docker-compose-up
+    compose_profile: odd-minimal
+  - kind: sql
+    query: |
+      -- minimal seed: one namespace, one datasource, one table-type data entity with
+      -- one DQ test + one test run, so the dashboard endpoint returns non-empty.
+      -- probe-runner fills exact INSERTs from the odd-minimal fixture set.
+  - kind: note
+    text: |
+      Run with a local HTTP proxy / request log (or Playwright route interception)
+      capturing every GET /api/dataqatests/runs and its query string.
+act:
+  - kind: dom-probe
+    description: "Scenario A — open /data-quality with NO query string. Wait for network idle."
+    capture_as: scenario_a_requests
+  - kind: dom-probe
+    description: |
+      Scenario B — open /data-quality?deNamespaceIds=%5B1%5D (one tables-side filter
+      pre-set in the URL). Wait for network idle.
+    capture_as: scenario_b_requests
+  - kind: dom-probe
+    description: |
+      Scenario C — from a settled /data-quality page, select one owner in the
+      "Filters for tests" section, then deselect it (net no-op). Wait for network idle.
+    capture_as: scenario_c_requests
+observe:
+  - kind: capture
+    expression: scenario_a_requests.filter(r => r.url.includes('/api/dataqatests/runs')).length
+    capture_as: count_a
+  - kind: capture
+    expression: scenario_b_requests.filter(r => r.url.includes('/api/dataqatests/runs')).length
+    capture_as: count_b
+  - kind: capture
+    expression: scenario_c_requests.filter(r => r.url.includes('/api/dataqatests/runs')).length
+    capture_as: count_c
+assert:
+  - "count_a == 1  # plain open: exactly one aggregate fetch"
+  - "count_b == 2  # URL-deeplink open: initial empty-filter fetch + post-sync filtered fetch (expected, record as multiplicity 2)"
+  - "count_c >= 2  # select+deselect: 2 real key changes; assert it does NOT exceed 2 (no churn-induced extra fetch)"
+  - "count_c <= 2"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__DataQualityContent
+    - odd-platform__ts__react-component__component__DataQualityFilters  # sibling — enriched this batch
+    - odd-platform__ts__react-component__component__DataQualityStore    # sibling — enriched this batch
+  retrospectives: [LSN-017]
+realism_caveats: |
+  This probe measures network-call cardinality at the browser boundary; it does NOT
+  measure React component re-render count (a re-render without a refetch is harmless
+  here and out of scope). The count_b == 2 assertion encodes the EXPECTED deeplink
+  behaviour — if a future change makes the searchParams-sync effect run before the
+  first fetch, count_b would drop to 1, which is an improvement, not a regression;
+  probe-runner should treat a count_b of 1 as a passing-with-note, not a failure.
+  Scenario C's select+deselect produces two genuinely distinct queryKeys, so 2 is the
+  floor; the real thing under test is the absence of a THIRD fetch from derived-atom
+  object-identity churn (H1).

@@ -7,19 +7,19 @@ source_monolith_frontmatter:
   sidecar_count: 65
   test_files_indexed: 70
   prompt_version: test-coverage-mapper/0.1.0
-  total_test_gaps: 906
+  total_test_gaps: 924
   gaps_by_criticality:
     CRITICAL: 151
-    HIGH: 294
-    MEDIUM: 338
-    LOW: 123
+    HIGH: 299
+    MEDIUM: 350
+    LOW: 124
   gaps_by_category:
-    missing-integration: 178
-    missing-security: 263
-    missing-edge-case: 304
-    missing-unit: 86
+    missing-integration: 188
+    missing-security: 264
+    missing-edge-case: 306
+    missing-unit: 90
     sidecar-stale: 3
-    missing-performance: 34
+    missing-performance: 35
     missing-binding: 10
     integration: 18
     unit: 5
@@ -214,7 +214,7 @@ source_monolith_frontmatter:
   - odd-platform java notification.sender class:SlackNotificationSender
   - odd-platform java notification.sender class:WebhookNotificationSender
   - odd-platform java notification.processor class:PostgresWALMessageProcessor
-total_entries: 906
+total_entries: 924
 notice: Rebuilt from detail/ by lineage/_extractor/registry-shard/rebuild_indexes.py.
   The detail files are the source of truth; this index is derived headlines for the
   registry-search subagent.
@@ -26279,3 +26279,1101 @@ test_gaps_index:
   related_refactor_ids: []
   related_doc_gap_ids: []
   detail_path: detail/TEST-GAP-909.yaml
+- gap_id: TEST-GAP-910
+  behaviour: '**HIGH — `palette.runStatus[status].color` (DataQualityContent.tsx:48)
+    throws an uncaught TypeError and blanks the WHOLE catalog-wide Data Quality dashboard
+    if the backend returns a run-status value outside the 6-value `DataEntityRunStatus`
+    enum.**
+
+
+    The crash chain (statically certain):
+
+
+    1. `useGetDataQualityDashboard(filterState)` returns `data.testResults[]` with
+    one entry per backend category; each entry''s `results[]` carries `(status, count)`
+    pairs from the `DataEntityRunStatus` enum (`components.yaml:1407-1415` — SUCCESS,
+    FAILED, SKIPPED, BROKEN, ABORTED, UNKNOWN).
+
+    2. `calcTestResultsBreakdown` reduces across all categories, summing per-status
+    counts into a `Map<DataEntityRunStatus, number>` (`DataQualityContent.tsx:28-41`).
+
+    3. `testResultsBreakdownChartData` materialises the map for the DonutChart: each
+    `[status, value]` entry maps to `color: palette.runStatus[status].color ?? palette.dataQualityDashboard.unknown`
+    (`DataQualityContent.tsx:46-50`).
+
+    4. `palette.runStatus` is typed `Record<DataEntityRunStatus, ItemColors>` (`interfaces.ts:55`)
+    — keyed by EXACTLY the 6 enum values. If `status` is any other string (e.g. the
+    backend ships a 7th `DataEntityRunStatus` value before the frontend types are
+    regenerated, OR a stale `generated-sources` build, OR a malformed/proxy-injected
+    value), `palette.runStatus[status]` is `undefined` and `.color` throws TypeError
+    **before** the `??` evaluates.
+
+    5. The error propagates out of the `useMemo`, React''s error boundary at the route
+    level is the AppSuspenseWrapper (NO ErrorBoundary — `App.tsx:39, 58` + `AppSuspenseWrapper.tsx:8-21`),
+    and the whole `/data-quality` page blanks.
+
+
+    The `?? palette.dataQualityDashboard.unknown` fallback is **mis-written defensive
+    code** — it guards a missing `.color` attribute on a PRESENT entry, not a missing
+    entry. The same risk does NOT apply to `tableHealthData` / `tableMonitoredTables`
+    (lines 53-73), which read fixed `palette.dataQualityDashboard` keys, not status-indexed
+    lookups.
+
+
+    **Why HIGH not CRITICAL**: HIGH per Rule 3 because the SIDECAR self-classifies
+    severity HIGH; the crash is latent (not exploitable as a security vector, no data
+    loss), but it weaponises **any** future backend enum addition into an instant
+    production outage on the Data Quality dashboard — a tier-1 operator surface (`docs.opendatadiscovery.org/features/data-quality/dashboard`
+    2026-05-22 status 200). No test exists; no type system catches it (the runtime
+    backend can ship enum values the frontend''s typed enum does not know about —
+    that is precisely the surface that breaks).
+
+
+    **Test gap shape**: an integration test mounts `<DataQuality>` inside a test router
+    with a mocked `dataQualityRunsApi.getDataQualityTestsRuns` that returns a `DataQualityResults`
+    whose `testResults[0].results` carries a status string NOT in `DataEntityRunStatus`
+    (e.g. `"PENDING"` or `"TIMEOUT"`). Assertion: the dashboard renders without throwing
+    (a graceful "unknown status" tile, or the donut excludes that slice — the test
+    pins WHICHEVER behaviour the maintainer chooses as the correct one, but the test
+    forces the choice).'
+  test_class: missing-integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-032
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-910.yaml
+- gap_id: TEST-GAP-911
+  behaviour: '**HIGH — the catalog-wide `/data-quality` Data Quality dashboard is
+    mounted UNGATED at `App.tsx:73` — the frontend route has NO `WithPermissionsProvider`
+    wrapper, the toolbar tab is rendered unconditionally, and NO test pins the deliberate
+    any-authenticated-user posture so a future tightening (or a future loosening that
+    opens the route to anonymous) has no regression detector.**
+
+
+    **The current posture (statically certain at the frontend layer)**:
+
+    - `App.tsx:73` mounts the route as `<Route path={dataQualityPath()} element={<DataQuality
+    />} />` — a BARE route, no permission wrapper.
+
+    - **Contrast**: the IMMEDIATELY ADJACENT `/lookup-tables` route at `App.tsx:75-88`
+    IS wrapped in `WithPermissionsProvider` with explicit `allowedPermissions: [LOOKUP_TABLE_CREATE,
+    LOOKUP_TABLE_UPDATE, LOOKUP_TABLE_DELETE]`. The contrast makes the absence visible
+    — it is an unexplained exception in a code path that knows how to gate routes.
+
+    - `ToolbarTabs.tsx:45-49` renders the "Data Quality" top-bar tab UNCONDITIONALLY
+    — no `Permission` check, no conditional render. Any authenticated user sees the
+    tab.
+
+    - Under `auth.type=DISABLED`, the SPA is anonymous, and so is `/data-quality`.
+
+
+    **What the dashboard exposes if reached** (the catalog-wide aggregate quality
+    view via the sibling `DataQualityContent`''s `useGetDataQualityDashboard` → `GET
+    /api/dataqatests/runs`):
+
+    - Tables Health aggregate: count of `healthyTables`, `warningTables`, `errorTables`
+    across the WHOLE catalog.
+
+    - Monitored Tables aggregate: count of `monitoredTables`, `notMonitoredTables`
+    across the WHOLE catalog.
+
+    - Test Results Breakdown: catalog-wide per-status (SUCCESS/FAILED/SKIPPED/BROKEN/ABORTED/UNKNOWN)
+    test-run counts.
+
+    - Per-category result rows for all 6 `DataQualityCategory` values with per-status
+    counts.
+
+
+    **The cross-pillar risk** (P-04 × P-09):
+
+    - This is the UI half. Whether the backend `GET /api/dataqatests/runs` endpoint
+    (owned by `DataQualityRunsController`, not yet enriched) is ALSO ungated decides
+    whether the catalog-wide aggregate health of every dataset is visible to every
+    authenticated principal. P-090 probe pins the backend half.
+
+    - If the backend ALSO omits a permission check (the hypothesis from F-032''s `drift_class_summary:
+    ungated_dashboard_route_no_permission_guard`), the dashboard exposes whole-catalog
+    DQ health to any authenticated principal, INCLUDING a minimum-privilege user with
+    zero `Permission`s and zero ownership associations.
+
+    - **DOC-side silence amplifies the gap**: the live `documentation/docs/features/data-quality/dashboard.md`
+    page (WebFetched 2026-05-22 status 200) makes NO statement about access control.
+    An operator reading the docs to understand "who can see this dashboard" finds
+    no answer. So the posture is BOTH undocumented AND unguarded by a regression test
+    — the exact "double jeopardy" Rule 4 of the contract surfaces.
+
+
+    **No test pins this** at any layer. A test asserting either "every authenticated
+    user can render `<DataQuality>`" OR "users without `DATA_QUALITY_READ` are redirected"
+    would pin the deliberate posture — TODAY a regression that adds an accidental
+    guard, or a regression that opens the route to unauthenticated callers, ships
+    green.
+
+
+    **Test gap shape**: two paired tests asserting (a) the CURRENT bare-route posture:
+    render `<App>` in a memory router with an authenticated minimal-privilege user;
+    navigate to `/data-quality`; assert `<DataQuality>` renders fully (mounts the
+    filter sidebar + content). PINS the read-collaborative posture for future regression
+    detection. (b) The CONTRAST: render `<App>` at `/lookup-tables` with the same
+    minimal-privilege user; assert the page does NOT render (the existing `WithPermissionsProvider`
+    gates it). PINS the asymmetry so anyone who later wraps `/data-quality` in a permission
+    gate must update BOTH tests — forcing the doc-side disclosure to ship alongside.'
+  test_class: missing-security
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-032
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-911.yaml
+- gap_id: TEST-GAP-912
+  behaviour: '**HIGH — the Data Quality dashboard''s "Title" filter (`titleIds` /
+    `deTitleIds`) is the LSN-020 input-name-vs-implementation drift class instantiated
+    on the dashboard: the UI label says "Title" (implying dataset title/name) but
+    the SQL binds to `OWNERSHIP.TITLE_ID` (ownership ROLE — "Data Steward", "Owner",
+    etc.). No test pins what the filter actually filters by, so the drift is invisible
+    to CI and to any operator reading the label.**
+
+
+    **The drift chain** (statically traced end-to-end):
+
+    - UI label: `t(''Title'')` — a bare i18n key with no scope qualifier (`TitleFilter.tsx:29`).
+
+    - filter atom write: `DataQualityFilters.tsx:73, 88` writes to `formFiltersAtom[titleIds]`
+    / `formFiltersAtom[deTitleIds]`.
+
+    - derived request shape: `filtersAtom` maps `FilterOption[]` → `number[]` and
+    passes the ids verbatim into `DataQualityRunsApiGetDataQualityTestsRunsRequest.titleIds`
+    / `.deTitleIds` (`DataQualityStore.ts:32-42`).
+
+    - request issued: `DataQualityContent.tsx:23-24` calls `useGetDataQualityDashboard(filterState)`
+    → `dataQualityRunsApi.getDataQualityTestsRuns(params)` → HTTP `GET /api/dataqatests/runs?titleIds=...`.
+
+    - controller: `DataQualityRunsController.java:19-32` binds `titleIds: List<Long>`.
+
+    - service + mapper: `DataQualityRunsServiceImpl.java:22-43` → `DataQualityTestFiltersMapper.java:9-26`
+    1:1 pass-through into `DataQualityTestFiltersDto`.
+
+    - **SQL bind site**: `ReactiveDataQualityRunsRepositoryImpl.java:301, 309` builds
+    `OWNERSHIP.TITLE_ID.in(titleIds)` — joining the `OWNERSHIP` table on `TITLE_ID`,
+    the ownership ROLE foreign key (FK to the `TITLE` table — values like "Data Steward",
+    "Data Owner").
+
+
+    **What the operator sees vs what they expect**:
+
+    - Expectation (reading "Title"): "narrow the dashboard to a named dataset" — the
+    human-readable entity name. In a data catalog, "Title" maps most strongly to the
+    entity''s display name.
+
+    - Reality: the dashboard narrows to entities where SOME owner holds the selected
+    ownership ROLE. A completely different, far WIDER slice.
+
+    - PARTIAL MITIGATION: a careful operator who opens the dropdown sees role names
+    (the autocomplete is populated by `useGetTitleList`, which lists `TITLE` rows
+    — `TitleFilter.tsx:4`), and can infer the meaning. The bare LABEL alone misleads;
+    the open dropdown corrects.
+
+    - **Compounding drift** (per sidecar): when BOTH Owner and Title are selected,
+    the SQL puts them in ONE OWNERSHIP join with AND (`ReactiveDataQualityRunsRepositoryImpl.java:297-302`)
+    — the result is entities where THAT owner holds THAT title, NOT "owned by Alice
+    AND tagged with title X". An operator expecting two independent filters may get
+    an empty dashboard if Alice''s ownership row has a different title.
+
+
+    **DOC-side silence amplifies the gap**: the live `documentation/docs/features/data-quality/dashboard.md`
+    (WebFetched 2026-05-22 status 200) lists "Title" as one of the five filter dimensions
+    but explicitly does NOT explain what it filters by. So an operator has no documentation
+    that disambiguates — only the autocomplete dropdown content disambiguates, which
+    is post-hoc.
+
+
+    **The LSN-020 cross-surface family** (each instance is the SAME class on a DIFFERENT
+    surface):
+
+    - LSN-020 itself: Activity Feed `userIds` parameter binds to `OWNER_ID` (the original
+    case).
+
+    - TEST-GAP-893: `TagController.getPopularTagList` `ids` parameter described as
+    "Entity ids" but binds to TAG id.
+
+    - TEST-GAP-912 (THIS): Dashboard "Title" filter binds to `OWNERSHIP.TITLE_ID`,
+    not dataset title.
+
+
+    **Test gap shape**: integration test against the full chain. Seed dataset D with
+    owner O carrying title T1. Seed another dataset D'' with no owners. POST `/api/dataqatests/runs?titleIds={T1.id}`
+    and assert the response''s `tablesDashboard` counts include D but NOT D''. Then
+    assert that filtering by `titleIds={existing-dataset-title-string-as-id}` (if
+    such ID exists in DATA_ENTITY''s name columns) returns EITHER empty OR the dataset
+    whose ownership row has that exact title-id — pinning that the bind is the OWNERSHIP
+    table, not the entity-name columns.'
+  test_class: missing-integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-032
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-912.yaml
+- gap_id: TEST-GAP-913
+  behaviour: '**HIGH — the deep-link / shareable-URL round-trip is unverified — the
+    `DataQualityFilters` bidirectional `useEffect` sync (URL ↔ `formFiltersAtom`,
+    `DataQualityFilters.tsx:28-54`) is the load-bearing contract that bookmarked dashboards
+    survive a reload, and there is NO test pinning either direction.**
+
+
+    **The contract** (statically certain):
+
+    - On mount: `DataQualityFilters.tsx:28-43` iterates `searchParams`, `JSON.parse`s
+    each value, and writes the parsed `FilterOption[]` into `formFiltersAtom[key]`
+    for each `key in newFilters` (i.e., known filter keys only). This is the URL→atom
+    direction — what happens when an operator opens a bookmarked or pasted `/data-quality?...`
+    URL.
+
+    - On every `formFilters` change: `DataQualityFilters.tsx:46-54` iterates `formFilters`,
+    `JSON.stringify`s every non-empty array, calls `setSearchParams(newSearchParams,
+    { replace: true })`. This is the atom→URL direction — what happens when the operator
+    selects a filter chip.
+
+    - The `replace: true` flag avoids polluting browser history (no Back button needed
+    to walk through every keystroke).
+
+
+    **What can silently break**:
+
+    - URL→atom regression: a maintainer changes the JSON-encoding shape, or renames
+    a filter key, or accidentally early-exits the loop. The next time an operator
+    follows a bookmark, the dashboard renders empty filters even though the URL has
+    filter params — operator-visible regression, no error message.
+
+    - atom→URL regression: a maintainer removes the `JSON.stringify` or changes the
+    `replace: true` flag. Bookmarks generated AFTER the regression silently differ
+    from bookmarks generated BEFORE; OR the browser history fills up with every keystroke.
+
+    - **The keys are JSON-encoded FilterOption[]** carrying `{id, name}` PAIRS (not
+    just ids) — so a URL bookmark carries names. A maintainer who decides to URL-encode
+    only ids breaks bookmarked URLs without realising they relied on the name half.
+
+
+    **This is the operator-facing deep-link contract**. The `dashboard.md` live doc
+    (WebFetched 2026-05-22 status 200) is SILENT on filter persistence / deep-linking
+    (DataQualityFilters.md:docs_link_semantic.doc_drift_findings.[2]) — operators
+    have to discover it. A regression that breaks the contract removes a discoverable-but-undocumented
+    feature with no signal.
+
+
+    **Why HIGH not MEDIUM**: this is a load-bearing UX contract for the dashboard''s
+    primary audience (data-quality engineers triaging catalog health) — bookmark /
+    share / paste a filtered dashboard is HOW the team uses the surface day-to-day.
+    A regression here ships green; the operator''s only signal is "my bookmark stopped
+    working". Sister to TEST-GAP-911 (the auth posture) — both are operator-facing
+    posture contracts that are deliberate but unguarded.
+
+
+    **Test gap shape**: integration test mounting `<DataQuality>` in a `<MemoryRouter>`
+    with seeded initial entries. Three assertions: (a) URL→atom: mount at `/data-quality?namespaceIds=[{"id":42,"name":"prod"}]`;
+    assert `formFiltersAtom.namespaceIds` equals `[{id:42, name:"prod"}]`. (b) atom→URL:
+    select a filter chip; assert `setSearchParams` was called with the chip''s value
+    JSON-stringified into the param. (c) round-trip: select a chip, then unmount +
+    remount the same component at the URL produced by step (b); assert the atom hydrates
+    back to the same state.'
+  test_class: missing-integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-032
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-913.yaml
+- gap_id: TEST-GAP-914
+  behaviour: '**MEDIUM — the per-category result rows on `/data-quality` are sorted
+    client-side by `data.testResults.toSorted((a,b) => a.category.localeCompare(b.category))`
+    (`DataQualityContent.tsx:75-77`) — alphabetical by category label, NOT by severity
+    / failure count / backend order. The backend imposes NO ORDER BY on `testResults`
+    (`DataQualityRunsServiceImpl.java:36-42`). No test pins the alphabetical ordering,
+    the locale-stability, or the override of backend order.**
+
+
+    **What the operator sees vs the alternative orderings**:
+
+    - Today: rows render in alphabetical category-name order (Assertion Tests, Column
+    Values Anomalies, Freshness Anomalies, Schema Changes, Unknown category, Volume
+    Anomalies). The operator scrolls all 6 to find "which is failing worst".
+
+    - Alternative (severity-first): would surface the WORST category at the top —
+    the actual operational question for a DQ engineer triaging catalog health.
+
+    - The doc-side silence (live `dashboard.md` lists categories in alphabetical order
+    but does not STATE the ordering is alphabetical — DataQualityContent.md:docs_link_semantic.doc_drift_findings.[2])
+    means an operator cannot tell from reading whether the order is meaningful or
+    accidental.
+
+
+    **Locale instability sub-finding** (sidecar bugs_limitations_corner_cases.[2]):
+    `localeCompare` is called with no locale argument — the runtime default locale
+    drives the collation. The 6 current category labels are ASCII-only so all locales
+    agree TODAY. A future accented or non-Latin category name would sort differently
+    per user (`en-US` vs `tr-TR`), and the doc''s stated order would be wrong for
+    some users. Severity LOW on its own — folded into this gap because the same test
+    would cover both.
+
+
+    **No test pins either**:
+
+    - A regression switching to a plain `results.map` (backend order) silently makes
+    the dashboard tile order dependent on backend row order — different per request
+    if the SQL is unordered.
+
+    - A regression specifying `localeCompare(b, ''en-US'')` is invisible today (all
+    ASCII) — but a test would force the decision.
+
+
+    **Why MEDIUM**: the ordering does not produce wrong DATA, only a UX trade-off
+    (alphabetical optimises "find by name", not "find the worst"); the sidecar self-classifies
+    the ordering MEDIUM and the locale sub-finding LOW. No cross-pillar bump. MEDIUM
+    stands.
+
+
+    **Test gap shape**: a unit test on `DataQualityContent` (or extracted-helper if
+    refactored). Build a `DataQualityResults` whose `testResults` arrives in REVERSE
+    alphabetical order; render; assert the rendered category headings are in alphabetical
+    order. Second test: build a `testResults` with a non-ASCII category label and
+    assert the locale-default produces a deterministic result.'
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-032
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-914.yaml
+- gap_id: TEST-GAP-915
+  behaviour: '**MEDIUM — the empty-state of the catalog-wide Data Quality dashboard
+    (a fresh install with no ingested DQ tests, or a filter selection that excludes
+    every entity) renders THREE grey "No data" donuts and ZERO category panels — distinct
+    from both a successful render and an error state. No test pins this rendering,
+    and the live `dashboard.md` (WebFetched 2026-05-22 status 200) makes NO statement
+    about what the dashboard looks like with no DQ data.**
+
+
+    **The empty-state chain** (statically certain):
+
+    - `useGetDataQualityDashboard` supplies `initialData` (`dataQuality.ts:34-81`)
+    — an all-zero `DataQualityResults` carrying 6 placeholder category names with
+    zero-count results.
+
+    - On a successful fetch with no real data, `data.testResults` is the empty array
+    OR the 6-zero-count placeholders; `data.tablesDashboard.tablesHealth.{healthy,warning,error}Tables`
+    are all 0.
+
+    - `tableHealthData` / `tableMonitoredTables` / `testResultsBreakdownChartData`
+    derive arrays whose values sum to 0 (`DataQualityContent.tsx:43-77`).
+
+    - `DonutChart` self-handles the zero-total case — renders a single grey ''No data''
+    slice (`DonutChart.tsx:88-98`).
+
+    - `testResults.map(<TestCategoryResults>)` renders zero or six category cards
+    depending on whether the backend returned the empty array or the zero-count placeholders.
+
+
+    **What an operator sees on a fresh install**: three grey donuts and an otherwise
+    blank or all-zero page with NO explanatory copy ("This catalog has no Data Quality
+    tests yet. To ingest DQ tests, see ..."). The doc-side silence means an operator
+    opening the dashboard for the first time has no signal whether the grey state
+    is "nothing ingested" or "filter excludes everything" or "fetch failed silently"
+    — the three are visually indistinguishable.
+
+
+    **The "failed-fetch indistinguishable from empty catalog" risk** is recorded SEPARATELY
+    in TEST-GAP-917 (a different test); THIS gap is the empty-but-honest case (no
+    failure, just no data).
+
+
+    **Why MEDIUM**: the empty-state is benign (no crash, no wrong data), but the operator-facing
+    UX is below product standard — a fresh install opens a confusing page; the doc
+    is silent. The sidecar self-classifies the doc-side drift LOW; bumping to MEDIUM
+    because the integration test would also catch a regression that mistakenly renders
+    empty content (no grey donuts) when data is genuinely absent.
+
+
+    **Test gap shape**: integration test mocking `useGetDataQualityDashboard` to return
+    both (a) the empty-array case (`testResults: []`, all-zero tablesDashboard) and
+    (b) the zero-count placeholders case. Assertions: three DonutCharts render with
+    the grey ''No data'' slice; the legend renders; either zero or six TestCategoryResults
+    cards render (depending on which empty-shape was returned) with zero totals.'
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-032
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-915.yaml
+- gap_id: TEST-GAP-916
+  behaviour: '**MEDIUM — the dashboard''s `GET /api/dataqatests/runs` fetch multiplicity
+    is unverified at every common operator action: plain `/data-quality` open should
+    fire exactly 1 fetch; deep-linked open (`/data-quality?deNamespaceIds=[1]`) should
+    fire EITHER 1 (if the mount-sync useEffect runs synchronously before first render)
+    OR 2 (if it runs after — LSN-017 class). No filter change should fire MORE than
+    1 fetch.**
+
+
+    **The multiplicity surfaces** (statically traced):
+
+    - Plain open: `<DataQualityContent>` mounts, reads `filtersAtom` (empty), `useGetDataQualityDashboard({})`
+    calls react-query''s `useQuery` with keyed `[''dataQualityDashboard'', {}]` —
+    1 fetch.
+
+    - Deep-linked open (`/data-quality?deNamespaceIds=[1]`): `<DataQualityContent>`
+    mounts and renders FIRST (since the sidebar''s mount-sync useEffect at `DataQualityFilters.tsx:28-43`
+    runs AFTER the first render in React''s mount order). The first render uses `filtersAtom
+    = {}` → 1 fetch. THEN the useEffect fires, sets `formFiltersAtom` from URL → derived
+    `filtersAtom` recomputes → react-query sees a new key → SECOND fetch. **2 fetches
+    per deep-link open** (LSN-017 multiplicity class).
+
+    - Filter change: operator selects a chip → `formFiltersAtom` write → `filtersAtom`
+    re-derives → react-query sees a new key → 1 fetch (correct).
+
+    - No-op filter churn: clicking the same already-selected chip should NOT fire
+    a new fetch (`filtersAtom` value is identity-equal). React-query dedupes — but
+    this is a TEST gap because no test pins the dedup behaviour.
+
+
+    **Why this matters**: the dashboard''s backend resolves each fetch into THREE
+    repository queries with multi-CTE multi-join SQL (`DataQualityRunsServiceImpl.java:36-39`
+    zips `getLatestDataQualityRunsResults` / `getLatestTablesHealth` / `getMonitoredTables`).
+    Doubling fetches doubles DB load on a deep-link click. For a SOC dashboard left
+    open and tabbed-in / tabbed-out 50 times per day, the multiplicity matters.
+
+
+    **Why MEDIUM**: the multiplicity is correctness-adjacent (the data is still correct
+    on the second fetch), but a performance / cost regression — sidecar self-rates
+    MEDIUM. No security or data loss; single-pillar. MEDIUM stands.
+
+
+    **Test gap shape**: integration test that spies on react-query''s `useQuery` fetch
+    count (or mocks `dataQualityRunsApi.getDataQualityTestsRuns` and counts calls).
+    Three scenarios: plain open (assert 1), deep-link open (assert 1 or 2 — PINS the
+    current state), filter chip toggle (assert exactly 1 new fetch).'
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-032
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-916.yaml
+- gap_id: TEST-GAP-917
+  behaviour: '**MEDIUM — a FAILED dashboard fetch (`GET /api/dataqatests/runs` returns
+    4xx/5xx or times out) shows the all-zero `initialData` placeholder identical to
+    a genuinely empty catalog. The component destructures only `{ data, isSuccess
+    }` from `useGetDataQualityDashboard` (`DataQualityContent.tsx:24`) — never `isError`
+    / `error`. On a backend failure, react-query keeps `data` at `initialData` (all
+    zeros), `isSuccess` stays false, `testResults` is `[]`, and the operator sees
+    three grey ''No data'' donuts with NO error message. A real backend failure is
+    presented as ''your catalog has no data quality tests''.**
+
+
+    **The contract drift** (statically certain):
+
+    - `useGetDataQualityDashboard` wraps `useQuery({ queryKey, queryFn, initialData
+    })` (`dataQuality.ts:77-81`) — no error callback, no `onError` handler, no `isError`
+    destructure exposed to the caller.
+
+    - `DataQualityContent.tsx:24` destructures only `{ data, isSuccess }` — `isError`
+    is discarded.
+
+    - All five `if (!data) return [...]` guards (`DataQualityContent.tsx:33, 44, 54,
+    66`) are dead while `initialData` is set (`data` is never undefined after first
+    render) — so the empty-array path is taken on FAILED fetches as well as on EMPTY-catalog
+    fetches.
+
+    - The user-facing result is identical: three grey ''No data'' donuts, zero category
+    cards.
+
+
+    **What an operator sees on a 500 from the backend**:
+
+    - The dashboard renders. No loading spinner stuck. No error banner. No retry button.
+    The grey ''No data'' state.
+
+    - There is no signal that the backend failed; the operator concludes the catalog
+    has no DQ tests; they don''t escalate; the platform reports green metrics; the
+    failure is INVISIBLE until someone notices the dashboard stays grey across known-good
+    ingestion runs.
+
+
+    **Why MEDIUM**: it is a UX correctness defect (a failure presented as a null result),
+    but the operator can disprove the empty-catalog reading by checking `/api/dataqatests/runs`
+    directly in the network tab. The blast radius is bounded — only one dashboard
+    surface. Sidecar self-rates MEDIUM. Single-pillar; MEDIUM stands.
+
+
+    **Test gap shape**: integration test mocking `dataQualityRunsApi.getDataQualityTestsRuns`
+    to reject (a) with HTTP 500, (b) with network error, (c) with HTTP 401. Three
+    assertions: the component does NOT render the all-zero state silently — it SHOULD
+    render an error banner (the test PINS the desired behaviour and FAILS today, so
+    it is both a regression-pin AND an actionable bug-fix request). Alternatively:
+    PIN the CURRENT (broken) behaviour and add a TODO comment requesting the fix.'
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-032
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-917.yaml
+- gap_id: TEST-GAP-918
+  behaviour: "**MEDIUM — the Data Quality dashboard's Namespace filter (`namespaceIds`\
+    \ / `deNamespaceIds`) silently WIDENS the match beyond what the bare \"Namespace\"\
+    \ label implies: the SQL joins `NAMESPACE.ID.in(namespaceIds)` against `DATA_ENTITY.NAMESPACE_ID`\
+    \ **OR** `DATA_SOURCE.NAMESPACE_ID` (`ReactiveDataQualityRunsRepositoryImpl.java:288-293`).\
+    \ An operator who selects \"namespace X\" sees BOTH entities directly in namespace\
+    \ X AND entities whose DATASOURCE carries namespace X — a wider result set than\
+    \ \"Namespace\" alone implies. No test pins the widening; the live `dashboard.md`\
+    \ (WebFetched 2026-05-22 status 200) does not document it.**\n\n**The widening\
+    \ chain** (statically certain):\n- Operator selects \"namespace X\" in the Namespace\
+    \ filter → `formFiltersAtom.namespaceIds = [{id:X, name:\"X\"}]`.\n- `filtersAtom`\
+    \ projects to `request.namespaceIds = [X]` → `GET /api/dataqatests/runs?namespaceIds=X`.\n\
+    - `DataQualityRunsController.java:19-32` binds.\n- `DataQualityTestFiltersMapper`\
+    \ 1:1 pass.\n- `ReactiveDataQualityRunsRepositoryImpl.java:288-293` builds:\n\
+    \  `NAMESPACE.ID.in(namespaceIds).and(NAMESPACE.ID.eq(DATA_ENTITY.NAMESPACE_ID).OR(NAMESPACE.ID.eq(DATA_SOURCE.NAMESPACE_ID)))`.\n\
+    - The OR-clause widens: entity E is in the result if EITHER `E.NAMESPACE_ID =\
+    \ X` (direct membership) OR `E.DATA_SOURCE.NAMESPACE_ID = X` (datasource inheritance).\n\
+    \n**What the operator sees vs expects**:\n- Expectation: \"Namespace X\" → entities\
+    \ whose direct namespace is X.\n- Reality: \"Namespace X\" → entities whose direct\
+    \ namespace is X PLUS entities with no namespace (or a different one) whose datasource\
+    \ is in namespace X.\n- The operator's count is WIDER than they think. On a catalog\
+    \ where most entities inherit their datasource's namespace, the two are nearly\
+    \ the same; on a catalog where entities are individually re-namespaced, the two\
+    \ diverge.\n\n**The drift class** is the same FAMILY as the Title-filter LSN-020\
+    \ (TEST-GAP-912) but a different MECHANISM: this is an OVER-INCLUSION drift (the\
+    \ column matches partially correctly, but an OR-clause silently widens), where\
+    \ LSN-020 is a MIS-BINDING drift (the column matches the wrong concept entirely).\
+    \ The sidecar classifies this as MEDIUM (datasource-inheritance widening) where\
+    \ Title is HIGH (full mis-binding).\n\n**Test gap shape**: integration test seeding\
+    \ (a) entity E1 with namespace X directly, (b) entity E2 with no namespace but\
+    \ datasource DS-X (with namespace X), (c) entity E3 with namespace Y and datasource\
+    \ DS-Y. POST `/api/dataqatests/runs?namespaceIds={X.id}`; assert the tablesDashboard\
+    \ aggregates cover BOTH E1 AND E2 (PINS the widening) but NOT E3."
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-032
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-918.yaml
+- gap_id: TEST-GAP-919
+  behaviour: '**MEDIUM — `TestCategoryResults.sortedResults` (`TestCategoryResults.tsx:19-25`)
+    is the component''s one non-trivial behaviour: it rebuilds the per-status tile
+    array by iterating `Object.values(DataEntityRunStatus)` in enum-declaration order
+    (SUCCESS, FAILED, SKIPPED, BROKEN, ABORTED, UNKNOWN), so every category row''s
+    tiles appear in the SAME horizontal slots. This is what makes the dashboard''s
+    category rows visually comparable column-by-column. A regression (e.g. a maintainer
+    simplifying to `results.map`) silently makes column position track backend serialisation
+    order — a category''s FAILED tile would land in a different slot than its neighbours''
+    FAILED tiles. No test pins the enum-order tile stabilisation.**
+
+
+    **The contract** (statically certain):
+
+    - Per-category row layout: a category heading + a large total + a horizontal row
+    of count tiles, one per status (`TestCategoryResults.tsx:27-45`).
+
+    - The tile order MUST be the enum-declaration order across all rendered category
+    rows so that "the FAILED tile is always in slot 2", "the SKIPPED tile is always
+    in slot 3", etc. — making the dashboard a comparable matrix.
+
+    - `sortedResults` enforces this by `Object.values(DataEntityRunStatus).map(status
+    => results.find(result => result.status === status)).flatMap(f => (f ? [f] : []))`
+    (`TestCategoryResults.tsx:19-25`).
+
+    - The same enum-iteration pattern is used for the shared dashboard legend in the
+    sibling `DataQualityContent.tsx:83-89` — so legend slot ↔ tile slot alignment
+    is guaranteed.
+
+
+    **What can silently break**:
+
+    - A refactor replaces `sortedResults` with `categoryResults.results` (the raw
+    prop). Backend serialisation order leaks through. Today the backend `DataQualityCategoryMapperImpl.java:21-43`
+    does not guarantee any specific order; under load or with a small SQL change,
+    neighbouring category rows could have their FAILED tiles in different visual slots.
+
+    - A refactor changes the iteration to `Object.keys(DataEntityRunStatus)` — at
+    TS string enums, `Object.keys` returns the same as `Object.values` only if there
+    are no reverse mappings, but a future enum addition could subtly differ.
+
+
+    **No test pins this**: the entire DataQuality subtree has zero tests (verified
+    by `find odd-platform-ui/src/components/DataQuality -type f` — 21 source files,
+    0 test files, 2026-05-22).
+
+
+    **Test gap shape**: unit test rendering `<TestCategoryResults>` with a `categoryResults.results`
+    whose statuses arrive in REVERSE enum order (UNKNOWN, ABORTED, BROKEN, SKIPPED,
+    FAILED, SUCCESS). Assert the rendered tiles appear in the FORWARD enum order (SUCCESS,
+    FAILED, SKIPPED, BROKEN, ABORTED, UNKNOWN). PINS the override of backend order.'
+  test_class: missing-unit
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-032
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-919.yaml
+- gap_id: TEST-GAP-920
+  behaviour: '**MEDIUM — `clearTableFiltersAtom` and `clearTestFiltersAtom` (`DataQualityStore.ts:44-66`)
+    are the only thing keeping the tables-side and tests-side filter blocks INDEPENDENT.
+    They are write-only mirror atoms: `clearTableFiltersAtom` resets exactly the five
+    `de*` keys (deNamespaceIds, deDatasourceIds, deOwnerIds, deTitleIds, deTagIds)
+    to `[]` while spreading the test-side keys unchanged; `clearTestFiltersAtom` is
+    the exact mirror. A regression that swaps a key family (e.g. accidentally resets
+    `namespaceIds` in `clearTableFiltersAtom`) breaks the independence the live `dashboard.md`
+    doc explicitly advertises: "The two filter sets are independent — you can hold
+    the tables-side filter at one slice and the tests-side at another."**
+
+
+    **The contract** (statically certain):
+
+    - `clearTableFiltersAtom`: `atom(null, (get, set) => set(formFiltersAtom, prev
+    => ({...prev, deNamespaceIds:[], deDatasourceIds:[], deOwnerIds:[], deTitleIds:[],
+    deTagIds:[]})))` (`DataQualityStore.ts:44-54`).
+
+    - `clearTestFiltersAtom`: same shape, resets `namespaceIds`, `datasourceIds`,
+    `ownerIds`, `titleIds`, `tagIds` (`DataQualityStore.ts:56-66`).
+
+    - Wired to the "Clear" buttons inside the two filter blocks at `DataQualityFilters.tsx:64-68`
+    (tables) and `DataQualityFilters.tsx:79-83` (tests).
+
+
+    **What can silently break**:
+
+    - Copy-paste swap: a maintainer adds a 6th sub-filter and copy-pastes one of the
+    two clear atoms, accidentally writing to the wrong key family.
+
+    - Spread loses a key: `prev` is the 10-key `FormFiltersAtom`; if a maintainer
+    rewrites with explicit key listing and misses one, that key is dropped (undefined)
+    and the derived `filtersAtom`''s `Object.keys` iteration skips it forever after.
+
+    - Cross-pillar inheritance: the test contract is also the operator-visible contract
+    advertised in the live dashboard doc verbatim.
+
+
+    **No test pins this**: the entire DataQuality subtree has zero tests.
+
+
+    **Test gap shape**: trivial jotai unit test using `createStore()` from jotai.
+    Setup: write a known shape into `formFiltersAtom`. Action: write `null` to `clearTableFiltersAtom`.
+    Assert: the 5 `de*` keys are `[]`; the 5 non-`de*` keys retain their previous
+    values. Mirror test for `clearTestFiltersAtom`.'
+  test_class: missing-unit
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-032
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-920.yaml
+- gap_id: TEST-GAP-921
+  behaviour: '**MEDIUM — the operator''s filter selection does NOT survive navigating
+    away from `/data-quality` and back: the `<DataQualityAtomProvider>` (`DataQualityProvider.tsx:4-6`)
+    is the dashboard''s jotai `<Provider>` scope; React Router unmounts the route
+    element on navigation away, destroys the Provider + its store, and the next mount
+    starts a fresh all-empty `formFiltersAtom` (`DataQualityStore.ts:11-22`). The
+    operator loses their filter slice with no warning. The URL search params (written
+    by `DataQualityFilters`'' second `useEffect`, see TEST-GAP-913) are the ONLY persistence
+    channel — and the URL bar typically gets cleared on a tab navigation away from
+    `/data-quality`. No test pins the per-mount-reset behaviour, so a regression that
+    accidentally widens the Provider scope (e.g. lifts it to App.tsx) silently changes
+    the UX from "fresh-per-visit" to "sticky-across-visits".**
+
+
+    **The contract** (statically certain):
+
+    - `App.tsx:73` mounts `<Route path={dataQualityPath()} element={<DataQuality />}
+    />` — a SINGLE non-wildcard Route. React Router unmounts `element` on navigation
+    away.
+
+    - `<DataQuality>` mounts `<DataQualityAtomProvider>` as its OUTERMOST element
+    (`DataQuality.tsx:8-17`).
+
+    - `DataQualityAtomProvider` is a thin pass-through over jotai''s `<Provider>`
+    (`DataQualityProvider.tsx:4-6`) — creating a fresh atom store per mount.
+
+    - On unmount: the Provider''s store is GC''d; the next mount creates a new store
+    with `formFiltersAtom = {all-empty}`.
+
+    - The URL is the only filter-persistence channel; the rest of the app does not
+    preserve `/data-quality` query params on navigation.
+
+
+    **What can silently break**:
+
+    - A maintainer "fixes" the per-mount reset by lifting `<DataQualityAtomProvider>`
+    to App.tsx (so the store outlives the route). Operator UX silently changes from
+    "fresh visit" to "sticky selection" — could be desirable, but the doc-side silence
+    (live `dashboard.md` does not document either) means the operator has no signal
+    which to expect.
+
+    - A maintainer adds a second `<Route path={dataQualityPath()}>` (e.g. for a sub-route)
+    and the routing matches both, but only one renders — the Provider mounts/unmounts
+    depending on which route matches first.
+
+
+    **No test pins this**. The doc-side is silent (DataQualityStore.md:docs_link_semantic.doc_drift_findings.[0]).
+
+
+    **Test gap shape**: integration test using a `<MemoryRouter>` with multiple navigation
+    entries. Step 1: mount at `/data-quality`; select filter chips; assert the atom
+    holds them. Step 2: navigate to `/`; assert the route unmounts. Step 3: navigate
+    back to `/data-quality`; assert the atom is FRESH (all-empty). PINS the per-Provider-mount
+    reset.'
+  test_class: missing-integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-032
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-921.yaml
+- gap_id: TEST-GAP-922
+  behaviour: "**MEDIUM — `DataQualityFilters` instantiates each of the 5 sub-filter\
+    \ components TWICE (one per side), passing a distinct `filterKey` prop typed `keyof\
+    \ DataQualityRunsApiGetDataQualityTestsRunsRequest` (`DataQualityFilters.tsx:70-89`).\
+    \ A copy-paste swap (e.g. `<TitleFilter filterKey='titleIds'/>` placed in the\
+    \ TABLES block where it should be `deTitleIds`) routes the operator's selection\
+    \ to the WRONG side. Both `titleIds` and `deTitleIds` are valid members of the\
+    \ union type — TypeScript compiles cleanly. No test pins the 10 (side × dimension)\
+    \ wiring.**\n\n**The wiring** (statically certain):\n- Tables block (`DataQualityFilters.tsx:70-74`):\n\
+    \  - `<NamespaceFilter filterKey='deNamespaceIds' />`\n  - `<DatasourceFilter\
+    \ filterKey='deDatasourceIds' />`\n  - `<OwnerFilter filterKey='deOwnerIds' />`\n\
+    \  - `<TitleFilter filterKey='deTitleIds' />`\n  - `<TagFilter filterKey='deTagIds'\
+    \ />`\n- Tests block (`DataQualityFilters.tsx:85-89`):\n  - `<NamespaceFilter\
+    \ filterKey='namespaceIds' />`\n  - `<DatasourceFilter filterKey='datasourceIds'\
+    \ />`\n  - `<OwnerFilter filterKey='ownerIds' />`\n  - `<TitleFilter filterKey='titleIds'\
+    \ />`\n  - `<TagFilter filterKey='tagIds' />`\n\n**What can silently break**:\n\
+    - Swap two keys within the same block: a maintainer copy-pastes and accidentally\
+    \ writes `<NamespaceFilter filterKey='deDatasourceIds'/>` in the tables block.\
+    \ The Namespace autocomplete now writes its selections to `formFiltersAtom.deDatasourceIds`.\
+    \ The dashboard then filters by datasource where the operator selected a namespace.\
+    \ Compiles cleanly because both are valid request keys.\n- Swap a key across blocks:\
+    \ a maintainer puts `<TitleFilter filterKey='titleIds'/>` in the tables block\
+    \ (should be `deTitleIds`). The operator selects a tables-side filter that mutes\
+    \ the TESTS ring instead of the TABLES rings. Compiles cleanly.\n- Both classes\
+    \ of swap are operator-visible (the dashboard reacts wrongly) but the operator\
+    \ may not realise the cause — the result is \"the filter doesn't seem to do what\
+    \ I expected\".\n\n**No test pins this**: the entire DataQuality subtree has zero\
+    \ tests.\n\n**Test gap shape**: unit test using React Testing Library to render\
+    \ `<DataQualityFilters>` and assert each of the 10 rendered filter component instances\
+    \ has the EXPECTED `filterKey` prop. Either snapshot-test or explicit assertion\
+    \ on each of the 10 slots."
+  test_class: missing-unit
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-032
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-922.yaml
+- gap_id: TEST-GAP-923
+  behaviour: "**MEDIUM — `MultipleFilterItemAutocomplete`'s options-loading effect\
+    \ (`MultipleFilterItemAutocomplete.tsx:91-104`) has a stale-closure / stuck-spinner\
+    \ bug: `setOptionsLoading(true)` runs unconditionally; `setOptionsLoading(false)`\
+    \ runs ONLY inside `if (hookResult.isSuccess)`; the effect's dependency array\
+    \ is `[searchText, autocompleteOpen]` — `hookResult` is NOT in it. Consequences:\
+    \ (a) if the list query is pending or has errored when the effect runs, `optionsLoading`\
+    \ stays `true` forever and the `noOptionsText` renders empty-string (`MultipleFilterItemAutocomplete.tsx:162`)\
+    \ — neither options nor a \"No options\" message; (b) because `hookResult` is\
+    \ excluded from deps, the effect does not re-run when the query later resolves,\
+    \ so freshly-arrived options are not flushed into `options` until the next `searchText`/`autocompleteOpen`\
+    \ change.**\n\n**The bug** (statically certain):\n- Effect at `MultipleFilterItemAutocomplete.tsx:91-104`:\n\
+    \  ```\n  useEffect(() => {\n    setOptionsLoading(true);\n    if (hookResult.isSuccess)\
+    \ {\n      setOptions(getFilterOptions(...));\n      setOptionsLoading(false);\n\
+    \    }\n  }, [searchText, autocompleteOpen]);\n  ```\n- `hookResult` is `useGetNamespaceList({...})`\
+    \ or one of the four siblings — a react-query result with `isSuccess`, `isError`,\
+    \ `isPending`.\n- Two failure modes:\n  1. The effect fires (searchText change).\
+    \ `hookResult.isPending` is true. `setOptionsLoading(true)` runs; the `if` skips.\
+    \ `optionsLoading` stays true. The query later resolves — but the effect does\
+    \ NOT re-run (no `hookResult` in deps). The Autocomplete shows nothing until the\
+    \ user types another character.\n  2. The query rejects (network error / 500).\
+    \ `hookResult.isError = true`, `isSuccess = false`. Same outcome: `optionsLoading`\
+    \ stays true; the `noOptionsText` is empty; user sees a blank Autocomplete with\
+    \ no error signal.\n\n**What an operator sees on a failed list-API call**: they\
+    \ open the Namespace autocomplete; the spinner stays forever; no options appear;\
+    \ no \"No options\" message; no error banner. They are stuck. The only escape\
+    \ is to type a character, which re-fires the effect — but the same failure path\
+    \ repeats unless the API recovers.\n\n**No test pins this**: the entire DataQuality\
+    \ subtree has zero tests.\n\n**Test gap shape**: unit test using React Testing\
+    \ Library + MSW. Three scenarios: (a) successful query → assert optionsLoading\
+    \ transitions true→false. (b) pending query → assert optionsLoading transitions\
+    \ true→true (FAILS today on this assertion because the effect never re-runs).\
+    \ (c) errored query → assert optionsLoading transitions to false AND a \"Failed\
+    \ to load\" message renders (FAILS today — this is a FIX-REQUIRED case)."
+  test_class: missing-unit
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-032
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-923.yaml
+- gap_id: TEST-GAP-924
+  behaviour: "**MEDIUM — both the dashboard re-fetch AND the filter autocompletes\
+    \ fire ONE network request per micro-action with no debounce / batch-apply, generating\
+    \ request bursts on the operator's primary interaction surface.**\n\n**Two distinct\
+    \ un-debounced surfaces** (statically certain):\n\n1. **Autocomplete per-keystroke\
+    \ list-API**: `MultipleFilterItemAutocomplete.tsx:57-66` calls `setSearchText(query)`\
+    \ directly on every `'input'` event. `searchText` is passed straight into `useFilter`'s\
+    \ `useHook({ page: 1, size: 30, query: searchText })` (`hooks/index.ts:13-17`);\
+    \ `searchText` is the React-Query key (`namespace.ts:7`). Each character types\
+    \ a fresh GET. Typing \"production\" (10 chars) into the Namespace filter fires\
+    \ up to 10 calls to `/api/namespaces`. With 5 filters × 2 sides = 10 autocompletes,\
+    \ an operator filling out the panel can generate a substantial burst.\n   - React-Query\
+    \ dedupes IDENTICAL keys, not distinct prefixes — \"p\", \"pr\", \"pro\", ...,\
+    \ \"production\" are all distinct keys.\n\n2. **Dashboard re-fetch per filter\
+    \ chip toggle**: every select/deselect mutates `formFiltersAtom`; `filtersAtom`\
+    \ re-derives; react-query sees a new key; new `GET /api/dataqatests/runs` fires\
+    \ (`DataQualityStore.ts:32-42` + `DataQualityContent.tsx:23-24`). No debounce,\
+    \ no \"Apply\" gate. An operator building a multi-chip filter slice fires one\
+    \ full backend dashboard query per chip rather than one on a deliberate \"Apply\"\
+    \ action. The dashboard query is multi-CTE multi-join SQL fanning to THREE repository\
+    \ queries server-side (`DataQualityRunsServiceImpl.java:36-39`).\n\n**What the\
+    \ operator sees today**: typing into a filter shows a \"results update as you\
+    \ type\" UX (good); typing into the autocomplete fires a burst of API calls (less\
+    \ good); selecting 4 chips fires 4 full dashboard fetches (3 wasted).\n\n**No\
+    \ test pins either**. A regression that ACCIDENTALLY adds a debounce delays UX\
+    \ (could be detected as a UX regression); a regression that REMOVES an existing\
+    \ debounce silently widens the burst.\n\n**Test gap shape**: integration test\
+    \ using fake timers + spy on the relevant query functions. Two assertions: (a)\
+    \ typing 10 characters into a filter autocomplete fires the list-API ≤ 10 times\
+    \ (PINS the current state) — pair with a TODO comment requesting a debounce. (b)\
+    \ selecting N chips in succession fires the dashboard fetch N times (PINS the\
+    \ current state) — pair with TODO requesting an Apply-button or debounce."
+  test_class: missing-performance
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-032
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-924.yaml
+- gap_id: TEST-GAP-925
+  behaviour: "**MEDIUM — the URL→atom mount-sync effect at `DataQualityFilters.tsx:31-39`\
+    \ does `JSON.parse(value)` on each query-param value with NO try/catch. A user\
+    \ who hand-edits or shares a malformed URL like `/data-quality?namespaceIds=foo`\
+    \ (not valid JSON) causes `JSON.parse` to THROW inside the React effect; React\
+    \ surfaces this as an UNCAUGHT render-time error and the dashboard fails to render.\
+    \ Additionally there is NO schema validation on the parsed shape — a param parsed\
+    \ to a non-array, or to an object missing `id`, flows straight into `formFiltersAtom`\
+    \ and may cause downstream renders to malfunction.**\n\n**The mount-sync effect**\
+    \ (`DataQualityFilters.tsx:28-43`):\n```\nuseEffect(() => {\n  const newFilters\
+    \ = { ...formFilters };\n  for (const [key, value] of searchParams) {\n    if\
+    \ (key in newFilters) {\n      newFilters[key] = JSON.parse(value);  // UNGUARDED\n\
+    \    }\n  }\n  setFormFilters(newFilters);\n}, [searchParams]);\n```\n\n**Three\
+    \ failure scenarios**:\n1. **Malformed JSON**: `?namespaceIds=foo` → `JSON.parse('foo')`\
+    \ throws SyntaxError → effect crashes → React surfaces uncaught error → dashboard\
+    \ fails to render.\n2. **Wrong shape (string not array)**: `?namespaceIds=\"hello\"\
+    ` → parses to `\"hello\"` → `formFiltersAtom.namespaceIds = \"hello\"` → derived\
+    \ `filtersAtom`'s `value.map(({id}) => id)` (`DataQualityStore.ts:37`) throws\
+    \ TypeError because string has no `.map` callback expecting `{id}`.\n3. **Wrong\
+    \ shape (objects missing `id`)**: `?namespaceIds=[{}]` → parses to `[{}]` → `filtersAtom`\
+    \ projects to `[undefined]` → backend receives `namespaceIds=` with no value or\
+    \ with `undefined` → backend may 400, may silently return unfiltered, may crash.\n\
+    \n**What the operator sees**: depending on the malformation, EITHER the dashboard\
+    \ blanks (scenario 1 uncaught throw) OR renders but filters return wrong results\
+    \ (scenarios 2-3). All three are operator-confusing; none surfaces a friendly\
+    \ error message.\n\n**Why this is operator-visible despite low base severity**:\
+    \ shared URLs are a primary use case (TEST-GAP-913 pins the happy-path round-trip).\
+    \ When the SHARED URL is broken (clipboard truncation, manual edit, link-shortener\
+    \ mangling, character-encoding double-decoding), the receiving operator sees a\
+    \ blank dashboard with no signal what happened. Sidecar self-rates LOW (`bugs_limitations_corner_cases.[5]`)\
+    \ — bumped to MEDIUM because the failure mode is operator-facing and discoverable\
+    \ through normal usage (paste a URL from a chat client that escaped a character\
+    \ wrong → dashboard blanks).\n\n**No test pins this**.\n\n**Test gap shape**:\
+    \ three negative-path unit/integration tests covering each of the three malformation\
+    \ scenarios above. Each test mounts at the bad URL; asserts EITHER (a) the dashboard\
+    \ renders gracefully with a \"URL filter could not be parsed\" message (PROPOSED\
+    \ behaviour) OR (b) the dashboard surfaces a friendly error and clears the malformed\
+    \ filter, retaining a clean atom. Today both fail; pair the test with a FIX-REQUIRED\
+    \ note."
+  test_class: missing-edge-case
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: F-032
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-925.yaml
+- gap_id: TEST-GAP-926
+  behaviour: '**LOW — every filter autocomplete (Namespace / Datasource / Owner /
+    Title / Tag, 10 instances) hard-codes `{ page: 1, size: 30 }` (`hooks/index.ts:13-16`)
+    with NO pagination, NO infinite-scroll, NO "load more". For catalogs with > 30
+    entries per dimension where the desired option does not appear in the server''s
+    first 30 for a given search prefix, the option is UNREACHABLE via that prefix.
+    The operator sees only 30 options per prefix with no indication this is a truncation.**
+
+
+    **The pagination contract** (statically certain):
+
+    - `useFilter` (the shared hook in `DataQualityFilters/hooks/index.ts`): `useHook({
+    page: 1, size: 30, query: searchText })` — page and size are literals.
+
+    - The server query DOES receive the `query` text, so server-side name-prefix search
+    narrows the 30.
+
+    - `MultipleFilterItemAutocomplete` ALSO re-filters client-side via `getFilterOptions`
+    (`MultipleFilterItemAutocomplete.tsx:75-89`) — redundant on the server''s already-filtered
+    30.
+
+    - No UI element (`MultipleFilterItemAutocomplete.tsx:146-178`) renders "showing
+    30 of N" or "load more" — the operator cannot distinguish a truncated list from
+    a complete one.
+
+
+    **What the operator sees**:
+
+    - Catalog with 200 owners, operator types "a" → server returns first 30 owner
+    names starting with "a" → 30 chips appear in the autocomplete dropdown → desired
+    owner is the 47th in alphabetical order → operator types more characters to narrow
+    → eventually finds it.
+
+    - Operator''s mental model: "the autocomplete shows me everything matching my
+    prefix" → wrong; correct model is "shows me the first 30 the server returns for
+    this prefix".
+
+    - Worst case: an owner whose name is preceded alphabetically by 30 other owners
+    with the same prefix never appears even with a fully-specified prefix shorter
+    than the owner''s full name.
+
+
+    **Why LOW**: degraded UX, not wrong behaviour; sidecar self-rates MEDIUM but the
+    workaround (type more characters) is discoverable; downgraded to LOW in line with
+    the contract''s emphasis on operator-facing severity (an experienced operator
+    works around it; a new operator may not realise they are missing options).
+
+
+    **Test gap shape**: integration test mocking the list-API to return 30 specific
+    options for any short prefix; asserting (a) all 30 render, (b) NO "load more"
+    or "showing X of N" element appears, (c) typing a more-specific prefix shows different
+    30. Pair with a FIX-REQUIRED comment requesting pagination OR an indicator.'
+  test_class: missing-edge-case
+  criticality: LOW
+  node_id: ''
+  feature_id: F-032
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-926.yaml
+- gap_id: TEST-GAP-927
+  behaviour: '**HIGH — META cross-cutting finding: the ENTIRE `components/DataQuality/`
+    subtree of `odd-platform-ui/src` has ZERO test files. F-032 (P-04:F-002 Catalog-wide
+    Data Quality Dashboard) is shipped to operators with no unit tests, no integration
+    tests, no smoke tests, no story files. Verified by `find /home/raman/work/odd/odd-platform/odd-platform-ui/src/components/DataQuality
+    -type f` — 21 source files, 0 test files (2026-05-22). Verified by `grep -rln
+    ''DataQuality'' /home/raman/work/odd/odd-platform/odd-platform-ui/src --include=''*.test.*''
+    --include=''*.spec.*''` — zero matches.**
+
+
+    **The 21 untested source files**:
+
+    - `DataQuality.tsx` (route entry)
+
+    - `DataQuality.styles.ts`
+
+    - `DataQualityContent.tsx` (dashboard body — 147 lines)
+
+    - `interfaces.ts`
+
+    - `DataQualityStore/DataQualityStore.ts` (filter atoms — 66 lines)
+
+    - `DataQualityStore/DataQualityProvider.tsx` (the jotai Provider wrapper)
+
+    - `DataQualityFilters/DataQualityFilters.tsx` (filter panel — 93 lines)
+
+    - `DataQualityFilters/DataQualityFiltersStyles.ts`
+
+    - `TestResults/TestCategoryResults.tsx` (per-category row — 48 lines)
+
+    - `TestResults/TestCategoryResults.styles.ts`
+
+    - `DataQualityFilters/FilterItem/{Namespace,Datasource,Owner,Title,Tag}Filter.tsx`
+    (5 filter components)
+
+    - `DataQualityFilters/hooks/index.ts` (the useFilter shared hook — 47 lines)
+
+    - `DataQualityFilters/FilterItem/MultipleFilterItem/MultipleFilterItem.tsx`
+
+    - `DataQualityFilters/FilterItem/MultipleFilterItem/MultipleFilterItemAutocomplete/MultipleFilterItemAutocomplete.tsx`
+    (the autocomplete — 178 lines, where the stale-closure bug TEST-GAP-923 lives)
+
+    - `DataQualityFilters/FilterItem/MultipleFilterItem/MultipleFilterItemAutocomplete/MultipleFilterItemAutocompleteStyles.ts`
+
+    - `DataQualityFilters/FilterItem/MultipleFilterItem/SelectedFilterOption/SelectedFilterOption.tsx`
+
+    - `DataQualityFilters/FilterItem/MultipleFilterItem/SelectedFilterOption/SelectedFilterOptionStyles.ts`
+
+
+    **The wider context** (`odd-platform-ui/src` test landscape):
+
+    - Total test files in the entire UI tree: 7 (verified: `find /home/raman/work/odd/odd-platform/odd-platform-ui/src
+    -type f \( -name "*.test.tsx" -o -name "*.test.ts" -o -name "*.spec.ts" -o -name
+    "*.spec.tsx" \)`).
+
+    - All 7 are in just two areas: `shared/elements/{NumberFormatted, TextFormatted,
+    EntityClassItem, BooleanFormatted}` (4) and `Overview/DataEntitiesUsageInfo/...`
+    (3).
+
+    - This is the project-wide UI test pattern — most React components have no test
+    files.
+
+    - DataQuality is the FIRST tier-1 feature surface comprehensively scanned (5 sidecars
+    covering route entry, body, filter panel, store, and per-category row) — and it
+    surfaces the SHARED systemic gap.
+
+
+    **Why HIGH not CRITICAL**: cross-pillar (P-04 + P-09 — the dashboard surface AND
+    the read-collaborative auth posture), and it triangulates the 17 individual TEST-GAPs
+    in this batch (910-926) into one strategic anchor. Not CRITICAL because the systemic
+    absence is project-wide and not a security vector on its own.
+
+
+    **This gap is the META-anchor for batch ZC''s TEST-GAPs 910-926**. Each individual
+    gap in the 910-926 range can be cited in isolation — but the systemic answer is
+    "the DataQuality subtree needs a test foundation, not 17 individual files". The
+    maintainer''s first priority should be a single `DataQuality/__tests__/setup.ts`
+    (testing-library/jotai/MSW boilerplate) and a "smoke" test (`DataQualityDashboardSmokeTest`
+    — mount the dashboard with mocked endpoints, assert the three DonutCharts render).
+    With that foundation, the 16 specific gaps in this batch become small individual
+    fix-items.
+
+
+    **What this signals about the project''s UI test posture** (a separate, larger
+    finding):
+
+    - 17 sidecars across 5 components surfaced 17 distinct test gaps + this META gap.
+
+    - The 7 existing test files cover 7 small primitives across the ENTIRE UI surface.
+
+    - A maintainer''s natural reading of this state: "UI tests are not part of this
+    project''s culture" — a doc-as-product candidate observation that would feed a
+    project-wide test-pillar activation discussion.
+
+
+    **Test gap shape**: this is an INFRASTRUCTURE gap, not a single-test gap. The
+    actionable item is: (a) create `odd-platform-ui/src/components/DataQuality/__tests__/setup.ts`
+    with shared MSW handlers + jotai test-Provider helpers + render utilities; (b)
+    author a single "smoke" test that mounts <DataQuality> with mocked APIs and asserts
+    the three rings render; (c) iteratively close TEST-GAPs 910-926 against that foundation.'
+  test_class: missing-integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: F-032
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-927.yaml

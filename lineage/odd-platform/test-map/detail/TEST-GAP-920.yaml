@@ -1,0 +1,56 @@
+gap_id: TEST-GAP-920
+category: missing-unit
+criticality: MEDIUM
+node_ids:
+  - "odd-platform ts jotai-store store:DataQualityStore"
+  - "odd-platform ts react-component component:DataQualityFilters"
+pillars_affected: [P-04]
+surfaced_by:
+  - "odd-platform__ts__jotai-store__store__DataQualityStore.md:tests_coverage_semantic.uncovered_behaviours.[1] (clearTableFiltersAtom empties only the five de* keys and leaves the test-side keys untouched; clearTestFiltersAtom is the mirror)"
+  - "odd-platform__ts__react-component__component__DataQualityFilters.md:tests_coverage_semantic.uncovered_behaviours.[1] (clear-tables vs clear-tests isolation — assert the 'Clear' button in the tables block resets only the five de* keys and leaves the tests-side selections intact)"
+behaviour: |-
+  **MEDIUM — `clearTableFiltersAtom` and `clearTestFiltersAtom` (`DataQualityStore.ts:44-66`) are the only thing keeping the tables-side and tests-side filter blocks INDEPENDENT. They are write-only mirror atoms: `clearTableFiltersAtom` resets exactly the five `de*` keys (deNamespaceIds, deDatasourceIds, deOwnerIds, deTitleIds, deTagIds) to `[]` while spreading the test-side keys unchanged; `clearTestFiltersAtom` is the exact mirror. A regression that swaps a key family (e.g. accidentally resets `namespaceIds` in `clearTableFiltersAtom`) breaks the independence the live `dashboard.md` doc explicitly advertises: "The two filter sets are independent — you can hold the tables-side filter at one slice and the tests-side at another."**
+
+  **The contract** (statically certain):
+  - `clearTableFiltersAtom`: `atom(null, (get, set) => set(formFiltersAtom, prev => ({...prev, deNamespaceIds:[], deDatasourceIds:[], deOwnerIds:[], deTitleIds:[], deTagIds:[]})))` (`DataQualityStore.ts:44-54`).
+  - `clearTestFiltersAtom`: same shape, resets `namespaceIds`, `datasourceIds`, `ownerIds`, `titleIds`, `tagIds` (`DataQualityStore.ts:56-66`).
+  - Wired to the "Clear" buttons inside the two filter blocks at `DataQualityFilters.tsx:64-68` (tables) and `DataQualityFilters.tsx:79-83` (tests).
+
+  **What can silently break**:
+  - Copy-paste swap: a maintainer adds a 6th sub-filter and copy-pastes one of the two clear atoms, accidentally writing to the wrong key family.
+  - Spread loses a key: `prev` is the 10-key `FormFiltersAtom`; if a maintainer rewrites with explicit key listing and misses one, that key is dropped (undefined) and the derived `filtersAtom`'s `Object.keys` iteration skips it forever after.
+  - Cross-pillar inheritance: the test contract is also the operator-visible contract advertised in the live dashboard doc verbatim.
+
+  **No test pins this**: the entire DataQuality subtree has zero tests.
+
+  **Test gap shape**: trivial jotai unit test using `createStore()` from jotai. Setup: write a known shape into `formFiltersAtom`. Action: write `null` to `clearTableFiltersAtom`. Assert: the 5 `de*` keys are `[]`; the 5 non-`de*` keys retain their previous values. Mirror test for `clearTestFiltersAtom`.
+test_class: missing-unit
+criticality_rationale: |-
+  MEDIUM per Rule 3: sidecar self-classifies MEDIUM (DataQualityStore.md:tests_coverage_semantic.uncovered_behaviours.[1]). Trivial unit-testable contract whose breakage is operator-visible and contradicts the live dashboard doc verbatim ("The two filter sets are independent"). Single-pillar (P-04). MEDIUM stands.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-ui/src/components/DataQuality/DataQualityStore/__tests__/clearAtoms.test.ts"
+  name: "clearTableFiltersAtom_resetsOnlyDeKeys_AND_clearTestFiltersAtom_resetsOnlyNonDeKeys_pinsIndependence"
+evidence:
+  - "DataQualityStore.md says (tests_coverage_semantic.uncovered_behaviours.[1]): 'clearTableFiltersAtom empties only the five de* keys and leaves the test-side keys untouched; clearTestFiltersAtom is the mirror. the table/test independence invariant — a regression that cleared both sides would be operator-visible and is not asserted anywhere.' test_class: unit; criticality: MEDIUM"
+  - "DataQualityFilters.md says (tests_coverage_semantic.uncovered_behaviours.[1]): 'clear-tables vs clear-tests isolation — assert the Clear button in the tables block resets only the five de* keys and leaves the tests-side selections intact. clearTableFiltersAtom / clearTestFiltersAtom (DataQualityStore.ts:44-66) are the only thing keeping the two sides independent.' test_class: unit; criticality: MEDIUM"
+  - "DataQualityStore.md says (stress_findings.name_behavior_pairs[1]): 'write-only atoms (atom(null, (get, set) => ...), lines 44, 56). clearTableFiltersAtom resets exactly the five de* keys (deNamespaceIds, deDatasourceIds, deOwnerIds, deTitleIds, deTagIds — lines 48-52) and spreads the rest unchanged; clearTestFiltersAtom resets exactly the five non-de keys (namespaceIds, datasourceIds, ownerIds, titleIds, tagIds — lines 60-64).' drift: NONE"
+  - "Verified at primary source via sidecar: DataQualityStore.ts:44-66 (the two write-only mirror atoms) + DataQualityFilters.tsx:64-68 (tables-side Clear button wiring) + DataQualityFilters.tsx:79-83 (tests-side Clear button wiring)"
+  - "WebFetch verification: documentation/docs/features/data-quality/dashboard.md page 2026-05-22 status 200 — verbatim 'The two filter sets are independent — you can hold the tables-side filter at one slice and the tests-side at another.' (per DataQualityFilters.md:docs_link_semantic.inferred_docs.[0].fetched_excerpts)"
+cross_references:
+  - "F-032 (P-04:F-002 Catalog-wide Data Quality Dashboard)"
+  - "TEST-GAP-922 (this batch — the filterKey wiring unit test; together with TEST-GAP-920, the two pin the tables-side/tests-side independence end-to-end: TEST-GAP-922 pins the WRITE separation, TEST-GAP-920 pins the CLEAR separation)"
+related_features: [F-032]
+related_pillar_features: ["P-04:F-002"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `clearAtomsTest` under `odd-platform-ui/src/components/DataQuality/DataQualityStore/__tests__/`. Use jotai's `createStore()` (or `useAtom` inside a Provider tree) plus Vitest. Four pinning methods:
+  (a) `clearTableFiltersAtom_resetsAllFiveDeKeysToEmpty_pinsTablesSideClear`: pre-populate `formFiltersAtom` with non-empty values in all 10 keys; write `null` to `clearTableFiltersAtom`; read `formFiltersAtom`; assert deNamespaceIds, deDatasourceIds, deOwnerIds, deTitleIds, deTagIds are ALL [].
+  (b) `clearTableFiltersAtom_leavesAllFiveNonDeKeysUntouched_pinsTestsSidePreserved`: same setup; after clearing; assert namespaceIds, datasourceIds, ownerIds, titleIds, tagIds are UNCHANGED (still carry the pre-populated values).
+  (c) `clearTestFiltersAtom_resetsAllFiveNonDeKeysToEmpty_pinsTestsSideClear`: mirror of (a).
+  (d) `clearTestFiltersAtom_leavesAllFiveDeKeysUntouched_pinsTablesSidePreserved`: mirror of (b).
+
+  Add a `// REGRESSION-PIN — DataQualityStore.ts:44-66 — the two write-only mirror atoms are the ONLY thing keeping the tables-side and tests-side filter blocks independent. The live dashboard doc verbatim advertises: 'The two filter sets are independent' (https://docs.opendatadiscovery.org/features/data-quality/dashboard 2026-05-22 status 200). If you refactor either atom (e.g. extract to a shared helper, or rename a key family), both halves must be updated together AND this test must continue to pass.` block.
+batch: 2026-05-22-ZC
+feature_id: F-032

@@ -18,6 +18,19 @@ description: |-
   owner-scoped (gated via DATASET_TEST_RUN_SET_SEVERITY) endpoint among the
   five DataQualityController routes.
 
+  **STRENGTHENED batch ZC (2026-05-22)**: the catalog-wide UI surface
+  (/data-quality dashboard, pillar feature P-04:F-002) is the second consumer
+  of DQ test data. The dashboard aggregates ALREADY-INGESTED test runs across
+  all datasets via GET /api/dataqatests/runs (DataQualityRunsController) returning
+  the DataQualityResults DTO (testResults[] per-category run-status counts +
+  tablesDashboard table-health and monitored-tables aggregates) — a CATALOG-WIDE
+  view backed by the SAME DQ test data the per-dataset DataQualityController
+  surfaces in detail. The two surfaces are deliberately distinct: per-dataset
+  (F-022) is the drill-down on the dataset detail page's 'Test reports' tab;
+  catalog-wide (F-032 / the new data-quality-dashboard entity) is the aggregate
+  view at /data-quality. No code is shared between the two surfaces; both
+  consume the DataEntityRunStatus enum.
+
   vocabulary_status: codebase-anchored + doc-side-covered (live
   https://docs.opendatadiscovery.org/features/data-quality and
   https://docs.opendatadiscovery.org/features/data-quality/test-results-import
@@ -25,42 +38,63 @@ description: |-
   WebFetched 2026-05-20 status 200; the entity is named verbatim as
   "data quality test" / "DQ test"; the live doc explicitly states the
   "Test reports" tab as the per-entity surface backed by the read endpoints
-  THIS entity surfaces).
+  THIS entity surfaces). Batch ZC adds the dashboard.md sub-page
+  (https://docs.opendatadiscovery.org/features/data-quality/dashboard,
+  WebFetched 2026-05-22 status 200) as a second doc-side surface naming
+  the catalog-wide quality view.
 vocabulary_status: codebase-anchored, doc-side-covered
 axes_present:
-- controllers
-- openapi_tags
+  - controllers
+  - openapi_tags
+  - react_components
 nodes:
-- odd-platform java DataQualityController controller-class:DataQualityController
+  - odd-platform java DataQualityController controller-class:DataQualityController
+  - odd-platform ts react-component component:DataQualityContent
+  - odd-platform ts react-component component:TestCategoryResults
 contributors:
-- |-
-  DataQualityController (class) batch T:
-    entities[DataEntityList, DataSetTestReport, DataSetSLAReport, SLA enum,
-    DataQualityTestSeverity, DataQualityTestSeverityForm, Resource (PNG byte-array)];
-    operations[list-data-quality-tests-for-dataset, aggregate-test-status-counts-for-dataset,
-    render-sla-colour-as-png, compute-detailed-sla-report-as-json, set-test-severity];
-    invariants[existsIncludingSoftDeleted-preserves-DQ-visibility-post-soft-delete,
-    severity-defaults-to-MAJOR-when-unset, SLA-deterministic-aggregation-not-direct-mapping];
-    audiences[odd-platform-ui-end-user (Test reports tab), viz-bi-engineer (PNG badge),
-    data-quality-engineer (severity-set), data-engineer-analyst]
+  - |-
+    DataQualityController (class) batch T:
+      entities[DataEntityList, DataSetTestReport, DataSetSLAReport, SLA enum,
+      DataQualityTestSeverity, DataQualityTestSeverityForm, Resource (PNG byte-array)];
+      operations[list-data-quality-tests-for-dataset, aggregate-test-status-counts-for-dataset,
+      render-sla-colour-as-png, compute-detailed-sla-report-as-json, set-test-severity];
+      invariants[existsIncludingSoftDeleted-preserves-DQ-visibility-post-soft-delete,
+      severity-defaults-to-MAJOR-when-unset, SLA-deterministic-aggregation-not-direct-mapping];
+      audiences[odd-platform-ui-end-user (Test reports tab), viz-bi-engineer (PNG badge),
+      data-quality-engineer (severity-set), data-engineer-analyst]
+  - |-
+    DataQualityContent (dashboard body) batch ZC:
+      entities[DataQualityResults — the catalog-wide aggregate DTO; DataEntityRunStatus
+      enum — the shared run-status vocabulary; DataQualityCategoryResults — per-category
+      bucket];
+      operations[fetch-aggregate-dashboard via GET /api/dataqatests/runs — the
+      catalog-wide read surface for DQ test data, distinct from the per-dataset
+      DataQualityController endpoints];
+      invariants[single-fetch aggregate projection — one GET serves all visual blocks,
+      backend zips three repository queries server-side]
+  - |-
+    TestCategoryResults (per-category row) batch ZC:
+      entities[DataQualityCategoryResults — per-test-category aggregation of run
+      statuses, surfaces on the dashboard as a category row];
+      operations[stabilise-status-order, compute-category-total];
+      invariants[render only statuses present in results, six-status backend
+      guarantee from DataQualityCategoryMapperImpl.addMissingStatuses]
 evidence:
-- |-
-  DataQualityController.md:concepts.entities (the five DTO types + the SLA + severity enums)
-- |-
-  DataQualityController.md:concepts.operations (the five operation IDs)
-- |-
-  DataQualityController.md:concepts.invariants.[2] (existsIncludingSoftDeleted precedes every
-  read path — explicit preservation of post-soft-delete DQ visibility)
-- |-
-  DataQualityController.md:implicit_adrs.[4] (aggregator-only pillar invariant: zero test-execution
-  endpoints; all five methods read or annotate existing data)
+  - DataQualityController.md:concepts.entities (the five DTO types + the SLA + severity enums)
+  - DataQualityController.md:concepts.operations (the five operation IDs)
+  - DataQualityController.md:concepts.invariants.[2] (existsIncludingSoftDeleted precedes every read path — explicit preservation of post-soft-delete DQ visibility)
+  - DataQualityController.md:implicit_adrs.[4] (aggregator-only pillar invariant — zero test-execution endpoints, all five methods read or annotate existing data)
+  - DataQualityContent.md:concepts.entities.[0] (DataQualityResults — catalog-wide aggregate DTO, second consumer of DQ test data)
+  - DataQualityContent.md:implicit_adrs.[0] (single-fetch aggregate projection — one GET, three repository queries zipped server-side)
+  - TestCategoryResults.md:concepts.entities.[0] (DataQualityCategoryResults — per-category bucket of DQ test runs)
+  - TestCategoryResults.md:dependencies_semantic.requires-feature (DataQualityCategoryMapperImpl — the backend mapper feeding the dashboard)
 security_aggregate:
   overall: LOW
   auth_modes_relevant:
-  - LOGIN_FORM
-  - OAUTH2
-  - LDAP
-  - DISABLED
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
+    - DISABLED
   ingestion_filter_relevance: false
   authorization_consistency:
     verdict: INCONSISTENT
@@ -72,6 +106,13 @@ security_aggregate:
       permission. Read-collaborative posture (ADR-CANDIDATE-003) extended to
       a new feature surface; the deliberate registration of exactly ONE rule
       (not five) is the intent_anchor.
+
+      Batch ZC: the catalog-wide UI surface (GET /api/dataqatests/runs via
+      DataQualityRunsController) likely follows the same read-collaborative posture
+      (P-090 PROBE-NEEDED — DataQualityRunsController not yet enriched); the UI
+      route /data-quality has NO WithPermissionsProvider wrapper at App.tsx:73
+      (vs the wrapped /lookup-tables sibling at App.tsx:75-88) — frontend tier
+      ungated.
   owner_scoping:
     verdict: MIXED
     detail: |-
@@ -80,117 +121,157 @@ security_aggregate:
       join. The lone PUT (setDataQATestSeverity) RESPECTS owner-scoping via the
       DATA_ENTITY SecurityRule — caller must be associated with one of the
       dataset's owners.
+
+      Batch ZC: the catalog-wide dashboard fetch is owner-unscoped at the UI tier
+      (no current-user predicate); backend SQL joins OWNERSHIP only when the operator
+      supplies owner/title FILTER ids (user-driven filter, NOT principal-derived scope).
+      Consistent with the read-collaborative posture, now triangulated across
+      per-dataset (DataQualityController) + catalog-wide (dashboard) surfaces.
   strengths:
-  - |-
-    The PUT is consistently gated through the centralised SecurityConstants.SECURITY_RULES
-    table — not through method-level annotation; the authorization wiring follows the
-    platform-wide convention.
-  - |-
-    existsIncludingSoftDeleted as the existence-check primitive — soft-deleted datasets
-    still surface their historical DQ signal for forensic/audit workflows.
+    - |-
+      The PUT is consistently gated through the centralised SecurityConstants.SECURITY_RULES
+      table — not through method-level annotation; the authorization wiring follows the
+      platform-wide convention.
+    - |-
+      existsIncludingSoftDeleted as the existence-check primitive — soft-deleted datasets
+      still surface their historical DQ signal for forensic/audit workflows.
   weaknesses:
-  - |-
-    Four read endpoints unscoped — any authenticated user reads per-dataset DQ tests,
-    test reports, SLA report, and SLA PNG badge for ANY dataset by id. New invocation
-    sites of the REFACTOR-024 cross-owner-read family (severity MEDIUM); the live
-    /features/data-quality docs are silent on access control.
-  - |-
-    Under auth.type=DISABLED, all five endpoints become anonymously reachable —
-    the DISABLED-mode blast radius (REFACTOR-185 family) extends to per-dataset
-    DQ data and SLA colours.
-  - |-
-    The SLA PNG endpoint is cross-origin embeddable (image/png; no @CrossOrigin,
-    no Cache-Control restrictions). A malicious page can img-tag the SLA badge
-    cross-origin to leak the colour for a known dataset id (severity LOW-MEDIUM
-    depending on operator's sensitivity classification of the SLA colour).
-  - |-
-    setDataQATestSeverity uses onDuplicateKeyUpdate at ReactiveDataQualityRepositoryImpl.java:90-101
-    — idempotent in outcome but NO ActivityEvent emission, NO audit log, NO last_modified_by.
-    Severity-change history is unrecoverable post-fact (audit-log presence asymmetry
-    instantiated on the DQ surface).
+    - |-
+      Four read endpoints unscoped — any authenticated user reads per-dataset DQ tests,
+      test reports, SLA report, and SLA PNG badge for ANY dataset by id. New invocation
+      sites of the REFACTOR-024 cross-owner-read family (severity MEDIUM); the live
+      /features/data-quality docs are silent on access control.
+    - |-
+      Under auth.type=DISABLED, all five endpoints become anonymously reachable —
+      the DISABLED-mode blast radius (REFACTOR-185 family) extends to per-dataset
+      DQ data and SLA colours. Batch ZC: same blast radius extends to the catalog-wide
+      dashboard at /data-quality.
+    - |-
+      The SLA PNG endpoint is cross-origin embeddable (image/png; no @CrossOrigin,
+      no Cache-Control restrictions). A malicious page can img-tag the SLA badge
+      cross-origin to leak the colour for a known dataset id (severity LOW-MEDIUM
+      depending on operator's sensitivity classification of the SLA colour).
+    - |-
+      setDataQATestSeverity uses onDuplicateKeyUpdate at ReactiveDataQualityRepositoryImpl.java:90-101
+      — idempotent in outcome but NO ActivityEvent emission, NO audit log, NO last_modified_by.
+      Severity-change history is unrecoverable post-fact (audit-log presence asymmetry
+      instantiated on the DQ surface).
+    - |-
+      Batch ZC: the catalog-wide dashboard route /data-quality is mounted bare at
+      App.tsx:73 with no WithPermissionsProvider (vs the wrapped /lookup-tables
+      sibling at App.tsx:75-88) — frontend gives no UI-tier permission gate; whether
+      the backend GET /api/dataqatests/runs is gated is PROBE-NEEDED (P-090).
   cross_file_inconsistencies:
-  - |-
-    Per-method authorization choices are CONSISTENT with platform-wide patterns:
-    reads cross-owner, mutations owner-scoped — but the read-collaborative
-    posture is undocumented on the live data-quality landing page (same shape
-    as alerting/lineage doc drift).
+    - |-
+      Per-method authorization choices are CONSISTENT with platform-wide patterns:
+      reads cross-owner, mutations owner-scoped — but the read-collaborative
+      posture is undocumented on the live data-quality landing page (same shape
+      as alerting/lineage doc drift). Batch ZC: the dashboard.md sub-page also
+      silent on access control (triangulated).
   contributing_files:
-  - DataQualityController.md
+    - DataQualityController.md
+    - DataQualityContent.md
+    - DataQuality.md
   evidence:
-  - |-
-    DataQualityController.md:security.known_security_gaps.[0] (cross-owner reads —
-    REFACTOR-024 family extension)
-  - |-
-    DataQualityController.md:security.known_security_gaps.[1] (PNG cross-origin embeddability)
-  - |-
-    DataQualityController.md:security.known_security_gaps.[2] (DISABLED reach)
-  - |-
-    DataQualityController.md:bugs_limitations_corner_cases.[4] (audit-trail absence on severity changes)
+    - DataQualityController.md:security.known_security_gaps.[0] (cross-owner reads — REFACTOR-024 family extension)
+    - DataQualityController.md:security.known_security_gaps.[1] (PNG cross-origin embeddability)
+    - DataQualityController.md:security.known_security_gaps.[2] (DISABLED reach)
+    - DataQualityController.md:bugs_limitations_corner_cases.[4] (audit-trail absence on severity changes)
+    - DataQualityContent.md:security.known_security_gaps.[0] (catalog-wide dashboard ungated at UI tier)
+    - DataQuality.md:bugs_limitations_corner_cases.[0] (App.tsx:73 bare route vs gated /lookup-tables sibling)
 performance_aggregate:
   overall: MEDIUM
   hot_paths:
-  - |-
-    GET /api/datasets/{id}/dataqatests + GET /api/datasets/{id}/test_report fire on
-    every dataset-detail-page 'Test reports' tab activation per the live data-quality.md
-    page — per-render cost compounds linearly with catalog navigation —
-    DataQualityController.java:25-39
-  - |-
-    GET /api/datasets/{id}/sla PNG endpoint is potentially embedded in BI dashboards
-    per the live sla-statuses.md page; for a dashboard with N tiles each pulling SLA
-    for a different dataset, request fan-out is N per render. PNG bytes cached at the
-    resolver layer (CachingByteArraySLAResourceResolver.java:15) so per-request cost
-    is SQL aggregation + byte-array copy; PNG-file IO is NOT per-request.
+    - |-
+      GET /api/datasets/{id}/dataqatests + GET /api/datasets/{id}/test_report fire on
+      every dataset-detail-page 'Test reports' tab activation per the live data-quality.md
+      page — per-render cost compounds linearly with catalog navigation —
+      DataQualityController.java:25-39
+    - |-
+      GET /api/datasets/{id}/sla PNG endpoint is potentially embedded in BI dashboards
+      per the live sla-statuses.md page; for a dashboard with N tiles each pulling SLA
+      for a different dataset, request fan-out is N per render. PNG bytes cached at the
+      resolver layer (CachingByteArraySLAResourceResolver.java:15) so per-request cost
+      is SQL aggregation + byte-array copy; PNG-file IO is NOT per-request.
+    - |-
+      Batch ZC: GET /api/dataqatests/runs (the catalog-wide dashboard endpoint) fires
+      once per /data-quality mount and on every filter change / window-focus
+      (react-query default staleTime 0). Backend fans out to THREE repository queries
+      zipped server-side (DataQualityRunsServiceImpl.java:36-39). Per-filter-chip-toggle
+      cost is one multi-CTE multi-join SQL execution — no debounce, no Apply gate
+      (captured in `live-filter-no-apply-gate-multi-cte-sql-per-chip-toggle` invariant).
   throughput_shape:
     verdict: SINGLE_ITEM_ONLY
     detail: |-
       No batch / bulk variant — setDataQATestSeverity operates on a single
       (test, dataset) pair per call; an operator setting severities for 50
       tests issues 50 PUTs. All four reads are reactive Mono with no
-      streaming / chunked alternative.
+      streaming / chunked alternative. Catalog-wide dashboard fetch is also
+      single-aggregate (one DTO; no per-ring or per-category lazy loading).
   scaling_shape:
     verdict: UNPAGINATED
     detail: |-
       getDataEntityDataQATests returns the full list of DQ tests for the dataset —
       no page / size parameters in the OpenAPI spec at openapi.yaml:1932-1947.
       A dataset with thousands of tests returns thousands of rows in one response;
-      UI must render all at once.
+      UI must render all at once. The catalog-wide dashboard endpoint
+      (openapi.yaml:1973-2087) also declares no pagination — testResults is the
+      full category set; bounded in practice at ~6, but the contract has no clamp.
   strengths:
-  - |-
-    All four reads are reactive (Mono/ResponseEntity) — non-blocking I/O end-to-end
-  - |-
-    Single DB round-trip per request for getDatasetTestReport, getSLA, getSLAReport;
-    two parallel sub-queries (severities + dimensions) zipped for getDataEntityDataQATests
-  - |-
-    PNG resolver caches all 3 SLA images at bean init (CachingByteArraySLAResourceResolver.java:30-42)
-    — total cached bytes ~3-6 KB; no per-request file IO
-  - |-
-    setDataQATestSeverity is @ReactiveTransactional — existence check + upsert
-    run in a single reactive transaction (DataQualityServiceImpl.java:63-81)
+    - |-
+      All four reads are reactive (Mono/ResponseEntity) — non-blocking I/O end-to-end
+    - |-
+      Single DB round-trip per request for getDatasetTestReport, getSLA, getSLAReport;
+      two parallel sub-queries (severities + dimensions) zipped for getDataEntityDataQATests
+    - |-
+      PNG resolver caches all 3 SLA images at bean init (CachingByteArraySLAResourceResolver.java:30-42)
+      — total cached bytes ~3-6 KB; no per-request file IO
+    - |-
+      setDataQATestSeverity is @ReactiveTransactional — existence check + upsert
+      run in a single reactive transaction (DataQualityServiceImpl.java:63-81)
+    - |-
+      Batch ZC: the catalog-wide dashboard is a single-fetch aggregate — all rings
+      reflect the same filter application at the same instant; no partial-load skew.
+      The three backend queries are zipped server-side, saving network round-trips.
   weaknesses:
-  - |-
-    No pagination on getDataEntityDataQATests — full list of DQ tests for a dataset
-    in one response; no @Max, no client-side hint, no server-side clamp
-    (severity MEDIUM)
-  - |-
-    No HTTP caching headers (Cache-Control, ETag, Last-Modified) on any response —
-    every UI tab activation and BI-dashboard render hits the platform fresh.
-    For the PNG endpoint the response is fully determined by (datasetId,
-    current_test_states) — an ETag derived from underlying state would let BI tools
-    cache the badge (severity LOW-MEDIUM depending on BI-render frequency)
-  - |-
-    Default-MAJOR fallback for unset severities (ReactiveDataQualityRepositoryImpl.java:142-148)
-    inflates SLACalculator work — every unset test contributes to MAJOR weight
-    calculation through the hierarchical Counter arithmetic (severity LOW)
-  - |-
-    No method-level observability — no @Timed, no Micrometer counter, no structured
-    log; latency regressions on hot paths surface only in WebFlux/DB metrics
-    (severity LOW)
+    - |-
+      No pagination on getDataEntityDataQATests — full list of DQ tests for a dataset
+      in one response; no @Max, no client-side hint, no server-side clamp
+      (severity MEDIUM)
+    - |-
+      No HTTP caching headers (Cache-Control, ETag, Last-Modified) on any response —
+      every UI tab activation and BI-dashboard render hits the platform fresh.
+      For the PNG endpoint the response is fully determined by (datasetId,
+      current_test_states) — an ETag derived from underlying state would let BI tools
+      cache the badge (severity LOW-MEDIUM depending on BI-render frequency)
+    - |-
+      Default-MAJOR fallback for unset severities (ReactiveDataQualityRepositoryImpl.java:142-148)
+      inflates SLACalculator work — every unset test contributes to MAJOR weight
+      calculation through the hierarchical Counter arithmetic (severity LOW)
+    - |-
+      No method-level observability — no @Timed, no Micrometer counter, no structured
+      log; latency regressions on hot paths surface only in WebFlux/DB metrics
+      (severity LOW)
+    - |-
+      Batch ZC: the catalog-wide dashboard re-fetches on every single filter chip
+      toggle (no debounce, no Apply gate) — full multi-CTE multi-join SQL runs per
+      chip. Severity MEDIUM. Captured in
+      `live-filter-no-apply-gate-multi-cte-sql-per-chip-toggle` invariant.
+    - |-
+      Batch ZC: the dashboard's react-query hook (useGetDataQualityDashboard) sets
+      no staleTime — refetches on every remount and window-focus. Severity LOW.
   cross_file_inconsistencies: []
   contributing_files:
-  - DataQualityController.md
+    - DataQualityController.md
+    - DataQualityContent.md
+    - DataQualityFilters.md
+    - DataQualityStore.md
   evidence:
-  - DataQualityController.md:performance.hot_paths.[0-1]
-  - DataQualityController.md:performance.known_performance_gaps.[0-3]
+    - DataQualityController.md:performance.hot_paths.[0-1]
+    - DataQualityController.md:performance.known_performance_gaps.[0-3]
+    - DataQualityContent.md:performance.hot_paths.[0]
+    - DataQualityFilters.md:performance.known_performance_gaps
+    - DataQualityStore.md:performance.known_performance_gaps.[0]
 notes: |-
   Data Quality Test is named in main-concepts.md / data-quality.md / sla-statuses.md
   verbatim. The new DataQualityController class sidecar is the first concept-catalog
@@ -199,3 +280,13 @@ notes: |-
   embodies is documented at the live API-reference but not at a per-tag
   /developer-guides/api-reference/data-quality page (the API-reference hub omits
   data-quality from its per-feature sub-page list per WebFetch 2026-05-20).
+
+  STRENGTHENED batch ZC (2026-05-22): adds the catalog-wide UI surface
+  (/data-quality dashboard, F-032 / P-04:F-002) as the second consumer of DQ test
+  data. The dashboard exposes the SAME DQ test runs through a different API
+  endpoint (GET /api/dataqatests/runs) and a different aggregate shape (catalog-wide
+  per-category bucket counts vs per-dataset status counts). Two surfaces, one
+  underlying entity — captured as related-but-distinct UI features that each
+  warrant their own concept entries (`data-quality-dashboard`,
+  `data-quality-test-category`, `data-entity-run-status`).
+maintainer_curated: false

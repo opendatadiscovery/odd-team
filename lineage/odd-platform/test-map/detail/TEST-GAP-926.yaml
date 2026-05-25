@@ -1,0 +1,52 @@
+gap_id: TEST-GAP-926
+category: missing-edge-case
+criticality: LOW
+node_ids:
+  - "odd-platform ts react-component component:DataQualityFilters"
+pillars_affected: [P-04]
+surfaced_by:
+  - "odd-platform__ts__react-component__component__DataQualityFilters.md:bugs_limitations_corner_cases.[3] (The autocomplete fetches a fixed first page of 30 options and never paginates — severity MEDIUM)"
+  - "odd-platform__ts__react-component__component__DataQualityFilters.md:stress_findings.tunables.useFilter (size: 30 / page: 1 hard-coded; no load-more)"
+behaviour: |-
+  **LOW — every filter autocomplete (Namespace / Datasource / Owner / Title / Tag, 10 instances) hard-codes `{ page: 1, size: 30 }` (`hooks/index.ts:13-16`) with NO pagination, NO infinite-scroll, NO "load more". For catalogs with > 30 entries per dimension where the desired option does not appear in the server's first 30 for a given search prefix, the option is UNREACHABLE via that prefix. The operator sees only 30 options per prefix with no indication this is a truncation.**
+
+  **The pagination contract** (statically certain):
+  - `useFilter` (the shared hook in `DataQualityFilters/hooks/index.ts`): `useHook({ page: 1, size: 30, query: searchText })` — page and size are literals.
+  - The server query DOES receive the `query` text, so server-side name-prefix search narrows the 30.
+  - `MultipleFilterItemAutocomplete` ALSO re-filters client-side via `getFilterOptions` (`MultipleFilterItemAutocomplete.tsx:75-89`) — redundant on the server's already-filtered 30.
+  - No UI element (`MultipleFilterItemAutocomplete.tsx:146-178`) renders "showing 30 of N" or "load more" — the operator cannot distinguish a truncated list from a complete one.
+
+  **What the operator sees**:
+  - Catalog with 200 owners, operator types "a" → server returns first 30 owner names starting with "a" → 30 chips appear in the autocomplete dropdown → desired owner is the 47th in alphabetical order → operator types more characters to narrow → eventually finds it.
+  - Operator's mental model: "the autocomplete shows me everything matching my prefix" → wrong; correct model is "shows me the first 30 the server returns for this prefix".
+  - Worst case: an owner whose name is preceded alphabetically by 30 other owners with the same prefix never appears even with a fully-specified prefix shorter than the owner's full name.
+
+  **Why LOW**: degraded UX, not wrong behaviour; sidecar self-rates MEDIUM but the workaround (type more characters) is discoverable; downgraded to LOW in line with the contract's emphasis on operator-facing severity (an experienced operator works around it; a new operator may not realise they are missing options).
+
+  **Test gap shape**: integration test mocking the list-API to return 30 specific options for any short prefix; asserting (a) all 30 render, (b) NO "load more" or "showing X of N" element appears, (c) typing a more-specific prefix shows different 30. Pair with a FIX-REQUIRED comment requesting pagination OR an indicator.
+test_class: missing-edge-case
+criticality_rationale: |-
+  Sidecar self-classifies MEDIUM (DataQualityFilters.md:bugs_limitations_corner_cases.[3]). Downgraded to LOW per Rule 3 — UX defect with a discoverable workaround (type more characters). Single-pillar (P-04). LOW stands.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-ui/src/components/DataQuality/DataQualityFilters/__tests__/autocompletePaginationLimit.test.tsx"
+  name: "autocompleteShowsAtMost30Options_withNoIndicator_pinsCurrentTruncation"
+evidence:
+  - "DataQualityFilters.md says (bugs_limitations_corner_cases.[3]): 'The autocomplete fetches a fixed first page of 30 options and never paginates — catalogs with >30 namespaces/owners/tags are not fully filterable. useFilter hard-codes { page: 1, size: 30 } (hooks/index.ts:13-16) and there is no page-increment, no infinite-scroll, no load more. The server query DOES receive the query text, so server-side name search narrows the 30; but getFilterOptions ALSO re-filters client-side (MultipleFilterItemAutocomplete.tsx:75-89). If an operator's catalog has 200 owners and the desired owner is not in the first 30 the server returns for a given search prefix, it cannot be selected via that prefix. For short or empty search text the operator sees only the first 30 of the dimension.' severity: MEDIUM"
+  - "DataQualityFilters.md says (stress_findings.tunables.useFilter Q2): 'At 31+ the 31st onward is unreachable: there is no page-increment and no infinite scroll, so any dimension value not in the server's first-30 for a given search prefix cannot be selected. At 3000 the operator still only ever sees 30 per prefix. Silent truncation — no showing 30 of N indicator.'"
+  - "Verified at primary source via sidecar: hooks/index.ts:13-16 + MultipleFilterItemAutocomplete.tsx:75-89 + MultipleFilterItemAutocomplete.tsx:146-178"
+cross_references:
+  - "F-032 (P-04:F-002 Catalog-wide Data Quality Dashboard) — drift_class autocomplete_no_pagination_first_30_only is enumerated in F-032.drift_class_summary"
+related_features: [F-032]
+related_pillar_features: ["P-04:F-002"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `autocompletePaginationLimitTest` under `odd-platform-ui/src/components/DataQuality/DataQualityFilters/__tests__/`. Three pinning methods:
+  (a) `autocomplete_showsAt30Options_pinsHardCodedSize`: mock useGetNamespaceList to return 30 options; open the autocomplete; assert 30 options render in the dropdown.
+  (b) `autocomplete_noShowingXofYIndicator_pinsSilentTruncation`: same mock; assert no "showing X of Y" or "load more" element appears in the rendered DOM.
+  (c) `autocomplete_typingMoreSpecificPrefix_returnsDifferent30_pinsServerSideSearch`: mock returns different 30 for "a" vs "ab"; assert the dropdown updates as the user types more characters. PINS the workaround.
+
+  Add a `// REGRESSION-PIN — hooks/index.ts:13-16 + MultipleFilterItemAutocomplete.tsx:146-178 — autocompletes are hard-coded to size:30 with no pagination indicator. Catalogs > 30 per dimension hide options behind prefix-narrowing. If you add pagination or an indicator, update this test.` block. The FIX (add pagination or a "showing 30 of N" indicator) is a low-priority backlog item.
+batch: 2026-05-22-ZC
+feature_id: F-032

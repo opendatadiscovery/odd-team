@@ -1,0 +1,59 @@
+gap_id: TEST-GAP-913
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform ts react-component component:DataQualityFilters"
+pillars_affected: [P-04]
+surfaced_by:
+  - "odd-platform__ts__react-component__component__DataQualityFilters.md:tests_coverage_semantic.uncovered_behaviours.[0] (URL ↔ formFilters bidirectional sync — assert the panel hydrates the Namespace tests-side filter; select a filter, assert the query string updates with replace: true)"
+  - "odd-platform__ts__react-component__component__DataQualityFilters.md:implicit_adrs.[2] (Filter selections are mirrored into the URL query string so the dashboard view is deep-linkable and shareable)"
+behaviour: |-
+  **HIGH — the deep-link / shareable-URL round-trip is unverified — the `DataQualityFilters` bidirectional `useEffect` sync (URL ↔ `formFiltersAtom`, `DataQualityFilters.tsx:28-54`) is the load-bearing contract that bookmarked dashboards survive a reload, and there is NO test pinning either direction.**
+
+  **The contract** (statically certain):
+  - On mount: `DataQualityFilters.tsx:28-43` iterates `searchParams`, `JSON.parse`s each value, and writes the parsed `FilterOption[]` into `formFiltersAtom[key]` for each `key in newFilters` (i.e., known filter keys only). This is the URL→atom direction — what happens when an operator opens a bookmarked or pasted `/data-quality?...` URL.
+  - On every `formFilters` change: `DataQualityFilters.tsx:46-54` iterates `formFilters`, `JSON.stringify`s every non-empty array, calls `setSearchParams(newSearchParams, { replace: true })`. This is the atom→URL direction — what happens when the operator selects a filter chip.
+  - The `replace: true` flag avoids polluting browser history (no Back button needed to walk through every keystroke).
+
+  **What can silently break**:
+  - URL→atom regression: a maintainer changes the JSON-encoding shape, or renames a filter key, or accidentally early-exits the loop. The next time an operator follows a bookmark, the dashboard renders empty filters even though the URL has filter params — operator-visible regression, no error message.
+  - atom→URL regression: a maintainer removes the `JSON.stringify` or changes the `replace: true` flag. Bookmarks generated AFTER the regression silently differ from bookmarks generated BEFORE; OR the browser history fills up with every keystroke.
+  - **The keys are JSON-encoded FilterOption[]** carrying `{id, name}` PAIRS (not just ids) — so a URL bookmark carries names. A maintainer who decides to URL-encode only ids breaks bookmarked URLs without realising they relied on the name half.
+
+  **This is the operator-facing deep-link contract**. The `dashboard.md` live doc (WebFetched 2026-05-22 status 200) is SILENT on filter persistence / deep-linking (DataQualityFilters.md:docs_link_semantic.doc_drift_findings.[2]) — operators have to discover it. A regression that breaks the contract removes a discoverable-but-undocumented feature with no signal.
+
+  **Why HIGH not MEDIUM**: this is a load-bearing UX contract for the dashboard's primary audience (data-quality engineers triaging catalog health) — bookmark / share / paste a filtered dashboard is HOW the team uses the surface day-to-day. A regression here ships green; the operator's only signal is "my bookmark stopped working". Sister to TEST-GAP-911 (the auth posture) — both are operator-facing posture contracts that are deliberate but unguarded.
+
+  **Test gap shape**: integration test mounting `<DataQuality>` in a `<MemoryRouter>` with seeded initial entries. Three assertions: (a) URL→atom: mount at `/data-quality?namespaceIds=[{"id":42,"name":"prod"}]`; assert `formFiltersAtom.namespaceIds` equals `[{id:42, name:"prod"}]`. (b) atom→URL: select a filter chip; assert `setSearchParams` was called with the chip's value JSON-stringified into the param. (c) round-trip: select a chip, then unmount + remount the same component at the URL produced by step (b); assert the atom hydrates back to the same state.
+test_class: missing-integration
+criticality_rationale: |-
+  Sidecar self-classifies HIGH (DataQualityFilters.md:tests_coverage_semantic.uncovered_behaviours.[0]). Per Rule 3 baseline HIGH applies. Single-pillar (P-04) so no cross-pillar bump. Not CRITICAL (no security, no data loss); not MEDIUM (the contract is operator-facing and breaks bookmarks across the entire dashboard audience). HIGH stands.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-ui/src/components/DataQuality/__tests__/DataQualityFiltersUrlRoundTrip.test.tsx"
+  name: "filtersSurviveUrlRoundTrip_andUrlReflectsAtom_pinsDeeplinkContract"
+evidence:
+  - "DataQualityFilters.md says (tests_coverage_semantic.uncovered_behaviours.[0]): 'URL ↔ formFilters bidirectional sync — open /data-quality?namespaceIds=[{...}], assert the panel hydrates the Namespace tests-side filter; select a filter, assert the query string updates with replace: true. the two useEffects at DataQualityFilters.tsx:28-54 are the deep-linking / shareable-URL contract; a regression silently breaks bookmarked dashboards.' test_class: integration; criticality: HIGH"
+  - "DataQualityFilters.md says (implicit_adrs.[2]): 'Filter selections are mirrored into the URL query string so the dashboard view is deep-linkable and shareable. ... The intent is that an operator can bookmark or paste a /data-quality?... URL and land on the same filtered view; replace: true avoids polluting browser history with every keystroke-driven filter change.' confidence: HIGH"
+  - "DataQualityFilters.md says (docs_link_semantic.doc_drift_findings.[2]): 'DOC DRIFT — the filter panel's whole interaction model is undocumented despite a dedicated dashboard doc page. The dashboard page describes the rings and names the filters but never documents: that filter selections are reflected into the URL query string (deep-linkable / shareable), that there are two Clear buttons scoped per side, or that the autocomplete searches by name.' severity: MEDIUM"
+  - "Verified at primary source via sidecar: DataQualityFilters.tsx:25, 27-54 (the useSearchParams hook + the two sync effects)"
+cross_references:
+  - "F-032 (P-04:F-002 Catalog-wide Data Quality Dashboard) — drift_class per_mount_filter_reset_loses_operator_slice (in F-032.drift_class_summary) interacts: the URL is the ONLY persistence channel, since the jotai store resets per mount (TEST-GAP-921)"
+  - "TEST-GAP-921 (this batch — per-mount filter reset on navigate-away — the URL is the recovery mechanism; if TEST-GAP-913 regresses, TEST-GAP-921's mitigation also vanishes)"
+  - "TEST-GAP-925 (this batch — malformed URL JSON crashes the mount-effect — the negative-path sister to this test)"
+  - "DOC-GAP-NNN (proposed): document the deep-link / shareable-URL behaviour on documentation/docs/features/data-quality/dashboard.md"
+related_features: [F-032]
+related_pillar_features: ["P-04:F-002"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `DataQualityFiltersUrlRoundTripTest` under `odd-platform-ui/src/components/DataQuality/__tests__/`. Use Vitest + React Testing Library + `<MemoryRouter initialEntries={...}>`. Five pinning methods:
+  (a) `urlToAtom_mountWithNamespaceIds_hydratesFormFiltersAtom`: mount `<DataQualityAtomProvider><DataQualityFilters/></DataQualityAtomProvider>` inside `<MemoryRouter initialEntries={['/data-quality?namespaceIds=[{"id":42,"name":"prod"}]']}>`. Assert (via a hidden test-only atom subscriber, or via the rendered chip in the Namespace autocomplete) that `formFiltersAtom.namespaceIds` equals `[{id:42, name:"prod"}]`.
+  (b) `urlToAtom_mountWithDeTitleIds_hydratesTableSideFilter`: same shape, deeplink with `deTitleIds=[...]`; assert the table-side TitleFilter shows the chip.
+  (c) `atomToUrl_selectFilterChip_updatesSearchParamsWithReplaceTrue`: mount with empty URL; select a filter chip; spy on `setSearchParams`; assert it was called with `(<expected newSearchParams>, { replace: true })` and the new params JSON-stringify the FilterOption[] verbatim including the `name` field.
+  (d) `atomToUrl_emptyFilterArrayIsDroppedFromUrl`: mount with `?namespaceIds=[{...}]`; click "Clear" on the tests-side; assert `setSearchParams` was called with the `namespaceIds` key REMOVED (not present as an empty array) — PINS the `value.length === 0` skip at `DataQualityFilters.tsx:49`.
+  (e) `roundTrip_selectThenRemountSameUrl_atomHydratedFromUrl`: select chips; capture the URL the panel produced; unmount; remount at that exact URL; assert the atom contains the same selections. PINS the full bookmark-survives-reload round-trip.
+
+  Add a `// REGRESSION-PIN — DataQualityFilters.tsx:28-54 — the URL ↔ formFiltersAtom bidirectional sync IS the deep-link / shareable-URL contract. JSON-stringified FilterOption[] (id + name) round-trips through the query string. replace: true keeps history clean. If you change the encoding, the key set, or the replace flag, every existing bookmarked /data-quality URL silently breaks.` block. Pair with DOC-GAP-NNN documenting the deep-link contract on the dashboard page.
+batch: 2026-05-22-ZC
+feature_id: F-032

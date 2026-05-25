@@ -1,0 +1,57 @@
+gap_id: TEST-GAP-914
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform ts react-component component:DataQualityContent"
+pillars_affected: [P-04]
+surfaced_by:
+  - "odd-platform__ts__react-component__component__DataQualityContent.md:tests_coverage_semantic.uncovered_behaviours.[2] (category panels render in alphabetical (localeCompare) order regardless of API order)"
+  - "odd-platform__ts__react-component__component__DataQualityContent.md:bugs_limitations_corner_cases.[1] (Category panel ordering is alphabetical by label, not by severity or failure count — severity MEDIUM)"
+  - "odd-platform__ts__react-component__component__DataQualityContent.md:bugs_limitations_corner_cases.[2] (localeCompare with no explicit locale is runtime-locale-dependent — severity LOW)"
+  - "odd-platform__ts__react-component__component__DataQualityContent.md:stress_findings.probes_emitted.P-100"
+behaviour: |-
+  **MEDIUM — the per-category result rows on `/data-quality` are sorted client-side by `data.testResults.toSorted((a,b) => a.category.localeCompare(b.category))` (`DataQualityContent.tsx:75-77`) — alphabetical by category label, NOT by severity / failure count / backend order. The backend imposes NO ORDER BY on `testResults` (`DataQualityRunsServiceImpl.java:36-42`). No test pins the alphabetical ordering, the locale-stability, or the override of backend order.**
+
+  **What the operator sees vs the alternative orderings**:
+  - Today: rows render in alphabetical category-name order (Assertion Tests, Column Values Anomalies, Freshness Anomalies, Schema Changes, Unknown category, Volume Anomalies). The operator scrolls all 6 to find "which is failing worst".
+  - Alternative (severity-first): would surface the WORST category at the top — the actual operational question for a DQ engineer triaging catalog health.
+  - The doc-side silence (live `dashboard.md` lists categories in alphabetical order but does not STATE the ordering is alphabetical — DataQualityContent.md:docs_link_semantic.doc_drift_findings.[2]) means an operator cannot tell from reading whether the order is meaningful or accidental.
+
+  **Locale instability sub-finding** (sidecar bugs_limitations_corner_cases.[2]): `localeCompare` is called with no locale argument — the runtime default locale drives the collation. The 6 current category labels are ASCII-only so all locales agree TODAY. A future accented or non-Latin category name would sort differently per user (`en-US` vs `tr-TR`), and the doc's stated order would be wrong for some users. Severity LOW on its own — folded into this gap because the same test would cover both.
+
+  **No test pins either**:
+  - A regression switching to a plain `results.map` (backend order) silently makes the dashboard tile order dependent on backend row order — different per request if the SQL is unordered.
+  - A regression specifying `localeCompare(b, 'en-US')` is invisible today (all ASCII) — but a test would force the decision.
+
+  **Why MEDIUM**: the ordering does not produce wrong DATA, only a UX trade-off (alphabetical optimises "find by name", not "find the worst"); the sidecar self-classifies the ordering MEDIUM and the locale sub-finding LOW. No cross-pillar bump. MEDIUM stands.
+
+  **Test gap shape**: a unit test on `DataQualityContent` (or extracted-helper if refactored). Build a `DataQualityResults` whose `testResults` arrives in REVERSE alphabetical order; render; assert the rendered category headings are in alphabetical order. Second test: build a `testResults` with a non-ASCII category label and assert the locale-default produces a deterministic result.
+test_class: missing-integration
+criticality_rationale: |-
+  MEDIUM per Rule 3: sidecar self-classifies MEDIUM (DataQualityContent.md:bugs_limitations_corner_cases.[1]). No security, no data loss. Single-pillar (P-04) so no cross-pillar bump. UX trade-off rather than correctness defect. MEDIUM stands.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-ui/src/components/DataQuality/__tests__/DataQualityContentCategoryOrdering.test.tsx"
+  name: "categoryRowsSortAlphabeticallyRegardlessOfApiOrder_pinsLocaleCompareOrdering"
+evidence:
+  - "DataQualityContent.md says (tests_coverage_semantic.uncovered_behaviours.[2]): 'category panels render in alphabetical (localeCompare) order regardless of API order. The LSN-019-class ordering claim — see stress_findings.orderings; probe P-100.' test_class: integration; criticality: MEDIUM"
+  - "DataQualityContent.md says (bugs_limitations_corner_cases.[1]): 'Category panel ordering is alphabetical by label, not by severity or failure count — the worst-failing category is not surfaced first. DataQualityContent.tsx:76 sorts testResults by category.localeCompare. An operator opening /data-quality to find which category of tests is failing worst must scan all panels; the panel order conveys nothing about quality.' severity: MEDIUM"
+  - "DataQualityContent.md says (bugs_limitations_corner_cases.[2]): 'localeCompare with no explicit locale is runtime-locale-dependent — category order can differ per user if a non-ASCII category label is ever introduced.' severity: LOW"
+  - "Verified at primary source via sidecar: DataQualityContent.tsx:75-77 (the toSorted(localeCompare)) + DataQualityRunsServiceImpl.java:36-42 (backend imposes no ordering)"
+cross_references:
+  - "F-032 (P-04:F-002 Catalog-wide Data Quality Dashboard) — drift_class category_ordering_alphabetical_not_severity is enumerated in F-032.drift_class_summary"
+  - "probe P-100 (lineage/odd-platform/probes/P-100.yaml — Is the category-panel ordering alphabetical (toSorted/localeCompare), and is localeCompare locale-stable?)"
+  - "DOC-GAP-NNN (proposed): document the alphabetical ordering on documentation/docs/features/data-quality/dashboard.md (state that the order is alphabetical and does not reflect severity)"
+related_features: [F-032]
+related_pillar_features: ["P-04:F-002"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `DataQualityContentCategoryOrderingTest` under `odd-platform-ui/src/components/DataQuality/__tests__/`. Three pinning methods:
+  (a) `categoryRowsRenderInAlphabeticalOrder_regardlessOfApiOrder`: mock `useGetDataQualityDashboard` to return a `DataQualityResults` whose `testResults` arrives in REVERSE alphabetical category order (e.g. Volume Anomalies first, Assertion Tests last). Render `<DataQualityContent>`. Assert the rendered category headings are in alphabetical order (Assertion Tests first, Volume Anomalies last). PINS the toSorted override of backend order.
+  (b) `categoryRowsRenderStably_acrossRerenders`: render twice with the same prop reference; assert the rendered order is identical (no random shuffling).
+  (c) `categoryRowsRenderInLocaleSafeOrder_withNonAsciiCategoryLabel`: mock with a non-ASCII category label (e.g. 'Çritical Tests'); render; assert the resulting order is deterministic against a specific locale. If the test runs in CI under a different locale than dev, the test will catch the missing locale arg (per DataQualityContent.md:bugs_limitations_corner_cases.[2]).
+
+  Add a `// REGRESSION-PIN — DataQualityContent.tsx:75-77 — category rows are sorted client-side by localeCompare(category). The backend imposes no ORDER BY. If you switch to backend order, this test breaks AND documentation/docs/features/data-quality/dashboard.md must be updated to disclose the new ordering. If you add a non-ASCII category label, you must add a locale argument to localeCompare for cross-user stability.` block. Pair with DOC-GAP-NNN (state the ordering on the dashboard page).
+batch: 2026-05-22-ZC
+feature_id: F-032

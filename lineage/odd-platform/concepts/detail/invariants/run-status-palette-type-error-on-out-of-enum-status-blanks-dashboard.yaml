@@ -1,0 +1,121 @@
+name: runStatus palette TypeError on out-of-enum status blanks the whole dashboard
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-04
+description: |-
+  `testResultsBreakdownChartData` does
+  `palette.runStatus[status].color ?? palette.dataQualityDashboard.unknown`
+  (DataQualityContent.tsx:47-48). `palette.runStatus` is a
+  `Record<DataEntityRunStatus, ItemColors>` (interfaces.ts:55) — keyed by
+  exactly the 6 enum values SUCCESS / FAILED / SKIPPED / BROKEN / ABORTED /
+  UNKNOWN. If `status` is any other string (a new backend enum value not
+  yet in the generated frontend types, a stale generated-sources build,
+  or malformed data), `palette.runStatus[status]` is `undefined` and
+  `.color` throws TypeError BEFORE the `??` is evaluated. The error
+  propagates out of the `useMemo` and crashes the component tree —
+  the entire dashboard blanks. NEW invariant, batch ZC (2026-05-22).
+
+  The `??` operator GUARDS a missing `.color` on a PRESENT entry, NOT a
+  missing entry. This is the classic mis-written defensive code pattern:
+  the developer added the fallback intending to handle "unknown status",
+  but the fallback is unreachable under the actual failure mode (which
+  is "status not in the map at all"). The right defence is optional
+  chaining: `palette.runStatus[status]?.color ?? palette.dataQualityDashboard.unknown`.
+
+  The same risk does NOT apply to `tableHealthData` / `tableMonitoredTables`
+  (DataQualityContent.tsx:53-73) — those read fixed
+  `palette.dataQualityDashboard` keys, not status-indexed lookups. The
+  vulnerability is uniquely on the breakdown ring's per-status colour
+  derivation.
+
+  Realistic trigger scenarios:
+    (a) Backend ships a new `DataEntityRunStatus` enum value (e.g. a
+        7th status `PENDING`) and the frontend's `generated-sources`
+        is not regenerated before the deployment. Mismatched-version
+        deployment crashes the dashboard for every user on the platform.
+    (b) Malformed test data uploaded via S2S ingestion carries a
+        non-enum string in the `status` field, slips past validation,
+        and hits the dashboard.
+
+  Severity HIGH: a single bad row in `testResults[].results[]` blanks
+  the dashboard for ALL users (the failure is on render of every page,
+  not per-record). The component has no error boundary; an Error
+  thrown inside `useMemo` propagates to the React render and falls
+  through to the parent's nearest boundary (DataQuality.tsx has none,
+  AppSuspenseWrapper handles Suspense only).
+vocabulary_status: codebase-anchored
+axes_present:
+  - react_components
+nodes:
+  - odd-platform ts react-component component:DataQualityContent
+contributors:
+  - |-
+    DataQualityContent (dashboard body) batch ZC:
+      bugs_limitations_corner_cases[line-48 status-color crash on an out-of-enum
+      status blanks the whole dashboard — severity HIGH];
+      stress_findings.tunables[the genuine boundary case for this component is the
+      run-status-color lookup at line 48 — the ?? unknown fallback is DEAD under
+      the current contract and mis-written defensive code]
+evidence:
+  - DataQualityContent.md:bugs_limitations_corner_cases.[0] (the line-48 TypeError — primary evidence)
+  - DataQualityContent.md:stress_findings.tunables (mis-written defensive code analysis)
+  - DataQualityContent.md:concepts.invariants.[4] (palette keyed by all 6 enum values — the contract this depends on)
+security_aggregate:
+  overall: HIGH
+  auth_modes_relevant: []
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: N/A
+    detail: |-
+      Render-crash invariant — not an authorization concept.
+  owner_scoping:
+    verdict: N/A
+    detail: |-
+      Render-crash invariant — not data-scoped.
+  strengths: []
+  weaknesses:
+    - |-
+      An attacker who can inject a non-enum status into the test-result data
+      path (via the S2S ingestion surface) can DoS the dashboard for every
+      user on the platform. The ingestion validation surface should pin the
+      enum; if it does not, this is a denial-of-service vector. Severity
+      depends on the ingestion validation posture (REFERENCE — not enriched
+      from these sidecars).
+  cross_file_inconsistencies: []
+  contributing_files:
+    - DataQualityContent.md
+  evidence:
+    - DataQualityContent.md:bugs_limitations_corner_cases.[0]
+performance_aggregate:
+  overall: HIGH
+  hot_paths: []
+  throughput_shape:
+    verdict: N/A
+    detail: |-
+      Render-crash invariant — not a throughput concept.
+  scaling_shape:
+    verdict: N/A
+    detail: |-
+      Render-crash invariant — not a scaling concept.
+  strengths: []
+  weaknesses: []
+  cross_file_inconsistencies: []
+  contributing_files:
+    - DataQualityContent.md
+  evidence: []
+related_features:
+  - F-032
+related_pillar_features:
+  - "P-04:F-002"
+notes: |-
+  Two-line fix: `palette.runStatus[status]?.color ?? palette.dataQualityDashboard.unknown`
+  at DataQualityContent.tsx:48. The change is mechanical, no semantic shift.
+  The HARDER fix (and the right one) is to wrap every render path in a
+  React `ErrorBoundary` so that a single bad data point doesn't blank the
+  page — but the line-48 patch is the minimum-viable correction.
+
+  An integration test asserting the component renders without throwing
+  when the API returns a status outside the DataEntityRunStatus enum would
+  pin this. None exists today.
+maintainer_curated: false

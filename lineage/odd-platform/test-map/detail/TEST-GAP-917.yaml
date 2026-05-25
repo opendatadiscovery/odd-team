@@ -1,0 +1,56 @@
+gap_id: TEST-GAP-917
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform ts react-component component:DataQualityContent"
+pillars_affected: [P-04]
+surfaced_by:
+  - "odd-platform__ts__react-component__component__DataQualityContent.md:bugs_limitations_corner_cases.[5] (No error UI — a failed dashboard fetch shows the all-zero initialData placeholder, indistinguishable from a genuinely empty catalog — severity MEDIUM)"
+  - "odd-platform__ts__react-component__component__DataQualityContent.md:stress_findings.resource_boundaries.questions.[2] (the initialData is shown if the fetch FAILS — meaning a failed fetch is indistinguishable from an empty catalog)"
+behaviour: |-
+  **MEDIUM — a FAILED dashboard fetch (`GET /api/dataqatests/runs` returns 4xx/5xx or times out) shows the all-zero `initialData` placeholder identical to a genuinely empty catalog. The component destructures only `{ data, isSuccess }` from `useGetDataQualityDashboard` (`DataQualityContent.tsx:24`) — never `isError` / `error`. On a backend failure, react-query keeps `data` at `initialData` (all zeros), `isSuccess` stays false, `testResults` is `[]`, and the operator sees three grey 'No data' donuts with NO error message. A real backend failure is presented as 'your catalog has no data quality tests'.**
+
+  **The contract drift** (statically certain):
+  - `useGetDataQualityDashboard` wraps `useQuery({ queryKey, queryFn, initialData })` (`dataQuality.ts:77-81`) — no error callback, no `onError` handler, no `isError` destructure exposed to the caller.
+  - `DataQualityContent.tsx:24` destructures only `{ data, isSuccess }` — `isError` is discarded.
+  - All five `if (!data) return [...]` guards (`DataQualityContent.tsx:33, 44, 54, 66`) are dead while `initialData` is set (`data` is never undefined after first render) — so the empty-array path is taken on FAILED fetches as well as on EMPTY-catalog fetches.
+  - The user-facing result is identical: three grey 'No data' donuts, zero category cards.
+
+  **What an operator sees on a 500 from the backend**:
+  - The dashboard renders. No loading spinner stuck. No error banner. No retry button. The grey 'No data' state.
+  - There is no signal that the backend failed; the operator concludes the catalog has no DQ tests; they don't escalate; the platform reports green metrics; the failure is INVISIBLE until someone notices the dashboard stays grey across known-good ingestion runs.
+
+  **Why MEDIUM**: it is a UX correctness defect (a failure presented as a null result), but the operator can disprove the empty-catalog reading by checking `/api/dataqatests/runs` directly in the network tab. The blast radius is bounded — only one dashboard surface. Sidecar self-rates MEDIUM. Single-pillar; MEDIUM stands.
+
+  **Test gap shape**: integration test mocking `dataQualityRunsApi.getDataQualityTestsRuns` to reject (a) with HTTP 500, (b) with network error, (c) with HTTP 401. Three assertions: the component does NOT render the all-zero state silently — it SHOULD render an error banner (the test PINS the desired behaviour and FAILS today, so it is both a regression-pin AND an actionable bug-fix request). Alternatively: PIN the CURRENT (broken) behaviour and add a TODO comment requesting the fix.
+test_class: missing-integration
+criticality_rationale: |-
+  MEDIUM per Rule 3: sidecar self-classifies MEDIUM (DataQualityContent.md:bugs_limitations_corner_cases.[5]). UX defect, not security or data loss. The empty-state-vs-failed-state ambiguity affects only one surface but it affects every operator opening the dashboard during a backend incident. Single-pillar (P-04). MEDIUM stands.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-ui/src/components/DataQuality/__tests__/DataQualityContentErrorState.test.tsx"
+  name: "failedDashboardFetchShowsErrorState_NOT_indistinguishableEmptyDonuts"
+evidence:
+  - "DataQualityContent.md says (bugs_limitations_corner_cases.[5]): 'No error UI — a failed dashboard fetch shows the all-zero initialData placeholder, indistinguishable from a genuinely empty catalog. The component destructures only { data, isSuccess } from useGetDataQualityDashboard (DataQualityContent.tsx:24) — never isError / error. On a 4xx/5xx from GET /api/dataqatests/runs, react-query keeps data at initialData (all zeros), isSuccess stays false, testResults is [], and the operator sees three grey No data donuts with no error message. A real backend failure is presented as your catalog has no data quality tests.' severity: MEDIUM"
+  - "DataQualityContent.md says (stress_findings.resource_boundaries.cache Q3): 'The initialData (all zeros) is shown until the first fetch resolves AND is also what is shown if the fetch FAILS (no isError handling — see bugs_limitations_corner_cases), meaning a failed fetch is indistinguishable from an empty catalog.'"
+  - "Verified at primary source via sidecar: DataQualityContent.tsx:24 (only data, isSuccess destructured; no isError) + dataQuality.ts:77-81 (useQuery with initialData, no error surface)"
+cross_references:
+  - "F-032 (P-04:F-002 Catalog-wide Data Quality Dashboard) — drift_class failed_fetch_indistinguishable_from_empty_catalog is enumerated in F-032.drift_class_summary"
+  - "TEST-GAP-915 (this batch — the HONEST empty-state case; TEST-GAP-917 is the DECEPTIVE failed-fetch-rendered-as-empty case)"
+  - "TEST-GAP-425 (existing — AppErrorPage reads AppError from store and renders the banner — sister class: error-state UX on fetchDataEntityDetails)"
+related_features: [F-032]
+related_pillar_features: ["P-04:F-002"]
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Add `DataQualityContentErrorStateTest` under `odd-platform-ui/src/components/DataQuality/__tests__/`. Four pinning methods (all FAIL TODAY — proposed test asserts DESIRED behaviour and forces a bug-fix):
+  (a) `failedDashboardFetch500_rendersErrorBanner_NOT_emptyDonuts`: mock useGetDataQualityDashboard so the underlying useQuery rejects with HTTP 500. Render <DataQualityContent>. Assert an error banner (e.g. <AppErrorPage> or an inline error message) is shown — NOT the three grey donuts. EXPECTED TO FAIL today; pins the desired UX.
+  (b) `failedDashboardFetch401_rendersAuthErrorBanner_NOT_emptyDonuts`: same as (a) but with HTTP 401. Assert the banner says something like "Authentication required" / "Please log in" — NOT the empty-catalog donuts. EXPECTED TO FAIL.
+  (c) `networkError_rendersConnectionErrorBanner_NOT_emptyDonuts`: same as (a) but with network rejection. EXPECTED TO FAIL.
+  (d) `genuineEmptyCatalog_rendersEmptyStateExplanatoryCopy_NOT_silentGreyDonuts`: mock successful fetch with empty testResults; assert an explanatory message ("This catalog has no Data Quality tests yet — see <link> to start ingesting"). EXPECTED TO FAIL.
+
+  Add a `// FIX-REQUIRED — DataQualityContent.tsx:24 — destructure { isError, error } from useGetDataQualityDashboard and render an <AppErrorPage> or inline error banner on isError. The current code presents a failed fetch as an empty catalog. This test PINS the desired behaviour and FAILS until the fix lands.` block.
+
+  Backlog this gap as a bug-fix item (not just a test-gap) since the desired behaviour is missing from the production code.
+batch: 2026-05-22-ZC
+feature_id: F-032

@@ -1,0 +1,89 @@
+---
+probe_id: P-111
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__DataQualityFilters
+emitted_at: 2026-05-22T00:00:00Z
+status: pending-stress-protocol
+feature_id: null  # P-04:F-002 Quality Dashboard — not yet feature-anchored as F-NNN
+test_class: performance
+verified_against_commit: ede5d277
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category A): the Data Quality Dashboard's filter
+  autocompletes (MultipleFilterItemAutocomplete) feed the typed text straight
+  into useFilter's list query — useHook({ page: 1, size: 30, query: searchText })
+  (hooks/index.ts:13-17) — and searchText is the React-Query cache key
+  (e.g. namespace.ts:7). There is no useDebounce and no minimum-character
+  gate in the input path (MultipleFilterItemAutocomplete.tsx:57-66).
+  Hypothesis: typing an N-character search string into one filter autocomplete
+  issues up to N distinct GET requests to the corresponding catalog list API
+  (one per prefix), bounded only by React-Query de-duplication of identical
+  keys. For a 10-character namespace name this is ~10 requests; an operator
+  populating the full 10-slot panel produces a request burst. Confirming the
+  count tells the maintainer whether a debounce is warranted.
+---
+arrange:
+  - kind: docker-compose-up
+    note: odd-minimal stack with the odd-platform-ui served
+  - kind: sql
+    query: |
+      -- seed enough namespaces that the autocomplete has options to render
+      INSERT INTO namespace (id, name, is_deleted)
+      SELECT 7200 + i, 'p111-namespace-' || i, false
+      FROM generate_series(1, 40) AS i;
+  - kind: playwright-setup
+    note: |
+      Headless Chromium via Playwright (local, per Rule 8). Log in if auth is
+      enabled, or run with auth.type=DISABLED. Navigate to /data-quality.
+      Install a network request interceptor that records every request whose
+      URL path matches the namespace list endpoint (the path the
+      useGetNamespaceList hook hits — confirm exact path from lib/api at run
+      time, expected to contain 'namespace').
+act:
+  - kind: dom-probe
+    steps:
+      - open the 'Namespace' autocomplete in the 'Filters for tables' block
+        (click the input labelled 'Namespace')
+      - type the 10-character string "p111-names" into the input, one
+        character at a time, with a 50ms gap between keystrokes (fast enough
+        that a debounce, if present, would collapse them)
+    capture_as: typing_done
+  - kind: wait
+    note: wait 1500ms for any in-flight list requests to settle
+observe:
+  - kind: network-capture
+    filter: namespace-list endpoint requests issued between autocomplete-open and wait-end
+    capture_as: namespace_list_requests
+  - kind: network-capture
+    filter: distinct `query` query-parameter values across namespace_list_requests
+    capture_as: distinct_query_values
+assert:
+  # NO debounce hypothesis: roughly one request per keystroke prefix
+  # (10 prefixes: 'p', 'p1', 'p11', ... 'p111-names'); allow the open-time
+  # empty-query request too. If a debounce existed this would be 1-2.
+  - "namespace_list_requests.length >= 8"
+  - "distinct_query_values.length >= 8"
+  # every request carries size=30, page=1 (the fixed tunable)
+  - "namespace_list_requests every request has query-param size == '30'"
+  - "namespace_list_requests every request has query-param page == '1'"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__DataQualityFilters
+  retrospectives:
+    - LSN-023
+realism_caveats: |
+  The assertion thresholds (>= 8) assume React-Query does not collapse the
+  distinct-prefix requests — it de-duplicates only identical keys, and each
+  prefix is a distinct key, so the count should track keystrokes. If the
+  count comes back at 1-2, either a debounce was added after commit ede5d277
+  or React-Query batching behaviour changed — re-read MultipleFilterItemAutocomplete
+  and hooks/index.ts. The probe does NOT measure backend latency or DB load
+  per request; it measures only request COUNT, which is the operator-cost the
+  Category-A no-debounce finding is about. The exact namespace list-API path
+  must be confirmed from lib/api at run time. A 50ms inter-keystroke gap is
+  chosen to be faster than a typical 300ms debounce; adjust if the suspected
+  debounce window differs.

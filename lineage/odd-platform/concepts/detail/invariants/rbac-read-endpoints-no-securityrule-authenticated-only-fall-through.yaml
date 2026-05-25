@@ -27,7 +27,7 @@ description: |-
       SECURITY_RULES entry
 
   All five fall through to
-  `AuthorizationCustomizer.java:29-30`'s catch-all
+  `AuthorizationCustomizer.java:29-30` catch-all
   `pathMatchers("/**").authenticated()` under LOGIN_FORM / OAUTH2 /
   LDAP. Under DISABLED, the chain is INERT
   (`DisabledAuthSecurityConfiguration.java:11-19` short-circuits
@@ -39,112 +39,136 @@ description: |-
   Per the implicit_adrs in the batch-ZD class sidecars,
   read-side endpoints are intentionally NOT in `SECURITY_RULES`
   — the read-collaborative posture for the RBAC management
-  surface is the architectural commitment:
-
-    "Any authenticated user can query their own permissions on
-     any resource because the response reveals only what the
-     policy graph would already grant them. Gating the read
-     would be tautological."
+  surface is the architectural commitment.
 
   For three of the five endpoints (the contextual permission
   query, the role list, the policy list) the response content is
-  CALLER-SCOPED:
-    - getResourcePermissions returns the caller's own resolved
-      permissions
-    - getRolesList non-admin path returns the caller's own
-      attached roles
-    - getPolicyList similar service-tier fork (per batch-S
-      finding)
+  CALLER-SCOPED. For two (getPolicyDetails, getPolicySchema),
+  the response is NOT caller-scoped — getPolicyDetails returns
+  the FULL policy by id and is the highest-leverage exposure.
 
-  For two of the five (getPolicyDetails, getPolicySchema), the
-  response is NOT caller-scoped:
-    - **getPolicyDetails returns the FULL policy by id** — every
-      statement, every role assignment. Any authenticated user
-      can enumerate every policy + read its full body. This is
-      the highest-leverage exposure on the surface.
-    - **getPolicySchema returns the live JSON-Schema catalogue
-      text** — the runtime authority on policy document shape.
-      Useful for policy authoring; structurally not secret.
+  ## STRENGTHENED batch ZE (2026-05-25) — broader pattern
+
+  Batch ZE confirms the same posture across SEVEN more read
+  endpoint classes — bringing the full no-SECURITY_RULES read
+  surface to 12+ endpoints. The pattern is genuinely
+  pillar-wide:
+
+    - GET /api/search/* — 7 endpoints (search/results/facets/
+      facet-options/suggestions/highlight + update). NO
+      SECURITY_RULES entry for any /api/search* path
+      (verified by Grep search|facet returns zero matches
+      in SecurityConstants.java).
+    - GET /api/relationships + /api/relationships/erd/{id} +
+      /api/relationships/graph/{id} — 3 endpoints. NO
+      SECURITY_RULES entry; catalog-global read posture
+      (per relationships-no-exclude-from-search-asymmetry-vs-dataentities).
+    - GET /api/titles — 1 endpoint. NO SECURITY_RULES entry;
+      Title directory readable by any authenticated user.
+    - GET /api/features/active — 1 endpoint. NO SECURITY_RULES
+      entry; feature-flag enumeration; LIMITED-RISK FACET of
+      REFACTOR-185 (PROVIDER-NULL-BLEED — see
+      refactor-185-identity-layer-facet).
+    - GET /api/links — 1 endpoint. NO SECURITY_RULES entry;
+      operator-configured catalogue.
 
   ## The structural inconsistency
 
   The pattern is INTERNALLY CONSISTENT within the platform's
   architectural conventions (read endpoints are catch-all
   authenticated; write endpoints have explicit SECURITY_RULES
-  entries). But it produces a SURPRISING outcome at the
-  getPolicyDetails surface: a user with no policy-management
-  permissions can still enumerate every policy by id, read every
-  statement, and learn the entire authorization model — which is
-  the platform's intellectual property and the surface most
-  sensitive to information leakage in a multi-tenant deployment.
+  entries). But it produces SEVERAL surprising outcomes:
+
+    - getPolicyDetails — full policy reading by anyone (batch ZD)
+    - getSearchResults — paginate the whole catalog (batch ZE)
+    - getFiltersForFacet(OWNERS) — enumerate every owner +
+      per-owner count (batch ZE)
+    - getRelationships — enumerate every relationship across
+      every data source (batch ZE)
+    - getTitleList — enumerate every owner-title (batch ZE)
+    - getActiveFeatures — fingerprint enabled features (batch ZE)
+    - getLinks — read operator-internal URLs (batch ZE)
+
+  Compounded with the IDENTITY-LAYER FACET of REFACTOR-185
+  (whoami returns admin under DISABLED), an anonymous caller
+  walks ALL of these surfaces.
 
   ## Live doc drift
 
   The live `/authorization/policies` page (WebFetched 2026-05-25,
   status 200) does NOT name a Permission required for reading
-  policies and does NOT warn that any authenticated user can
-  enumerate every policy by id. An operator reading the doc would
-  reasonably assume that the read surface is gated identically
-  to the write surface (POLICY_CREATE / POLICY_UPDATE /
-  POLICY_DELETE) — and they would be wrong.
+  policies. Batch ZE adds: features/active, /links, /titles,
+  /relationships are all undocumented for their read-posture
+  semantics on the live doc surface. Operators reading the doc
+  would reasonably assume gated reads.
 
   ## Severity
 
   MEDIUM. The intentional posture is internally coherent
   (read-collaborative); the doc gap is the higher-leverage
-  finding. A `POLICY_READ` permission added to gate
-  getPolicyDetails would close the highest-leverage exposure
-  (full policy reading by anyone) while preserving the
-  per-caller read on getResourcePermissions /
-  getNonContextualPermissions / getRolesList.
+  finding. Code fixes per endpoint would close per-surface
+  exposures; doc fixes surface the remaining intentional
+  posture.
 
   ## Mitigation candidates
 
-  - **Code (preferred)**: add `POLICY_READ` permission to
-    PolicyPermissionDto + add a SECURITY_RULES entry gating
-    `GET /api/policies/{id}` + add the permission to the
-    seeded Administrator role's `ALL` expansion. Closes the
-    full-policy-read exposure. Trade-off: the UI must gate
-    the policy-detail navigation; the read-collaborative
-    architecture loses one of its five member endpoints.
-
-  - **Doc (alternative)**: add an explicit admonition on the
-    live `/authorization/policies` page naming the read posture
-    + the contrast with the gated write surface. Surfaces the
-    operator-visible reality without changing the code.
-
-  - **Both**: the highest-completeness path — close the
-    full-policy-read exposure AND document the remaining
-    read-collaborative posture.
+  - **Code (preferred)**: per-endpoint POLICY/READ permission
+    additions for the highest-leverage exposures
+    (getPolicyDetails + getSearchResults via owner-scoping).
+  - **Doc (alternative)**: explicit admonition on every
+    relevant doc page naming the read posture + the contrast
+    with the gated write surface.
+  - **Both**: the highest-completeness path.
 axes_present:
 - controllers
 nodes:
 - odd-platform java RoleController controller-class:RoleController
 - odd-platform java PolicyController controller-class:PolicyController
 - odd-platform java PermissionController controller-class:PermissionController
+- odd-platform java SearchController controller-class:SearchController
+- odd-platform java RelationshipController controller-class:RelationshipController
+- odd-platform java TitleController controller-class:TitleController
+- odd-platform java FeatureController controller-class:FeatureController
+- odd-platform java LinksController controller-class:LinksController
 contributors:
-- 'RoleController.md (batch ZD class-level sidecar):
-  bugs_limitations_corner_cases.[1] + invariants (GET /api/roles
-  has no SECURITY_RULES entry)'
-- 'PolicyController.md (batch ZD class-level sidecar):
-  understanding + invariants + doc_drift_findings.[2] (3 of 6
-  endpoints are .authenticated() only)'
-- 'PermissionController.md (batch ZD class-level sidecar):
-  understanding + implicit_adrs.[1] (read-collaborative posture
-  is the architectural commitment)'
+- 'RoleController.md (batch ZD class-level sidecar)'
+- 'PolicyController.md (batch ZD class-level sidecar)'
+- 'PermissionController.md (batch ZD class-level sidecar)'
+- |-
+  NEW batch ZE — SearchController class-level: no @PreAuthorize on
+  any of 7 endpoints; SECURITY_RULES has no entry for /api/search*;
+  Grep search|facet returns zero matches
+- |-
+  NEW batch ZE — RelationshipController class-level:
+  bugs_limitations_corner_cases.[1] + security.known_security_gaps.[2]
+  (no rule for /api/relationships/**)
+- |-
+  NEW batch ZE — TitleController class-level:
+  bugs_limitations_corner_cases.[0] + security.known_security_gaps
+  (no rule for /api/titles)
+- |-
+  NEW batch ZE — FeatureController class-level:
+  bugs_limitations_corner_cases.[0] (no rule for /api/features/active)
+- |-
+  NEW batch ZE — LinksController class-level:
+  bugs_limitations_corner_cases.[3] + security.known_security_gaps
+  (no rule for /api/links)
 evidence:
-- 'SecurityConstants.java:98+ — no entries for GET /api/roles,
-  GET /api/policies, GET /api/policies/{id}, GET /api/policies/schema,
-  GET /api/resource/{type}/{id}/permissions'
-- 'AuthorizationCustomizer.java:29-30 — the catch-all
+- 'SecurityConstants.java:98+ — no entries for /api/policies, /api/roles,
+  /api/policies/schema, /api/resource/{type}/{id}/permissions, /api/search*,
+  /api/relationships/**, /api/titles, /api/features/active, /api/links'
+- 'AuthorizationCustomizer.java:29-30 — catch-all
   `pathMatchers("/**").authenticated()`'
-- 'RoleController.java:27-34 + PolicyController.java:27-32, 34-41,
-  59-63 + PermissionController.java:19-25 (no @PreAuthorize, no
-  programmatic permission check on any of the five methods)'
-- 'PolicyPermissionDto.java — no POLICY_READ enum value; the
-  read-side permission does NOT EXIST in the catalogue'
+- 'PolicyPermissionDto.java — no POLICY_READ enum value'
 - WebFetch 2026-05-25 status 200 against /authorization/policies
   (silent on the read posture)
+- |-
+  NEW batch ZE
+  odd-platform__java__SearchController__controller-class__SearchController.md
+  + odd-platform__java__RelationshipController__controller-class__RelationshipController.md
+  + odd-platform__java__TitleController__controller-class__TitleController.md
+  + odd-platform__java__FeatureController__controller-class__FeatureController.md
+  + odd-platform__java__LinksController__controller-class__LinksController.md
 related_features:
 - F-001
 - F-006
@@ -154,20 +178,18 @@ related_concepts:
 - 'operation:query-resource-permissions'
 - 'operation:create-policy'
 - 'operation:create-role'
-- 'invariant:read-collaborative-cross-owner-enumeration-batch-w-extension
-  (the parallel UNRESTRICTED catalogue-read posture at the data-entity
-  catalogue surface)'
-- 'invariant:openapi-spec-no-security-schemes-machine-readable-auth-absent
-  (the meta-finding — the OpenAPI spec carries no auth declarations,
-  making the per-endpoint posture invisible to spec-driven consumers)'
+- 'invariant:read-collaborative-cross-owner-enumeration-batch-w-extension'
+- 'invariant:openapi-spec-no-security-schemes-machine-readable-auth-absent'
+- 'invariant:refactor-185-identity-layer-facet-batch-zd-whoami-admin-grant (the IDENTITY-LAYER surface compounding all the reads)'
+- 'invariant:cross-owner-facet-count-enumeration-via-drill-down (the search/facets-specific finding)'
+- 'invariant:relationships-no-exclude-from-search-asymmetry-vs-dataentities (the relationships-specific finding)'
 notes: |-
-  NEW invariant captured in batch 2026-05-25-ZD. Five-endpoint
-  enumeration of the RBAC read surface posture; one of the five
-  (getPolicyDetails) is the highest-leverage exposure because the
-  response is NOT caller-scoped — any authenticated user reads
-  the full policy by id.
+  STRENGTHENED batch ZE — the 12+ endpoint pattern is now
+  pillar-wide. The original 5-endpoint RBAC-read pattern
+  generalises to ALL non-mutation read surfaces across the
+  platform. The doc-vs-code asymmetry compounds because every
+  read endpoint is silently catch-all authenticated; only
+  write endpoints carry the explicit SECURITY_RULES entry.
 
-  DOC-NNN + REFACTOR-NNN candidates as documented in the
-  Mitigation candidates section. The two are complementary, not
-  alternatives — the code fix closes the exposure; the doc fix
-  surfaces the remaining intentional posture.
+  DOC-NNN + REFACTOR-NNN candidates as enumerated in the
+  Mitigation candidates section.

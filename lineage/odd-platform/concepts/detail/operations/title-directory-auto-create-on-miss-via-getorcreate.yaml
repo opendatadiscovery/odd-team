@@ -1,0 +1,74 @@
+name: Title Directory Auto-Create on Miss (via getOrCreate)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-08
+description: |-
+  NEW OPERATION, batch ZE — the SIDE-EFFECT WRITE PATH for the
+  Title directory. TitleController.java exposes only a READ
+  endpoint (GET /api/titles); titles are MINTED into the directory
+  by OwnershipServiceImpl.create / update calling
+  titleService.getOrCreate(formData.getTitleName()).
+
+  IMPLEMENTATION: TitleServiceImpl.java:19-22 —
+  `titleRepository.getByName(name).switchIfEmpty(titleRepository
+  .create(new TitlePojo().setName(name)))`. A read-then-insert
+  pattern with NO ON CONFLICT clause; the DB-level
+  `title.name UNIQUE` constraint is the only guard.
+
+  AUTH POSTURE: NOT separately gated — riding piggyback on the
+  OwnershipServiceImpl.create write path, which IS gated by
+  DATA_ENTITY_OWNERSHIP_CREATE / TERM_OWNERSHIP_CREATE permission
+  via SECURITY_RULES. Any caller permitted to grant ownership
+  can mint a new title by typing any free-text string into the
+  React OwnerTitleAutocomplete (freeSolo: true at
+  OwnerTitleAutocomplete.tsx:149).
+
+  CONCURRENT RACE — two parallel ownership-grant calls naming
+  the SAME brand-new title both read empty + both attempt
+  create; one wins, the other hits TITLE_NAME_UNIQUE constraint
+  → ExceptionUtils.translateDatabaseException → HTTP 400 USR003
+  'Title with this name already exists'. The losing caller's
+  @ReactiveTransactional ownership-grant rolls back atomically;
+  retry resolves. Pinned by batch-K OwnershipServiceImpl
+  invariants[3].
+
+  NO NORMALISATION — case-folding, trimming, deduping by
+  lowercase are all absent. The directory accumulates
+  'data steward', 'Data Steward', 'DATA STEWARD',
+  ' Data Steward ' (leading space), 'data-steward',
+  'data_steward' as DISTINCT rows the moment two operators
+  type slightly different forms. This produces a SILENT POLICY-
+  LEAK CLASS — operators wiring policies on
+  dataEntity:owner:title == 'Data Steward' miss every
+  other-casing variant.
+
+  DOC GAP — the auto-create side-effect is not documented on
+  any live doc page; operators with no prior knowledge cannot
+  predict that typing 'Maintainer' creates a brand-new
+  directory row.
+axes_present:
+  - services
+  - repositories
+  - ui_components
+nodes:
+  - odd-platform java TitleController controller-class:TitleController
+contributors:
+  - 'TitleController.md:concepts.operations.[1] — getOrCreate side-effect path'
+  - 'TitleController.md:bugs_limitations_corner_cases.[4,5] — no length/pattern constraint + concurrent race'
+  - 'TitleController.md:implicit_adrs.[0] — directory mutated only as OwnershipServiceImpl side-effect'
+evidence:
+  - TitleController.md:concepts.operations.[1]
+  - TitleController.md:bugs_limitations_corner_cases.[4,5]
+  - TitleController.md:implicit_adrs.[0]
+  - TitleController.md:stress_findings.resource_boundaries.[0]
+notes: |-
+  Pairs with entitie:title-directory (the directory entity) and
+  operation:get-title-list-paged (the READ surface). The
+  permission-bypass-via-owner-auto-create-side-door-write-path
+  invariant (existing in the registry) has the same shape for
+  the Owner directory — Title is the sibling case for the
+  Ownership feature.
+related_features: []
+related_pillar_features:
+  - P-08

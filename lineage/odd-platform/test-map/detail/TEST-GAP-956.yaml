@@ -1,0 +1,77 @@
+gap_id: TEST-GAP-956
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - 'odd-platform java TitleController controller-class:TitleController'
+  - 'odd-platform java service TitleServiceImpl'
+  - 'odd-platform java service OwnershipServiceImpl'
+surfaced_by:
+  - 'odd-platform__java__TitleController__controller-class__TitleController.md:tests_coverage_semantic.uncovered_behaviours.[5]'
+  - 'odd-platform__java__TitleController__controller-class__TitleController.md:bugs_limitations_corner_cases.[5]'
+  - 'odd-platform__java__TitleController__controller-class__TitleController.md:stress_findings.resource_boundaries.[0]'
+behaviour: |-
+  **`TitleServiceImpl.getOrCreate` is a read-then-insert race that
+  produces a transient HTTP 400 USR003 on concurrent owner-grants
+  naming the SAME brand-new title.** Two parallel `OwnershipServiceImpl.create`
+  calls naming the same unseen title both call
+  `titleRepository.getByName(name)` (returns empty), then both call
+  `titleRepository.create(new TitlePojo().setName(name))`. The DB
+  constraint `TITLE_NAME_UNIQUE` (per ExceptionUtils.java:22-23) rejects
+  one; the losing side surfaces as `UniqueConstraintException("Title
+  with this name already exists")` per ExceptionUtils.java:72-74 →
+  ControllerAdvice → HTTP 400 USR003. The
+  `OwnershipServiceImpl.@ReactiveTransactional` boundary rolls back the
+  entire ownership-grant on the losing side.
+
+  No test currently exercises the concurrent path; the existing
+  OwnershipServiceImplTest covers single-threaded flow. The race
+  surfaces in production as a transient 400 that operators see as
+  "create owner failed — try again" with no documentation. Pairs with
+  TEST-GAP-571 (sibling Tag-shaped race), TEST-GAP-540 (TOCTOU on
+  TagServiceImpl.getOrCreateTagsByName), TEST-GAP-575
+  (UniqueConstraintException mapping), TEST-GAP-859 (TagServiceImpl
+  sibling read-then-insert) — this is the Title-specific instance of
+  the read-then-insert race-condition class.
+
+  Mitigation candidates: (a) ON CONFLICT DO NOTHING semantics at the
+  SQL layer with a re-fetch on conflict; (b) DB-level UPSERT
+  (insertOnConflictDoUpdate); (c) idempotent retry at the
+  OwnershipServiceImpl layer that catches USR003 and re-runs the
+  ownership-grant after re-fetching the now-existing title.
+test_class: integration
+test_files_existing:
+  - 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/OwnershipServiceImplTest.java:78-112 (single-threaded title path only)'
+test_files_proposed:
+  - path: 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/TitleServiceImplConcurrencyTest.java'
+    name: 'getOrCreate_twoConcurrentCallsSameNewName_oneWinsOtherSurfacesUSR003'
+  - path: 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/TitleServiceImplConcurrencyTest.java'
+    name: 'getOrCreate_secondCallAfterRace_findsTheExistingTitle'
+  - path: 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/TitleServiceImplConcurrencyTest.java'
+    name: 'ownershipCreate_concurrentSameTitleName_oneOwnershipGrantSucceedsOtherRollsBack'
+evidence:
+  - 'TitleController.md says: "Concurrent calls to OwnershipServiceImpl.create with the same NEW title_name — race causing duplicate-key violation on title.name UNIQUE. The auto-create path in TitleService.getOrCreate (TitleServiceImpl.java:19-22) reads-then-inserts without ON CONFLICT; two parallel owner-grants for an unseen title produce a DB-level UniqueConstraintException"'
+  - 'TitleController.md says: "YES — well-defined race surfacing as HTTP 400 USR003. Two parallel OwnershipServiceImpl.create calls naming the SAME brand-new title: both call titleRepository.getByName(name); both observe empty; both call titleRepository.create"'
+  - 'Source: TitleServiceImpl.java:19-22 + ExceptionUtils.java:22-23, 72-74'
+cross_references:
+  - 'TEST-GAP-571 (sibling read-then-insert race on roles)'
+  - 'TEST-GAP-540 (TagServiceImpl TOCTOU race)'
+  - 'TEST-GAP-575 (UniqueConstraintException mapping)'
+  - 'TEST-GAP-859 (TagServiceImpl read-then-insert sibling)'
+  - 'TEST-GAP-955 (sibling — TitleController list endpoint coverage gap)'
+related_refactor_ids: []
+related_doc_gap_ids: []
+related_pillar_features:
+  - 'P-09 Authentication and Authorization (ownership grant path)'
+related_features: []
+proposed_action: |-
+  Author TitleServiceImplConcurrencyTest with three cases:
+  (a) two parallel OwnershipServiceImpl.create calls with the same
+  brand-new title_name → one succeeds, the other gets USR003;
+  (b) subsequent third call → finds the now-existing row via
+  getByName, succeeds without re-attempting insert;
+  (c) ownership rollback assertion: the losing side's ownership row
+  is NOT persisted (txn boundary rolled it back).
+  Use CountDownLatch or StepVerifier.zip with explicit thread pools to
+  reproduce the race deterministically.
+maintainer_curated: false
+batch: 2026-05-25-ZE

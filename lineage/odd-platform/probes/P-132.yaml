@@ -1,0 +1,101 @@
+---
+probe_id: P-132
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__FeatureController__controller-class__FeatureController
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: security
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category D — auth gates, unauthenticated): Under
+  auth.type=LOGIN_FORM / OAUTH2 / LDAP, what is the exact HTTP status code
+  (302 vs 401) and response shape an UNAUTHENTICATED curl caller sees when
+  hitting GET /api/features/active? Static inference confirms `.authenticated()`
+  applies (FeatureController.java has no @PreAuthorize; /api/features/active
+  is NOT in SecurityConstants.WHITELIST_PATHS or LoginFormSecurityConfiguration.
+  permittedPaths; the fall-through is `pathMatchers('/**').authenticated()` per
+  LoginFormSecurityConfiguration.java:57 + AuthorizationCustomizer.java:29-30)
+  but the precise filter-chain response (302 redirect to /login for LOGIN_FORM,
+  302 to OAuth provider for OAUTH2, 401 with WWW-Authenticate for LDAP, or
+  some combination) requires a running stack to confirm. The defence-in-depth
+  implication: if a future change adds /api/features/active to WHITELIST_PATHS
+  or permittedPaths, the LOGIN_FORM assertion flips (status 200, body contains
+  the FeatureList) and probe-runner catches the regression on next sweep.
+---
+arrange:
+  - kind: docker-compose-up
+    env:
+      AUTH_TYPE: LOGIN_FORM
+      AUTH_LOGIN_FORM_CREDENTIALS: "admin:admin"
+  - kind: wait-for-readiness
+    endpoint: /actuator/health
+    timeout_seconds: 60
+act:
+  - kind: rest
+    method: GET
+    path: /api/features/active
+    headers: {}
+    follow_redirects: false
+    capture_as: response_login_form_anon
+  - kind: capture
+    name: status_login_form
+    expression: response_login_form_anon.status
+  - kind: capture
+    name: location_login_form
+    expression: response_login_form_anon.headers.Location
+  - kind: capture
+    name: body_login_form
+    expression: response_login_form_anon.body
+  - kind: docker-compose-down
+    destroy_volumes: true
+  - kind: docker-compose-up
+    env:
+      AUTH_TYPE: OAUTH2
+      AUTH_OAUTH2_CLIENT_OKTA_PROVIDER: "okta"
+      AUTH_OAUTH2_CLIENT_OKTA_CLIENT_ID: "stub-client"
+      AUTH_OAUTH2_CLIENT_OKTA_CLIENT_SECRET: "stub-secret"
+      AUTH_OAUTH2_CLIENT_OKTA_ISSUER_URI: "http://stub-oidc:9999/"
+  - kind: rest
+    method: GET
+    path: /api/features/active
+    headers: {}
+    follow_redirects: false
+    capture_as: response_oauth2_anon
+  - kind: capture
+    name: status_oauth2
+    expression: response_oauth2_anon.status
+  - kind: capture
+    name: location_oauth2
+    expression: response_oauth2_anon.headers.Location
+observe:
+  - kind: emit-summary
+    fields: [status_login_form, location_login_form, status_oauth2, location_oauth2]
+assert:
+  - "status_login_form == 302  # LOGIN_FORM: redirect to /login (default Spring Security form-login behavior)"
+  - "location_login_form contains '/login'"
+  - "body_login_form does not contain 'DATA_COLLABORATION'  # confirms the FeatureList was NOT served"
+  - "body_login_form does not contain 'ALERT_NOTIFICATIONS'"
+  - "status_oauth2 == 302  # OAUTH2: redirect to OAuth provider's authorization endpoint"
+  - "location_oauth2 contains '/oauth2/authorization'  # Spring Security WebFlux OAuth2 entry-point path"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__FeatureController__controller-class__FeatureController
+    - odd-platform__java__IdentityController__controller-class__IdentityController
+    - odd-platform__java__LoginFormSecurityConfiguration__config-class__LoginFormSecurityConfiguration
+  retrospectives: []
+realism_caveats: |
+  Probe verifies the LOGIN_FORM and OAUTH2 unauthenticated-response shape.
+  LDAP is omitted to avoid the LDAP-server dependency in the docker-compose
+  stack; the LDAP case is assumed similar to OAUTH2 (Spring Security WebFlux
+  defaults to 302 for unauthenticated form-style requests). If the OAUTH2
+  assertion fails because the stub OIDC provider is unreachable, fall back
+  to asserting `status_oauth2 in (302, 401, 500)` and surface the failure
+  mode as a separate finding. Probe deliberately uses `follow_redirects: false`
+  to assert on the immediate filter-chain response rather than the
+  redirect-target page.

@@ -3976,3 +3976,180 @@ Directed RBAC + Identity + Integration class-level batch on `feature/ontology-fi
 - **REFACTOR-269** strengthened with Policy + Role controller-tier confirmations. Non-admin pagination-ignored asymmetry is a CLASS-WIDE convention in PolicyService + RoleService. See `detail/REFACTOR-269-strengthen-batch-ZD.md`.
 
 - **REFACTOR-545** strengthened with Policy + Role class-level enumeration of 200-vs-201 drift. Cluster table now spans 13+ controllers; every Create+Update in the RBAC management half (6 endpoints) returns 200 against spec's 201. See `detail/REFACTOR-545-strengthen-batch-ZD.md`.
+
+## Refresh note — batch ZE (2026-05-25 — Discovery / Search / Links / Feature / Relationship / Title controller-class enrichment)
+
+Five new class-level sidecars enriched the read-surface bookend (P-01 Data Discovery + P-02 Data Modelling + P-04 Data Catalog + P-05 Ownership + P-06 Configuration). Per the Rule-0 wisdom test the batch is GAP-heavy as expected for an endpoint-deepening pass on read-collaborative surfaces: **13 new refactoring scopes** (REFACTOR-620..632) + **5 existing scopes STRENGTHENED**. The architectural framings landed in parallel as 4 new ADR candidates (`index-batch-ZE-append.md` under implicit-adrs/).
+
+**Coherence (Rule 6)**: cross-registry grep confirmed all new findings are SAME-polarity with the other registries:
+- `concepts/index.yaml` already carries the read-collaborative posture as an invariant; REFACTOR-626 (no authz on /api/relationships) is the new endpoint-anchored instance.
+- `feature-flows/` carries the search-session lifecycle (F-010 housekeeping) — REFACTOR-620 (hasNext bug) and REFACTOR-621 (suggestions determinism) are co-located.
+- `test-map` carries gaps on Title CRUD; REFACTOR-624 (case-sensitivity policy-leak) adds the security-class hardening to that cluster.
+- Zero CONTRADICTS surfaced.
+
+**Pre-emit coherence check (LSN-018) on the headline findings**:
+- REFACTOR-620 (hasNext: true hardcoded) — SAME-polarity with REFACTOR-319 (Term listByTerm hasNext: false hardcoded); both call for the shared `Page.of(items, total, page, size)` factory fix.
+- REFACTOR-626 (no authz on relationships) — SAME-polarity with REFACTOR-554 (Tag no SECURITY_RULES), REFACTOR-617 (Policies no SECURITY_RULES); all cluster under the read-collaborative-posture-or-gap maintainer triage.
+- REFACTOR-627 (relationship_id Category F drift) — SAME-polarity with REFACTOR-496 (getPopularTagList ids parameter LSN-020 shape); both call for input-name-cleanup.
+
+**Batch-ZE leverage ranking** (new entries; `triangulation_count × severity_weight`, HIGH=4/MEDIUM=2/LOW=1):
+1. **REFACTOR-620** — SearchResults hasNext: true hardcoded (HIGH; canonical contract bug on the platform's most-trafficked READ endpoint; UI hides; non-UI consumers broken) — leverage 4 × 1 = 4 (+ sibling-cluster strengthening)
+2. **REFACTOR-626** — RelationshipController zero authorization gate (HIGH; cross-tenant + EXCLUDE_FROM_SEARCH bypass; compound with REFACTOR-185 DISABLED) — leverage 4 × 1 = 4 (+ HIGH severity rationale already noted)
+3. **REFACTOR-627** — relationship_id path-param Category F drift (HIGH; third-party API contract drift; UI masks the bug) — leverage 4 × 1 = 4
+4. **REFACTOR-628** — relationships.data_entity_id no UNIQUE constraint (MEDIUM; schema-fragility under single-row reader) — leverage 2 × 1 = 2
+5. **REFACTOR-624** — Title.name no normalization → silent-policy-leak (MEDIUM; compounds with REFACTOR-206 cluster) — leverage 2 × 1 = 2
+6. **REFACTOR-623** — TitleController size unbounded + page=0 boundary (MEDIUM; Title-specific REFACTOR-020 instance) — leverage 2 × 1 = 2
+7. **REFACTOR-629** — AppInfoMenu target=_blank no rel=noopener (MEDIUM; UI security hygiene) — leverage 2 × 1 = 2
+8. **REFACTOR-630** — odd.links no URL-scheme validation (MEDIUM; defense-in-depth) — leverage 2 × 1 = 2
+9. **REFACTOR-632** — RelationshipMapper silent GRAPH_RELATIONSHIP default (MEDIUM; elevated from sidecar LOW) — leverage 2 × 1 = 2
+10. **REFACTOR-625** — FeatureResolverImpl SpEL no default → boot fail (LOW; sibling SpEL-no-default cluster) — leverage 1 × 1 = 1
+11. **REFACTOR-631** — LinksController boot-time immutable undocumented (LOW; doc-disclosure for ADR-CANDIDATE-213 NEW) — leverage 1 × 1 = 1
+12. **REFACTOR-621** — getSearchSuggestions no tiebreaker (LOW; UX-shaped) — leverage 1 × 1 = 1
+13. **REFACTOR-622** — getSearchSuggestions.entityClassId singular (LOW; feature-gap) — leverage 1 × 1 = 1
+
+The orchestrator re-ranks the global `## Top 20 by leverage` head over the COMBINED set; **REFACTOR-620, REFACTOR-626, REFACTOR-627** (each leverage 4 at HIGH severity) are the likely batch-ZE entries to enter the global Top 20. The cluster of MEDIUM-severity findings (REFACTOR-623..632) represents the read-surface hardening backlog — coupling well with the existing REFACTOR-020 / REFACTOR-185 / REFACTOR-206 / REFACTOR-229 / REFACTOR-344 clusters.
+
+<!-- NEW-HEADLINES-BELOW -->
+
+## REFACTOR-620 — `GET /api/search/{search_id}/results` returns `hasNext: true` REGARDLESS of remaining rows — `DataEntityServiceImpl.findByState:192` hard-codes `true`; third-party API consumers using the OpenAPI contract loop forever fetching empty pages
+
+**Severity**: HIGH
+**Category**: contract-bug + name-vs-behavior-drift (Category B)
+
+**Discriminating context**: `DataEntityServiceImpl.findByState:192` constructs `new Page<>(dtos, total, true)` with `true` hard-coded. The UI compensates client-side at `dataentitiesSearch.thunks.ts:62-63` with `hasNext: page * size < pageInfo.total`. Third-party API consumers reading the OpenAPI `DataEntityList.pageInfo.hasNext` field expect a derived boolean — they pagination-loop indefinitely. Sibling-inverse: REFACTOR-319 (TermServiceImpl.listByTerm has hasNext hard-coded `false`); both call for a shared `Page.of(items, total, page, size)` factory fix.
+
+**Full detail**: `detail/REFACTOR-620.md`
+
+---
+
+## REFACTOR-621 — `getSearchSuggestions` top-5 has NO secondary ORDER BY tiebreaker — equal-`ts_rank` rows are returned in storage/heap order, non-deterministic across queries on the same dataset
+
+**Severity**: LOW
+**Category**: missing-ordering (LSN-019-class)
+
+**Discriminating context**: `ReactiveDataEntityRepositoryImpl.java:498-499, 509` — the CTE's `ORDER BY rank DESC LIMIT 5` and the OUTER select's `ORDER BY rank DESC` both lack a secondary key. With 6+ entities at equal `ts_rank` the top-5 is non-deterministic across queries on the same dataset. UX-visible: operator types `users`, sees autocomplete dropdown flicker across keystrokes. Contrast with `getSearchResults` (line 962-966) which adds `DATA_ENTITY.ID DESC` as the deterministic tiebreaker. One-line fix.
+
+**Full detail**: `detail/REFACTOR-621.md`
+
+---
+
+## REFACTOR-622 — `getSearchSuggestions.entityClassId` is a single Integer — cannot filter multi-class entities by multiple classes; OR-filtering requires multiple round-trips + client-side de-duplication
+
+**Severity**: LOW
+**Category**: feature-gap (over-narrow parameter shape)
+
+**Discriminating context**: `SearchController.java:78` declares `final Integer entityClassId`; the SQL at `ReactiveDataEntityRepositoryImpl.java:482-484` wraps the single value into a 1-element array. The underlying column `DATA_ENTITY.ENTITY_CLASS_IDS` is `INTEGER[]` (multi-class support exists), but the parameter shape doesn't allow OR-filtering. UI today only exercises the single-class case; the gap is API-consumer-visible.
+
+**Full detail**: `detail/REFACTOR-622.md`
+
+---
+
+## REFACTOR-623 — `GET /api/titles` `size` parameter is unbounded; `page=0` and negative inputs produce HTTP 500 — the Title directory's caller-controlled amplification + the page-zero boundary
+
+**Severity**: MEDIUM
+**Category**: missing-validation (pagination boundaries)
+
+**Discriminating context**: TitleController.java:18-22 has raw `Integer page, Integer size` with no `@Min`/`@Max`; OpenAPI PageParam/SizeParam have no minimum/maximum; the inherited `ReactiveAbstractCRUDRepository.list` at line 91 does `(page-1) * size` with no Math.max guard. Title-specific instance of the cross-cutting REFACTOR-020 pattern. Fix is platform-wide (PageParam/SizeParam OpenAPI components) rather than per-endpoint.
+
+**Full detail**: `detail/REFACTOR-623.md`
+
+---
+
+## REFACTOR-624 — `Title.name` has NO length / pattern / case-normalization constraint at schema or service; Policy conditions like `dataEntity:owner:title == 'Data Steward'` silently miss `'data steward'`, `'Data  Steward'`, etc. → silent policy-leak class
+
+**Severity**: MEDIUM
+**Category**: missing-normalization (silent-policy-leak)
+
+**Discriminating context**: `title.name varchar(128)` at `V0_0_3__add_ownership.sql:4` has no CHECK constraint; `TitleServiceImpl.getOrCreate(name)` writes verbatim with no trim/case-fold/dedup. The directory accumulates `'Data Steward'`, `'data steward'`, `'DATA STEWARD'`, `'Data  Steward'`, etc. as distinct rows. Policy conditions on `dataEntity:owner:title == 'X'` are case-sensitive at the evaluator. Compound with REFACTOR-206: silent-policy-leak class — operator's GRANT intent silently misses cased-variants. Two-side fix: schema normalisation + Policy evaluator case-insensitivity.
+
+**Full detail**: `detail/REFACTOR-624.md`
+
+---
+
+## REFACTOR-625 — `FeatureResolverImpl` SpEL bindings use `${datacollaboration.enabled}` / `${notifications.enabled}` WITHOUT a SpEL-level default; a minimal externalised config override that removes either key BRICKS application startup with opaque `BeanCreationException`
+
+**Severity**: LOW
+**Category**: missing-default (boot-failure-risk)
+
+**Discriminating context**: `FeatureResolver.java:6-10` declares the SpEL constants as bare `${key}` with no `:default` suffix; the bundled `application.yml` supplies the defaults at `:172-173, 200-205` so stock deployments are SAFE. An externalised-config-override flow that removes the keys bricks startup with `Could not resolve placeholder`. Sibling SpEL-no-default cluster: REFACTOR-036 (attachment.max-file-size), REFACTOR-069 (auth.type AppInfoController), REFACTOR-098 (auth.type security configs). Cross-cutting fix at REFACTOR-073 (boot-time security-posture validator) would address all.
+
+**Full detail**: `detail/REFACTOR-625.md`
+
+---
+
+## REFACTOR-626 — `/api/relationships/**` has ZERO authorization gate at any layer — cross-tenant + EXCLUDE_FROM_SEARCH bypass; every authenticated user (or anonymous under DISABLED) sees every relationship in the catalog
+
+**Severity**: HIGH
+**Category**: missing-auth (catalog-graph cross-tenant exposure)
+
+**Discriminating context**: All three RelationshipController endpoints reach every relationship in the catalog regardless of owner-scope, namespace policy, EXCLUDE_FROM_SEARCH posture, or HOLLOW status. Verified across four layers: no @PreAuthorize, no SECURITY_RULES entry, no service check, no repository OWNERSHIP JOIN. The EXCLUDE_FROM_SEARCH asymmetry vs `/api/dataentities` is operator-actionable: an operator's deployment marking entities EXCLUDE_FROM_SEARCH=true to hide them from search STILL surfaces them via relationship endpoints. Cross-link ADR-CANDIDATE-215 NEW for the architectural framing + borderline_flag triage.
+
+**Full detail**: `detail/REFACTOR-626.md`
+
+---
+
+## REFACTOR-627 — `GET /api/relationships/erd/{relationship_id}` and `/graph/{relationship_id}` path parameter NAME promises the `relationships` table primary key; the SQL filter uses `data_entity.id` — Category F TRANSLATES_SILENTLY; third-party API consumers get 404
+
+**Severity**: HIGH
+**Category**: input-name-vs-implementation-drift (Category F)
+
+**Discriminating context**: `RelationshipController.java:31, 39` accept `relationshipId` path parameter; the SQL at `ReactiveRelationshipsRepositoryImpl.java:194` filters by `relationshipsDataEntity.field(DATA_ENTITY.ID).eq(relationshipId)` — the data_entity.id, NOT relationships.id. The list endpoint maps `.id(item.dataEntityRelationship().getId())` so UI round-trip works. Third-party API consumers reading the OpenAPI spec literally and supplying actual `relationships.id` values get 404. The `RELATIONSHIPS.ID` column IS available; the fix is renaming the parameter OR migrating both the SQL filter + list-mapper. Sibling LSN-020-class: REFACTOR-496.
+
+**Full detail**: `detail/REFACTOR-627.md`
+
+---
+
+## REFACTOR-628 — `relationships.data_entity_id` has NO UNIQUE constraint; the schema admits one relationship-class data_entity owning MULTIPLE `relationships` rows; the detail endpoint's `mono()` expects ONE — JOOQ-driver-specific behaviour on multi-match
+
+**Severity**: MEDIUM
+**Category**: schema-fragility (multi-row admissibility under single-row reader)
+
+**Discriminating context**: `V0_0_87__create_relation_tables.sql:1-10` declares `data_entity_id bigint` with only an FK constraint, no UNIQUE. `ReactiveRelationshipsRepositoryImpl.java:194-197` uses `mono(query)` expecting one row; on multi-match the behaviour is JOOQ-driver-specific (TooManyResultsException or silent first-row). No collector currently produces multi-row per the ingestion matrix, but a collector regression or manual SQL UPSERT could trigger it. Preferred fix: `UNIQUE (data_entity_id, relationship_type)` — admits one-ERD-plus-one-GRAPH-per-pair and makes the `mono()` contract-correct.
+
+**Full detail**: `detail/REFACTOR-628.md`
+
+---
+
+## REFACTOR-629 — `AppInfoMenu` renders operator-configured `odd.links` with `target='_blank'` but WITHOUT `rel='noopener noreferrer'` — every operator-configured URL can `window.opener` the ODD Platform tab to a phishing page (reverse tabnabbing)
+
+**Severity**: MEDIUM
+**Category**: missing-security-attribute (UI; reverse-tabnabbing)
+
+**Discriminating context**: `AppInfoMenu.tsx:60-66` renders each `odd.links` entry as `<Link to={link.url} target='_blank'>{link.title}</Link>` with no `rel` attribute. A compromised internal-wiki page (or a deliberately-configured malicious URL) can use `window.opener.location = 'phishing-site'` to silently redirect the ODD Platform tab. Modern browsers (Chrome 88+ / Firefox 79+) apply `noopener` by default — but only for raw `<a>` elements; `react-router-dom <Link>` may not propagate the semantic. One-line UI fix + ESLint `react/jsx-no-target-blank` rule activation.
+
+**Full detail**: `detail/REFACTOR-629.md`
+
+---
+
+## REFACTOR-630 — Neither the backend nor the UI validates URL scheme on `odd.links[].url` — an operator can configure `javascript:` or `data:text/html,...` URLs; React 17+ neutralises `javascript:` at runtime but `data:` URLs pass through
+
+**Severity**: MEDIUM
+**Category**: missing-validation (UI; URL-scheme allowlist)
+
+**Discriminating context**: `AdditionalLinkProperties.Link(String title, String url)` has no `@URL`/`@Pattern`/`@Validated` constraints; `LinksController.getLinks` passes URLs through verbatim. React 17+ and modern-browser top-level-navigation restrictions soften the realistic threat for `javascript:` URLs, but `data:text/html` URLs work for new-tab navigation and can mimic the ODD Platform UI for phishing. Defense-in-depth: backend `@URL(protocol="http")` annotation + UI scheme allowlist.
+
+**Full detail**: `detail/REFACTOR-630.md`
+
+---
+
+## REFACTOR-631 — `GET /api/links` is bound at BOOT and IMMUTABLE; runtime YAML / env changes to `odd.links` are silently ignored until process restart — undocumented in the live `odd-platform` configuration page
+
+**Severity**: LOW
+**Category**: missing-doc (boot-immutability)
+
+**Discriminating context**: `AdditionalLinkProperties` is `@ConfigurationProperties("odd")` bound at boot; `LinksController.linkProperties` is a `final` field. Hot-reload via `/actuator/refresh` is not supported (not @RefreshScope-annotated; refresh endpoint not exposed by default). The live `https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` page does NOT explain the boot-immutability — operators reasonably expect YAML edits to take effect. Links-specific doc-disclosure instance of ADR-CANDIDATE-213 NEW platform-wide pattern.
+
+**Full detail**: `detail/REFACTOR-631.md`
+
+---
+
+## REFACTOR-632 — `RelationshipMapper` silently defaults to `GRAPH_RELATIONSHIP` for ANY `relationship_type` value that's not exactly `'ERD'`; the schema's `relationship_type varchar(256)` has no CHECK constraint — corrupted ingestion is admissible and silently mis-typed
+
+**Severity**: MEDIUM (elevated from sidecar LOW)
+**Category**: missing-validation + silent-default-bias
+
+**Discriminating context**: `RelationshipMapper.java:60-62` ternary classifies any row with `relationship_type != 'ERD'` as `GRAPH_RELATIONSHIP`. The "otherwise" branch absorbs null, lowercase variants, typos, future-schema-types, and corrupted-ingestion values. Schema `relationship_type varchar(256)` (per `V0_0_87__create_relation_tables.sql:7`) has no CHECK constraint. Two-step fix: schema CHECK + mapper fail-loud on unknown values. Today bounded by 1:1-collector-convention, but the silent-default-bias class is the gap.
+
+**Full detail**: `detail/REFACTOR-632.md`
+
+---

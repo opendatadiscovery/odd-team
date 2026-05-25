@@ -1,0 +1,206 @@
+---
+probe_id: P-135
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__SearchController__controller-class__SearchController
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-018
+test_class: integration
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category A + B): SearchController.getSearchResults
+  delegates to DataEntityServiceImpl.findByState which constructs
+  `new Page<>(dtos, total, true)` with hard-coded `true` for the
+  hasNext boolean (DataEntityServiceImpl.java:192). The OpenAPI
+  contract at openapi.yaml:734-755 promises that PageInfo.hasNext
+  reflects whether more results exist.
+
+  Hypothesis: the response's pageInfo.hasNext is ALWAYS true, even
+  when page * size >= total. A third-party API consumer using the
+  documented contract directly will pagination-loop indefinitely.
+  The UI compensates client-side at dataentitiesSearch.thunks.ts:62-63
+  but that is undocumented and only applies to the ODD UI consumer.
+
+  Additionally pins: what happens at size=Integer.MAX_VALUE
+  (unbounded LIMIT) — does Postgres reject, OOM, or stream
+  successfully? Combined with the hasNext bug this is the
+  maximum-impact path for a misbehaving consumer.
+
+  PASS-1: hasNext correctly reflects (page * size) < total.
+  PASS-2: size=Integer.MAX_VALUE either returns a documented error
+  or completes successfully with all rows.
+  FAIL-1 (expected): hasNext is true even on the last page —
+  REFACTOR candidate to fix DataEntityServiceImpl.java:192.
+  FAIL-2 (acceptable for now): size=Integer.MAX_VALUE crashes or
+  hangs — REFACTOR candidate to add a maximum on SizeParam.
+---
+arrange:
+  - kind: docker-compose-up
+    services: [postgres, odd-platform-api]
+  - kind: sql
+    description: "Seed exactly 7 data entities matching a unique FTS term — easy to verify pagination boundaries with small page sizes"
+    query: |
+      DELETE FROM search_entrypoint WHERE data_entity_id IN
+        (SELECT id FROM data_entity WHERE oddrn LIKE '//probe-source/p135/%');
+      DELETE FROM data_entity WHERE oddrn LIKE '//probe-source/p135/%';
+      INSERT INTO data_entity (id, oddrn, external_name, internal_name, data_source_id, type_id, entity_class_ids, status, hollow, manually_created, exclude_from_search, created_at, updated_at)
+      SELECT
+        21000 + i,
+        '//probe-source/p135/widget-' || lpad(i::text, 2, '0'),
+        'p135widget entity ' || lpad(i::text, 2, '0'),
+        NULL,
+        1,
+        1,
+        ARRAY[1],
+        1,
+        false,
+        false,
+        false,
+        NOW() - (7 - i) * INTERVAL '1 minute',
+        NOW() - (7 - i) * INTERVAL '1 minute'
+      FROM generate_series(1, 7) AS i;
+      INSERT INTO search_entrypoint (data_entity_id, search_vector)
+      SELECT
+        21000 + i,
+        to_tsvector('english', 'p135widget entity ' || lpad(i::text, 2, '0'))
+      FROM generate_series(1, 7) AS i;
+  - kind: rest
+    method: POST
+    path: /login
+    body: "username=admin&password=admin"
+    headers:
+      Content-Type: "application/x-www-form-urlencoded"
+    capture_as: session_cookie
+  - kind: rest
+    description: "Create search session with FTS query p135widget — expect total=7 entities"
+    method: POST
+    path: /api/search
+    headers:
+      Cookie: "${session_cookie}"
+      Content-Type: "application/json"
+    body: |
+      {"query": "p135widget", "myObjects": false, "filters": {}}
+    capture_as: session_creation
+  - kind: extract
+    from: session_creation
+    field: "searchId"
+    capture_as: search_id
+act:
+  - kind: rest
+    description: "Page 1 of 3 (size=3) — expect 3 rows, hasNext should be TRUE (still more rows)"
+    method: GET
+    path: "/api/search/${search_id}/results?page=1&size=3"
+    headers:
+      Cookie: "${session_cookie}"
+    capture_as: page_1
+  - kind: rest
+    description: "Page 2 of 3 (size=3) — expect 3 rows, hasNext should be TRUE (1 row left)"
+    method: GET
+    path: "/api/search/${search_id}/results?page=2&size=3"
+    headers:
+      Cookie: "${session_cookie}"
+    capture_as: page_2
+  - kind: rest
+    description: "Page 3 of 3 (size=3) — expect 1 row, hasNext should be FALSE (last page). THIS IS WHERE THE BUG SURFACES — implementation always returns hasNext=true"
+    method: GET
+    path: "/api/search/${search_id}/results?page=3&size=3"
+    headers:
+      Cookie: "${session_cookie}"
+    capture_as: page_3
+  - kind: rest
+    description: "Page 4 (size=3) — expect 0 rows, hasNext MUST be FALSE. THIS IS THE PAGINATION-LOOP BUG — implementation continues to return hasNext=true even on empty pages"
+    method: GET
+    path: "/api/search/${search_id}/results?page=4&size=3"
+    headers:
+      Cookie: "${session_cookie}"
+    capture_as: page_4
+  - kind: rest
+    description: "size=Integer.MAX_VALUE — does Postgres / WebFlux / Reactor cope?"
+    method: GET
+    path: "/api/search/${search_id}/results?page=1&size=2147483647"
+    headers:
+      Cookie: "${session_cookie}"
+    timeout_ms: 30000
+    capture_as: page_max_size
+observe:
+  - kind: extract
+    from: page_1
+    field: "pageInfo.hasNext"
+    capture_as: page_1_hasNext
+  - kind: extract
+    from: page_1
+    field: "pageInfo.total"
+    capture_as: page_1_total
+  - kind: extract
+    from: page_1
+    field: "items.length"
+    capture_as: page_1_count
+  - kind: extract
+    from: page_3
+    field: "pageInfo.hasNext"
+    capture_as: page_3_hasNext
+  - kind: extract
+    from: page_3
+    field: "items.length"
+    capture_as: page_3_count
+  - kind: extract
+    from: page_4
+    field: "pageInfo.hasNext"
+    capture_as: page_4_hasNext
+  - kind: extract
+    from: page_4
+    field: "items.length"
+    capture_as: page_4_count
+  - kind: extract
+    from: page_max_size
+    field: "items.length"
+    capture_as: page_max_size_count
+assert:
+  - "page_1_total == 7  # total reflects the seeded count"
+  - "page_1_count == 3  # page 1 returns 3 rows"
+  - "page_1_hasNext == true  # hasNext is true on page 1 (correct)"
+  - "page_3_count == 1  # last page returns the trailing 1 row"
+  - "page_3_hasNext == false  # FAILS — hasNext is true even though no more results exist. REFACTOR candidate"
+  - "page_4_count == 0  # past last page returns empty"
+  - "page_4_hasNext == false  # FAILS — hasNext is true on empty result. Pagination-loop bug confirmed"
+  - "page_max_size_count == 7  # OR error mapping — pin the actual behaviour"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM search_facets WHERE id = '${search_id}'::uuid;
+      DELETE FROM search_entrypoint WHERE data_entity_id IN
+        (SELECT id FROM data_entity WHERE oddrn LIKE '//probe-source/p135/%');
+      DELETE FROM data_entity WHERE oddrn LIKE '//probe-source/p135/%';
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__SearchController__controller-class__SearchController
+    - odd-platform__java__service__service__DataEntityServiceImpl
+  retrospectives:
+    - LSN-019
+  features:
+    - F-018
+  drift_classes:
+    - hasnext-hard-coded-true-contract-bug
+    - size-parameter-unbounded
+realism_caveats: |
+  Two assertions expect FAIL on the current implementation:
+  - page_3_hasNext == false (currently returns true)
+  - page_4_hasNext == false (currently returns true)
+
+  If both fail as expected, the probe has CONFIRMED the contract
+  bug at DataEntityServiceImpl.java:192. Fix anchor: change
+  `new Page<>(dtos, total, true)` to
+  `new Page<>(dtos, total, (page * size) < total)`.
+
+  The size=Integer.MAX_VALUE assertion is open-ended — the actual
+  behaviour determines whether a max-size cap is needed at the
+  OpenAPI parameter spec (currently unconstrained per
+  components.yaml:4213-4229).
+
+  The probe does NOT exercise: page=0 (negative offset case),
+  size=0 (degenerate case), or my_objects=true (owner-scoped path).
+  Those are separable concerns.

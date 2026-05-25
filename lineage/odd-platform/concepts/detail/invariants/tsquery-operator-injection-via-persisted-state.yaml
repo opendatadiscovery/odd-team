@@ -27,12 +27,39 @@ description: |-
   than the user expected — the response is "wrong but not failing". **Reached
   from FIVE distinct invocation sites** in the facet aggregator suite at
   ReactiveSearchFacetRepositoryImpl.java:182 (entity-class), :267 (type),
-  :339-407 owner aggregator's ftsCondition site, :469 (group), :582 — every
+  :339-407 owner aggregator ftsCondition site, :469 (group), :582 — every
   facet GET triggers the same parse path. The injection is bounded by Postgres
   tsquery semantics (the parser does not eval SQL — it raises 42601), but it
   IS a denial-of-service surface AND it is the SAME code path that batch H
   flagged on getHighlightedResult. The facet endpoints are SECOND, THIRD, FOURTH,
   FIFTH, SIXTH invocation sites for the same bug. **Severity**: HIGH.
+
+  ## STRENGTHENED batch ZE (2026-05-25) — SearchController class-level
+
+  Batch ZE adds the SearchController class-level confirmation that
+  brings the picture to a SEVENTH and EIGHTH invocation site:
+    (g) ReactiveDataEntityRepositoryImpl.findByState:651-727 (the
+        getSearchResults SQL — applies ftsCondition on every paginated
+        result page when state.getQuery() is non-empty);
+    (h) ReactiveDataEntityRepositoryImpl.getQuerySuggestions:470-513
+        (the getSearchSuggestions autocomplete — applies ftsCondition
+        on every 500ms-debounced keystroke).
+
+  The class-level controller surface confirms the persisted-query
+  semantic at the controller tier: search-session creation
+  (SearchController.search) persists the raw user-typed query
+  WITHOUT validation; the persisted query is then
+  reached by every subsequent endpoint:
+    - getSearchResults (per-page paginated list);
+    - getSearchFacetList (aggregate counts);
+    - updateSearchFacets (merge + recompute);
+    - getFiltersForFacet (facet-option drill);
+    - highlightDataEntity (TRUE SQL injection via .formatted
+      compounding the tsquery DoS path — see
+      get-highlighted-result-formatted-sql-injection).
+
+  The ONE missing validation site (controller-tier 400 rejection)
+  would close all 8+ invocation surfaces at the source.
 axes_present:
   - controllers
   - services
@@ -40,6 +67,7 @@ axes_present:
 nodes:
   - odd-platform java SearchController controller-method:search
   - odd-platform java SearchController controller-method:facets
+  - odd-platform java SearchController controller-class:SearchController
   - odd-platform java repository reactive repository:ReactiveSearchFacetRepositoryImpl
   - odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl
 contributors:
@@ -64,6 +92,15 @@ contributors:
     code path; this invariant is the cross-batch confirmation that the
     operator-injection surface is reached from FIVE facet-aggregator sites
     on top of the original search-creation site.
+  - |-
+    SearchController class-level batch ZE:
+    concepts.invariants.[6] — tsquery split-on-space + :* + & via
+    JooqFTSHelper.tsQuery does NOT escape special operators; reached
+    from every FTS-using endpoint AND from highlightDataEntity via
+    String.formatted.
+    bugs_limitations_corner_cases.[5] — tsquery-operator injection on
+    persisted query → DoS on every subsequent facet read for a
+    poisoned session.
 evidence:
   - |-
     JooqFTSHelper.java:100-105 (field("? @@ to_tsquery(?)", vectorField, query)
@@ -87,11 +124,19 @@ evidence:
     security.known_security_gaps.[2]
   - |-
     search.md:bugs_limitations_corner_cases.[1]
+  - |-
+    NEW batch ZE
+    odd-platform__java__SearchController__controller-class__SearchController.md
+    concepts.invariants.[6] +
+    bugs_limitations_corner_cases.[5] +
+    ReactiveDataEntityRepositoryImpl.java:651-727 (findByState ftsCondition)
+    + ReactiveDataEntityRepositoryImpl.java:470-513
+    (getQuerySuggestions ftsCondition)
 mitigations_unimplemented:
   - |-
     Implement a tsquery-operator escape function in JooqFTSHelper.tsQuery that
     escapes (, ), !, &, |, :, single-quote, backslash, <-> before tokenizing
-    — single-touch fix for all six invocation sites.
+    — single-touch fix for all 8+ invocation sites.
   - |-
     Switch from to_tsquery to plainto_tsquery or websearch_to_tsquery (Postgres
     11+) which handle user-supplied text without operator interpretation —
@@ -109,12 +154,16 @@ mitigations_unimplemented:
     from existing search_facets rows — closes the LATENT poison-pill data
     sitting in production tables.
 notes: |-
+  STRENGTHENED batch ZE (2026-05-25) — the SearchController class-level
+  surface brings 8+ invocation sites under the same root cause. The
+  shared root cause remains JooqFTSHelper.tsQuery — one fix closes the
+  full surface.
+
   Cross-batch finding: the tsquery-operator-injection surface is shared
-  between (a) batch E's POST /api/search create-session path, (b) batch H's
-  getHighlightedResult SQL-injection / DoS finding, and (c) batch M's FIVE
-  facet-aggregator invocations (per-keystroke hot-path in the Catalog tab).
-  The shared root cause is a single JooqFTSHelper.tsQuery function with no
-  escape; a one-touch fix closes all six surfaces.
+  between (a) batch E POST /api/search create-session path, (b) batch H
+  getHighlightedResult SQL-injection / DoS finding, and (c) batch M FIVE
+  facet-aggregator invocations (per-keystroke hot-path in the Catalog tab),
+  AND (d) batch ZE getSearchResults + getSearchSuggestions.
 
   Operator-facing impact: persisted query_string is a poison pill — once a
   malformed string lands in search_facets via POST /api/search, EVERY
@@ -128,6 +177,12 @@ notes: |-
       creation path that is the FIRST entry point for the malformed query.
     - Search Session — the persisted server-side state that carries the
       poison query.
+    - get-highlighted-result-formatted-sql-injection — TRUE SQL injection
+      compounding the DoS surface on the same code path.
     - Read-collaborative cross-owner enumeration — the same facet endpoints
       that suffer this injection ALSO expose catalog-wide cardinality across
       owners; the two findings compound at the same surfaces.
+related_features: []
+related_pillar_features:
+  - P-01
+  - P-09

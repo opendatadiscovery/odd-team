@@ -1,0 +1,76 @@
+name: Feature-flag set is BOOT-RESOLVED and IMMUTABLE
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-07
+  - P-08
+description: |-
+  NEW INVARIANT, batch ZE — FeatureResolverImpl.java:14, 16-31
+  captures the @Value-injected `datacollaboration.enabled` and
+  `notifications.enabled` booleans into a `private final
+  Set<Feature>` in the constructor:
+
+  ```
+  if (BooleanUtils.isTrue(dataCollaborationEnabled))
+    activeFeatures.add(Feature.DATA_COLLABORATION);
+  if (BooleanUtils.isTrue(notificationsEnabled))
+    activeFeatures.add(Feature.ALERT_NOTIFICATIONS);
+  this.activeFeatures = activeFeatures;
+  ```
+
+  The `final` modifier on the field is a COMPILE-TIME GUARANTEE
+  of immutability — not an oversight. The
+  `resolveActiveFeatures()` method (lines 33-36) wraps the SAME
+  set in a fresh FeatureList per call; the underlying set is
+  never recomputed.
+
+  CONSEQUENCE — runtime mutation of the config keys via
+  /actuator/refresh, JVM system properties update, or
+  environment-variable change is NOT reflected. An operator who
+  toggles `datacollaboration.enabled: true` in YAML and runs
+  /actuator/refresh would reasonably expect GET /api/features/active
+  to return the new state immediately, but it returns the boot
+  snapshot until the process restarts. The endpoint name
+  'getActiveFeatures' / 'active features' implies a
+  runtime-current view; the implementation is a boot snapshot.
+  Category B DRIFT_NAME_VS_BEHAVIOR (from sidecar
+  stress_findings.name_behavior_pairs[0]).
+
+  COORDINATED ROLLOUT — for an HA deployment, two replicas with
+  different boot times against the same config converge IFF
+  their config sources are uniform. A canary instance with
+  `datacollaboration.enabled=true` while stable replicas have
+  it false will return INCONSISTENT FeatureLists across the
+  cluster during the rollout window — the load-balancer-shuffled
+  UI session sees flicker on every App-component remount.
+  Acceptable for the current OSS-single-instance baseline; would
+  matter for production HA.
+
+  DOC GAP — neither configuration-and-deployment/odd-platform
+  nor the candidate /active-platform-features/data-collaboration
+  (404) nor /active-platform-features/alerting (404) document
+  the boot-snapshot semantics. An operator following the
+  hot-reload mental model would be silently misled.
+
+  Severity: LOW (operator-surprise; not security; not data loss).
+  Pairs with entity:active-feature-flag (the snapshot consumer)
+  and operation:get-active-feature-list-boot-snapshot (the
+  endpoint that ships it).
+axes_present:
+  - controllers
+  - config_consumers
+nodes:
+  - odd-platform java FeatureController controller-class:FeatureController
+contributors:
+  - 'FeatureController.md:concepts.invariants.[2] — set computed once at boot'
+  - 'FeatureController.md:implicit_adrs.[0] — boot-resolved immutable'
+  - 'FeatureController.md:bugs_limitations_corner_cases.[1] — runtime mutation ignored'
+  - 'FeatureController.md:stress_findings.name_behavior_pairs.[0] — DRIFT_NAME_VS_BEHAVIOR'
+evidence:
+  - FeatureController.md:concepts.invariants.[2]
+  - FeatureController.md:implicit_adrs.[0]
+  - FeatureController.md:bugs_limitations_corner_cases.[1]
+related_features: []
+related_pillar_features:
+  - P-07
+  - P-08

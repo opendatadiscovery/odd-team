@@ -1,0 +1,114 @@
+---
+probe_id: P-129
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__TitleController__controller-class__TitleController.md
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: integration
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category A — Tunables): GET /api/titles?page=1&size=N has
+  NO server-side cap on `size`. The controller signature `Integer size`
+  (TitleController.java:19) flows verbatim into
+  ReactiveAbstractCRUDRepository.list(page, size, nameQuery) at line 84-100,
+  which feeds size to `paginate(...).limit(size)` (line 91) and computes offset
+  as `(page - 1) * size`. The OpenAPI parameter (`components.yaml:4222-4229`)
+  has no maximum constraint. Hypothesis: an authenticated caller can pass
+  size=100000 and the repository will run an unbounded SELECT * FROM title
+  LIMIT 100000, materialising the entire title directory + the count CTE in
+  memory in the JVM. This probe pins the behaviour at boundary points size=0,
+  size=1, size=10000, size=100000.
+
+  Secondary check (Category A — page boundary): page=0 yields offset=-size
+  (negative offset). Hypothesis: jOOQ / Postgres rejects with SQL error, or
+  silently returns empty; either way the operator's input is processed
+  without validation.
+
+  Tertiary check (Category C — ordering): ORDER BY id ASC at the OUTER select
+  per ReactiveAbstractCRUDRepository.java:91 + JooqQueryHelper.paginate:74-80.
+  Tie-breaker is irrelevant (id is bigserial PK, deterministic). When the
+  title directory holds many alphabetically-similar entries (e.g. ten variants
+  of "Owner"), the autocomplete dropdown returns them in INSERT order (id ASC),
+  not in alphabetical or relevance order. Verify.
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: sql
+    query: |
+      -- Seed the title directory with a known size and order
+      INSERT INTO title (name, created_at, updated_at)
+      SELECT 'probe-title-' || lpad(i::text, 6, '0'), NOW(), NOW()
+      FROM generate_series(1, 10000) AS i
+  - kind: env
+    auth_type: LOGIN_FORM
+    credentials: "admin:admin"
+act:
+  - kind: rest
+    method: GET
+    path: /api/titles?page=1&size=0
+    capture_as: response_size_zero
+    capture_status_as: status_size_zero
+  - kind: rest
+    method: GET
+    path: /api/titles?page=1&size=1
+    capture_as: response_size_one
+  - kind: rest
+    method: GET
+    path: /api/titles?page=1&size=10000
+    capture_as: response_size_10k
+    capture_latency_ms_as: latency_size_10k
+  - kind: rest
+    method: GET
+    path: /api/titles?page=1&size=100000
+    capture_as: response_size_100k
+    capture_latency_ms_as: latency_size_100k
+    capture_status_as: status_size_100k
+  - kind: rest
+    method: GET
+    path: /api/titles?page=0&size=10
+    capture_as: response_page_zero
+    capture_status_as: status_page_zero
+  - kind: rest
+    method: GET
+    path: /api/titles?page=1&size=5
+    capture_as: response_top5
+observe:
+  - kind: sql
+    query: |
+      SELECT id, name FROM title
+      WHERE deleted_at IS NULL
+      ORDER BY id ASC
+      LIMIT 5
+    capture_as: db_first_5_by_id_asc
+assert:
+  - "response_size_one.items.length == 1                                # single-row baseline"
+  - "response_size_10k.items.length == 10000                            # NO size cap; returns full directory"
+  - "response_size_100k.items.length == 10000 || status_size_100k == 200  # JVM should not OOM; returns all 10000"
+  - "latency_size_10k < 5000                                            # 10k rows shouldn't blow the budget"
+  - "response_top5.items[0].name == db_first_5_by_id_asc[0].name        # Confirms ORDER BY id ASC at the wire"
+  - "response_top5.items[4].name == db_first_5_by_id_asc[4].name        # Confirms tie-breaker = id ASC (PK)"
+  - "status_page_zero in [200, 400, 500]                                # Document the page=0 surface"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM title WHERE name LIKE 'probe-title-%'
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__TitleController__controller-class__TitleController
+    - odd-platform__java__service__service__OwnershipServiceImpl
+  retrospectives: [LSN-019, LSN-020]
+realism_caveats: |
+  The probe pins (a) the unbounded-size class-A absence and (b) the
+  ORDER BY id ASC class-C contract. It does NOT verify what the React
+  OwnerTitleAutocomplete renders to the operator — that is a UI-side
+  probe (Playwright) for a sibling sidecar to enqueue. The probe also
+  does NOT exercise the `query` substring filter (containsIgnoreCase) —
+  that is a Category F follow-up to test whether typing 'data' returns
+  'Data Steward' before 'Metadata Owner' (the answer is: id ASC, so the
+  oldest matching id wins, not the most-relevant — but that is a
+  separate failure-mode probe).

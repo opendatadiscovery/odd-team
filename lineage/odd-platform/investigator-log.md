@@ -2413,3 +2413,55 @@ DataSourceController is now class+method complete. High-value fully-dark control
 - Pre-existing quarantined YAML: 5 entries (TEST-GAP-363/687 + 3 concept invariants) — present from before ZD; no new breakage from this batch.
 - 5 "sidecars referencing nodes NOT in substrate" + 5 "feature-flow chains referencing obsolete IDs" — pre-existing substrate-staleness, candidate for full re-scan after sprint close.
 
+
+---
+
+## Batch ZE — 2026-05-25 (Discovery + Search + Title + Feature + Relationship + Links controllers)
+
+**Sprint**: feature/ontology-finalize-2026-05-25 (sprint-close, 2nd batch).
+**Network state**: full outage at completion time — push deferred again (caught up on next successful push).
+
+**Sidecars added** (5/5): SearchController + TitleController + FeatureController + RelationshipController + LinksController.
+
+### Phase 1 — file-analyser results
+| Node | Headline finding |
+|---|---|
+| SearchController | **TRUE SQL injection** in highlightDataEntity at ReactiveDataEntityRepositoryImpl.java:798-806 via `String.formatted` direct interpolation; `hasNext:true` hardcoded contract bug at DataEntityServiceImpl.java:192; P-134/135/136 probes |
+| TitleController | Title is free-text catalogue auto-created by OwnershipServiceImpl with NO permission gate, NO normalisation; policies on `:owner:title` silently leak via case variants; P-129 |
+| FeatureController | `getActiveFeatures` is boot-immutable (cached in `private final Set<Feature>`); runtime YAML changes invisible until restart; PROVIDER-NULL-BLEED-LIMITED-RISK facet of REFACTOR-185; P-132/133 |
+| RelationshipController | Zero authz at any layer; `relationshipId` path-param binds to wrong table (data_entity.id vs relationships.id, spec drift); P-130/131 |
+| LinksController | Name reuse + URL-scheme + boot-time bind warnings absent; AppInfoMenu reverse-tabnabbing via target=_blank without rel=noopener; P-128 |
+
+### Phase 2 — reducer deltas
+- **concept-merger**: +21 new + 7 extended / 0 supersedes. STRENGTHENS controllers-as-pass-through-delegates → 16-sidecar; rbac-read-endpoints-no-securityrule → 12-surfaces; REFACTOR-185 → 4 LIMITED-RISK facets + 1 HIGH IDENTITY-LAYER.
+- **adr-archaeologist**: +4 new ADRs (-212/-213/-214/-215; 3 HIGH + 1 MEDIUM) + 6 strengthened; +13 new scopes (REFACTOR-620..632; 3 HIGH + 7 MEDIUM + 3 LOW) + 5 strengthened — REFACTOR-229 third-invocation site (FTS injection family).
+- **doc-gap-finder**: +8 new DOC-GAPs (282-289; 3 HIGH + 5 MEDIUM) + 8 strengthens. **Network DOWN — inherited URL verifications per LSN-018 stale-probe cadence** (11-day window). 4 Category-drift findings. 0 contradicts surfaced.
+- **test-coverage-mapper**: +12 new TEST-GAPs (946-957; 1 CRITICAL — TEST-GAP-946 HTTP-entry SQL-injection chain) + 3 strengthens.
+- **feature-flow-builder**: returned ANALYSIS in-chat without writing detail files (mis-applied "minimal resources" framing). **Orchestrator wrote 4 new F-NNN.yaml files directly** from the agent's analysis: F-034 Platform Feature-Flag Exposure (P-09:F-006), F-035 Operator-Configured Additional Links (P-08:F-009), F-036 Owner-Relationship Title Directory (P-08:F-010), F-037 ERD/Graph Relationships Listing (P-02:F-001 — FIRST P-02 feature). Also flagged 1 NAVIGATION-PILLAR coherence contradiction: navigation/domains/relationships.md:20 claims `Documentation: None` while two doc pages exist; surfaced as nav-update follow-up.
+
+### Phase 3 — pipeline state
+- YAML safe-fix: `ok: 1579, fixed: 0`.
+- Rebuild indexes: concepts 485 / test-map 954 / feature-flows 37 (added F-034..F-037).
+- Coherence sweep: 95588 generic regex-noise candidates (baseline).
+- 4 orchestrator-written feature-flow detail files required test_matrix + terminal_side_effect shape fixups (string → object) after first rebuild attempt.
+
+### Cumulative state after ZE
+- Direct enrichment: 174 → **179/395 (45.3%)**
+- Effective coverage: 333 → **338/395 (85.6%)**
+- Features discovered: 33 → **37** (+4 net new pillar-anchored features in one batch — most since batch V)
+- Stress-verified pct: 88.8% → **88.5%** (slight decrease — more probe-needed in this batch)
+- P-02 Data Modelling pillar GAINS its first feature (F-037). All 11 pillars now have ≥1 feature minted (P-02 was the last empty one until ZE).
+
+### Headline architectural signals
+1. **TRUE SQL injection at highlightDataEntity** — third invocation site for REFACTOR-229 family; first time confirmed as HTTP entry point (controller-method chain), not just repository-tier bug.
+2. **F-037 RelationshipController zero-authz** — every authenticated caller sees every relationship in the catalog including hidden + cross-tenant; asymmetric to /api/dataentities EXCLUDE_FROM_SEARCH posture; first P-02 feature.
+3. **F-034 boot-immutable cached feature flags** — runtime YAML mutation silent; same root pattern as F-009 (notification flags) and LSN-001 (attachment-default) — boot-time-only configuration capture across multiple feature surfaces.
+4. **F-036 Title directory silent policy leak** — typing 'Data Steward' / 'data steward' / 'DATA STEWARD' creates 3 DISTINCT directory rows; Policy `:owner:title == 'X'` matches only one variant; LSN-020 input-name-alignment class extended into auto-created vocabulary.
+5. **Network outage stress-tested LSN-018 inheritance** — doc-gap-finder degraded gracefully via stale-probe cadence inheritance from sibling sidecars (all URLs verified within 11-day window).
+
+### Follow-ups
+- Orchestrator-written feature-flow detail files: F-034..F-037. The feature-flow-builder agent returned analysis in chat without emitting files; the orchestrator materialised the 4 features directly from the agent's narrative. Maintainer review of these 4 files (against agent transcript in this log entry) at next session.
+- Coherence-conflict surfaced for navigation/domains/relationships.md:20 (stale `Documentation: None` claim while 2 doc pages exist). State-file: state/coherence-conflicts-batch-ZE.md NOT WRITTEN this batch (the agent suggested writing it but I prioritised getting through Phase 3 — log as follow-up).
+- 12 unfixable YAML quarantines surfaced this batch (up from 5 pre-ZE) — investigate next session whether the quarantine count grew due to ZE artifacts or due to a yaml_safe_fix.py false-positive widening.
+- Network outage during ZD + ZE push window — when network recovers, the next successful push will catch up commits d500330 (ZD batch) + 25e66b1 (ZD done) + 3dd0a63 (ZE in_progress) + (this ZE batch commit) + (next ZE done commit).
+

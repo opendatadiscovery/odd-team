@@ -21,60 +21,52 @@ description: |-
   housekeeping.ttl.search_facets_days, default 30 days). Sibling features
   (/api/terms/search, /api/queryexample/search, /api/referencedata/search)
   replicate the same UUID pattern. NOT named in main-concepts.md.
+
+  ## STRENGTHENED batch ZE (2026-05-25) — class-level controller surface
+
+  Batch ZE adds the SearchController class-level sidecar — the full
+  7-endpoint surface that operates on the session UUID is now pinned:
+  search / getSearchFacetList / updateSearchFacets / getSearchResults /
+  getFiltersForFacet / getSearchSuggestions / highlightDataEntity.
+  Cross-link: invariant:get-highlighted-result-formatted-sql-injection
+  is the TRUE SQL-injection vector compounding the bearer-token reach
+  on the highlight path; invariant:has-next-true-contract-bug-pagination-loop
+  is the Category B drift on getSearchResults that produces
+  pagination-loop for third-party API consumers.
 axes_present:
   - controllers
 nodes:
   - odd-platform java SearchController controller-method:search
   - odd-platform java SearchController controller-method:facets
+  - odd-platform java SearchController controller-class:SearchController
   - odd-platform java org.opendatadiscovery.oddplatform.housekeeping.config config-properties-class:HousekeepingTTLProperties
 contributors:
   - |-
     SearchController.search: entities[SearchFacetsPojo (persisted search-session
-    row in search_facets table, keyed by UUID), SearchFormData (request body —
-    query: string + my_objects: boolean + filters: {...}), SearchFacetsData
-    (response payload — search_id: UUID + aggregated facet counts), FacetStateDto
-    (in-memory representation)]; operations[create-search-session]
-  - 'SearchController.implicit_adrs.[0]: search-session-as-server-state pattern
-    — every search interaction is bound to a persistent session row'
-  - 'HousekeepingTTLProperties.search_facets_days: time-based retention 30-day
-    default at YAML floor'
+    row in search_facets table, keyed by UUID), SearchFormData (request body),
+    SearchFacetsData (response payload), FacetStateDto]; operations[create-search-session]
+  - 'SearchController.implicit_adrs.[0]: search-session-as-server-state pattern'
+  - 'HousekeepingTTLProperties.search_facets_days: time-based retention 30-day default'
   - |-
-    **NEW batch M** — facets.md (the OTHER sibling endpoints on the same
-    search_facets row): concepts.entities[SearchFacetsData response shape;
-    CountableSearchFilter filter element; MultipleFacetType enum;
-    SearchFacetsPojo DB row schema with id uuid PRIMARY KEY DEFAULT
-    gen_random_uuid(), query_string varchar(255), filters jsonb — no
-    owner column; FacetStateDto in-memory representation; SearchFilterId
-    row key for FACET_COLLECTOR]; concepts.invariants — search_facets
-    schema has NO owner/user binding; last_accessed_at updated on every
-    get(id) but never read for cleanup; persisted FacetStateDto.query
-    IS bound to FTS via to_tsquery; the FTS shape and its operator-injection
-    surface owned by JooqFTSHelper.tsQuery (cross-link tsquery
-    operator-injection invariant);
-    implicit_adrs.[2] — Search session is bearer-token-shaped by design at
-    the schema layer; the schema-level decision is reinforced at the service
-    layer with no ownership check at any repository read or write path;
-    bugs_limitations_corner_cases.[1] — the search_facets table has no
-    user binding — any authenticated user in possession of any other user
-    searchId UUID can READ, UPDATE, and DRIVE that session (HIGH severity);
-    bugs_limitations_corner_cases.[4] — tsquery operator-injection on
-    persisted query_string permanently breaks the session;
-    bugs_limitations_corner_cases.[5] — fetchFacetState does a side-effect
-    UPDATE of last_accessed_at on every read (every GET is a WRITE);
-    bugs_limitations_corner_cases.[6] — search_facets rows accumulate
-    without bound (TTL housekeeping not implemented).
+    NEW batch M facets.md (the OTHER sibling endpoints on the same
+    search_facets row): full bearer-token + tsquery-injection +
+    side-effect-UPDATE findings primary source.
+  - |-
+    NEW batch ZE SearchController class-level: all 7 endpoints inherit
+    the bearer-token semantic; highlightDataEntity additionally has the
+    .formatted SQL-injection vector; getSearchResults has the hasNext
+    contract bug.
 evidence:
-  - search.md:concepts.entities (SearchFormData, SearchFacetsPojo,
-    SearchFacetsData, FacetStateDto) + concepts.invariants.[2]
-  - search.md:implicit_adrs.[0] (session-as-server-state)
+  - search.md:concepts.entities + concepts.invariants.[2]
+  - search.md:implicit_adrs.[0]
   - |-
-    **NEW batch M** facets.md:concepts.entities (SearchFacetsPojo with the
-    schema-level finding of no owner column) + concepts.invariants
-    (schema has no owner/user binding) + implicit_adrs.[2]
-    (bearer-token-shaped by design at the schema layer) +
-    bugs_limitations_corner_cases.[1,4,5,6] (no user binding HIGH +
-    tsquery injection HIGH + side-effect UPDATE on every read LOW +
-    unbounded growth LOW) + V0_0_1__init.sql:204-211 (schema primary source)
+    NEW batch M facets.md:concepts.entities + invariants + implicit_adrs.[2] +
+    bugs_limitations_corner_cases.[1,4,5,6] + V0_0_1__init.sql:204-211
+  - |-
+    NEW batch ZE
+    odd-platform__java__SearchController__controller-class__SearchController.md
+    concepts.invariants.[2] + bugs_limitations_corner_cases.[2,6] +
+    security.known_security_gaps.[1,2]
 security_aggregate:
   overall: LOW
   auth_modes_relevant:
@@ -86,241 +78,149 @@ security_aggregate:
   authorization_consistency:
     verdict: UNGATED
     detail: |-
-      POST /api/search has NO SECURITY_RULES entry — falls through to
-      catch-all .authenticated(). Same for GET /api/search/{search_id},
-      GET /api/search/{search_id}/results, PUT /api/search/{search_id},
-      GET /api/search/{search_id}/facet/{facet_type},
-      GET /api/search/{search_id}/data_entities/{data_entity_id}/highlights.
-      Any authenticated user can search the entire catalog. Under DISABLED,
-      anonymously reachable. **Batch M PRIMARY SOURCE confirms** the same
-      posture across the getSearchFacetList + getFiltersForFacet sibling
-      endpoints — verified by Grep search|facet in SecurityConstants.java
-      returns zero matches.
+      ALL SEVEN /api/search* endpoints fall through to .authenticated();
+      none has a SECURITY_RULES entry. Under DISABLED, anonymously
+      reachable end-to-end. Batch ZE class-level confirms the seven-
+      endpoint surface.
   owner_scoping:
     verdict: BYPASSES
     detail: |-
       Default my_objects=false path returns aggregations over the ENTIRE
-      catalog (SearchServiceImpl.java:122-130 countByState(state) runs
-      without owner predicate). Owner-filter applied ONLY when caller
-      explicitly toggles my_objects=true on SearchFormData
-      (SearchServiceImpl.java:104-108). Catalog enumeration of
-      NON-EXCLUDE_FROM_SEARCH entities is the default behaviour.
-      **Batch M confirms** the same posture across facet COUNTS —
-      catalog-wide computation by design; the myObjects toggle is an
-      EXTRA opt-in scope, not a permission boundary.
+      catalog; facet counts always catalog-wide; owner-filter only on
+      explicit toggle. Catalog enumeration is the default behaviour
+      across all 7 endpoints (batch ZE class-level confirmation).
   strengths:
     - |-
-      Server-generated v4 UUID — unguessable in O(2^60) attempts; no
-      per-user owner column on search_facets is bounded by the UUID
-      unpredictability
+      Server-generated v4 UUID — unguessable in O(2^60) attempts
     - |-
       TTL-bounded retention via housekeeping.ttl.search_facets_days
-      (default 30 days) — SearchFacetsHousekeepingJob deletes rows older
-      than the TTL
+      (default 30 days)
   weaknesses:
     - |-
-      **Catalog-wide cross-owner enumeration (HIGH) — same shape as
-      REFACTOR-024 with WIDER blast radius** — any authenticated user can
-      paginate POST /api/search + GET /api/search/{search_id}/results to
-      enumerate every non-EXCLUDE_FROM_SEARCH data entity in the platform —
-      name, ODDRN, descriptions, ownership, tags, custom metadata, term
-      linkages. **Batch M PRIMARY SOURCE adds** facet-count drill-down via
-      getFiltersForFacet(OWNERS) enumerates every owner name + per-owner
-      entity count — the catalog-cardinality discovery vector
-      (search.md:security.known_security_gaps.[0] HIGH +
-      facets.md:security.known_security_gaps.[0] HIGH)
+      Catalog-wide cross-owner enumeration HIGH — same shape as
+      REFACTOR-024 with WIDER blast radius across the 7-endpoint
+      surface (batch ZE class-level)
     - |-
-      **to_tsquery syntax-error vector via raw user input (HIGH)** —
-      JooqFTSHelper.tsQuery splits on space + appends :* + joins with & ;
-      queries containing tsquery metacharacters not space-separated
-      become malformed to_tsquery(?). **Batch M elevates severity from
-      MEDIUM to HIGH** — the persisted query_string is the poison-pill
-      source for FIVE distinct facet aggregator invocation sites in the
-      SearchController.facets path; a single malformed POST permanently
-      breaks the session at every subsequent facet GET (the row is
-      reachable but every facet read 500s).
-      (search.md:bugs_limitations_corner_cases.[1] + facets.md:bugs_limitations_corner_cases.[4])
+      to_tsquery syntax-error vector HIGH — the persisted query_string
+      is the poison-pill source for FIVE facet aggregator invocations
+      PLUS getSearchResults + getSearchSuggestions (batch ZE adds the
+      7th and 8th invocation sites)
     - |-
-      **Unbounded query length + unbounded search_facets writes (MEDIUM)** —
-      SearchFormData.query has no maxLength; every POST persists a new row
-      keyed by UUID. Combined with REFACTOR-141 (housekeeping default-leak
-      — overriding application.yml without re-supplying the housekeeping
-      block silently binds 0 days and hard-deletes search-session rows on
-      the next 15-minute housekeeping cycle), pathological case is also a
-      data-loss vector.
-      (search.md:bugs_limitations_corner_cases.[2,3])
+      Unbounded query length + unbounded search_facets writes MEDIUM
     - |-
-      **Search-session UUID has no per-user owner-binding (HIGH — promoted
-      from LOW by batch M)** — searchFacetRepository.get(searchId) returns
-      the session regardless of who created it. **Batch M elevates severity
-      from LOW to HIGH** — the schema-level evidence is explicit
-      (V0_0_1__init.sql:204-211 with TODOs that do NOT mention ownership)
-      AND the facet drill-down endpoints inherit the same posture — the
-      catalog cardinality enumeration via facets compounds the
-      bearer-token risk; any authenticated user in possession of any
-      other user UUID can READ + UPDATE + DRIVE that session.
-      (search.md:security.known_security_gaps.[2] +
-      facets.md:bugs_limitations_corner_cases.[1] HIGH)
+      Search-session UUID has no per-user owner-binding HIGH — promoted
+      from LOW by batch M; reconfirmed by batch ZE class-level
     - |-
-      **Persistent query text — PII concern (LOW depending on threat model)**
-      — search_facets.query stores raw query text verbatim with no redaction,
-      no encryption. Users searching for sensitive terms (employee names,
-      customer IDs, GDPR identifiers) leave a 30-day DB trail readable by
-      any operator with DB access.
-      (search.md:security.known_security_gaps.[3])
+      Persistent query text — PII concern LOW depending on threat model
     - |-
-      **Under auth.type=DISABLED, anonymously reachable (MEDIUM)** —
-      corollary of REFACTOR-073; cross-references the Auth Mode
-      DISABLED-default trap. Same posture across facets endpoints —
-      anonymously reachable end-to-end with bearer-token UUID exposure
-      compounding to anonymous catalog cardinality discovery.
-      (search.md:security.known_security_gaps.[1] +
-      facets.md:bugs_limitations_corner_cases.[2])
+      Under auth.type=DISABLED, anonymously reachable MEDIUM
+    - |-
+      NEW batch ZE — highlightDataEntity is a TRUE SQL-injection vector
+      via .formatted direct interpolation (NOT just DoS); the persisted
+      query_string flows through .formatted to raw SQL on every highlight
+      call. Cross-link
+      invariant:get-highlighted-result-formatted-sql-injection.
+    - |-
+      NEW batch ZE — DataEntityList.pageInfo.hasNext is hardcoded true
+      regardless of remaining rows on getSearchResults; third-party API
+      consumers pagination-loop indefinitely. Category B drift.
+      Cross-link invariant:has-next-true-contract-bug-pagination-loop.
   cross_file_inconsistencies:
-    - Live features/data-discovery/search page (200, 2026-05-19) is silent on
-      WHO can search; the code enforces "any authenticated user". **Batch M
-      PRIMARY SOURCE** — the live page is ALSO silent on whether facet
-      counts reflect per-user / per-owner / per-tenant scope; the code
-      computes facet counts CATALOG-WIDE; the doc-vs-code asymmetry is
-      sharper at the facet-counts layer because the surface IS catalog
-      cardinality.
+    - Live features/data-discovery/search page (200) silent on WHO can search;
+      code enforces "any authenticated user"; facet counts catalog-wide; doc-vs-code
+      asymmetry across all 7 endpoints.
     - |-
-      Live page enumerates 7 facets (Datasource / Type / Namespace / Owner /
-      Tag / Groups / Statuses) but FacetType enum carries an additional
-      ENTITY_CLASSES facet AND a top-level my_objects boolean flag.
-      (search.md:docs_link_semantic.doc_drift_findings.[2])
+      Live page enumerates 7 facets but FacetType enum carries additional
+      ENTITY_CLASSES facet AND top-level my_objects boolean flag.
     - |-
-      **NEW batch M** — live page does not mention search-session UUIDs at
-      all — operators have no documented expectation about session lifetime,
-      sharing, or isolation. The code creates UUIDs with gen_random_uuid()
-      (V0_0_1__init.sql:208), persists them with NO owner column, NO TTL
-      lifecycle binding, NO last_accessed_at-based eviction. An operator
-      who shares a UUID via copy/paste hands the recipient full read+update
-      access to that session.
+      NEW batch M + ZE — live page does not mention search-session UUIDs
+      at all; bearer-token risk undocumented.
   contributing_files:
     - search.md
     - facets.md
     - HousekeepingTTLProperties.md
+    - SearchController-class.md
   evidence:
     - search.md:security.known_security_gaps.[0-3]
     - search.md:bugs_limitations_corner_cases.[0-8]
-    - |-
-      **NEW batch M** facets.md:security.known_security_gaps.[0,1,2] +
-      bugs_limitations_corner_cases.[0,1,2,4,5,6] + implicit_adrs.[0,1,2]
+    - facets.md:security.known_security_gaps + bugs_limitations_corner_cases + implicit_adrs
+    - SearchController-class.md:security.known_security_gaps.[0-5] + bugs_limitations_corner_cases.[0-10]
 performance_aggregate:
   overall: LOW
   hot_paths:
     - |-
-      POST /api/search runs THREE concurrent queries per call inside
-      getFacetsData via Mono.zip (SearchServiceImpl.java:122-155): (a)
-      entity-class facet aggregation, (b) catalog-wide countByState(state),
-      (c) owner-scoped countByState(state, owner) — the third ALWAYS runs
-      even when my_objects=false. Plus searchFacetRepository.create(pojo)
-      row insert. Hot path on every keystroke / facet click after UI
-      debounce.
+      POST /api/search — THREE concurrent queries per call via Mono.zip
     - |-
-      **NEW batch M** — GET /api/search/{search_id} (getSearchFacetList)
-      runs 4 parallel DB calls via Mono.zip; GET /api/search/{search_id}/facet/{type}
-      (getFiltersForFacet) runs 2 sequential DB calls. Each facet GET
-      is also a WRITE (side-effect UPDATE of last_accessed_at on the
-      session row). Per-keystroke hot path on the Catalog tab facet
-      sidebar; concurrent UI tabs on the same session contend on
-      row-lock writes.
+      GET /api/search/{id} — 4 parallel DB calls; every GET is also a
+      WRITE (side-effect UPDATE)
+    - |-
+      NEW batch ZE — GET /api/search/{id}/results — InfiniteScroll
+      hot-path; 1 jOOQ findByState + 1 count + 4 enrichment passes per
+      page
+    - |-
+      NEW batch ZE — GET /api/search/suggestions — 500ms-debounced
+      per-keystroke; CTE + LIMIT 5 + outer order
+    - |-
+      NEW batch ZE — GET /api/search/{id}/data_entities/{id}/highlights —
+      3-Mono zip + ts_headline CPU-intensive SQL
   throughput_shape:
     verdict: SINGLE_ITEM_ONLY
     detail: |-
-      Single-request POST per search session; no batch endpoint, no
-      streaming. Triple-aggregation fan-out per call is fixed cost
-      regardless of my_objects toggle. **Batch M adds** — facet drill-down
-      endpoints are single-item-only too; no batched-facet-fetch variant
-      that could return multiple facet types in one round-trip.
+      Single-request per call across every endpoint; no batch endpoint,
+      no streaming.
   scaling_shape:
     verdict: UNPAGINATED
     detail: |-
       Stateless controller scales horizontally. search_facets grows
-      monotonically until housekeeping cycle (15-min cadence). NO pagination
-      on search itself (only sibling getSearchResults accepts page + size
-      — both @NotNull but NO @Min/@Max, unbounded size structurally
-      accepted). NO caching at any layer. **Batch M adds** — getFiltersForFacet
-      pagination is also unbounded at every layer (controller, OpenAPI,
-      repository at 7+ sites); side-effect UPDATE on every read keeps
-      every session "hot" in the table; the table accumulates without
-      bound.
+      monotonically until housekeeping. NO pagination cap on /results
+      or /facet/{type} or /suggestions; size=Integer.MAX_VALUE structurally
+      accepted. Batch ZE adds — every paginated endpoint shares the
+      pillar-wide pagination-unbounded weakness.
   strengths:
-    - Reactive non-blocking signature — no thread held during DB await
+    - Reactive non-blocking signature throughout
   weaknesses:
-    - |-
-      **Unconditional my_objects aggregation cost (MEDIUM)** —
-      getFacetsData always runs owner-scoped countByState(state, owner)
-      even when my_objects=false. A short-circuit on
-      state.isMyObjects() would halve per-call DB work in the common
-      case.
-    - |-
-      **No max-size on SearchFormData.query / getSearchResults
-      pagination (MEDIUM)** — same shape as REFACTOR-024 pagination
-      concern; size=1_000_000 triggers a query bounded only by Postgres
-      / network buffers. **Batch M adds** — getFiltersForFacet has the
-      SAME shape at 7+ repository sites.
-    - |-
-      **to_tsquery(?) reconstruction per request (LOW)** —
-      JooqFTSHelper.tsQuery re-tokenises and re-builds the to_tsquery
-      argument on every call; Postgres-side parse cost per request.
-    - |-
-      **No HTTP-level caching (LOW)** — catalog is read-heavy and
-      search returns slow-changing aggregates; no @Cacheable, no
-      ETag, no Cache-Control.
-    - |-
-      **NEW batch M** — side-effect UPDATE on every facet read
-      (LOW) — fetchFacetState issues UPDATE search_facets SET
-      last_accessed_at WHERE id = ? on every GET; the field is never
-      read by any housekeeping job (no search_facets policy in
-      V0_0_52__introduce_housekeeping.sql); the write is wasted I/O
-      and adds row-lock latency under concurrent UI tabs on the same
-      session.
-    - |-
-      **NEW batch M** — deep-pagination cost on facet drill-downs
-      (LOW) — OFFSET = (page - 1) * size grows linearly with page;
-      keyset pagination would be O(1) but is not implemented.
+    - Unconditional my_objects aggregation cost MEDIUM
+    - No max-size on pagination (size=1_000_000 admissible) MEDIUM
+    - to_tsquery reconstruction per request LOW
+    - No HTTP-level caching LOW
+    - Side-effect UPDATE on every facet read LOW
+    - Deep-pagination cost on OFFSET LOW
+    - NEW batch ZE — `ts_headline` CPU cost not cached
+    - NEW batch ZE — per-keystroke autocomplete cost (no client cache)
   cross_file_inconsistencies: []
   contributing_files:
     - search.md
     - facets.md
+    - SearchController-class.md
   evidence:
     - search.md:performance.known_performance_gaps.[0-3]
-    - |-
-      **NEW batch M** facets.md:performance.* (full block, 7 entries)
+    - facets.md:performance.* (full block)
+    - SearchController-class.md:performance.known_performance_gaps.[0-8]
 notes: |-
-  **STRENGTHENED batch 2026-05-19M with the facet-aggregator sibling
-  surface**. The Search Session concept now spans TWO controller-method
-  sidecars (search + facets) plus the HousekeepingTTLProperties config
-  surface. Three batch-M findings ELEVATE pre-existing weaknesses:
-
-    (a) Bearer-token-shaped session (no per-user binding) — was LOW under
-        read-collaborative posture; PROMOTED TO HIGH because the
-        catalog-cardinality enumeration via facet drill-down compounds
-        the risk;
-
-    (b) tsquery operator injection — was MEDIUM at the search-creation
-        site; PROMOTED TO HIGH because the persisted query_string is the
-        poison-pill source for FIVE distinct facet aggregator invocations;
-        a single malformed POST permanently breaks the session at every
-        subsequent facet GET;
-
-    (c) Side-effect UPDATE on every read — NEW finding from batch M; the
-        last_accessed_at field is updated but never read; design implies
-        a future TTL eviction job that never landed.
+  STRENGTHENED batch ZE (2026-05-25) — class-level controller surface
+  brings the full 7-endpoint picture together. Four batch-ZE additions:
+    (a) class-level confirmation of bearer-token semantic across all 7
+        endpoints;
+    (b) hasNext-true contract bug on getSearchResults (Category B
+        drift);
+    (c) .formatted SQL-injection on highlightDataEntity (TRUE injection
+        vector);
+    (d) tsquery-injection 7th + 8th invocation sites (findByState +
+        getQuerySuggestions).
 
   Cross-references:
-    - tsquery operator-injection via persisted state (NEW batch M
-      invariant) — the injection surface that compounds at this entity.
-    - Search-facets bearer-token-shaped — schema has no user binding
-      (NEW batch M invariant) — the schema-level finding.
-    - Cross-owner facet-count enumeration via drill-down (NEW batch M
-      invariant) — the catalog-cardinality discovery surface.
-    - Compute facet counts catalog-wide (NEW batch M operation) — the
-      operation primitive that the facet drill-down endpoints embody.
-    - Read-collaborative cross-owner enumeration — this entity is one of
-      the 19 surfaces.
-    - REFACTOR-141 housekeeping default-leak — the upstream maintenance
-      gap that ALSO sits on this entity (the search_facets retention
-      misconfiguration vector).
+    - tsquery operator-injection via persisted state — the injection
+      surface that compounds at this entity.
+    - Search-facets bearer-token-shaped — schema has no user binding.
+    - Cross-owner facet-count enumeration via drill-down — catalog-
+      cardinality discovery.
+    - Compute facet counts catalog-wide — the operation primitive.
+    - Read-collaborative cross-owner enumeration — this entity is one
+      of the 20+ surfaces.
+    - REFACTOR-141 housekeeping default-leak.
+    - get-highlighted-result-formatted-sql-injection (NEW batch ZE).
+    - has-next-true-contract-bug-pagination-loop (NEW batch ZE).
+related_features: []
+related_pillar_features:
+  - P-01
+  - P-09

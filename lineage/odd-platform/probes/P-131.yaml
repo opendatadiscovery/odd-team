@@ -1,0 +1,141 @@
+---
+probe_id: P-131
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__RelationshipController__controller-class__RelationshipController
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-XXX-data-modelling-relationships
+test_class: security
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category D — authorization gate posture):
+  RelationshipController has NO @PreAuthorize, NO programmatic permission
+  check, NO owner-scoping filter at any layer. The list/detail endpoints
+  return ALL relationships across ALL data sources to ANY authenticated
+  caller — no SECURITY_RULES entry exists for `/api/relationships/**`
+  (verified via grep of `SecurityConstants.java:95-355` — only paths
+  ending in `relationships` appear as DATASET-scoped under
+  `/api/datasets/{data_entity_id}/relationships`, which is the
+  DatasetController endpoint, NOT this controller's three endpoints).
+  Under auth.type=DISABLED the endpoints are reachable unauthenticated
+  (`DisabledAuthSecurityConfiguration` skips the AuthorizationCustomizer
+  chain entirely).
+
+  The downstream SQL at `ReactiveDataEntityRelationshipRepositoryImpl.java:74-75`
+  filters ONLY by `entity_class_ids = [DATA_RELATIONSHIP.getId()]` and
+  the optional `external_name` query string — no `OWNERSHIP` JOIN, no
+  `data_source_id`-by-permission filter, no namespace-by-permission
+  filter. Hypothesis: the relationships list is a global directory of
+  every catalogued relationship-class data entity across every collected
+  data source. This is intentional for ODD's data-cataloging model but
+  surfaces an INFORMATION-LEAK class if the operator assumed that the
+  user-visibility model of /api/dataentities (which respects HOLLOW +
+  EXCLUDE_FROM_SEARCH filters per batch-T REFACTOR-425) ALSO applies here.
+
+  Specifically test (a) the cross-tenant case — relationship A from
+  data_source_1, relationship B from data_source_2; a user with no
+  policy granting data_source_2 visibility nonetheless sees both;
+  (b) the EXCLUDE_FROM_SEARCH case — a relationship-class data entity
+  with `exclude_from_search = true` is NOT filtered out here (the
+  conditionList doesn't include EXCLUDE_FROM_SEARCH); (c) the HOLLOW
+  case — `hollow = true` data entities are NOT filtered out either.
+  Each of these is a NoOwnerScopingFinding for the doc-drift surface.
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: sql
+    query: |
+      -- Set up two relationship-class entities in two different data sources
+      INSERT INTO namespace (id, name) VALUES (1001, 'probe-ns-1') ON CONFLICT DO NOTHING;
+      INSERT INTO namespace (id, name) VALUES (1002, 'probe-ns-2') ON CONFLICT DO NOTHING;
+      INSERT INTO data_source (id, oddrn, name, namespace_id, connection_url, active)
+      VALUES (2001, '//probe-source-1', 'probe_source_1', 1001, '', true)
+      ON CONFLICT DO NOTHING;
+      INSERT INTO data_source (id, oddrn, name, namespace_id, connection_url, active)
+      VALUES (2002, '//probe-source-2', 'probe_source_2', 1002, '', true)
+      ON CONFLICT DO NOTHING;
+  - kind: sql
+    query: |
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, entity_class_ids, namespace_id, exclude_from_search, hollow)
+      VALUES (90031, '//probe-source-1/relationships/rel-A', 'rel_A', 2001, 25, ARRAY[9], 1001, false, false)
+  - kind: sql
+    query: |
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, entity_class_ids, namespace_id, exclude_from_search, hollow)
+      VALUES (90032, '//probe-source-2/relationships/rel-B', 'rel_B', 2002, 25, ARRAY[9], 1002, false, false)
+  - kind: sql
+    query: |
+      -- A "hidden" relationship (exclude_from_search = true)
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, entity_class_ids, namespace_id, exclude_from_search, hollow)
+      VALUES (90033, '//probe-source-2/relationships/rel-hidden', 'rel_HIDDEN', 2002, 25, ARRAY[9], 1002, true, false)
+  - kind: sql
+    query: |
+      -- A "hollow" relationship (hollow = true)
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, entity_class_ids, namespace_id, exclude_from_search, hollow)
+      VALUES (90034, '//probe-source-2/relationships/rel-hollow', 'rel_HOLLOW', 2002, 25, ARRAY[9], 1002, false, true)
+  - kind: sql
+    query: |
+      INSERT INTO relationships (data_entity_id, source_dataset_oddrn, target_dataset_oddrn, relationship_type)
+      VALUES (90031, '//ds1/src', '//ds1/tgt', 'ERD'),
+             (90032, '//ds2/src', '//ds2/tgt', 'ERD'),
+             (90033, '//ds2/src-h', '//ds2/tgt-h', 'ERD'),
+             (90034, '//ds2/src-w', '//ds2/tgt-w', 'ERD')
+act:
+  # Authenticated regular user
+  - kind: rest
+    method: GET
+    path: /api/relationships?page=1&size=30&type=ALL
+    capture_as: response_authed
+  # Unauthenticated probe (only meaningful under auth.type=DISABLED)
+  - kind: rest
+    method: GET
+    path: /api/relationships?page=1&size=30&type=ALL
+    auth: anonymous
+    capture_as: response_anon
+observe:
+  - kind: sql
+    query: |
+      SELECT COUNT(*) AS cnt FROM data_entity WHERE entity_class_ids @> ARRAY[9]
+        AND id IN (90031, 90032, 90033, 90034)
+    capture_as: total_rels_inserted
+assert:
+  # Hypothesis A — cross-data-source leak: caller sees BOTH data sources
+  - "response_authed.status == 200"
+  - "any(item.name == 'rel_A' for item in response_authed.body.items)"
+  - "any(item.name == 'rel_B' for item in response_authed.body.items)"
+  # Hypothesis B — exclude_from_search=true does NOT filter here
+  - "any(item.name == 'rel_HIDDEN' for item in response_authed.body.items)"
+  # Hypothesis C — hollow=true does NOT filter here
+  - "any(item.name == 'rel_HOLLOW' for item in response_authed.body.items)"
+  # Hypothesis D — under DISABLED, anon sees the same (under non-DISABLED,
+  # 401 expected — test depends on which auth mode the stack runs under)
+  - "response_anon.status == 200 or response_anon.status == 401"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM relationships WHERE data_entity_id IN (90031, 90032, 90033, 90034)
+  - kind: sql
+    query: |
+      DELETE FROM data_entity WHERE id IN (90031, 90032, 90033, 90034)
+  - kind: sql
+    query: |
+      DELETE FROM data_source WHERE id IN (2001, 2002)
+  - kind: sql
+    query: |
+      DELETE FROM namespace WHERE id IN (1001, 1002)
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__RelationshipController__controller-class__RelationshipController
+  retrospectives: [LSN-001]
+realism_caveats: |
+  The probe verifies the POSTURE (no owner-scoping / no exclude_from_search /
+  no hollow filter at this code path) — it does NOT prejudge whether the
+  posture is bug or feature. ODD's data catalog is intentionally cross-tenant
+  for the namespace + data-source visibility model; relationships are
+  presented as part of the same catalog. The finding is "the
+  relationship-list endpoint does NOT apply the search-context filters
+  that /api/dataentities applies" — the doc-drift question is whether
+  the live data-modelling/relationships.md page mentions this asymmetry.

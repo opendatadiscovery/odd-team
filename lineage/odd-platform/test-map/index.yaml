@@ -7,11 +7,11 @@ source_monolith_frontmatter:
   sidecar_count: 65
   test_files_indexed: 70
   prompt_version: test-coverage-mapper/0.1.0
-  total_test_gaps: 942
+  total_test_gaps: 954
   gaps_by_criticality:
-    CRITICAL: 156
-    HIGH: 309
-    MEDIUM: 353
+    CRITICAL: 157
+    HIGH: 316
+    MEDIUM: 357
     LOW: 124
   gaps_by_category:
     missing-integration: 188
@@ -21,9 +21,9 @@ source_monolith_frontmatter:
     sidecar-stale: 3
     missing-performance: 35
     missing-binding: 10
-    integration: 26
+    integration: 34
     unit: 6
-    security: 11
+    security: 15
     performance: 3
   batch_history:
   - '2026-05-08: TEST-GAP-001..069 — initial 15-sidecar reduction'
@@ -214,7 +214,7 @@ source_monolith_frontmatter:
   - odd-platform java notification.sender class:SlackNotificationSender
   - odd-platform java notification.sender class:WebhookNotificationSender
   - odd-platform java notification.processor class:PostgresWALMessageProcessor
-total_entries: 942
+total_entries: 954
 notice: Rebuilt from detail/ by lineage/_extractor/registry-shard/rebuild_indexes.py.
   The detail files are the source of truth; this index is derived headlines for the
   registry-search subagent.
@@ -28046,3 +28046,724 @@ test_gaps_index:
   related_refactor_ids: []
   related_doc_gap_ids: []
   detail_path: detail/TEST-GAP-945.yaml
+- gap_id: TEST-GAP-946
+  behaviour: '**CRITICAL HTTP-ENTRY-POINT REGRESSION-PIN — SearchController.highlightDataEntity
+
+    is the operator-visible HTTP entry that drives the TRUE SQL-injection vector at
+
+    ReactiveDataEntityRepositoryImpl.java:798-806 (`.formatted(text, tsQuery)` raw
+
+    string-interpolation into ts_headline SQL).** STRENGTHENS TEST-GAP-316 (the
+
+    repository-level finding) by adding the FULL request-shape attack chain:
+
+
+    (1) attacker calls POST /api/search with a body whose
+
+    `SearchFormData.query` field contains a crafted payload (e.g. `X'', NULL);
+
+    SELECT pg_sleep(10); --`) — the platform persists this verbatim into
+
+    `search_facets.query_string` (SearchServiceImpl.java:74-82); no validation
+
+    at controller, service, or repository layer;
+
+
+    (2) attacker (OR ANY OTHER AUTHENTICATED USER WHO SEES THE searchId UUID)
+
+    calls GET /api/search/{searchId}/data_entities/{data_entity_id}/highlights
+
+    (SearchController.java:85-91); SearchController has no @PreAuthorize, the
+
+    searchId is a bearer-token UUID with no owner_id binding (cross-link
+
+    TEST-GAP-252), and any catalog data_entity_id is reachable;
+
+
+    (3) DataEntityHighlightServiceImpl.java:36 zips (session-state read, data
+
+    entity searchable string, latest dataset version) into a single Mono that
+
+    calls getHighlightedResult(text, queryString) at line 44;
+
+
+    (4) ReactiveDataEntityRepositoryImpl.java:798-806 builds the SQL via
+
+    `String.formatted(text, tsQuery)` — both arguments interpolated raw into
+
+    ts_headline(''english'', ''%s'', to_tsquery(''%s''), ...). The persisted
+
+    query_string from step (1) reaches `to_tsquery(''%s'')` directly; the
+
+    closing-quote terminator + arbitrary-SQL injection payload runs on the
+
+    read connection.
+
+
+    TEST-GAP-316 frames the gap at the repository layer — useful for unit
+
+    testing the SQL builder but blind to the FULL chain. This gap is the HTTP
+
+    contract regression-pin: a future maintainer reviewing
+
+    SearchController.highlightDataEntity in isolation would not see the
+
+    repository-level SQL site; the chain only surfaces when the test drives
+
+    the request through the controller. THIS test fails today (production
+
+    vulnerability) and SHOULD fail forever (regression-pin) until the
+
+    String.formatted call is replaced by jOOQ parameterised binding per
+
+    TEST-GAP-316.proposed_action.'
+  test_class: security
+  criticality: CRITICAL
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids:
+  - REFACTOR-229
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-946.yaml
+- gap_id: TEST-GAP-947
+  behaviour: '**OpenAPI contract bug — `DataEntityList.pageInfo.hasNext` is ALWAYS
+
+    true regardless of remaining rows on GET /api/search/{search_id}/results.**
+
+    `DataEntityServiceImpl.findByState:181-194` constructs
+
+    `new Page<>(dtos, total, true)` with the third argument HARD-CODED to
+
+    `true` (Page.java:11-15 is the wrapper carrying it through). The mapper
+
+    writes that into `DataEntityList.pageInfo.hasNext` verbatim. No
+
+    compensating logic exists at the service, mapper, or controller layers.
+
+
+    Operator-visible impact diverges by consumer class:
+
+    (a) ODD UI: the `fetchDataEntitySearchResults` thunk at
+
+    `dataentitiesSearch.thunks.ts:62-63` OVERRIDES with
+
+    `hasNext: page * size < pageInfo.total` — the UI is correct;
+
+    (b) third-party API consumers (mobile, CLI, automation, third-party
+
+    catalog connectors) reading the documented OpenAPI contract directly
+
+    trust `hasNext: false` as the pagination terminator. With the value
+
+    hard-coded to `true`, those consumers pagination-loop indefinitely —
+
+    fetching page 1, page 2, ..., page N where N*size >= total, then
+
+    continue fetching empty pages until rate-limited or timed out.
+
+
+    This is a Category B drift (UI compensates for backend) on a documented
+
+    OpenAPI response field. The OpenAPI spec at openapi.yaml:734-755
+
+    documents PageInfo as the standard pagination envelope; the UI''s
+
+    client-side override is undocumented compensation. No regression test
+
+    for this exists. A fix candidate is changing
+
+    DataEntityServiceImpl.java:192 from `new Page<>(dtos, total, true)` to
+
+    `new Page<>(dtos, total, (page * size) < total)`.'
+  test_class: integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-947.yaml
+- gap_id: TEST-GAP-948
+  behaviour: '**No HTTP-level integration test exists for ANY of the 7 endpoints on
+
+    SearchController (POST /api/search, GET /api/search/{id}, PUT
+
+    /api/search/{id}, GET /api/search/{id}/results, GET
+
+    /api/search/{id}/facet/{type}, GET /api/search/suggestions, GET
+
+    /api/search/{id}/data_entities/{de_id}/highlights).** The only existing
+
+    search tests are two Playwright UI specs (tests/features/search/*.spec.ts)
+
+    that drive the entire UI end-to-end and do NOT pin individual HTTP
+
+    contract behaviour. A regression in OpenAPI routing, WebFlux config,
+
+    Jackson serialisation, jOOQ FTS, the highlighting SQL, the facet
+
+    aggregators, or the session-row CRUD would not be caught by the build.
+
+
+    The architectural cost: this is the seven-endpoint surface of one of
+
+    ODD''s primary user-facing features (catalog search). Five of seven
+
+    endpoints (all except `search` and `getSearchSuggestions`) are keyed by
+
+    a `searchId` UUID — a bearer-token shape (TEST-GAP-252). The whole
+
+    surface has zero JVM-side coverage. A round-trip integration test
+
+    spanning all seven endpoints would simultaneously catch (a) the
+
+    hasNext-always-true contract bug (TEST-GAP-947), (b) the bearer-token
+
+    cross-user-access regression (TEST-GAP-252 STRENGTHENED), (c) OpenAPI
+
+    routing drift, (d) Jackson serialisation drift, (e) the tsquery
+
+    injection class (TEST-GAP-250 / TEST-GAP-946 preconditions). One test
+
+    class with seven WebTestClient calls covers the entire surface; the
+
+    per-finding STRENGTHENS gaps narrow the assertion shape inside that
+
+    class.'
+  test_class: integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-948.yaml
+- gap_id: TEST-GAP-949
+  behaviour: '**Zero direct test coverage on FeatureController OR FeatureResolverImpl.
+
+    The Feature-flag → UI mapping has no regression test.** GET
+
+    /api/features/active is dispatched ONCE per app-mount from App.tsx:49;
+
+    the response feeds every `WithFeature featureName={Feature.X}` wrapper
+
+    in the SPA (Message.tsx:59 Open in Slack button,
+
+    DataEntityDetailsHeader.tsx:132 CreateMessageForm visibility, etc.).
+
+    The contract is:
+
+
+    (a) When `datacollaboration.enabled=true` AND `notifications.enabled=true`
+
+    → items = [DATA_COLLABORATION, ALERT_NOTIFICATIONS];
+
+    (b) When BOTH flags are false (the bundled application.yml defaults at
+
+    lines 173, 205) → items = [] (NOT null, NOT 404);
+
+    (c) Asymmetric: each flag independently maps to one Feature enum value.
+
+
+    No test pins this mapping. A refactor that swaps which @Value binds to
+
+    which enum (e.g. `datacollaboration.enabled` accidentally bound to
+
+    ALERT_NOTIFICATIONS) silently flips every WithFeature consumer''s
+
+    rendered output platform-wide. The blast radius is ALL UI users of
+
+    optional features. The build would not catch it. Stock-deployment
+
+    baseline (both flags false → items=[]) is the second highest-leverage
+
+    case — a regression to `null` or `404` would silently break the
+
+    appInfo.selectors.ts:9 `appInfo.activeFeatures || emptyArr` fallback
+
+    in some edge.'
+  test_class: integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-949.yaml
+- gap_id: TEST-GAP-950
+  behaviour: '**Cross-auth-mode reachability of GET /api/features/active is undocumented
+
+    and unpinned — under auth.type=DISABLED the endpoint is anonymously
+
+    reachable (PROVIDER-NULL-BLEED-LIMITED-RISK facet of REFACTOR-185),
+
+    under LOGIN_FORM / OAUTH2 / LDAP it requires authentication but no role
+
+    gate.** The asymmetry across modes is the operator-visible contract,
+
+    and no test pins it. The defence-in-depth assertion against accidental
+
+    WHITELIST_PATHS or LoginFormSecurityConfiguration.permittedPaths
+
+    additions is critical: a future change that adds `/api/features/active`
+
+    to WHITELIST (e.g. to support a pre-login feature-toggle exposing SSO
+
+    buttons) would silently lower the auth bar with no regression-pin
+
+    catching the shift.
+
+
+    Today''s facts:
+
+    - DISABLED (bundled default at application.yml:34): 200 OK to any
+
+    anonymous caller (DisabledAuthSecurityConfiguration.java:13-18
+
+    `.anyExchange().permitAll()`);
+
+    - LOGIN_FORM: 302 to /login for unauth callers
+
+    (LoginFormSecurityConfiguration.java:55-57 +
+
+    AuthorizationCustomizer.java:29-30; /api/features/active NOT in
+
+    WHITELIST at SecurityConstants.java:95-96);
+
+    - OAUTH2 / LDAP: 401 or 302 to OAuth provider (same fallthrough);
+
+    - All four modes: 200 OK to ANY authenticated user regardless of role.
+
+    No per-role gate; the FeatureList is intentionally not role-scoped.
+
+
+    The PROVIDER-NULL-BLEED facet (DISABLED-anonymous): the payload is
+
+    operator-policy-configurable booleans — narrower than IdentityController
+
+    (admin principal fabrication) and IntegrationController (internal
+
+    hostname leak) but real. An external scanner can fingerprint whether
+
+    the operator has activated DataCollaboration and/or Notifications.'
+  test_class: security
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids:
+  - REFACTOR-185
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-950.yaml
+- gap_id: TEST-GAP-951
+  behaviour: '**TRANSLATES_SILENTLY — `relationshipId` path parameter on
+
+    GET /api/relationships/erd/{relationship_id} and
+
+    GET /api/relationships/graph/{relationship_id} promises the
+
+    `relationships`-table primary key but the SQL at
+
+    ReactiveRelationshipsRepositoryImpl.java:194 filters by
+
+    `relationshipsDataEntity.field(DATA_ENTITY.ID).eq(relationshipId)` —
+
+    the data_entity.id column, NOT relationships.id.** The list endpoint''s
+
+    response maps `.id(item.dataEntityRelationship().getId())` at
+
+    RelationshipMapper.java:53 — the data_entity id. UI round-trip works
+
+    because the list and detail endpoints both speak data_entity.id under
+
+    the parameter name `relationship_id`. A third-party API consumer
+
+    reading the OpenAPI spec literally (where `relationship_id` plus the
+
+    operation summary ''Get erd relationship by id'' reads as the
+
+    relationships-table id) and supplying the actual `relationships.id`
+
+    value gets 404 — or worse, a 200 for an UNRELATED relationship if the
+
+    data_entity.id and relationships.id values happen to collide (both
+
+    bigserial; collision is admissible across two independent counters).
+
+
+    LSN-020 class — input-name-vs-implementation drift. The fix candidate
+
+    is changing line 194 from
+
+    `relationshipsDataEntity.field(DATA_ENTITY.ID).eq(relationshipId)` to
+
+    `RELATIONSHIPS.ID.eq(relationshipId)` AND updating the list endpoint''s
+
+    mapper at RelationshipMapper.java:53 to surface
+
+    `relationshipPojo().getId()` as the response `id` field. Both halves
+
+    needed for the rename — either half alone breaks the UI round-trip.'
+  test_class: integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-951.yaml
+- gap_id: TEST-GAP-952
+  behaviour: '**No-authorization posture on /api/relationships/** is unpinned —
+
+    every endpoint is reachable by any authenticated caller (or anonymous
+
+    under DISABLED) without owner-scoping, data_source_id filter,
+
+    namespace_id filter, EXCLUDE_FROM_SEARCH filter, or HOLLOW filter.**
+
+    The controller has no @PreAuthorize, SecurityConstants.java:95-355
+
+    has no /api/relationships/** matcher, the service applies no check,
+
+    and the repository SQL filters only by `entity_class_ids =
+
+    [DATA_RELATIONSHIP.getId()=9]`.
+
+
+    Whether this is intentional (implicit_adrs[1] — catalog-as-public-
+
+    metadata posture, symmetric to /api/lineage) or a security defect
+
+    depends on the maintainer''s stance. The asymmetry vs /api/dataentities
+
+    is documented in the sidecar: /api/dataentities applies the
+
+    EXCLUDE_FROM_SEARCH filter (per batch-T REFACTOR-425), /api/relationships
+
+    does not. Specifically:
+
+    (a) Cross-data-source visibility: a caller with policy/role grants
+
+    over data_source_1 only nonetheless sees relationships from
+
+    data_source_2 in list and detail payloads;
+
+    (b) EXCLUDE_FROM_SEARCH bypass: a relationship-class data_entity
+
+    flagged exclude_from_search=true (via operator HIDE OR corrupted
+
+    ingestion) IS NEVERTHELESS RETURNED here;
+
+    (c) DISABLED-mode anonymous reachability: full payload to any
+
+    network-reachable caller.
+
+
+    No test pins ANY of these — the no-auth invariant could be silently
+
+    tightened OR silently loosened without detection. Operator surprise
+
+    surface: an operator assuming the platform-wide EXCLUDE_FROM_SEARCH
+
+    semantics also gate /api/relationships would be wrong.'
+  test_class: security
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids:
+  - REFACTOR-108
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-952.yaml
+- gap_id: TEST-GAP-953
+  behaviour: '**The `type` query parameter (RelationshipsType enum: ERD / GRAPH /
+    ALL)
+
+    on GET /api/relationships drives an SQL filter switch — but no test
+
+    exercises any of the three branches.** At
+
+    ReactiveDataEntityRelationshipRepositoryImpl.java:99-101:
+
+    - `type == ALL` → DSL.noCondition() (disables the filter; returns both
+
+    types);
+
+    - `type == ERD` → `relationships.field(RELATIONSHIPS.RELATIONSHIP_TYPE).eq(ERD)`;
+
+    - `type == GRAPH` → `relationships.field(RELATIONSHIPS.RELATIONSHIP_TYPE).eq(GRAPH)`.
+
+
+    A regression that inverted the ERD/GRAPH enum-to-SQL mapping, or that
+
+    silently flipped `DSL.noCondition()` to the wrong branch, or that
+
+    added a new RelationshipsType value without updating the switch,
+
+    would not be caught by the build. The list endpoint is the primary
+
+    surface of the P-02 Data Modelling feature; the UI uses the type
+
+    filter as one of its main facets.
+
+
+    Pairs with: the page=1 happy-path response shape pin (items[].id,
+
+    items[].type, items[].sourceDataEntity / targetDataEntity refs) and
+
+    the `query` substring filter behavior pin (relationship name match,
+
+    not source/target entity name). The four uncovered behaviours
+
+    enumerated in the sidecar map to one test class with four cases:
+
+    type=ERD, type=GRAPH, type=ALL, and query-substring filter.'
+  test_class: integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-953.yaml
+- gap_id: TEST-GAP-954
+  behaviour: '**TWIN-DEFECT class on the `odd.links` operator-configured external-URL
+
+    surface — reverse tabnabbing AND URL-scheme passthrough.**
+
+
+    (1) `AppInfoMenu.tsx:60-66` renders `<Link to={link.url} target=''_blank''>`
+
+    WITHOUT `rel=''noopener noreferrer''`. Any URL the operator configures
+
+    (typically internal wikis, runbooks, Grafana) opens with
+
+    `window.opener` set; the destination page can navigate the ODD
+
+    Platform tab to a phishing page (reverse tabnabbing). The realistic
+
+    threat is a compromised internal wiki; severity is non-zero but
+
+    bounded by who controls the URLs.
+
+
+    (2) Neither the backend (`AdditionalLinkProperties.java:8` — no `@URL`
+
+    / `@Pattern` constraint on the `url` field; no controller validation)
+
+    nor the UI validates the URL scheme. An operator-supplied
+
+    `javascript:alert(1)` or `data:text/html,<script>...</script>` URL is
+
+    passed unsanitised. React 17+ neutralises `javascript:` in <a href>,
+
+    but `data:text/html` and `vbscript:` may still render in some
+
+    browsers. No allowlist of schemes.
+
+
+    No test pins either defect. Both surface in the UI; both can be
+
+    asserted in a test (the backend passthrough is testable via
+
+    LinksController, the UI rendering is testable via the existing
+
+    Playwright spec). Operator-relevant under any trust model where the
+
+    `odd.links` YAML/env can be edited by a less-trusted role.'
+  test_class: security
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-954.yaml
+- gap_id: TEST-GAP-955
+  behaviour: '**`getTitleList(page, size, query)` controller and service `list` path
+
+    has ZERO direct test coverage — only the lower-level repository CRUD
+
+    is exercised (TitlesRepositoryImplTest), and the Ownership test covers
+
+    the auto-create write side-effect (`getOrCreate`), NOT the read.** A
+
+    regression that broke the ORDER BY id ASC contract, the soft-delete
+
+    filter (deleted_at IS NULL), OR the case-insensitive substring filter
+
+    semantics would land silently.
+
+
+    The implicit contract:
+
+    (a) Order: `id ASC` at the OUTER select (insertion order; bigserial PK
+
+    → unique deterministic; the autocomplete shows oldest titles first).
+
+    This is operator-surprising — operators expecting alphabetical or
+
+    relevance-ranked ordering are wrong. Pin the ID-ASC contract before
+
+    someone "improves" it to alphabetical and breaks 30+ downstream
+
+    autocomplete consumers.
+
+    (b) `query` filter: case-insensitive substring containment
+
+    (`LOWER(name) LIKE LOWER(''%query%'')`). Empty/null returns ALL
+
+    non-deleted titles. Typing ''data'' returns ''Data Steward'' AND
+
+    ''Metadata Owner'' (both substring matches), ordered by id ASC. This
+
+    is NOT prefix-match priority and NOT FTS — operators expecting
+
+    prefix-priority get noisy results.
+
+    (c) Soft-delete: titles with deleted_at IS NOT NULL are filtered out.
+
+
+    No test pins any of these. The TitlesRepositoryImplTest covers
+
+    create/update/delete/getByName CRUD but NOT the paginated list
+
+    contract.'
+  test_class: integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-955.yaml
+- gap_id: TEST-GAP-956
+  behaviour: '**`TitleServiceImpl.getOrCreate` is a read-then-insert race that
+
+    produces a transient HTTP 400 USR003 on concurrent owner-grants
+
+    naming the SAME brand-new title.** Two parallel `OwnershipServiceImpl.create`
+
+    calls naming the same unseen title both call
+
+    `titleRepository.getByName(name)` (returns empty), then both call
+
+    `titleRepository.create(new TitlePojo().setName(name))`. The DB
+
+    constraint `TITLE_NAME_UNIQUE` (per ExceptionUtils.java:22-23) rejects
+
+    one; the losing side surfaces as `UniqueConstraintException("Title
+
+    with this name already exists")` per ExceptionUtils.java:72-74 →
+
+    ControllerAdvice → HTTP 400 USR003. The
+
+    `OwnershipServiceImpl.@ReactiveTransactional` boundary rolls back the
+
+    entire ownership-grant on the losing side.
+
+
+    No test currently exercises the concurrent path; the existing
+
+    OwnershipServiceImplTest covers single-threaded flow. The race
+
+    surfaces in production as a transient 400 that operators see as
+
+    "create owner failed — try again" with no documentation. Pairs with
+
+    TEST-GAP-571 (sibling Tag-shaped race), TEST-GAP-540 (TOCTOU on
+
+    TagServiceImpl.getOrCreateTagsByName), TEST-GAP-575
+
+    (UniqueConstraintException mapping), TEST-GAP-859 (TagServiceImpl
+
+    sibling read-then-insert) — this is the Title-specific instance of
+
+    the read-then-insert race-condition class.
+
+
+    Mitigation candidates: (a) ON CONFLICT DO NOTHING semantics at the
+
+    SQL layer with a re-fetch on conflict; (b) DB-level UPSERT
+
+    (insertOnConflictDoUpdate); (c) idempotent retry at the
+
+    OwnershipServiceImpl layer that catches USR003 and re-runs the
+
+    ownership-grant after re-fetching the now-existing title.'
+  test_class: integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-956.yaml
+- gap_id: TEST-GAP-957
+  behaviour: '**Cross-cutting pagination boundary gap — four endpoints across batch
+
+    ZE all share the same unbounded-input class.** Each is a separate
+
+    test target but the class is one:
+
+
+    (1) GET /api/relationships (page, size) — `(page-1)*size` arithmetic
+
+    at ReactiveDataEntityRelationshipRepositoryImpl.java:79; page=0 →
+
+    negative OFFSET → Postgres rejects (500 likely; P-130 pins). size
+
+    unbounded.
+
+    (2) GET /api/search/{id}/results (page, size) AND GET
+
+    /api/search/{id}/facet/{type} (page, size) — same unbounded-size
+
+    class (REPEAT of TEST-GAP-503 / TEST-GAP-864 family across the
+
+    catalog).
+
+    (3) GET /api/titles (page, size) — size unbounded, page=0 → negative
+
+    offset (TitleController.java:18-22; P-129 pins).
+
+    (4) GET /api/links — no pagination at all; mid-sized link list
+
+    (50+) returned without truncation. Not strictly a boundary test but
+
+    belongs to the same architectural gap class.
+
+
+    The cross-cutting pattern: NO endpoint in batch ZE has a server-side
+
+    max-size cap, an @Min(1) on page, or an @Max on size. The OpenAPI
+
+    PageParam / SizeParam carry no min/max constraints either. A future
+
+    fix at the framework level (e.g. WebFlux argument-resolver max-size
+
+    default) would silently cap every list endpoint; pinning the current
+
+    unbounded behaviour at four sites would catch regressions to either
+
+    the framework default OR the per-endpoint override pattern.
+
+
+    This gap is filed at MEDIUM criticality (rather than enumerating
+
+    four separate gaps) because the pattern is architectural — one cross-
+
+    cutting test class with one case per endpoint covers the class. The
+
+    alternative (one TEST-GAP per endpoint) would inflate the catalog
+
+    without surfacing the systemic angle.'
+  test_class: integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-957.yaml

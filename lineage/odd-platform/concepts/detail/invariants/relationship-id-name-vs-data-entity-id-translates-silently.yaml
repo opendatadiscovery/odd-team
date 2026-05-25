@@ -1,0 +1,86 @@
+name: Relationship-id path param TRANSLATES_SILENTLY to data_entity.id (Category F)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-02
+  - P-11
+description: |-
+  NEW INVARIANT, batch ZE — CATEGORY F TRANSLATES_SILENTLY drift
+  on the two detail endpoints of /api/relationships:
+
+  - GET /api/relationships/erd/{relationship_id}
+  - GET /api/relationships/graph/{relationship_id}
+
+  The OpenAPI parameter `relationship_id` (components.yaml:4385-
+  4391) and the Java parameter `relationshipId`
+  (RelationshipController.java:31, 39) PROMISE the relationships-
+  table primary key (the operation summaries
+  'Get erd relationship by id' / 'Get graph relationship by id'
+  read as the relationships-table id).
+
+  The actual SQL at ReactiveRelationshipsRepositoryImpl.java:194
+  filters by
+  `relationshipsDataEntity.field(DATA_ENTITY.ID).eq(relationshipId)`
+  — the relationship-class data_entity's `data_entity.id` column,
+  NOT the `relationships.id` PK.
+
+  The list endpoint's mapper at RelationshipMapper.java:53 surfaces
+  `.id(item.dataEntityRelationship().getId())` — also the
+  data_entity id. The UI round-trip (list → detail with the
+  surfaced `id`) is therefore SELF-CONSISTENT — UI clients
+  observe no drift.
+
+  CONSUMER FAILURES — a third-party API consumer:
+    (a) reads the OpenAPI spec literally, supplies an actual
+        relationships.id (e.g. from a direct DB query, or generated
+        from a Postman test set) → gets HTTP 404
+        (NotFoundException at RelationshipsServiceImpl.java:40-47);
+    (b) gets 200 if they happen to supply a data_entity.id that
+        coincidentally matches an existing relationship — but
+        which data_entity is matched is non-deterministic without
+        the relationships.id mapping in hand;
+    (c) hits the multi-row sub-case when two relationships share
+        one data_entity_id (admissible per schema —
+        relationships.data_entity_id has NO UNIQUE constraint
+        per V0_0_87__create_relation_tables.sql) → JOOQ driver-
+        specific behaviour (TooManyResultsException OR silent
+        first-row).
+
+  Doc drift — neither
+  documentation/docs/developer-guides/api-reference/relationships.md
+  nor documentation/docs/data-modelling/relationships.md warns of
+  the translation.
+
+  FIX ANCHOR — coordinated change to BOTH:
+    - line 194: change
+      `relationshipsDataEntity.field(DATA_ENTITY.ID).eq(relationshipId)`
+      to `RELATIONSHIPS.ID.eq(relationshipId)` (use the
+      relationships.id column);
+    - RelationshipMapper.java:53: change
+      `.id(item.dataEntityRelationship().getId())` to
+      `.id(item.relationshipPojo().getId())` (surface
+      relationships.id as the list `id`).
+  Either half alone breaks the UI round-trip.
+
+  Pinned by P-128.
+
+  Severity: HIGH for third-party consumers; INVISIBLE for UI.
+axes_present:
+  - controllers
+  - openapi_schemas
+  - repositories
+nodes:
+  - odd-platform java RelationshipController controller-class:RelationshipController
+contributors:
+  - 'RelationshipController.md:concepts.invariants.[1] — relationshipId path-param name vs SQL filter alignment'
+  - 'RelationshipController.md:bugs_limitations_corner_cases.[0] — CATEGORY F TRANSLATES_SILENTLY'
+  - 'RelationshipController.md:stress_findings.request_inputs.[4,5] — DRIFT_INPUT_NAME_VS_IMPLEMENTATION on both ERD + GRAPH detail paths'
+evidence:
+  - RelationshipController.md:concepts.invariants.[1]
+  - RelationshipController.md:bugs_limitations_corner_cases.[0]
+  - RelationshipController.md:stress_findings.request_inputs.[4,5]
+  - RelationshipController.md:stress_findings.probes_emitted.[0] (P-128)
+related_features: []
+related_pillar_features:
+  - P-02
+  - P-11

@@ -1606,3 +1606,84 @@ Directed RBAC + Integration class-level batch on `feature/ontology-finalize-2026
 - **ADR-CANDIDATE-051** strengthened to **2-sidecar** support (was 1). PermissionController class-level confirmation of the enum-field discriminator. See `detail/ADR-CANDIDATE-051-strengthen-batch-ZD.md`.
 
 - **ADR-CANDIDATE-189** strengthened with **5 new controller-side mirror confirmations**. Controller-side 23-sidecar count cross-validates the spec-side primary source. See `detail/ADR-CANDIDATE-189-strengthen-batch-ZD.md`.
+
+## Refresh note — batch ZE (2026-05-25 — Discovery / Search / Links / Feature / Relationship / Title controller-class enrichment)
+
+Five new class-level sidecars enriched the read-surface bookend across the catalog: SearchController (7 endpoints — P-04 Data Discovery), TitleController (1 endpoint — P-05 Ownership directory), FeatureController (1 endpoint — P-06 Configuration), RelationshipController (3 endpoints — P-02 Data Modelling), LinksController (1 endpoint — P-06 Configuration / Operator-configured navigation). Per the Rule-0 wisdom test the batch is ADR-heavy on the architectural-framing side: **4 new ADR candidates** (ADR-CANDIDATE-212..215) + **6 existing ADRs STRENGTHENED**, plus parallel refactoring-scope work captured in `index-batch-ZE-append.md` under refactoring-scopes/.
+
+**Coherence (Rule 6)**: cross-registry grep confirmed all new ADR findings are SAME-polarity with concept aggregates — `concepts/index.yaml` already carries the read-collaborative posture as an invariant; `feature-flows/` already carries the search-session lifecycle. Zero CONTRADICTS. The architectural framing of ADR-CANDIDATE-212 (directory side-effect mutation) composes with the existing concept-merger entries on Title / Owner / Tag / Namespace dimensions; ADR-CANDIDATE-213 (boot-resolved immutable config) composes with the existing `*SecurityConfiguration` boot-time pattern; ADR-CANDIDATE-214 (links global surface) is a new framing absent from prior registries; ADR-CANDIDATE-215 (relationships catalog-global read) composes with the implicit lineage-surface ADR (not yet enumerated as its own ADR-CANDIDATE).
+
+**Batch-ZE leverage ranking** (new entries; `triangulation_count × severity_weight`, HIGH=4/MEDIUM=2):
+1. ADR-CANDIDATE-215 — Relationships catalog-global read (HIGH, with borderline_flag) — leverage 4 × 1 = 4
+2. ADR-CANDIDATE-213 — Boot-resolved immutable config (HIGH, 3 sidecars: FeatureController + LinksController + cross-link to *SecurityConfiguration) — leverage 4 × 3 = 12
+3. ADR-CANDIDATE-212 — Directory side-effect-only mutation (HIGH, Title canonical instance + sibling links to Tag / Owner / Namespace) — leverage 4 × 1 = 4
+4. ADR-CANDIDATE-214 — Links global surface (MEDIUM, Links-specific instance of read-collaborative posture) — leverage 2 × 1 = 2
+
+The orchestrator re-ranks the global `## Top 20 by leverage` head over the COMBINED set; **ADR-CANDIDATE-213 (leverage 12)** is the strongest batch-ZE entry and likely enters the global Top 20 — the boot-resolved immutable config pattern affects deployment-lifecycle decisions for the whole platform.
+
+<!-- NEW-HEADLINES-BELOW -->
+
+## ADR-CANDIDATE-212 — Directory dimension tables are mutated ONLY as a side-effect of feature-domain mutations; the read surface is exposed but the WRITE surface is intentionally absent (`Title` is the canonical instance)
+
+**Classification**: promote
+**Severity**: HIGH
+**Pillars affected**: [P-09 Security & Access Control, P-04 Data Discovery]
+
+**Discriminating context**: TitleController is the canonical instance — a single-endpoint READ-only controller (`GET /api/titles`) whose underlying directory is mutated EXCLUSIVELY via `TitleService.getOrCreate(name)` called from OwnershipServiceImpl's create/update path. `TitleApi` (`openapi.yaml:323-340`) exposes a single GET; no POST/PUT/DELETE. No `TITLE_CREATE` permission exists (grep confirmed). Soft-delete machinery PROVISIONED but UNREACHABLE (only test-fixture callers). The pattern propagates to Tag / Owner / Namespace with varying degrees of "purity" — Title is the purest instance (side-door only); others have admin endpoints alongside the side-door. The architectural choice is "directory growth induced by usage, never managed by admin."
+
+**Surfaced by** (1 sidecar — single PURE instance + sibling triangulation with REFACTOR-206 batch K service-layer anchor):
+- TitleController.md:implicit_adrs.[0] + concepts.operations.[1]
+
+**Full detail**: `detail/ADR-CANDIDATE-212.md`
+
+---
+
+## ADR-CANDIDATE-213 — Feature-flag and operator-configured-catalogue state is BOOT-RESOLVED and IMMUTABLE; runtime YAML / env mutations are silently ignored until process restart
+
+**Classification**: promote
+**Severity**: HIGH
+**Pillars affected**: [P-04 Data Discovery, P-06 Configuration & Deployment, P-09 Security & Access Control]
+
+**Discriminating context**: FeatureResolverImpl captures @Value-injected Booleans into `private final Set<Feature>` in the constructor (lines 16-31); the `final` modifier is the compile-time enforcement. LinksController stores `AdditionalLinkProperties` as a `private final` field bound from `@ConfigurationProperties("odd")`. The pattern repeats across every `*SecurityConfiguration` (LoginForm / OAuth / LDAP / Disabled) and every operator-config-shaped binding. The Feature enum is INTENTIONALLY NARROW (only 2 UI-affecting values from 8+ available toggles). The decision trades hot-reloadability for memory + per-call latency simplicity + deterministic startup-time validation. Drift consequence: operators reasonably expect `enabled: true → false` to take effect without restart, but it does not — DRIFT_NAME_VS_BEHAVIOR per FeatureController's stress_findings.name_behavior_pairs.
+
+**Surfaced by** (3 sidecars):
+- FeatureController.md:implicit_adrs.[0]+[1]
+- LinksController.md:implicit_adrs.[0]
+- cross-link: every *SecurityConfiguration class (same boot-time-immutable-binding pattern)
+
+**Full detail**: `detail/ADR-CANDIDATE-213.md`
+
+---
+
+## ADR-CANDIDATE-214 — The "additional links" surface is GLOBAL (visible to every authenticated user), NOT per-user / per-role; an operator cannot show different links to different roles via this feature
+
+**Classification**: promote
+**Severity**: MEDIUM
+**Pillars affected**: [P-04 Data Discovery, P-09 Security & Access Control]
+
+**Discriminating context**: `GET /api/links` returns the SAME LinkList payload to every caller regardless of role/owner/policy. The decision is enforced at three layers: controller (no @PreAuthorize, no Permission check, no exchange.getPrincipal() consultation), routing (no SECURITY_RULES entry; falls through to authenticated()), data (AdditionalLinkProperties.Link record has only `title` + `url` — no audience/role fields). The operator-facing implication: do NOT use odd.links to surface URLs that should be access-controlled; the underlying URLs must enforce their own ACL. The LINK-specific instance of the read-collaborative posture (ADR-CANDIDATE-003) on operator-controlled (not user-data-controlled) state.
+
+**Surfaced by** (1 sidecar):
+- LinksController.md:implicit_adrs.[1]
+
+**Full detail**: `detail/ADR-CANDIDATE-214.md`
+
+---
+
+## ADR-CANDIDATE-215 — Relationship list endpoint is a CATALOG-GLOBAL read surface, NOT an owner-scoped one — distinct from `/api/dataentities/my`; the intent is that relationships are PUBLIC METADATA across the catalog
+
+**Classification**: promote
+**Severity**: HIGH
+**Pillars affected**: [P-02 Data Modelling, P-04 Data Discovery, P-09 Security & Access Control]
+**Borderline_flag**: TRUE — the EXCLUDE_FROM_SEARCH asymmetry vs `/api/dataentities` is the live triage question
+
+**Discriminating context**: All three RelationshipController endpoints (list / ERD-by-id / GRAPH-by-id) reach every relationship in the catalog regardless of owner-scope, namespace policy, EXCLUDE_FROM_SEARCH posture, or HOLLOW status. The repository SQL at `ReactiveDataEntityRelationshipRepositoryImpl.java:66-75` contains NO OWNERSHIP JOIN, NO data_source_id filter, NO EXCLUDE_FROM_SEARCH predicate (even though the sibling /api/dataentities surface DOES apply the filter per batch-T REFACTOR-425). Symmetric to /api/lineage (per batch-J). Graph topology is intentionally always visible; the underlying entity reads remain access-controlled.
+
+The borderline_flag: deliberate catalog-as-public-metadata stance OR the EXCLUDE_FROM_SEARCH filter was forgotten on the relationships side? Maintainer triage required.
+
+**Surfaced by** (1 sidecar — RelationshipController class-level, with cross-link to lineage pattern):
+- RelationshipController.md:implicit_adrs.[1]
+
+**Full detail**: `detail/ADR-CANDIDATE-215.md`
+
+---

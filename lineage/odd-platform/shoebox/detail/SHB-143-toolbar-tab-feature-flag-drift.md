@@ -1,6 +1,6 @@
 # SHB-143 — Primary-navigation tabs render unconditional of feature-flag state
 
-**Category**: clustering
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -30,5 +30,9 @@ Operators see the full nine-tab primary navigation row (Catalog / Directory / Da
 ## Links
 
 - cluster_with: [F-041, F-034]
-- merged_into: (open)
+- merged_into: F-041
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — F-041 already carries the `tabs_render_regardless_of_active_features_set` facet (severity MEDIUM) which is precisely this thread's hypothesis. The thread's evidence (ToolbarTabs.tsx:34-82 hardcoded array + App.tsx:49 fetchActiveFeatures unused) is verbatim what F-041's existing facet observed/expected blocks cite. No new drift class to add; thread is a confirmation, not an extension. F-041: Application Toolbar — drift_class: tabs_render_regardless_of_active_features_set (existing).

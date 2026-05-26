@@ -45,3 +45,7 @@ The ODD alerting feature enforces "one OPEN alert of the same type per data enti
 - cluster_with: [F-007, F-014]
 - merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — into F-014 Per-Entity Alert View. F-007 batch S note 3 (`updateStatus` SERVICE-TIER NO @ReactiveTransactional — AOP-PROVIDED SYNTHETIC TRANSACTION) is already the primary-source service-tier confirmation of the reopen-conflict-guard race at AlertServiceImpl.java:111-113 + lines 124-131. The application-only nature of the guard (no DB-level UNIQUE PARTIAL INDEX, no SELECT FOR UPDATE) is captured. F-014's chain crosses through AlertServiceImpl as hop-2, sharing the same evidence cluster. Appending the SHB-061 hypothesis as a new drift facet on F-014 — `alert_reopen_guard_application_only_no_db_constraint_concurrent_reopens_both_succeed_brief_double_open` — is the load-bearing extension. The race-window facet is bounded by READ COMMITTED isolation (R2DBC default per AlertServiceImpl batch S note 3) and the absence of `CREATE UNIQUE INDEX alert_one_open_per_type_per_entity ON alert(data_entity_oddrn, type) WHERE status = 'OPEN'` per ReactiveAlertRepositoryImpl. Thread marked merged. F-014: Per-Entity Alert View — adding drift_class `alert_reopen_guard_application_only_no_db_constraint`. (Note: this falls outside Slice D's strict modify-F-NNN-of-own-pillar rule for FRESH facet additions to F-014; F-014 IS pillar P-07 so this is in-pillar — verified.)

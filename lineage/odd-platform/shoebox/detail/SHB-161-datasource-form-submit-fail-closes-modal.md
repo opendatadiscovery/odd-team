@@ -1,6 +1,6 @@
 # SHB-161 — Datasource form submit closes the modal on rejection, discarding all typed input, with only a transient toast
 
-**Category**: open
+**Category**: clustering
 **Severity**: HIGH
 
 ## Hypothesis
@@ -31,6 +31,10 @@ When operators click Save on the Add/Edit Datasource modal and the backend rejec
 
 ## Links
 
-- cluster_with: [F-031, SHB-154]
+- cluster_with: [F-031, F-028, F-019, F-020, SHB-154, SHB-160, SHB-162]
 - merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: cluster — joins the "Form UX class" cluster with SHB-160 (token rotation warning) + SHB-162 (edit-replace-nulls). The pattern is verifiably widespread across ≥5 form types (DataSource / Term / DEG / Collector / LookupTable) per the SHB's grep evidence. Holding the cluster together so next batch can graduate a single "Form-Submit UX class" feature capturing all three facets (modal-close-on-fail + post-rotation-warning + REPLACE-not-PATCH) across the form family. HIGH severity per repeated data loss.

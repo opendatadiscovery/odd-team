@@ -32,6 +32,10 @@ Operators clicking the "Title" filter chip on the Data Quality Dashboard (`/data
 
 ## Links
 
-- cluster_with: [F-032]
-- merged_into: (set when merged into F-032)
+- cluster_with: [F-032, SHB-157, SHB-158]
+- merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: cluster — F-032 is in P-04 Data Quality (cross-pillar; outside this H1 slice's P-08 boundary per BRIEFING anti-pattern). Cluster_with siblings SHB-157 (debounce/spinner) + SHB-158 (per-chip refetch) — all three are DQ Dashboard filter-UX class. The cluster's combined evidence + the LSN-020-class label-vs-SQL drift across multiple filter dimensions ("Title" + "Namespace" + sibling "User" already in F-043) is strong enough for a future "DQ Dashboard Filter UX" feature graduation by the maintainer or next-batch P-04-pillar agent.

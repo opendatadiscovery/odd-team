@@ -1,6 +1,6 @@
 # SHB-046 — Lookup Tables list silently caps at 30 rows because InfiniteScroll scrollableTarget references a non-existent DOM id
 
-**Category**: open
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -37,9 +37,9 @@ Operators visiting `/master-data/lookup-tables` see a list of their lookup table
 ## Links
 
 - cluster_with: [F-026]
-- merged_into: (open)
+- merged_into: F-058
 - supersedes: []
 
 ## evaluation
 
-(feature-flow-builder will append a dated entry here on its next run.)
+- **feature-flow-builder 2026-05-26**: graduated — the SOLE user-observable surface of pillar P-03 has a HIGH severity silent-truncation bug; F-026 anchors per-table operations (RBAC / XSS / cross-table jump) but the LISTING surface is conceptually distinct. Pillar P-03's narrowness (one child surface — Lookup Tables) is itself load-bearing per system-mission.md:125-141, so the listing-surface failure mode warrants its own feature anchor. 5 evidence refs spanning UI list component, UI page shell counter, sibling Directory feature id (the source of the copy-paste), companion sidecar bugs[1] HIGH + probe P-192. Minted F-058 at lineage/odd-platform/feature-flows/detail/F-058.yaml (P-03:F-002 Lookup Tables Listing UX). Three drift facets: silent_30_row_cap_via_scrollable_target_mismatch (HIGH), zero_test_coverage_no_regression_anchor (MEDIUM), pillar_p_03_sole_surface_bug_blast_radius (HIGH).

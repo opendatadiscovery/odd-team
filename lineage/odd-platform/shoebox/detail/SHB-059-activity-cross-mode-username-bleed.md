@@ -42,3 +42,7 @@ The activity-feed write path resolves the current user via `authIdentityProvider
 - cluster_with: [F-021, F-011]
 - merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — into F-021 Activity Feed. F-021's drift_class_summary already enumerates `provider_agnostic_actor_resolution_cross_mode_bleed`, `anonymous_mutation_attribution_gap_disabled_mode_null_created_by`, and `ingestion_attribution_null_created_by_no_is_system_event_flag_disambiguator` (batch VAL-LSN-019-B facet 7). The username-vs-(username,provider) tuple drift is anchored at ActivityServiceImpl.java:47,58 + V0_0_48__add_activity.sql + ReactiveActivityRepositoryImpl.java:157-158,178-179,199-200,221-222 + LSN-020. The write-side cross-mode-bleed is the F-021 LSN-020 surface (`user_filter_label_promises_actor_axis_sql_binds_owner_of_entity_axis_ui_doc_both_misleading` extended through batches ZI / ZJ / ZL). The read-side LEFT JOIN cross-mode bleed is also captured. Thread marked merged. F-021: Activity Feed — drift_class facets already cover the full SHB-059 hypothesis.

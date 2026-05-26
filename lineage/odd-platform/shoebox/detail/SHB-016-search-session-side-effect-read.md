@@ -1,6 +1,6 @@
 # SHB-016 — Search session UUIDs: GET-is-a-write `last_accessed_at` UPDATE + persistent query-text trail + bearer-token semantics
 
-**Category**: open
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -51,5 +51,17 @@ Operators see "Search and Filtering" sessions persist beyond a single request be
 ## Links
 
 - cluster_with: [F-017, F-024]
-- merged_into: (open)
+- merged_into: F-017
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merged — SHB-016 captures the
+  FOUR operational drift facets on F-017's search-session bearer-token
+  surface (GET-is-a-write, dead column, unbounded growth, persistent
+  query trail). Appended as a single composite drift_class
+  `search_session_side_effect_read_update_dead_column_no_ttl` (MEDIUM)
+  to F-017 with full evidence trail + the cross-cutting note that
+  the session-UUID pattern is platform-wide (replicated in F-024
+  Term Search, QueryExampleController, ReferenceDataController).
+  Per SHB-016's Next step 6: "May merge into F-017 as drift facets."

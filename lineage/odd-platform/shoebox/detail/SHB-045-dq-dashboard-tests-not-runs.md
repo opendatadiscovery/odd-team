@@ -1,6 +1,6 @@
 # SHB-045 — Quality Dashboard `test_results` counts TESTS by their latest-run status, NOT RUNS as the label and live docs promise
 
-**Category**: clustering
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -36,9 +36,9 @@ Operators reading the `/data-quality` Quality Dashboard see a "Test Results Brea
 ## Links
 
 - cluster_with: [F-032, F-022, F-040]
-- merged_into: (open — feature-flow-builder will fold into F-032)
+- merged_into: F-032
 - supersedes: []
 
 ## evaluation
 
-(feature-flow-builder will append a dated entry here on its next run.)
+- **feature-flow-builder 2026-05-26**: merged into F-032 (P-04:F-002 Quality Dashboard) — thread is an enricher capturing the LSN-019 class drift (label-vs-behaviour) on the catalog-wide aggregate surface. Three independent surfaces (URL path /api/dataqatests/runs, operation summary "Get Data Quality tests runs", UI label "Test Results Breakdown", live docs) all promise per-RUN semantics; SQL delivers per-TEST-by-latest-status via DATA_ENTITY_TASK_LAST_RUN's PRIMARY KEY on task_oddrn. drift_class: label_promises_runs_implements_tests_by_latest_status (new facet, HIGH severity per LSN-019 family). NOT minting a new feature because F-032 is the catalog-wide quality view's anchor; this is a label-vs-implementation drift on the SAME surface, not a new user-observable feature. Maintainer ADR-shape decision: (a) rename URL+OpId+UI+docs to honour per-test semantics OR (b) add second per-run-volume metric. Both paths preserve the dashboard's identity as F-032.

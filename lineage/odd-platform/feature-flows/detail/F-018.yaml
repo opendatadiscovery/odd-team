@@ -1588,3 +1588,85 @@ related_features_cross_batch_confirmation:
     TagServiceImpl.java:1-167 has zero @PreAuthorize + zero
     programmatic checks. REFACTOR-547 remains the canonical fix anchor.
 maintainer_curated: false
+shoebox_merged_facets:
+- batch: 2026-05-26-shoebox-slice-A
+  seeded_from: SHB-005
+  drift_class: tag_origin_channel_ownership_asymmetric_external_protection
+  description: |-
+    SHB-005 anchors the THREE-CHANNEL ownership model on tag↔target
+    relations (INTERNAL/EXTERNAL/EXTERNAL_STATISTICS) that determines who
+    can mutate what. F-018 already names the side-channel-mint problem
+    (collectors + 4 services bypass TAG_CREATE); SHB-005 surfaces the
+    COMPLEMENTARY facet — per-relation ownership channel that determines
+    who can MODIFY existing rows. Asymmetry: the data-entity side uses a
+    boolean `external` column; the dataset-field side uses a `TagOrigin`
+    enum with three values. A tag with INTERNAL data-entity relations +
+    EXTERNAL dataset-field relations is NOT blocked by TagServiceImpl.update's
+    guard (which reads only `tagDto.external()` aggregate — the data-entity
+    side only).
+  evidence:
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/TagServiceImpl.java:49-50 (update guard)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/TagServiceImpl.java:62-63 (delete guard)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/TagServiceImpl.java:102 (filter !external before diff)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/TagServiceImpl.java:109 (new relations hardcoded setExternal(false))"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveTagRepositoryImpl.java:289-295 (deleteDatasetFieldInternalRelations origin = INTERNAL filter)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/dto/TagOrigin.java:3-7 (three-member enum)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/DatasetFieldServiceImpl.java:191-231 (updateFieldsTags — EXTERNAL_STATISTICS channel writer from ingestion)"
+  - "odd-platform-api/src/main/resources/db/migration/V0_0_82__add_tag_to_dataset_field.sql:12 (origin varchar NOT NULL DEFAULT 'INTERNAL')"
+  severity: MEDIUM
+  related_facets:
+  - tag_delete_cascade_asymmetric_dataset_field_orphans_survive
+  - tag_case_sensitivity_drift_listbynames_vs_search
+- batch: 2026-05-26-shoebox-slice-A
+  seeded_from: SHB-005
+  drift_class: tag_delete_cascade_asymmetric_dataset_field_orphans_survive
+  description: |-
+    TagServiceImpl.delete hard-deletes tag_to_term + tag_to_data_entity
+    rows concurrently but does NOT touch tag_to_dataset_field. Operators
+    deleting a tag attached to dataset fields leave orphan rows
+    referencing a soft-deleted tag id. Orphans are invisible to UI reads
+    (the listDatasetFieldDtos join applies addSoftDeleteFilter) but
+    persist in DB indefinitely.
+  evidence:
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/TagServiceImpl.java (delete Flux.zip — no deleteDatasetFieldRelations call)"
+  - "Per TagServiceImpl sidecar bugs_limitations_corner_cases[3]"
+  severity: MEDIUM
+- batch: 2026-05-26-shoebox-slice-A
+  seeded_from: SHB-006
+  drift_class: popular_tags_pagination_orders_by_id_asc_returning_oldest_not_most_popular
+  description: |-
+    SHB-006 anchors a HIGH-leverage operator-visible drift on the
+    Popular Tags ranking (GET /api/tags/popular) consumed by
+    TagsForm autocomplete on every entity-detail page.
+    ReactiveTagRepositoryImpl.listMostPopular paginates with
+    `paginate(homogeneousQuery, List.of(new OrderByField(TAG.ID, SortOrder.ASC)),
+    (page - 1) * size, size)` — pagination orders by TAG.ID ASC
+    (effectively OLDEST-BY-CREATION), selects the first `size` lowest-id
+    rows, and ONLY THEN sorts those by COUNT_FIELD DESC. On a platform
+    with N tags and a popular-page-size of 30, the response is the
+    OLDEST 30 tags re-ordered by usage_count locally, not the 30 tags
+    with the highest GLOBAL usage. Empirically verified against
+    demo.oddp.io 2026-05-20 per TagServiceImpl Stress Protocol S-B-1.
+    The endpoint name (listMostPopular) and the OpenAPI operation
+    (getPopularTagList) both promise popularity ranking; the
+    implementation delivers oldest-first.
+  evidence:
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveTagRepositoryImpl.java:148 (paginate with TAG.ID ASC ordering — pagination window applies BEFORE COUNT_FIELD sort)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveTagRepositoryImpl.java:158 (outer SELECT sorts by COUNT_FIELD DESC over already-windowed set)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/TagController.java:42 (getPopularTagList exposes via GET /api/tags/popular)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/TagServiceImpl.java:73-77 (straight-through pass-through; drift propagates one-to-one)"
+  - "TagServiceImpl sidecar — NAME-BEHAVIOUR DRIFT paragraph + demo.oddp.io empirical verification 2026-05-20"
+  severity: MEDIUM
+  fix_shape: |-
+    Replace `OrderByField(TAG.ID, SortOrder.ASC)` with
+    `OrderByField(COUNT_FIELD, SortOrder.DESC)` in the paginate call. Two-line
+    change with user-visible behaviour improvement.
+shoebox_evaluation_log:
+- batch: 2026-05-26-shoebox-slice-A
+  agent: feature-flow-builder
+  notes: |-
+    SHB-005 (Tag Origin Channel Ownership) MERGED to F-018 as 2 new drift
+    facets (origin-channel asymmetric protection + dataset-field delete
+    cascade asymmetry). SHB-006 (listMostPopular drift) MERGED to F-018
+    as 1 new drift facet (popular-tags pagination orders by oldest).
+    Both threads explicitly cluster_with F-018 in their bodies.

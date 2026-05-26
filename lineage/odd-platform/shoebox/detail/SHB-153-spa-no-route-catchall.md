@@ -1,6 +1,6 @@
 # SHB-153 — Bare-URL fall-through produces a blank page; SPA has no path='*' catch-all and no React error boundary
 
-**Category**: clustering
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -33,5 +33,9 @@ When operators visit ANY URL that doesn't match the SPA's 11 declared `<Route>` 
 ## Links
 
 - cluster_with: [F-042]
-- merged_into: (set when merged into F-042)
+- merged_into: F-042
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — F-042 already carries both the `bare_url_fall_through_produces_blank_page_no_route_path_star_catch_all` (MEDIUM) and `no_react_error_boundary_anywhere_in_spa_uncaught_throw_unmounts_entire_app` (HIGH) facets with verbatim file:line citations matching this thread. No new drift class needed; thread is reinforcement. F-042: Page-level UI Error Display + Missing-Route Fall-Through — drift_class: ui_router_no_match_renders_nothing_no_404_widget + ui_no_error_boundary_uncaught_throw_unmounts_app (both existing).

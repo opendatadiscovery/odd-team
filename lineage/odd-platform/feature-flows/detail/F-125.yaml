@@ -1,0 +1,211 @@
+feature_id: F-125
+feature_name: "Ingestion Credential Lifecycle — orphan tokens never housekept, plaintext at rest, no rotation grace period"
+pillar_id: P-08
+pillar_anchored_id: P-08:F-017
+pillar_anchored_feature_name: "Ingestion Credential Storage & Lifecycle"
+seeded_from: SHB-182
+seeded_at: 2026-05-26
+discovered_from_entry_point: |-
+  rest:POST /api/collectors/{id}/token (regenerate) + DELETE
+  /api/collectors/{id} (soft-delete) + parallel surfaces on
+  /api/datasources. Token table has NO `deleted_at`; regenerate UPDATEs
+  in place (no grace period); soft-delete-collector leaves token row
+  dangling; HousekeepingJobManager does NOT touch orphan tokens.
+primary_subject:
+  - "odd-platform-api/src/main/resources/db/migration/V0_0_28__add_token.sql:1-9"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/TokenGeneratorImpl.java:34-42"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveTokenRepositoryImpl.java:33-36"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/CollectorServiceImpl.java:71-90"
+  - "odd-platform-api/src/main/resources/db/migration/V0_0_33__add_token_constraints.sql:1"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveCollectorRepositoryImpl.java:89-97"
+contributing_nodes:
+  - "odd-platform sql migration:V0_0_28__add_token"
+  - "odd-platform sql migration:V0_0_33__add_token_constraints"
+  - "odd-platform java auth:TokenGeneratorImpl"
+  - "odd-platform java repository:ReactiveTokenRepositoryImpl"
+  - "odd-platform java repository:ReactiveCollectorRepositoryImpl"
+  - "odd-platform java service:CollectorServiceImpl"
+  - "odd-platform java service:HousekeepingJobManager"
+chain:
+  - hop: 1
+    node: "rest:POST /api/collectors/{id}/token OR DELETE /api/collectors/{id}"
+    sidecar: "CollectorController"
+    evidence: "regenerate or soft-delete entry point"
+    multiplicity_per_trigger: 1
+  - hop: 2
+    node: "service:CollectorServiceImpl regenerate / delete"
+    sidecar: "CollectorServiceImpl"
+    evidence: |-
+      regenerate: TokenGeneratorImpl.java:34-42 generates new 40-char
+      alphanumeric → ReactiveTokenRepositoryImpl.java:33-36 UPDATE
+      in place (prior value LOST).
+      delete: CollectorServiceImpl.java:71-90 soft-deletes the Collector
+      via ReactiveAbstractSoftDeleteCRUDRepository (UPDATE SET deleted_at=NOW())
+      — the TOKEN row is NOT touched.
+    multiplicity_per_trigger: 1
+  - hop: 3
+    node: "db-write:token row UPDATE (regenerate) OR orphan (delete)"
+    sidecar: "ReactiveTokenRepositoryImpl"
+    evidence: "token table has NO deleted_at; orphan rows accumulate forever"
+    multiplicity_per_trigger: 1
+terminal_side_effect:
+  side_effect_class: db-write
+  description: |-
+    Token table row UPDATE (rotation) OR orphaning (collector/datasource
+    soft-delete). No housekeeping cascade ever DELETEs orphan token rows.
+    Every collector token EVER MINTED by the platform accumulates in the
+    token table monotonically over time.
+  evidence:
+    - "ReactiveTokenRepositoryImpl.java:33-36 (regenerate)"
+    - "HousekeepingJobManager.java (no token cleanup)"
+  cardinality_per_call: 1
+amplification_factor: 1
+observed_vs_expected:
+  facets:
+    - drift_class: token_table_no_deleted_at_no_housekeeping_orphans_forever
+      description: |-
+        `token` table per V0_0_28 has NO `deleted_at` / `is_deleted` /
+        STATUS column. Soft-delete-collector path UPDATE SET deleted_at=NOW()
+        on COLLECTOR but does NOT delete the TOKEN row. HousekeepingJobManager
+        covers DataEntity / Activity / Message / OwnerAssociationRequest /
+        Notification cleanup; token cleanup is NOT in the cascade. Grep
+        for `DELETE FROM token` returns zero matches. A deployment running
+        for a year accumulates every historical credential of every long-gone
+        collector in a single PG table.
+      evidence:
+        - "V0_0_28__add_token.sql:1-9 (no deleted_at)"
+        - "HousekeepingJobManager.java (no token cleanup query)"
+        - "grep DELETE FROM token returns zero matches"
+    - drift_class: token_plaintext_at_rest_no_encryption_no_hash
+      description: |-
+        `RandomStringUtils.randomAlphanumeric(40)` (TokenGeneratorImpl.java:34-42)
+        written VERBATIM into `token.value VARCHAR(40)` — no hash, no
+        encryption, no separate plaintext-display column. Reachable by any
+        DB-side reader (replica / pg_dump / backup / accidentally-leaked
+        SQL log line). Combined with the no-cleanup invariant: a Postgres
+        replica leak / nightly backup compromise / accidental-log-line
+        exposes EVERY collector token the platform has ever minted.
+      evidence:
+        - "TokenGeneratorImpl.java:34-42"
+        - "ReactiveCollectorRepositoryImpl.java:89-97 (plaintext TOKEN.VALUE.eq(token) match)"
+    - drift_class: regenerate_no_grace_period_old_token_immediately_invalid
+      description: |-
+        Regenerate path UPDATEs the row in place — the OLD token immediately
+        starts 401-ing at every `POST /ingestion/datasources` and
+        `POST /ingestion/entities`. The collector deployed on operator
+        infrastructure must be restarted with the new token AT THE MOMENT
+        of rotation; if not, ingestion stops. There's no "old + new both
+        valid for 24 hours" pattern. Operationally fragile.
+      evidence:
+        - "ReactiveTokenRepositoryImpl.java:33-36 (UPDATE token SET value = ? WHERE id = ?)"
+    - drift_class: token_rotation_delete_no_audit_log_no_activity_event
+      description: |-
+        `regenerateToken` emits NO Activity Event, writes NO audit-log
+        row. `TOKEN.updated_at` + `TOKEN.updated_by` (which CAN be null
+        in `auth.type=DISABLED` per TokenGeneratorImpl fallback) is the
+        ONLY forensic trace. An incident reviewer asking "who rotated
+        this collector's token at 02:13 last Tuesday" has minimal info.
+        Same for delete-collector.
+      evidence:
+        - "ReactiveTokenRepositoryImpl regenerateToken (no @ActivityLog)"
+        - "TokenGeneratorImpl.java:27-32 (updated_by null in DISABLED mode)"
+    - drift_class: data_source_token_parallel_orphan_surface_same_class
+      description: |-
+        `data_source.token_id` accumulates orphans the same way per
+        ReactiveDataSourceRepositoryImpl sidecar: token rotation UPDATEs
+        in place, data_source soft-delete leaves token row dangling.
+        Cross-cutting failure across BOTH ingestion-credential surfaces
+        (Collector tokens + DataSource tokens). Fix must enumerate every
+        table with a `token_id` FK in the housekeeping NOT IN clause.
+      evidence:
+        - "ReactiveDataSourceRepositoryImpl invariants section"
+        - "DataSourceServiceImpl.regenerateDataSourceToken"
+    - drift_class: regenerate_token_ui_one_click_no_confirmation_modal
+      description: |-
+        UI "Regenerate Token" button (CollectorController.regenerateCollectorToken
+        / DataSourceController.regenerateDataSourceToken) is one click; there's
+        no "are you sure?" modal warning about immediate invalidation. Operators
+        who click expecting draft / preview flow lose ingestion. UX-amplified
+        version of the no-grace-period drift.
+      evidence:
+        - "(UI inferred — CollectorController.regenerateCollectorToken endpoint exists)"
+    - drift_class: token_value_no_unique_constraint_theoretical_collision_risk
+      description: |-
+        No UNIQUE constraint on `TOKEN.value`. Two tokens COULD collide;
+        keyspace 62^40 makes this astronomically improbable in practice,
+        but no schema-level defence. A future migration could add UNIQUE
+        without operational risk.
+      evidence:
+        - "V0_0_28__add_token.sql:1-9 (no UNIQUE on value)"
+test_matrix:
+  unit: GAP
+  integration: GAP
+  performance: GAP
+  security: GAP
+related_refactoring_scopes: []
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+  - "ingestion-credential-auth-path"
+  - "no-audit-log-on-rbac-mutations"
+status: active
+cross_pillar_relationships:
+  - pillar_id: P-09
+    kind: feeds
+    via: |-
+      Token authentication on `/ingestion/*` paths (P-09 Ingestion filter)
+      consumes token.value plaintext-equality match in
+      ReactiveCollectorRepositoryImpl.getByToken. The credential lifecycle
+      surface is the SECURITY load-bearing infrastructure for ingestion
+      authentication.
+  - pillar_id: P-10
+    kind: feeds
+    via: |-
+      Every Collector and DataSource integration depends on a token
+      generated through this lifecycle. Rotation invalidates the producer's
+      auth immediately; orphan tokens persist forever beyond the
+      producer's existence.
+notes_for_maintainer: |-
+  Probe-needed (local-only docker-compose stack): boot platform, create
+  100 collectors, delete 50, count `SELECT count(*) FROM token` vs
+  `SELECT count(*) FROM collector WHERE deleted_at IS NULL` — confirm
+  orphan count grows monotonically.
+
+  Follow-up scope candidates:
+  - SEC-NNN (HIGH): add housekeeping query to HousekeepingJobManager:
+    `DELETE FROM token WHERE id NOT IN (SELECT token_id FROM collector
+    WHERE deleted_at IS NULL) AND id NOT IN (SELECT token_id FROM
+    data_source WHERE deleted_at IS NULL) AND id NOT IN (...)`. Schedule
+    cadence: daily.
+  - SEC-NNN (HIGH): encrypt-at-rest the token.value column (pgcrypto OR
+    application-layer with operator-config key). Migrate via new column +
+    dual-write + read-only-from-new + drop-old over multiple releases.
+  - SEC-NNN: add 24-hour grace period on rotation — insert NEW token row,
+    mark OLD as `superseded_at`, accept both during grace, then delete OLD.
+    Schema migration: drop partial unique `collector_token_unique`,
+    add `superseded_at` column.
+  - REFACTOR-NNN: add ActivityEvent emission on token rotation +
+    collector delete + datasource delete (currently silent).
+  - DOC-NNN: operator security page admonition: "Collector and DataSource
+    tokens are stored as plaintext in PostgreSQL `token` table; secure your
+    Postgres backups and replicas accordingly. Soft-deleted collectors
+    leave token rows in the table indefinitely until a future housekeeping
+    migration."
+
+  This thread is the SHAPE that LSN-001 and LSN-002 were FOR (silent-default
+  footguns shipping operator-trust failures). Maintainer should consider
+  whether this constitutes an LSN-NNN candidate in its own right.
+
+  Cluster_with [F-020, F-031] per source SHB. F-020 (Collector Lifecycle)
+  + F-031 (DataSource Lifecycle) name the WHAT-it-does of token creation;
+  F-125 names the STORAGE-LAYER + HOUSEKEEPING-GAP. Cross-pillar with
+  F-010 (Housekeeping) — the fix is in HousekeepingJobManager but the
+  feature surface is credential-lifecycle.
+provenance: |-
+  Graduated from SHB-182 by feature-flow-builder on 2026-05-26 (parallel
+  triage slice H2). Evidence: 6 file:line citations across migrations +
+  TokenGeneratorImpl + repository + service + HousekeepingJobManager
+  absence-of-cleanup. Graduation threshold easily met. SECURITY load-bearing.
+  Cross-pillar with F-010 (Slice E) AND F-020 (Slice F) — flagged via
+  cluster_with [F-020, F-031] without modifying those F-NNNs (per slice
+  discipline).

@@ -42,3 +42,7 @@ The Activity Feed exposes two sibling endpoints: `GET /api/activity` (list) and 
 - cluster_with: [F-021, SHB-089]
 - merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — into F-021 Activity Feed. F-021's existing drift_class_summary covers the monotonic-growth aspect (`activity_table_monotonic_growth_no_delete_path` + the F-010 partition-rotation interaction) but does NOT explicitly enumerate the asymmetric-validation gap between `getActivity` (validated) and `getActivityCounts` (not validated). The SHB-067 hypothesis is anchored at ActivityServiceImpl.java:98-100 (validated) vs lines 138-166 (not validated) — primary-source at the service tier. Appending a new drift_class on F-021 — `getactivitycounts_asymmetric_validation_null_dates_unbounded_count_scan_authenticated_user_dos_surface` — captures the missing facet. Cross-link to F-021 batch-VAL-LSN-019-B facet 5 (`service_tier_zero_authorization_cross_owner_visibility_multi_tenant_leak`) which compounds with this — any authenticated user can issue the bad query because the no-RBAC posture is also present. Probe P-023 already authored at the ActivityServiceImpl sidecar. Thread marked merged. F-021: Activity Feed — adding drift_class `getactivitycounts_asymmetric_validation_null_dates_unbounded_count_scan_authenticated_user_dos_surface`.

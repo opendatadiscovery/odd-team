@@ -23,6 +23,8 @@ drift_class_summary:
   - master_data_label_lands_on_lookup_tables_specifically_not_pillar_overview
   - tab_selectedness_substring_match_fragile_under_route_rename
   - three_tab_labels_missing_from_all_six_locales_natural_keys_fallback_silent
+  - tab_thunk_silent_failure_no_catch_orphan_search_id_mint
+  - module_load_time_date_snapshot_stale_window_across_spa_session
 cross_pillar_relationships:
   - pillar_id: P-01
     kind: feeds
@@ -563,6 +565,50 @@ observed_vs_expected:
         fragility ships silently — a route rename in routes/*.ts without
         updating the matching value field at ToolbarTabs.tsx:42-79 silently
         stops the tab from highlighting.
+    - facet_id: tab_thunk_silent_failure_no_catch_orphan_search_id_mint
+      drift_class: tab_thunk_silent_failure_no_catch_orphan_search_id_mint
+      severity: MEDIUM
+      observed: |-
+        ToolbarTabs.tsx:112-117 — Dictionary handler:
+        `dispatch(createTermSearch(...)).unwrap().then(({searchId}) => navigate(...))`
+        — no `.catch`. Catalog handler `useCreateSearch.ts:14-19` shares the shape.
+        On backend 5xx the rejected promise produces no toast (handleResponseAsyncThunk
+        path-dependent), no navigation, no error pane — the click appears unresponsive.
+        Rapid repeat clicks mint repeat orphan search-id rows server-side (no in-flight
+        de-dup, no idempotency key, no client-side cleanup).
+      expected: |-
+        Either a `.catch(showServerErrorToast)` on each handler, or a chain-level
+        AbortController + an idempotency key. Orphan search-id rows should be evicted
+        by a housekeeping job (F-010 currently enumerates 5 jobs — no orphan-search-id
+        TTL evictor today).
+      operator_visible_consequence: |-
+        Backend down → Catalog/Dictionary clicks fail silently; user has no signal
+        the request was even attempted. Compounds with SHB-153 (no path='*'
+        catch-all) — if the user did somehow land on the destination, the
+        downstream search result page would then potentially show AppErrorPage
+        but the entry-point click never reached navigate(). Seeded from SHB-145.
+    - facet_id: module_load_time_date_snapshot_stale_window_across_spa_session
+      drift_class: module_load_time_date_snapshot_stale_window_across_spa_session
+      severity: LOW
+      observed: |-
+        Activity/common.ts:33-41 — `defaultActivityQuery` is a module-level
+        constant; `beginDate: addDays(new Date(), -5)`, `endDate: new Date()`
+        are evaluated at MODULE-IMPORT TIME (SPA bundle load), not at click time.
+        ToolbarTabs.tsx:75-79 builds the Activity tab's href via
+        `activityPath(activityQueryString)` where activityQueryString defaults
+        to defaultActivityQuery. On a long-lived SPA tab (laptop-suspend over
+        days), the Activity tab carries a window that slides further out of
+        date with each day since bundle load.
+      expected: |-
+        Replace the module-level constants with a function call inside
+        `useQueryParams` defaults, OR redirect to a stable URL that lets
+        the Activity page itself compute the now-time window.
+      operator_visible_consequence: |-
+        SRE checking "what changed today" via Activity tab after a multi-day
+        SPA session sees a window that ends N days ago (N = days since bundle
+        load). The bug surfaces only after the SPA has been idle >24h — class
+        an integration test would never catch without mocking Date.now across
+        module reload boundaries. Seeded from SHB-146.
 test_matrix:
   unit:
     state: GAP

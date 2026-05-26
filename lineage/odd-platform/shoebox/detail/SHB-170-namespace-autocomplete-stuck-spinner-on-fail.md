@@ -1,6 +1,6 @@
 # SHB-170 — NamespaceAutocomplete strands the spinner on backend failure across 5+ form types
 
-**Category**: open
+**Category**: clustering
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -29,6 +29,10 @@ When the namespace search backend is unavailable (5xx, network failure, 4xx) dur
 
 ## Links
 
-- cluster_with: [SHB-145, SHB-157, SHB-161]
+- cluster_with: [SHB-145, SHB-157, SHB-159, SHB-161]
 - merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: cluster — joins the "Autocomplete UX class" cluster with SHB-157 + SHB-159 (debounce-gap, 30-cap mislabel, stuck-spinner-on-fail across ~11 sibling autocompletes). Also reinforces the platform-wide silent-failure cluster (SHB-145 tab thunk + SHB-161 form submit + SHB-170 autocomplete) — three different surfaces sharing the missing-`.catch` shape. Next batch can graduate either the autocomplete cluster OR the cross-surface silent-failure cluster.

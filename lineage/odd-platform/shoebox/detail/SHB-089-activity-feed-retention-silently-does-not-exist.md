@@ -1,6 +1,6 @@
 # SHB-089 — Activity-feed (and Message) retention silently does not exist; docs imply it does
 
-**Category**: open
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -35,5 +35,9 @@ Operators reading the live `/features/active-platform-features/activity-feed` pa
 ## Links
 
 - cluster_with: [F-021, F-038, F-010]
-- merged_into: (open)
+- merged_into: F-010
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merged — F-010 (Housekeeping TTL Enforcement, P-08) already enumerates `cross_pillar_activity_retention_to_p_07` + `activity_table_monotonic_growth_confirmed_repo_tier_no_delete_path` in its drift_class_summary. The thread proposed enriching F-021 (P-07) instead, but Slice E owns P-08 and F-021 is P-07; per the anti-pattern rule I MERGE into F-010 (my pillar) preserving the cross-pillar relationship to P-07. F-010: shoebox_extensions_2026_05_26 → drift_class: activity_and_message_tables_no_time_based_retention_partition_drop_requires_empty_silent_doc_drift. F-021 readers will see the cross-link via F-010's existing `cross_pillar_activity_retention_to_p_07`. Category flipped open → merged.

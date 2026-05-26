@@ -31,6 +31,10 @@ When operators register a data source (or term, DEG, collector, lookup-table) in
 
 ## Links
 
-- cluster_with: []
+- cluster_with: [SHB-157, SHB-170, F-028, F-031]
 - merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: cluster — the namespace + 7 sibling autocompletes pattern is cross-pillar (touches P-08 Namespace Lifecycle + P-08 Data Source Lifecycle + P-01 Glossary terms + P-08 Owner Lifecycle + P-08 Collector + P-03 Lookup Tables). Cluster_with SHB-157 (DQ-filter autocomplete debounce/spinner) + SHB-170 (autocomplete stuck spinner on fail) so the next batch can graduate a single "Autocomplete UX class" feature capturing all 3 dimensions (mislabel-on-30-cap + no-debounce + stuck-spinner-on-fail) across the ~11 sibling autocompletes. Coordinate with Slice E for cross-pillar reach.

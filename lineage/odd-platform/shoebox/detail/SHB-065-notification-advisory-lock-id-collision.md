@@ -51,3 +51,7 @@ ODD Platform uses Postgres advisory locks to elect single-leader executors for F
 - cluster_with: [F-009, F-010, F-038]
 - merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduate — minted F-065 at lineage/odd-platform/feature-flows/detail/F-065.yaml (pillar P-08:F-005 "Single-Leader Background Subsystem Registry"). Evidence list spans application.yml lines 177,197-198,201,202 + three @ConfigurationProperties classes (NotificationsProperties.wal, DataCollaborationProperties, partition.* binding) + PostgreSQLLeaderElectionManagerImpl.java:22 + the deliberate-share invariant at ActivityTablePartitionManager sidecar coupling[0] — sufficient evidence spanning TWO substrate axes (config-tier + boot-time leader-election) plus a third operator-visible-failure axis. The feature is a cross-cutting operational-infrastructure concern serving THREE pillar P-07 sub-features (F-009, F-038, F-021 via F-010). The pillar choice (P-08 Management & Administration) reflects that operators tune these IDs via application.yml — a Management surface. The system-mission.md "Platform-Internal Operational Infrastructure" canonicalisation candidate covers this feature shape; this graduation is one concrete instance of that pillar canonicalisation opportunity. Thread marked merged. cluster_with relationships (F-009, F-010, F-038) preserved as related_features cross-references on F-065.

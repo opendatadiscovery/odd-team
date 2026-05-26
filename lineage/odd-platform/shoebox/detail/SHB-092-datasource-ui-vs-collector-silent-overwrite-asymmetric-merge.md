@@ -1,6 +1,6 @@
 # SHB-092 — Operator UI edits to Datasource name/description are silently overwritten by the next collector startup (asymmetric merge across two write paths)
 
-**Category**: open
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -37,5 +37,9 @@ The same `data_source` table is mutated through TWO disjoint paths that apply DI
 ## Links
 
 - cluster_with: [F-031, F-008, F-020, F-021]
-- merged_into: (open)
+- merged_into: F-031
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merged — F-031 already carries `replace_not_merge_silent_field_wipe` as primary drift class; this thread STRENGTHENS it with the cross-path asymmetry dimension (UI replace-all vs S2S partial-merge of name+description only). F-031: shoebox_extensions_2026_05_26 → drift_class: operator_vs_collector_silent_overwrite_asymmetric_merge_strengthens_replace_not_merge. Cross-link to F-008 (S2S primary source) + F-021 (audit-silence surface) preserved via cross_pillar_compounds_with. Category flipped open → merged.

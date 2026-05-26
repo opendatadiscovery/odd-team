@@ -46,3 +46,18 @@ Operators see a per-test "Runs History" page (`/dataentities/{id}/history` and t
 - cluster_with: [F-040]
 - merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: deferred — F-040 (the natural
+  merge target) is pillar P-04 Data Quality, OUTSIDE this slice's
+  pillar (P-01 Data Discovery). Per the slice-A anti-pattern: "Do NOT
+  modify F-NNN files OUTSIDE your slice's pillar." The hypothesis is
+  strong (8 refs across DTO / spec / mapper / repo / UI / controller /
+  service axes + UI components named) and the evidence pattern matches
+  F-040's anchor. NEXT-RUN ACTION: a P-04 slice should merge SHB-011
+  into F-040 as new drift facets (`runs_history_wire_db_enum_asymmetry_500_on_running_row`
+  + `runs_history_nulls_first_running_rows_surface_unannotated_at_top`
+  + `unbounded_size_param_dos_risk`). Thread stays `clustering` with
+  cluster_with: [F-040] preserved; a fresh P-04-pillar pass will
+  graduate or merge.

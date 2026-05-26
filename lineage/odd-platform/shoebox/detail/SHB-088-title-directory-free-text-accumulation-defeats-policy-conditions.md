@@ -1,6 +1,6 @@
 # SHB-088 — Title directory's free-text auto-create silently defeats Policy conditions on `dataEntity:owner:title == 'X'`
 
-**Category**: open
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -38,5 +38,9 @@ Operators writing an RBAC policy with condition `dataEntity:owner:title == 'Data
 ## Links
 
 - cluster_with: [F-036, F-018]
-- merged_into: (open)
+- merged_into: F-036
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merged — F-036 (Owner-Relationship Title Directory) is the existing P-08 anchor for this directory. This thread enriches F-036 with the AUTHORIZATION-CONSEQUENCE half (case-sensitive byte equality in Policy conditions; free-text auto-create silently defeats rules). F-036: shoebox_extensions_2026_05_26 → drift_class: title_directory_free_text_auto_create_silently_defeats_policy_conditions. Cross-link to F-074 (read-collaborative posture — Title list is ungated so attacker enumerates policy vocabulary). Category flipped open → merged.

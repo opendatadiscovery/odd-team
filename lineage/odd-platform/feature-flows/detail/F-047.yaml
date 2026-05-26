@@ -1,0 +1,345 @@
+feature_id: F-047
+pillar_id: P-01
+pillar_anchored_id: P-01:F-011
+pillar_anchored_feature_name: Dataset Field per-Column Annotation Surface
+feature_name: |-
+  Dataset Field per-Column Annotation Surface — per-column annotation
+  (description / business-name / tags / enum values / glossary-term
+  links) on the dataset Structure tab, parent-data-entity-scoped via
+  DatasetFieldResourceExtractor, with FOUR distinct correctness defects
+  (replace-all tags, BULK-REPLACE enums named CREATE, description-link
+  DELETE quirk, XSS verbatim storage) and TWO HIGH-severity
+  SecurityConstants wiring bugs misrouting permission gates
+seeded_from: SHB-010
+seeded_at: 2026-05-26
+status: active
+primary_drift_class: security_constants_wiring_bug_term_endpoint_gated_by_data_entity_permission
+drift_class_summary:
+  - security_constants_wiring_bug_term_endpoint_gated_by_data_entity_permission
+  - security_constants_wiring_bug_alert_status_gated_by_dataset_field_permission
+  - update_dataset_field_tags_delete_all_then_recreate_not_diff
+  - create_enum_value_named_create_implemented_bulk_replace
+  - delete_term_from_dataset_field_filters_description_link_isfalse_survives
+  - description_verbatim_storage_no_sanitization_xss_class_at_per_column_surface
+  - jooq_unset_origin_insert_relies_on_db_default
+  - http_200_vs_spec_201_drift_on_three_put_endpoints
+  - bulk_replace_enum_value_no_concurrency_control_last_writer_wins
+companion_to:
+  - feature_id: F-004
+    relationship: per-entity-vs-per-column-twin
+    note: |-
+      F-004 anchors the PER-ENTITY description editing surface (markdown
+      XSS-class verbatim storage). F-047 is the PER-COLUMN twin —
+      same XSS-class fingerprint, separate render path
+      (DatasetField description in the Structure tab).
+discovered_from_entry_point: |-
+  rest:7 endpoints under /api/datasets/{data_entity_id}/fields/{dataset_field_id}/*
+  (DatasetFieldController) — three PUTs (description, internal-name,
+  tags), one POST (enum_values bulk-replace), two GETs, two
+  term-related (POST term, DELETE term).
+  UI entry-point: per-column row on the Structure tab of the data
+  entity detail page; clicking a column opens the per-column edit panel.
+primary_subject:
+  - odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/DatasetFieldController.java
+  - odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/DatasetFieldServiceImpl.java
+  - odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/EnumValueServiceImpl.java
+  - odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/TermRelationsRepositoryImpl.java
+  - odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveTagRepositoryImpl.java
+  - odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDatasetFieldRepositoryImpl.java
+  - odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/permission/extractor/DatasetFieldResourceExtractor.java
+  - odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/util/SecurityConstants.java
+contributing_nodes:
+  - odd-platform java DatasetFieldController controller-class:DatasetFieldController
+  - odd-platform java service:DatasetFieldServiceImpl
+  - odd-platform java service:EnumValueServiceImpl
+  - odd-platform java repository reactive repository:TermRelationsRepositoryImpl
+  - odd-platform java repository reactive repository:ReactiveTagRepositoryImpl
+  - odd-platform java repository reactive repository:ReactiveDatasetFieldRepositoryImpl
+  - odd-platform java auth permission extractor:DatasetFieldResourceExtractor
+  - odd-platform java auth util:SecurityConstants
+chain:
+  - hop: 1
+    node: rest controller-class:DatasetFieldController
+    sidecar: odd-platform__java__DatasetFieldController__controller-class__DatasetFieldController.md
+    multiplicity_per_trigger: 1
+    evidence: |-
+      DatasetFieldController.java:35-103 — 7 endpoints, thin-proxy.
+      Three PUTs (description, internal-name, tags), one POST
+      (enum_values), two GETs, two term endpoints.
+  - hop: 1.5
+    node: auth permission extractor:DatasetFieldResourceExtractor
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      DatasetFieldResourceExtractor.java:21-27 — every authorized request
+      issues a 3-table JOIN
+      (dataset_field → dataset_structure → dataset_version → data_entity)
+      to map dataset_field_id to parent data_entity_id BEFORE the
+      controller method runs.
+  - hop: 2
+    node: service:DatasetFieldServiceImpl
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      DatasetFieldServiceImpl.java:117-132 — updateDatasetFieldTags
+      calls deleteDatasetFieldInternalRelations(datasetFieldId) first
+      (unconditional DELETE filtered by origin = INTERNAL), then re-inserts
+      the full submitted set. NOT a diff.
+  - hop: 2.5
+    node: service:EnumValueServiceImpl
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      EnumValueServiceImpl.java:91-122 — BULK-REPLACE semantics: items
+      with id != null → bulkUpdate; items with id == null → bulkCreate;
+      rows whose id is NOT in idsToKeep → softDeleteExcept. Partial body
+      silently deletes others.
+  - hop: 3
+    node: repository reactive:ReactiveTagRepositoryImpl.deleteDatasetFieldInternalRelations
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      ReactiveTagRepositoryImpl.java:289-295 — DELETE filter
+      `.and(TAG_TO_DATASET_FIELD.ORIGIN.eq(TagOrigin.INTERNAL.toString()))`.
+      Replace-all only touches the INTERNAL channel; EXTERNAL_STATISTICS
+      rows survive.
+  - hop: 3.5
+    node: repository reactive:TermRelationsRepositoryImpl
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      TermRelationsRepositoryImpl.java:179 — DELETE filter
+      `.and(DATASET_FIELD_TO_TERM.IS_DESCRIPTION_LINK.isFalse())`.
+      Description-derived term-link rows survive the DELETE endpoint.
+  - hop: 4
+    node: repository reactive:ReactiveDatasetFieldRepositoryImpl
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      ReactiveDatasetFieldRepositoryImpl.java:73-80 — updateDescription
+      is UPDATE dataset_field SET internal_description = ? WHERE id = ?
+      with only empty-to-null normalisation. No Jsoup.clean, no
+      Encode.html, no length cap.
+terminal_side_effect:
+  side_effect_class: db-write
+  description: |-
+    Per-column annotation rows mutated: dataset_field.internal_description
+    (verbatim, no sanitization), dataset_field.internal_name,
+    tag_to_dataset_field (INTERNAL channel — delete-all-then-recreate),
+    dataset_field_enum_values (bulk-replace via softDeleteExcept),
+    dataset_field_to_term (manual rows only, description-link rows
+    survive). Activity events may fire (TERM_ASSIGNMENT_UPDATED for
+    description-derived term links — see SHB-017's analysis).
+  evidence: |-
+    DatasetFieldServiceImpl.java:117-132; EnumValueServiceImpl.java:91-122;
+    TermRelationsRepositoryImpl.java:179; ReactiveDatasetFieldRepositoryImpl.java:73-80.
+observed_vs_expected:
+  observed: |-
+    Operator edits per-column description in the Structure tab → body
+    is stored verbatim (HTML / markdown / scripts). Tags update on a
+    column with `tags: []` clears every INTERNAL tag silently.
+    EXTERNAL_STATISTICS tags (from collector ingestion) survive but
+    the operator may not realise the surviving rows belong to a
+    different channel. Enum-value POST with a partial body silently
+    deletes existing items (operationId says CREATE; behaviour is
+    BULK-REPLACE). DELETE-term on a column that has the term linked
+    via both manual-add AND description marker returns 204 but the
+    term remains. SecurityConstants wires the term-add endpoint to
+    DATA_ENTITY_ADD_TERM (Data Entity scope) instead of the documented
+    DATASET_FIELD_ADD_TERM (field scope) — anyone with the entity-scope
+    permission can link terms to any field of any entity they hold the
+    permission on. Spec declares 201 for the three PUTs; controller
+    returns 200.
+  expected: |-
+    Description is sanitized at write time (or render-time defence is
+    documented and tested). Tag update is a diff (current tags ∪
+    submitted tags, removals are explicit). Enum-value POST is
+    truly create-only OR the operationId is renamed to
+    replaceEnumValues. DELETE-term removes all rows OR returns 409
+    Conflict explaining the description-link survivor. Permission
+    gates match the docs (DATASET_FIELD_ADD_TERM gates the field-scope
+    endpoint; DATA_ENTITY_ALERT_RESOLVE gates alert PUT). Response
+    code 201 matches the spec for resource-creating PUTs.
+  facets:
+    - drift_class: security_constants_wiring_bug_term_endpoint_gated_by_data_entity_permission
+      description: |-
+        SecurityConstants.java:299 gates POST /api/datasetfields/{id}/terms
+        with DATA_ENTITY_ADD_TERM (DataEntity-scope) instead of the
+        documented DATASET_FIELD_ADD_TERM (field-scope). Anyone with the
+        entity-scope permission can link terms to ANY field of any
+        entity they hold the permission on.
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/util/SecurityConstants.java:299"
+        - "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions (verified 2026-05-25 status 200) — DATASET_FIELD_ADD_TERM documented as field-scope"
+      severity: HIGH
+      seeded_from: SHB-010
+    - drift_class: security_constants_wiring_bug_alert_status_gated_by_dataset_field_permission
+      description: |-
+        SecurityConstants.java:295-296 gates PUT /api/alerts/{id}/status
+        with DATASET_FIELD_ADD_TERM. Copy-paste bug. Anyone with the
+        field-scope term-add permission can resolve alerts on any
+        entity.
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/util/SecurityConstants.java:295-296"
+      severity: HIGH
+      seeded_from: SHB-010
+    - drift_class: update_dataset_field_tags_delete_all_then_recreate_not_diff
+      description: |-
+        updateDatasetFieldTags calls deleteDatasetFieldInternalRelations
+        first (unconditional DELETE filtered by origin = INTERNAL),
+        then re-inserts the submitted set. Submitting `tags: []`
+        clears every INTERNAL tag silently. NOT a diff (unlike
+        TagServiceImpl.updateRelationsWithDataEntity).
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/DatasetFieldServiceImpl.java:117-132"
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveTagRepositoryImpl.java:289-295"
+      severity: HIGH
+      seeded_from: SHB-010
+    - drift_class: create_enum_value_named_create_implemented_bulk_replace
+      description: |-
+        operationId createEnumValue says CREATE (singular); the
+        implementation is bulk-replace via softDeleteExcept. Items not
+        in the request body are soft-deleted. Spec schema name
+        BulkEnumValueFormData is honest; operationId hides it.
+        Same shape as F-013's silent-overwrite class (batch-ZG cross-link).
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/EnumValueServiceImpl.java:91-122"
+        - "odd-platform-specification/openapi.yaml:2536-2554"
+      severity: HIGH
+      seeded_from: SHB-010
+    - drift_class: delete_term_from_dataset_field_filters_description_link_isfalse_survives
+      description: |-
+        DELETE filter `.and(DATASET_FIELD_TO_TERM.IS_DESCRIPTION_LINK.isFalse())`.
+        Description-derived term-link rows survive. Operator clicks
+        DELETE expecting "the term is gone" → 204 No Content → the term
+        remains visible because the description-link row was untouched.
+        Endpoint description does not warn.
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/TermRelationsRepositoryImpl.java:179"
+      severity: MEDIUM
+      seeded_from: SHB-010
+    - drift_class: description_verbatim_storage_no_sanitization_xss_class_at_per_column_surface
+      description: |-
+        updateDescription is UPDATE dataset_field SET internal_description = ?.
+        No Jsoup.clean, no Encode.html, no length cap. The F-004
+        XSS-class fingerprint at the per-column variant. Defence in
+        depth lives only at UI render.
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDatasetFieldRepositoryImpl.java:73-80"
+      severity: HIGH
+      seeded_from: SHB-010
+    - drift_class: jooq_unset_origin_insert_relies_on_db_default
+      description: |-
+        TagToDatasetFieldPojo is constructed without .setOrigin(...) —
+        the schema column is NOT NULL DEFAULT 'INTERNAL'. Whether jOOQ's
+        newRecord(table, pojo) omits the field (default applies) or
+        emits explicit NULL (constraint violation) is unverified by any
+        test. A jOOQ version bump could change null-field-handling
+        silently.
+      evidence:
+        - "DatasetFieldServiceImpl.java — getUpdatedRelations does not set origin"
+        - "V0_0_82__add_tag_to_dataset_field.sql:12 — origin varchar NOT NULL DEFAULT 'INTERNAL'"
+      severity: MEDIUM
+      seeded_from: SHB-010
+    - drift_class: http_200_vs_spec_201_drift_on_three_put_endpoints
+      description: |-
+        Spec declares 201 for the three PUT endpoints; controller
+        returns 200 via ResponseEntity::ok. Generated SDKs branching on
+        201 mishandle the response.
+      evidence:
+        - "odd-platform-specification/openapi.yaml:2465 2488 2511"
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/DatasetFieldController.java:35-103"
+      severity: LOW
+      seeded_from: SHB-010
+    - drift_class: bulk_replace_enum_value_no_concurrency_control_last_writer_wins
+      description: |-
+        No optimistic-lock, no advisory lock at the dataset_field_id
+        level, no SERIALIZABLE isolation. Two concurrent POSTs to the
+        same field's enum values produce silent last-write-wins.
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/EnumValueServiceImpl.java:91-122"
+      severity: MEDIUM
+      seeded_from: SHB-010
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+      - "Assert createEnumValue with partial body soft-deletes omitted items (locks bulk-replace)."
+      - "Assert updateDatasetFieldTags with empty array clears INTERNAL tags."
+      - "Assert delete-term filter does NOT touch description-link rows."
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+      - "Two SecurityConstants wiring bugs — controller-level WebTestClient probes (P-153 in SHB-010)."
+      - "BULK-REPLACE enum-values + concurrency (P-154)."
+      - "Description-link survives DELETE (P-155)."
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+      - "Replace-all tags on a column with 100+ tags: latency profile."
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+      - "User with DATA_ENTITY_ADD_TERM but NOT DATASET_FIELD_ADD_TERM can link terms (bug 1)"
+      - "User with DATASET_FIELD_ADD_TERM but NOT DATA_ENTITY_ALERT_RESOLVE can resolve alerts (bug 2)"
+      - "XSS payload in description survives storage and renders in client."
+control_summary: |-
+  0/4 cells COVERED. The per-column annotation surface has NINE
+  named drift facets across four behaviour clusters (security wiring,
+  silent-data-loss, XSS-class, spec drift). The TWO SecurityConstants
+  wiring bugs are HIGH-severity operator-policy bypasses; the
+  BULK-REPLACE enum-values bug and the delete-all-then-recreate tags
+  bug are data-loss-shaped. DatasetFieldController has ZERO direct
+  HTTP tests; the controller-class sidecar already catalogues six
+  HIGH-severity findings.
+related_refactoring_scopes: []
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+  - dataset-field-annotation
+  - parent-data-entity-scoped-permission
+  - silent-bulk-replace-class
+  - xss-verbatim-storage-class
+  - security-constants-wiring-drift
+related_features:
+  - F-004  # Entity Description Editing — PER-ENTITY twin (same XSS-class verbatim storage fingerprint)
+  - F-013  # Custom Metadata Field Editing — silent UPDATE-not-UPSERT class (sibling pattern)
+  - F-018  # Manual Object Tagging — Tag service tier with three-channel ownership; this thread describes the per-column tag write path
+  - F-002  # Term-to-Entity Linkage — the term-related endpoints + the SecurityConstants:299 misroute belong to the term-linkage feature; cross-pillar (P-06)
+related_pillar_features:
+  - P-06:F-001  # Term-to-Entity Linkage (cross-pillar — the SecurityConstants:299 bug ALSO concerns Glossary pillar)
+proposed_local_probes:
+  - id: P-shb-010-001
+    description: |-
+      Local stack: create a user with ONLY DATA_ENTITY_ADD_TERM (no
+      DATASET_FIELD_ADD_TERM). Attempt POST
+      /api/datasetfields/{id}/terms. Assert 200 (locks bug 1), 403
+      after fix.
+    type: security
+    cost: low
+  - id: P-shb-010-002
+    description: |-
+      Local stack: create a user with ONLY DATASET_FIELD_ADD_TERM.
+      Attempt PUT /api/alerts/{id}/status. Assert 200 (locks bug 2),
+      403 after fix.
+    type: security
+    cost: low
+  - id: P-shb-010-003
+    description: |-
+      Local stack: create field with 3 enum values; POST with
+      `items: [{name: 'newOnly'}]`; assert other 2 are soft-deleted.
+    type: integration
+    cost: low
+  - id: P-shb-010-004
+    description: |-
+      Local stack: create description with `<script>alert(1)</script>`
+      via PUT; GET the field; assert response body carries the script
+      verbatim (locks XSS-class).
+    type: security
+    cost: low
+ui_unverified: true  # the per-column edit panel UI is implicit; exact UI component (Structure tab field-editor) not yet enriched
+maintainer_curated: false

@@ -1,6 +1,6 @@
 # SHB-149 — All six locale JSON bundles ship in the main JS chunk regardless of which the user picks
 
-**Category**: open
+**Category**: merged
 **Severity**: LOW
 
 ## Hypothesis
@@ -29,5 +29,9 @@ Every browser session that loads the ODD Platform SPA — including English-only
 ## Links
 
 - cluster_with: [F-043, SHB-147, SHB-148]
-- merged_into: (open)
+- merged_into: F-043
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — F-043 already carries the `no_code_splitting_per_locale_all_six_bundles_ship_together` facet (severity LOW) which captures verbatim what this thread proposes. No new drift class to add. F-043: Multilingual UI — drift_class: i18n_no_code_splitting_per_locale_total_bundle_30_to_50kb_gzipped (existing).

@@ -1,6 +1,6 @@
 # SHB-007 — Dataset Schema Revision History (per-version structure + diff + cross-dataset version-id leak)
 
-**Category**: clustering
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -41,5 +41,21 @@ Operators see a per-dataset "Revision History" surface (Structure tab + Compare 
 ## Links
 
 - cluster_with: []
-- merged_into: (open)
+- merged_into: F-045
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduated — strong evidence (8
+  refs spanning controller/repo/service/migration/UI/spec/doc-side
+  axes + verified live doc); clear product surface (Structure tab +
+  Compare tab on the data entity detail page) with TWO HIGH-severity
+  defects sharing the same root cause (path component is
+  documentation-only). Pillar anchor: P-01 (Dataset schema diff is
+  listed in system-mission.md P-01 sub-features). Minted F-045 at
+  `lineage/odd-platform/feature-flows/detail/F-045.yaml`
+  (P-01:F-009 Dataset Schema Revision History) with 7 drift facets
+  + 3 proposed local probes. UI hop is implicit
+  (`ui_unverified: true` marked on the feature) — the four endpoints
+  are the wire-level entry-point set; the Structure tab + Compare
+  tab UI components are not yet enriched as sidecars.

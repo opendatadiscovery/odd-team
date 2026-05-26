@@ -1,6 +1,6 @@
 # SHB-172 — AppErrorPage callers using react-query cast a different error type, producing undefined behaviour on missing fields
 
-**Category**: open
+**Category**: merged
 **Severity**: LOW
 
 ## Hypothesis
@@ -32,5 +32,9 @@ Two Integration callers (`Integration.tsx`, `IntegrationPreviewList.tsx`) use re
 ## Links
 
 - cluster_with: [F-033, F-042]
-- merged_into: (open)
+- merged_into: F-042
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — F-042 already carries the `react_query_error_cast_to_redux_errorstate_undefined_behaviour_at_runtime` facet citing both Integration.tsx:33 and IntegrationPreviewList.tsx:70. No new drift class needed. F-042: Page-level UI Error Display — drift_class: type_cast_hides_react_query_vs_redux_errorstate_mismatch (existing).

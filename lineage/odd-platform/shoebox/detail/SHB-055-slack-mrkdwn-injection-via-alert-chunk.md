@@ -38,3 +38,7 @@
 - cluster_with: [F-007, F-009, SHB-053, SHB-054]
 - merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — into F-009 WAL-driven Notification Delivery. F-009 batch Y facet 11 (`slack_mrkdwn_injection_via_alert_chunk_description_at_channel_at_here_broadcast`) is the load-bearing primary-source for SHB-055's hypothesis at SlackMessageGenerator.java:77 + MrkdwnUtils.java:1-14 + AlertActionResolverImpl.java:162. The cross-feature compound with F-007 (forge-and-display) is already captured via F-007 batch Y note 1 + F-009 batch Y note 1 + the F-007 → F-009 → F-004 probe-intersection (F-009 batch Y P-W-3). The Slack mrkdwn-injection is also enumerated as F-004's 6th XSS surface in F-004 batch Y. Thread marked merged. F-009: WAL-driven outbound alert notification fan-out — drift_class facets already cover the full SHB-055 hypothesis.

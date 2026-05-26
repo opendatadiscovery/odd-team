@@ -1,0 +1,182 @@
+feature_id: F-074
+pillar_id: P-08
+pillar_anchored_id: P-08:F-014
+pillar_anchored_feature_name: Management-Tab Read-Collaborative Posture
+feature_name: |-
+  Management directory list endpoints are universally ungated reads — every
+  Management tab (Owners / Datasources / Collectors / Titles / Namespaces /
+  Owner-Association activity / IdP-providers list) returns its full
+  directory to any authenticated user, and to any anonymous caller under
+  `auth.type=DISABLED`. The implicit ADR-CANDIDATE-003 "read-collaborative
+  posture" is operator-invisible: the live `/permissions` page names no
+  `*_READ` permissions and is silent on the cross-Management-tab read
+  posture; least-privilege expectations (withholding `*_CREATE` should
+  restrict reads) silently fail.
+seeded_from: SHB-085
+seeded_at: 2026-05-26
+discovered_from_entry_point: |-
+  controller-class chain (read endpoints on seven Management controllers):
+   - GET /api/owners (OwnerController#list)
+   - GET /api/datasources (DataSourceController#list)
+   - GET /api/collectors (CollectorController#list — masked-token last-6-chars in response)
+   - GET /api/titles (TitleController#list)
+   - GET /api/namespaces (NamespaceController#list)
+   - GET /api/owner_association_request/activity (OwnerAssociationRequestController#activityLog)
+   - GET /api/owners/providers (OwnerAssociationRequestController#providersList)
+  All seven share the identical security posture: NO entry in
+  SecurityConstants.SECURITY_RULES → falls through to the catch-all
+  `pathMatchers("/**").authenticated()` (AuthorizationCustomizer:29-30);
+  under DISABLED the SecurityWebFilterChain bypasses (DisabledAuthSecurityConfiguration:13-18 permitAll).
+primary_subject:
+  - "odd-platform java SecurityConstants config-prefix:auth.security_rules"
+  - "odd-platform java OwnerController controller-method:list"
+  - "odd-platform java CollectorController controller-method:list"
+  - "odd-platform java DataSourceController controller-method:list"
+  - "odd-platform java TitleController controller-method:list"
+  - "odd-platform java NamespaceController controller-method:list"
+  - "odd-platform java OwnerAssociationRequestController controller-method:activityLog"
+contributing_nodes:
+  - "odd-platform java SecurityConstants:143-147"
+  - "odd-platform java SecurityConstants:116-126"
+  - "odd-platform java SecurityConstants:127-137"
+  - "odd-platform java SecurityConstants:98-108"
+  - "odd-platform java SecurityConstants:148-162"
+  - "odd-platform java AuthorizationCustomizer:29-30"
+  - "odd-platform java DisabledAuthSecurityConfiguration:13-18"
+  - "odd-platform java TitleController:14-24"
+  - "odd-platform java TokenMapper:15-18"
+chain:
+  - hop: 1
+    node: "ui_route:any Management tab (Owners / Datasources / Collectors / Titles / Namespaces / Associations)"
+    sidecar: unresolved
+    evidence: "system-mission.md:226 P-08 sub-feature seed (Management tab list)"
+    multiplicity_per_trigger: 1
+  - hop: 2
+    node: "rest:GET on the chosen tab's list endpoint"
+    sidecar: "Multiple — OwnerController / DataSourceController / etc. sidecars"
+    evidence: "SecurityConstants.java:143-162 (NO GET rule on any Management list path)"
+    multiplicity_per_trigger: 1
+  - hop: 3
+    node: "AuthorizationCustomizer catch-all"
+    sidecar: unresolved
+    evidence: "AuthorizationCustomizer.java:29-30 (pathMatchers(\"/**\").authenticated())"
+    multiplicity_per_trigger: 1
+  - hop: 4
+    node: "service-tier list path (ungated)"
+    sidecar: "various Management service impls"
+    evidence: "no @PreAuthorize on any of the 7 list methods"
+    multiplicity_per_trigger: 1
+terminal_side_effect:
+  side_effect_class: page-render
+  description: |-
+    Full Management directory (Owner / Datasource / Collector / Title /
+    Namespace lists; OAR activity log; IdP provider list) rendered into
+    HTTP 200 response body — to any authenticated user (and any
+    anonymous caller under DISABLED). Collector list includes masked
+    token last-6-chars (TokenMapper.java:15-18).
+  evidence: "TokenMapper.java:15-18 (last-6-chars) + 7 controller list methods"
+observed_vs_expected:
+  facets:
+    - drift_class: management_read_collaborative_posture_undocumented_across_seven_surfaces
+      description: |-
+        Implicit ADR-CANDIDATE-003 "read-collaborative posture" applies to
+        all seven Management read surfaces uniformly — yet the live
+        `/permissions` doc names no `*_READ` permissions, and the
+        `/features/management` page does not warn operators that
+        withholding `*_CREATE` does not restrict reads. Operator-expectation
+        mismatch is the LOAD-BEARING drift.
+      evidence:
+        - "SecurityConstants.java:98-162 (5 *_CREATE/UPDATE/DELETE blocks; NO *_READ; NO GET-rule)"
+        - "AuthorizationCustomizer.java:29-30 (catch-all to authenticated())"
+    - drift_class: collector_masked_token_last_six_chars_anonymous_under_disabled
+      description: |-
+        Under `auth.type=DISABLED`, the Collector list endpoint returns
+        the last-6-chars of every collector token to any anonymous
+        caller. Narrows brute-force search space for the non-CSPRNG token
+        entropy class (cross-link F-020 / SHB-091).
+      evidence:
+        - "TokenMapper.java:15-18 (last-6-chars rendering)"
+        - "DisabledAuthSecurityConfiguration.java:13-18 (permitAll under DISABLED)"
+    - drift_class: idp_provider_topology_fingerprintable_anonymous_under_disabled
+      description: |-
+        GET /api/owners/providers enumerates the deployment's auth
+        provider topology (LOGIN_FORM / OAUTH2_GOOGLE / OAUTH2_GITHUB / LDAP).
+        Reachable by any authenticated user (and anonymous under
+        DISABLED). A compromised low-privilege user fingerprints the
+        deployment for phishing campaign tailoring.
+      evidence:
+        - "OwnerAssociationRequestController.java:81-85"
+        - "SecurityConstants.java:148-162 (no rule for OAR controller)"
+    - drift_class: owner_association_activity_log_full_forensic_dataset_anonymous_reachable
+      description: |-
+        GET /api/owner_association_request/activity exposes the historical
+        "who approved Alice's binding to Owner-X at T" record set — a
+        richer forensic dataset than the live request list — to any
+        authenticated session.
+      evidence:
+        - "OwnerAssociationRequestController.java:47-53"
+        - "SecurityConstants.java:148-162 (no SecurityRule)"
+    - drift_class: title_directory_reveals_policy_vocabulary_for_reverse_engineering
+      description: |-
+        GET /api/titles enumerates every role-label string operators have
+        ever attached to ownership records. Combined with Policy conditions
+        `dataEntity:owner:title == 'X'`, an attacker can reverse-engineer
+        the deployment's policy vocabulary.
+      evidence:
+        - "TitleController.java:14-24"
+        - "system-mission.md:234 (Title directory is read-collaborative)"
+    - drift_class: owner_directory_pii_disclosure_surface
+      description: |-
+        Owner.name typically carries PII (emails, employee handles,
+        pseudonymous research identifiers). On public-facing deployments
+        hosting personally-named owners, the ungated GET is an
+        information-disclosure surface.
+      evidence:
+        - "SecurityConstants.java:143-147 (no GET-rule)"
+        - "F-019 frontmatter (Owner Lifecycle — PII context)"
+    - drift_class: openapi_403_response_absent_implicit_design_intent_under_documented
+      description: |-
+        The OpenAPI spec for these 7 endpoints declares only 200 and 500
+        responses — NOT 403 — implicitly confirming the design intent
+        that authenticated reads are not gated. The implicit-design-intent
+        encoding is invisible to operators reading either the live spec
+        page or the live `/permissions` page.
+      evidence:
+        - "openapi.yaml — no 403 response on any GET in this set"
+        - "no DOC-NNN follow-up exists for this implicit-design encoding"
+test_matrix:
+  unit: GAP
+  integration: GAP
+  performance: GAP
+  security: GAP
+related_refactoring_scopes:
+  - REFACTOR-024
+  - REFACTOR-203
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+  - Management-tab-Read-Collaborative-Posture
+  - ADR-CANDIDATE-003
+related_features:
+  - F-019  # Owner Lifecycle — adjacent (read posture on the Owner directory)
+  - F-020  # Collector Lifecycle — adjacent (read posture on the Collector list + masked tokens)
+  - F-028  # Namespace Lifecycle — adjacent
+  - F-031  # DataSource Lifecycle — adjacent (already carries ungated_list_read_no_security_rule)
+  - F-036  # Title Directory — adjacent
+  - F-041  # Application Toolbar — adjacent (UI shell renders the tabs)
+related_retrospectives: []
+related_probes: []
+probe_verifications: []
+status: active
+maintainer_curated: false
+batch_origin: shoebox_step_0_2026_05_26
+created_in_batch: shoebox_triage_slice_E_2026_05_26
+notes: |-
+  Graduated from SHB-085. Pillar P-08 chosen because the seven read
+  endpoints are all Management surfaces; the feature anchors the
+  cross-cutting POSTURE (not a per-controller bug). The implicit ADR
+  encoding via OpenAPI's missing-403 response is the operator-discoverability
+  failure surface — that is the LOAD-BEARING drift, not the design
+  intent itself.
+  Cross-pillar to P-09 (read posture is a Security-property class) — see
+  related_features for the operative cross-links.

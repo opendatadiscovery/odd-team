@@ -39,3 +39,7 @@ Operators integrating ODD's generic webhook channel with incident-management pla
 - cluster_with: [F-007, F-009, SHB-055]
 - merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — into F-009 WAL-driven Notification Delivery. F-009 batch Y facet 12 (`webhook_no_hmac_signature_operator_receiver_cannot_verify_origin`), facet 13 (`webhook_cross_tenant_exposure_one_url_receives_every_owner`), facet 14 (`webhook_no_content_type_header_strict_receivers_reject_415`), facet 15 (`webhook_200_only_accept_2xx_success_codes_treated_as_failure`), facet 16 (`webhook_no_custom_auth_header_config_knob_operator_must_run_gateway`) — all primary-source at WebhookNotificationSender.java:18-23 + NotificationConfiguration.java:88-99 + AbstractNotificationSender.java:24-29. The five-facet cluster is precisely SHB-056's hypothesis "what does an operator need to safely integrate ODD's webhook with an external receiver (HMAC + custom headers + Content-Type + idempotency key + 2xx-accept)." Thread marked merged. F-009: WAL-driven outbound alert notification fan-out — drift_class facets already cover the full SHB-056 hypothesis.

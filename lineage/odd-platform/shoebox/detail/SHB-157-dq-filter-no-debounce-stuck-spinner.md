@@ -1,6 +1,6 @@
 # SHB-157 — DQ Dashboard filter autocompletes have no debounce + stuck-spinner-on-fail; operators see request bursts and broken loading states
 
-**Category**: open
+**Category**: clustering
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -30,6 +30,10 @@ When operators interact with the DQ Dashboard's 10 filter autocompletes (5 dimen
 
 ## Links
 
-- cluster_with: [F-032, SHB-159]
+- cluster_with: [F-032, SHB-156, SHB-158, SHB-159, SHB-170]
 - merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: cluster — F-032 (cross-pillar P-04) — defer F-032 enrichment to a P-04-pillar batch. Cluster_with SHB-156 (label/SQL drift) + SHB-158 (per-chip refetch) + SHB-159 (namespace 30-cap) + SHB-170 (autocomplete stuck spinner on fail). The cluster spans 2 axes: DQ filter autocomplete behaviour (SHB-156/157/158) AND platform-wide autocomplete pattern (SHB-159/170). Strong graduation candidate for either "DQ Dashboard Filter UX" (P-04) or "Autocomplete UX class" (P-08 cross-cutting) next batch.

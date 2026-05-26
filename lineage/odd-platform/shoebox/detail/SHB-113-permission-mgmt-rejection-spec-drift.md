@@ -1,6 +1,6 @@
 # SHB-113 — `PermissionResourceType.MANAGEMENT` is valid in spec but rejected at runtime
 
-**Category**: open
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -37,5 +37,9 @@ The OpenAPI spec at `components.yaml:3381-3387` declares `PermissionResourceType
 ## Links
 
 - cluster_with: [F-006, F-026]
-- merged_into: (open)
+- merged_into: F-090
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduated — genuinely new feature shape. The READ-SIDE complement to F-006's WRITE-side RBAC policy lifecycle. Substrate evidence spans openapi.yaml + components.yaml + PermissionServiceImpl + PermissionService interface + IdentityServiceImpl + PolicyTypeDto + ControllerAdvice + UI selectors + live docs — 5+ axes. F-029 (Platform Public API Contract, P-11) is the cross-pillar umbrella for spec-vs-impl drift in general; this feature instantiates the pattern for the PermissionResourceType enum specifically. Minted F-090 at lineage/odd-platform/feature-flows/detail/F-090.yaml (P-09:F-011 Permission Read Surface — Contextual vs Non-Contextual Split). FLAGGED CROSS-PILLAR: a maintainer triage decision is needed on whether to enrich F-029 (P-11) with this finding too — Slice F's contract prevents me from modifying cross-pillar F-029 directly. Cross-link with F-006 (write-side), F-026 (Lookup Tables surface), F-085 (whoami).

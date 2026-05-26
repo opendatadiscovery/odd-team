@@ -1,6 +1,6 @@
 # SHB-104 — GitHub login rename silently orphans Owner association
 
-**Category**: open
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -35,5 +35,9 @@ Operators using GitHub OAuth see a **silent loss of Owner-link** when a user ren
 ## Links
 
 - cluster_with: [F-011]
-- merged_into: (open — should be an ENRICHER for F-011)
+- merged_into: F-011
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merged — explicit ENRICHER call-out in thread's Notes block; substrate evidence is operator-narrative + threat-model concretisation, not new file:line beyond what F-011 batches O/N already carry. Appended a 2026-05-26-shoebox-F batch extension to F-011 with three new drift facets — `github_login_escrow_recycle_new_user_inherits_orphaned_owner_link_security_boundary`, `oauth2_registration_id_yaml_key_rename_orphans_user_owner_mapping_provider_column`, `mutable_username_attribute_family_orphan_by_rename_open_to_any_oidc_provider`. STRENGTHENS=3 against existing F-011 facets; SUPERSEDES=0; CONFLICTS=0.

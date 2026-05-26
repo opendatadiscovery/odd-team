@@ -50,3 +50,7 @@ The Discussions sub-feature exposes a server-side 302 redirect at `GET /api/mess
 - cluster_with: [F-038]
 - merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — into F-038 Data Collaboration. F-038's drift_class_summary already enumerates all three SHB-062 facets: `open_redirect_class_slack_permalink_trusted_verbatim`, `openapi_301_vs_impl_302_redirect_status_code_drift`, `non_uuid_v1_message_id_returns_200_not_404_silent_conflation`. The fourth concern (no per-message authorization = message-existence oracle for any authenticated user) is structurally inside `rbac_ungated_three_endpoints_pillar_catch_all_only`. F-038 batch ZF primary-source at DataCollaborationController.java:41-49 + openapi.yaml:1788-1789 + ReactiveMessageRepositoryImpl.java:171-185 covers the full SHB-062 hypothesis. Probes P-144 + P-145 already authored. Thread marked merged. F-038: Data Collaboration — drift_class facets already cover the full SHB-062 hypothesis.

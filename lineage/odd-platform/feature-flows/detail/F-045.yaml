@@ -1,0 +1,270 @@
+feature_id: F-045
+pillar_id: P-01
+pillar_anchored_id: P-01:F-009
+pillar_anchored_feature_name: Dataset Schema Revision History
+feature_name: |-
+  Dataset Schema Revision History — per-dataset Structure tab + diff
+  surface against `dataset_version` rows monotonically auto-incremented
+  by the ingestion pipeline, with HIGH-severity cross-dataset version-id
+  leak (path component is documentation-only) + asymmetric error model
+  on diff endpoint
+seeded_from: SHB-007
+seeded_at: 2026-05-26
+status: active
+primary_drift_class: cross_dataset_version_id_leak_path_component_is_documentation_only
+drift_class_summary:
+  - cross_dataset_version_id_leak_path_component_is_documentation_only
+  - cross_dataset_diff_returns_200_with_nonsensical_diff_body
+  - latest_means_max_version_not_max_created_at_silent_divergence_on_replay
+  - diff_500_vs_400_asymmetric_error_model
+  - no_securityrule_for_structure_endpoints_falls_through_to_authenticated
+  - diff_in_memory_load_no_pagination_no_row_count_guard
+  - relationships_page_overstates_role_based_visibility
+discovered_from_entry_point: |-
+  rest:GET /api/datasets/{data_entity_id}/structure/{version_id}
+  rest:GET /api/datasets/{data_entity_id}/structure (latest variant)
+  rest:GET /api/datasets/{data_entity_id}/structure/diff
+  rest:GET /api/datasets/{data_entity_id}/relationships
+  UI entry-point: per-dataset Structure tab + Compare tab on the data
+  entity detail page (DataEntityDetails → DataSetStructure component
+  family). The UI is implicit in the SHB evidence; the four endpoints
+  are the wire-level entry-point set.
+primary_subject:
+  - odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/DatasetController.java
+  - odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/DatasetVersionServiceImpl.java
+  - odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDatasetVersionRepositoryImpl.java
+  - odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/ingestion/processor/DatasetStructureIngestionRequestProcessor.java
+contributing_nodes:
+  - odd-platform java DataSetController controller-class:DataSetController
+  - odd-platform java service:DatasetVersionServiceImpl
+  - odd-platform java repository reactive repository:ReactiveDatasetVersionRepositoryImpl
+  - odd-platform java service ingestion:DatasetStructureIngestionRequestProcessor
+chain:
+  - hop: 1
+    node: rest controller-class:DataSetController
+    sidecar: odd-platform__java__DataSetController__controller-class__DataSetController.md
+    multiplicity_per_trigger: 1
+    evidence: |-
+      DatasetController.java:22-50 — four GET endpoints under
+      /api/datasets/{data_entity_id}/...: get-by-version-id, get-latest,
+      diff-two-versions, list-relationships. Path-component data_entity_id
+      is consumed by the controller and dropped before reaching SQL.
+  - hop: 2
+    node: service:DatasetVersionServiceImpl
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      DatasetVersionServiceImpl.java:69-71 — diff endpoint throws bare
+      RuntimeException("Query returned %s rows for diff request") when
+      one or both ids don't exist → ControllerAdvice maps to 500. The
+      identical-version-ids case gets a clean BadUserRequestException
+      → 400. Asymmetric error model.
+  - hop: 3
+    node: repository reactive:ReactiveDatasetVersionRepositoryImpl
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      ReactiveDatasetVersionRepositoryImpl.java:129 — by-id path filters
+      on DATASET_VERSION.ID.eq(datasetVersionId) ONLY. The data_entity_id
+      from the URL is never enforced.
+      Lines 147-157 — diff path uses DATASET_VERSION.ID.in(List.of(first, second))
+      — same issue, doubled.
+      Lines 160-217 — getLatestDatasetVersion computes max(VERSION) as
+      dsv_max via subquery, joins back. created_at exists but is not
+      referenced.
+  - hop: 4
+    node: service ingestion:DatasetStructureIngestionRequestProcessor
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      DatasetStructureIngestionRequestProcessor.java:171-178 — the
+      ingestion path increments `version.getVersion() + 1` as the
+      monotonic-version assumption. Works correctly under normal
+      ingestion; diverges silently under manual SQL fixup or replay.
+terminal_side_effect:
+  side_effect_class: page-render
+  description: |-
+    HTTP 200 response carrying the dataset's per-version structure
+    (field names, types, descriptions, tags, terms, lookup-table
+    definitions) — OR a structurally-valid diff body computing
+    CREATED/DELETED per field across two version IDs. Either response
+    can carry the schema of an UNRELATED dataset if the version-id
+    belongs elsewhere (the cross-dataset leak).
+  evidence: |-
+    DatasetController.java:22-50 — four endpoints return the structure;
+    ReactiveDatasetVersionRepositoryImpl.java:129/147 — no
+    DATASET_VERSION.DATASET_ODDRN predicate. The path component
+    creates the false impression of dataset scoping.
+observed_vs_expected:
+  observed: |-
+    GET /api/datasets/X/structure/V where V belongs to dataset Y returns
+    Y's full schema (field names + types + descriptions + tags + terms
+    + lookup-table definitions) with HTTP 200. GET .../diff?first=V1&second=V2
+    where V1 and V2 belong to different datasets returns 200 with a
+    nonsensical diff body (every field appears CREATED or DELETED
+    depending on which dataset's side it lives on). Missing version-ids
+    → 500 (bare RuntimeException). Identical version-ids → 400 (typed
+    BadUserRequestException). "Latest" returns max(version), not
+    max(created_at) — diverges silently after manual SQL fixup or
+    collector replay. No SecurityRule for /api/datasets/*/structure*
+    → falls through to .authenticated() catch-all; under
+    auth.type=DISABLED the leak is anonymous.
+  expected: |-
+    GET /api/datasets/X/structure/V returns 404 if V does not belong
+    to X (the path component IMPLIES dataset scoping). Diff across
+    different datasets returns 400 or 404. Missing version-ids
+    returns 404 (typed). Latest is the most-recently-created revision.
+    Schema reads are gated by per-dataset visibility (the
+    /features/data-modelling/relationships page CLAIMS "role-based
+    visibility").
+  facets:
+    - drift_class: cross_dataset_version_id_leak_path_component_is_documentation_only
+      description: |-
+        The SQL filters by version_id only; the path component
+        data_entity_id is consumed and dropped. Any authenticated user
+        (and any anonymous DISABLED-mode caller) reads any dataset's
+        schema by enumerating version_ids.
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDatasetVersionRepositoryImpl.java:129"
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/DatasetController.java:22-50"
+      severity: HIGH
+      seeded_from: SHB-007
+    - drift_class: cross_dataset_diff_returns_200_with_nonsensical_diff_body
+      description: |-
+        Same root cause as above — diff endpoint accepts version-ids
+        from different datasets and returns 200 with a structurally-valid
+        but semantically-nonsensical CREATED/DELETED diff. No
+        validation; no 400/404.
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDatasetVersionRepositoryImpl.java:147-157"
+      severity: HIGH
+      seeded_from: SHB-007
+    - drift_class: latest_means_max_version_not_max_created_at_silent_divergence_on_replay
+      description: |-
+        getLatestDatasetVersion orders by max(VERSION); created_at is
+        not referenced. Under normal ingestion (version monotonically
+        increases) the two are equivalent; under manual SQL fixup or
+        collector replay (operator re-ingests an old version) the two
+        diverge. Operators reading /structure (no version_id) get the
+        max-version row, which may be older than they expect.
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDatasetVersionRepositoryImpl.java:160-217"
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/ingestion/processor/DatasetStructureIngestionRequestProcessor.java:171-178"
+      severity: MEDIUM
+      seeded_from: SHB-007
+    - drift_class: diff_500_vs_400_asymmetric_error_model
+      description: |-
+        Missing version-ids → 500 (bare RuntimeException). Identical
+        version-ids → 400 (typed BadUserRequestException). Operators
+        can't distinguish "platform broken" from "wrong id".
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/DatasetVersionServiceImpl.java:69-71"
+      severity: MEDIUM
+      seeded_from: SHB-007
+    - drift_class: no_securityrule_for_structure_endpoints_falls_through_to_authenticated
+      description: |-
+        SecurityConstants.java grep for /api/datasets returns no
+        entry for the structure or relationships paths. Falls through
+        to the catch-all .authenticated(). Under auth.type=DISABLED
+        the leak is anonymous. Same read-collaborative-posture
+        fingerprint as REFACTOR-024 / REFACTOR-203.
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/util/SecurityConstants.java (no /api/datasets/* matches)"
+      severity: MEDIUM
+      seeded_from: SHB-007
+    - drift_class: diff_in_memory_load_no_pagination_no_row_count_guard
+      description: |-
+        DatasetVersionServiceImpl.java:156-180 loads two versions' full
+        field lists in-memory with recursive getParentOddrnChangedPojos.
+        No streaming, no pagination, no row-count guard. For
+        pathological nested schemas (10K+ fields) this is a
+        memory-bound operation.
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/DatasetVersionServiceImpl.java:156-180"
+      severity: LOW
+      seeded_from: SHB-007
+    - drift_class: relationships_page_overstates_role_based_visibility
+      description: |-
+        The live /features/data-modelling/relationships page CLAIMS
+        "role-based visibility"; the code implements no role filter
+        on /api/datasets/*/relationships. Docs overstate the security
+        model.
+      evidence:
+        - "https://docs.opendatadiscovery.org/features/data-modelling/relationships (per SHB-007 evidence)"
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/util/SecurityConstants.java (no role filter wired)"
+      severity: MEDIUM
+      seeded_from: SHB-007
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+      - "Assert by-id path returns 404 when version_id does not belong to data_entity_id."
+      - "Assert diff path returns 400/404 when version-ids belong to different datasets."
+      - "Assert missing version-ids on diff returns 404 (typed), not 500."
+  integration:
+    state: PARTIAL
+    covered:
+      - "DatasetVersionDiffTest covers happy-path diff (same-dataset, both versions exist)"
+    uncovered:
+      - "Cross-dataset version-id (currently 200, after fix 404)"
+      - "Non-existent version-id on diff (currently 500, after fix 404)"
+      - "Latest-after-manual-fixup ordering (currently max(version), after fix max(created_at))"
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+      - "Diff endpoint with 10K-field schemas — memory and latency profile"
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+      - "Cross-owner enumeration via /api/datasets/*/structure/* (currently anonymous under DISABLED, authenticated-only otherwise)"
+      - "Cross-dataset diff information disclosure"
+control_summary: |-
+  1/4 cells PARTIAL, 3/4 GAP. The schema-revision feature is
+  documented as one of the highest-leverage operator-facing surfaces
+  (the primary tool for downstream-impact analysis after a breaking
+  change), but the implementation has TWO HIGH-severity correctness
+  defects sharing the same root cause (path component is
+  documentation-only) AND a separate MEDIUM-severity
+  doc-overstates-security defect on the sibling relationships
+  endpoint. Fix is small (one .and() predicate per path); test
+  coverage is the bigger gap.
+related_refactoring_scopes: []
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+  - dataset-version
+  - schema-diff
+  - read-collaborative-posture
+related_features:
+  - F-001  # Detail-page view tracking — Structure tab is a SUB-TAB of the entity detail page that F-001 enters
+  - F-008  # Batch Ingestion — DatasetStructureIngestionRequestProcessor is the INGESTION-side processor that increments version
+  - F-018  # Manual Object Tagging — schema payload returned includes tags + terms (the leak is wider than just field metadata)
+related_pillar_features: []
+proposed_local_probes:
+  - id: P-shb-007-001
+    description: |-
+      Local stack: ingest two distinct datasets D1 and D2; for D2 capture
+      its version_id V2; GET /api/datasets/D1.id/structure/V2 — assert
+      200 today (locks the bug), 404 after fix.
+    type: security
+    cost: low
+  - id: P-shb-007-002
+    description: |-
+      Local stack: ingest two datasets; GET /api/datasets/D1.id/structure/diff?first=V1&second=V2
+      where V1 belongs to D1 and V2 belongs to D2 — assert 200 today
+      (locks the cross-dataset diff bug), 400 or 404 after fix.
+    type: security
+    cost: low
+  - id: P-shb-007-003
+    description: |-
+      Local stack: ingest a dataset normally (versions 1, 2, 3); then
+      INSERT a row directly with version=999 and created_at = now() - 1 year;
+      GET /api/datasets/{id}/structure — assert it returns version 999
+      (max(VERSION)) NOT version 3 (max(created_at)).
+    type: integration
+    cost: medium
+ui_unverified: true  # the Structure tab + Compare tab UI components are not explicitly enumerated in the chain above; verification deferred to UI-axis enrichment
+maintainer_curated: false

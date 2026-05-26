@@ -1,6 +1,6 @@
 # SHB-176 — Single-thread `@Scheduled` executor — four background jobs share ONE thread, undocumented
 
-**Category**: open
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -40,5 +40,9 @@ Operators running ODD assume their four `@Scheduled` background jobs (housekeepi
 ## Links
 
 - cluster_with: [F-010]
-- merged_into: (open)
+- merged_into: F-121
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduate — evidence rich (SchedulingConfiguration + 4 @Scheduled job files + application.yml absence + WebFetch docs silence). Minted F-121 (P-08:F-015 Scheduled-Job Executor Concurrency Contract). Cluster_with F-010 preserved as related cross-reference; not folded because the executor architecture is cross-cutting infrastructure (covers ALL four scheduled jobs), not housekeeping-specific.

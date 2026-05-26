@@ -1,6 +1,6 @@
 # SHB-168 — Description editor's Cancel button silently discards in-flight edits with no confirm prompt
 
-**Category**: open
+**Category**: clustering
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -30,6 +30,10 @@ When an operator has typed (or significantly modified) a data entity description
 
 ## Links
 
-- cluster_with: [F-004]
+- cluster_with: [F-004, SHB-166, SHB-167]
 - merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: cluster — F-004 is P-01 cross-pillar; defer to P-01-pillar batch. Cluster_with SHB-166 + SHB-167 for cohesive next-batch graduation. Also adjacent to SHB-161 (datasource form discards typed input on submit fail) — the discard-without-warning pattern is platform-wide; next batch may surface a cross-pillar "Form Discard UX" feature OR keep the description-editor-specific instance scoped.

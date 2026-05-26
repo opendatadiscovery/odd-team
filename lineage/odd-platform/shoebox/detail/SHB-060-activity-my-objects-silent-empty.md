@@ -38,3 +38,7 @@ Operators using ODD's Activity Feed see four view-mode tabs: All / My objects / 
 - cluster_with: [F-021, F-014, F-015, F-011]
 - merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduate — minted F-064 at lineage/odd-platform/feature-flows/detail/F-064.yaml (pillar P-07:F-007 "User-Owner Association Discoverability"). Evidence list spans TWO substrate axes (service tier + auth tier) PLUS the live-doc gap on activity-feed.md — sufficient for graduation per the 3-refs/2-axes threshold. The cross-feature framing (Activity My + Alerts My + future Owned My all share the same silent-empty chokepoint at AuthIdentityProviderImpl.fetchAssociatedOwner) is captured as F-064's `cross_feature_uniform_silent_empty_pattern_activity_alerts_my_objects_views` drift facet. Status flagged ui-incomplete per Rule 0b LSN-023 — the UI-dependent drift facets (silent-empty-vs-no-affordance, onboarding-workflow-gap) carry `ui_unverified: true` pending dedicated empty-state-component sidecar enrichment for Activity.tsx + Alerts.tsx. The pillar choice (P-07:F-007) reflects that the feature lives downstream of P-09's user_owner_mapping infrastructure but the operator-visible surface is the Active Platform Features pillar's read views.

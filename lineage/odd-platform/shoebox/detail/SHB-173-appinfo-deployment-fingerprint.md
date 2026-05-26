@@ -1,6 +1,6 @@
 # SHB-173 — `/api/appInfo` deployment fingerprint surface (auth-mode + projectVersion exposure)
 
-**Category**: open
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -38,5 +38,9 @@ Operators running the shipped-default `auth.type=DISABLED` deployment expose a n
 ## Links
 
 - cluster_with: [F-011, F-034]
-- merged_into: (open)
+- merged_into: F-119
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduate — strong evidence (5 file:line + WebFetched docs + cross-pillar P-09 anchor + clear product surface as deployment-fingerprint endpoint). Minted F-119 (P-09:F-007 Deployment-Info Introspection Surface) at lineage/odd-platform/feature-flows/detail/F-119.yaml. Cluster_with [F-011, F-034] preserved as related_features cross-reference.

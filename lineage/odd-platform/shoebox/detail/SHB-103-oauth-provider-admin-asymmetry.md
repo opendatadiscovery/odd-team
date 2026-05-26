@@ -1,6 +1,6 @@
 # SHB-103 — Per-provider admin-grant inconsistency across OAuth2 handlers
 
-**Category**: open
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -35,5 +35,9 @@ Operators configuring multiple OAuth2 IDPs (Google, GitHub, Cognito, Azure, ODD_
 ## Links
 
 - cluster_with: [F-011, F-034]
-- merged_into: (open)
+- merged_into: F-084
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduated — operator-observable matrix is genuinely new feature shape (5 providers × 5 admin-detection knobs); F-011 carries per-quirk facets but no F-NNN names the matrix as a coherent surface. Minted F-084 at lineage/odd-platform/feature-flows/detail/F-084.yaml (P-09:F-004 OAuth Provider Admin-Detection Matrix), cross-link with F-011 in both directions.

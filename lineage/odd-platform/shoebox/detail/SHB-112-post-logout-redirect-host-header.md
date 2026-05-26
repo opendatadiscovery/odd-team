@@ -1,6 +1,6 @@
 # SHB-112 — Post-logout redirect URI derived from inbound Host header (open-redirect surface)
 
-**Category**: open
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -37,5 +37,9 @@ Operators using OAuth2 logout flows (Cognito, Azure, Google, GitHub, ODD_IAM) se
 ## Links
 
 - cluster_with: []
-- merged_into: (open)
+- merged_into: F-089
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduated — genuinely new feature shape. Evidence spans 5 logout handlers (consistent platform-wide pattern) + UriUtils + application.yml absence of platform.base-url; substrate evidence verified by AzureLogoutSuccessHandler sidecar (F-011 batch O). F-011 batch O carries the Azure NPE finding (different facet of same handler); F-086 covers the token-revocation matrix (different facet of same logout flow); F-089 is the redirect-provenance surface — together the three features describe the full "what does logout actually do?" question. Minted F-089 at lineage/odd-platform/feature-flows/detail/F-089.yaml (P-09:F-010 Post-Logout Redirect Provenance). Cross-link with F-086 (revocation), F-011 (chokepoint), F-087 (session cookie posture).

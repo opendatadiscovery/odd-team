@@ -1,0 +1,158 @@
+feature_id: F-076
+pillar_id: P-08
+pillar_anchored_id: P-08:F-016
+pillar_anchored_feature_name: Cross-Management Cascade-on-Delete Protection Pattern
+feature_name: |-
+  Cross-Management cascade-on-delete protection pattern — Owner / Namespace
+  / DataSource (the three Management-tab parent rows whose delete paths
+  guard against orphaning referents) share a uniform architectural shape
+  AND a uniform defect: the existence-check + soft-delete pair is NOT
+  atomic with concurrent referent INSERTs. None of the three delete paths
+  acquires a row-level lock on the parent row, none uses a Postgres
+  advisory lock, and they run under READ COMMITTED isolation. Worse: the
+  Namespace path is not even `@ReactiveTransactional`, so the cascade-check
+  + soft-delete chain is non-atomic with itself.
+seeded_from: SHB-093
+seeded_at: 2026-05-26
+discovered_from_entry_point: |-
+  Three operator-triggered DELETE controller methods that share the
+  cascade-protection pattern:
+   - DELETE /api/owners/{id}      (OwnerController#delete)
+   - DELETE /api/namespaces/{id}  (NamespaceController#delete)
+   - DELETE /api/datasources/{id} (DataSourceController#delete)
+  Each: existence-checks-via-Mono.zip-then-soft-deletes the parent. All
+  three are operator-facing destructive verbs in the Management tabs.
+primary_subject:
+  - "odd-platform java OwnerServiceImpl service-method:delete"
+  - "odd-platform java NamespaceServiceImpl service-method:delete"
+  - "odd-platform java DataSourceServiceImpl service-method:delete"
+contributing_nodes:
+  - "odd-platform java OwnerServiceImpl:88-100"
+  - "odd-platform java NamespaceServiceImpl:73-90"
+  - "odd-platform java DataSourceServiceImpl:85-96"
+  - "odd-platform java ReactiveAbstractSoftDeleteCRUDRepository:50-59"
+chain:
+  - hop: 1
+    node: "ui_route:operator clicks Delete on Owner/Namespace/Datasource list row"
+    sidecar: unresolved
+    evidence: "F-019/F-028/F-031 batch-Q UI surfaces"
+    multiplicity_per_trigger: 1
+  - hop: 2
+    node: "rest:DELETE /api/{owners|namespaces|datasources}/{id}"
+    sidecar: "Multiple controller sidecars"
+    evidence: "F-019/F-028/F-031 chain hops"
+    multiplicity_per_trigger: 1
+  - hop: 3
+    node: "service:delete (the cascade-check chain)"
+    sidecar: "OwnerServiceImpl / NamespaceServiceImpl / DataSourceServiceImpl"
+    evidence: "OwnerServiceImpl.java:88-100 + NamespaceServiceImpl.java:73-90 + DataSourceServiceImpl.java:85-96"
+    multiplicity_per_trigger: 1
+  - hop: 4
+    node: "repository.delete (soft-delete UPDATE)"
+    sidecar: "ReactiveAbstractSoftDeleteCRUDRepository:50-59"
+    evidence: "UPDATE parent SET deleted_at = NOW() WHERE id = ? AND deleted_at IS NULL"
+    multiplicity_per_trigger: 1
+terminal_side_effect:
+  side_effect_class: db-write
+  description: |-
+    UPDATE on parent row sets deleted_at = NOW(). In the race window
+    between the existence-check SELECT(s) and the parent UPDATE, a
+    concurrent INSERT into a referent table (ownership / data_entity_to_namespace
+    / data_entity-by-datasource_id) can succeed, leaving an orphan referent
+    row pointing at a now-soft-deleted parent.
+  evidence: "ReactiveAbstractSoftDeleteCRUDRepository:50-59 + cascade-check call patterns"
+observed_vs_expected:
+  facets:
+    - drift_class: cascade_check_toctou_race_window_three_management_surfaces_uniform
+      description: |-
+        All three delete paths use `Mono.zip` of N existence predicates,
+        then `.filter(!exists).switchIfEmpty(CascadeDeleteException)`, then
+        `repository.delete(id)`. None acquires a parent-row lock; none
+        uses advisory locks; READ COMMITTED is the default. Race window
+        bounded by 1-4 EXISTS queries — narrow but observable under
+        sustained admin load + concurrent ingestion.
+      evidence:
+        - "OwnerServiceImpl.java:88-100 (3-leg Mono.zip)"
+        - "NamespaceServiceImpl.java:73-90 (4-leg Mono.zip)"
+        - "DataSourceServiceImpl.java:85-96 (1-leg check)"
+    - drift_class: namespace_delete_not_reactive_transactional_chain_non_atomic_with_itself
+      description: |-
+        NamespaceServiceImpl.delete has no `@ReactiveTransactional` (per
+        NamespaceController sidecar bugs[5]) — the cascade-check + soft-delete
+        chain is non-atomic with itself. Even SINGLE-THREADED, a partial
+        failure (network blip between EXISTS predicates and the
+        soft-delete UPDATE) leaves the namespace as `deleted_at IS NULL`
+        while the operator sees a successful response. Worst of the three
+        — Owner + DataSource at least have a transaction boundary.
+      evidence:
+        - "NamespaceServiceImpl.java:73-90 (no @ReactiveTransactional)"
+        - "system-mission.md:241 (Namespaces tab — Management-facing operator surface)"
+    - drift_class: orphan_referent_rows_pass_fk_at_insert_but_point_at_soft_deleted_parent
+      description: |-
+        Consequence of the race: orphan rows that satisfy FK checks at
+        insert time but point at a parent whose `deleted_at` is now non-NULL.
+        Subsequent read-side soft-delete filters HIDE the orphan from list
+        endpoints, but a direct by-id read (where `getDto` doesn't filter on
+        `deleted_at IS NULL` — cross-link F-019's visibility-asymmetry
+        facet) surfaces both the orphan and the soft-deleted parent.
+      evidence:
+        - "ReactiveAbstractSoftDeleteCRUDRepository.java:50-59"
+        - "F-019 batch-R drift facet (getownerdtobyid_returns_soft_deleted_visibility_asymmetry)"
+    - drift_class: missing_cascade_leg_owner_association_request_orphans_on_owner_delete
+      description: |-
+        Owner cascade check is 3-leg (termOwnership + ownership +
+        userOwnerMapping) but omits a 4th — `owner_association_request`
+        rows (V0_0_51:11 has no `ON DELETE` clause). Operator deleting
+        an Owner leaves OAR rows pointing at the deleted Owner — orphan
+        history.
+      evidence:
+        - "V0_0_51__add_owner_association_request.sql:11 (FK without ON DELETE)"
+        - "OwnerServiceImpl.java:88-100 (3-leg cascade, missing OAR)"
+        - "REFACTOR-427 already filed"
+    - drift_class: fk_no_on_delete_clauses_pg_cascade_not_relied_on
+      description: |-
+        All four Namespace-referent FKs (V0_0_1:84 + V0_0_11 + V0_0_29:14 +
+        V0_0_35:12), the 4 Owner-referent FKs, and the DataSource-referent FK
+        have NO `ON DELETE` clauses. PG cascade is not relied on — every
+        cascade-check + cascade-block decision lives in application code,
+        compounding the TOCTOU surface.
+      evidence:
+        - "V0_0_1__init.sql:84"
+        - "V0_0_11__add_namespace_support.sql:1-2"
+        - "V0_0_29__add_collector.sql:14"
+        - "V0_0_35__add_terms.sql:12"
+        - "V0_0_51__add_owner_association_request.sql:11"
+test_matrix:
+  unit: GAP
+  integration: GAP
+  performance: GAP
+  security: GAP
+related_refactoring_scopes:
+  - REFACTOR-427  # missing 4th cascade-leg for owner_association_request on Owner delete
+  - REFACTOR-430  # Owner-side race already filed
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+  - cascade-on-delete-protection-pattern
+  - soft-delete-toctou-race
+related_features:
+  - F-019  # Owner Lifecycle — primary source for the cascade pattern (OwnerServiceImpl)
+  - F-028  # Namespace Lifecycle — already carries `cascade_check_toctou_non_transactional` facet
+  - F-031  # DataSource Lifecycle — adjacent (1-leg cascade)
+related_retrospectives:
+  - LSN-023  # cross-feature pattern naming (the methodology rule to name UX patterns as concepts)
+related_probes: []
+probe_verifications: []
+status: active
+maintainer_curated: false
+batch_origin: shoebox_step_0_2026_05_26
+created_in_batch: shoebox_triage_slice_E_2026_05_26
+notes: |-
+  Graduated from SHB-093. Cross-feature pattern anchor — describes the
+  CLASS, not per-feature deletes. F-019 / F-028 / F-031 each retain their
+  per-feature cascade facets; F-076 is the structural-class home for the
+  shared defect + the operator-relevant `Management-tab cascade-on-delete
+  protection pattern` concept. The graduation is per Rule 8 (Step 0 §
+  Cluster verdict reconsideration) and APPROACH.md rule 19 (name cross-cutting
+  patterns as concepts) — the SHB-093 evidence is sufficient on its own
+  for a structural-class graduation.

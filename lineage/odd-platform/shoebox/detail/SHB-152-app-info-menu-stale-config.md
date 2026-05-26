@@ -1,6 +1,6 @@
 # SHB-152 — App Info menu shows stale operator-configured links until full page reload
 
-**Category**: open
+**Category**: merged
 **Severity**: LOW
 
 ## Hypothesis
@@ -30,5 +30,9 @@ Operators editing `odd.links[]` config in YAML and restarting the backend contin
 ## Links
 
 - cluster_with: [F-035, F-034]
-- merged_into: (open)
+- merged_into: F-041
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — F-041 already carries the `keepmounted_combined_with_no_staletime_renders_yaml_edits_invisible_until_reload` facet which covers verbatim the keepMounted + staleTime=0 scenario. F-035 owns the operator-configured-links surface side. No new drift class needed. F-041: Application Toolbar — drift_class: react_query_keepmounted_combined_with_no_staletime_silent_staleness (existing).

@@ -1,6 +1,6 @@
 # SHB-181 — ADMIN-role promotion mechanism diverges per auth provider (LDAP substring vs OAuth2 claim vs ODD_IAM flag)
 
-**Category**: open
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -42,5 +42,9 @@ Operators promoting users to platform ADMIN role discover that the mechanism var
 ## Links
 
 - cluster_with: [F-006, F-011]
-- merged_into: (open)
+- merged_into: F-124
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduate — evidence: 8 file:line citations across handler classes + 2 Properties classes + WebFetched docs + concept-catalog cross-references. Minted F-124 (P-09:F-009 ADMIN Promotion Across Auth Providers). Cluster_with [F-006, F-011] preserved as related cross-references — F-124 is the admin-promotion layer that PRODUCES the authority; F-011 is the resolver layer that CONSUMES it; F-006 is the RBAC destination. Cross-pillar with Slice F's SHB-103 acknowledged via cluster_with without modifying Slice F F-NNNs.

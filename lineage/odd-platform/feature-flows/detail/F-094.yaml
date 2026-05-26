@@ -1,0 +1,200 @@
+feature_id: F-094
+feature_name: |-
+  Ingestion API Authentication Coverage Matrix — `auth.ingestion.filter.enabled`
+  covers 1 of 5 ingestion endpoints, but its name suggests the whole namespace
+pillar_id: P-10
+pillar_anchored_id: P-10:F-002
+pillar_anchored_feature_name: |-
+  Ingestion authentication-coverage matrix (5 endpoints × 4 UI auth modes ×
+  2 filter toggle × 2 S2S toggle = 80-cell operator-visible deployment matrix
+  with property-name misdirection at the core)
+seeded_from: SHB-123
+seeded_at: 2026-05-26
+batch_origin: 'batch-shoebox-graduation 2026-05-26 — slice G'
+
+discovered_from_entry_point: |-
+  property:auth.ingestion.filter.enabled (consumed at IngestionDataEntitiesFilter
+  bean construction); compounded across 5 endpoints in IngestionController +
+  4 auth-mode bean variants (DisabledAuthSecurityConfiguration / LoginFormSecurityConfiguration
+  / AuthorizationCustomizer × OAUTH2 / AuthorizationCustomizer × LDAP) +
+  S2SAuthFilter conditional.
+
+primary_subject:
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/filter/IngestionDataEntitiesFilter.java"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/ingestion/IngestionController.java"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/utils/SecurityConstants.java"
+  - "odd-platform-api/src/main/resources/application.yml"
+
+contributing_nodes:
+  - "auth-filter:IngestionDataEntitiesFilter"
+  - "controller:IngestionController"
+  - "security-constants:SecurityConstants"
+  - "config-yaml:application.yml#auth.ingestion.filter.enabled"
+
+chain:
+  - hop: 1
+    node: "IngestionController (5 endpoints)"
+    sidecar: unresolved
+    evidence: |-
+      odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/ingestion/IngestionController.java:31-103
+      — 5 handlers: createDataSource (auth via sibling IngestionDataSourceFilter),
+      postDataEntityList (auth via toggled IngestionDataEntitiesFilter when ON),
+      postDataSetStatsList (NO filter), ingestMetrics (NO filter),
+      getDataEntitiesByDEGOddrn (NO filter).
+    multiplicity_per_trigger: 1
+  - hop: 2
+    node: "IngestionDataEntitiesFilter (path matcher)"
+    sidecar: unresolved
+    evidence: |-
+      odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/filter/IngestionDataEntitiesFilter.java:28
+      — exact-literal `new PathPatternParserServerWebExchangeMatcher("/ingestion/entities", HttpMethod.POST)`;
+      sub-paths like `/ingestion/entities/datasets/stats` are unmatched.
+    multiplicity_per_trigger: 1
+  - hop: 3
+    node: "SecurityConstants.WHITELIST_PATHS"
+    sidecar: unresolved
+    evidence: |-
+      odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/utils/SecurityConstants.java:95-96
+      — WHITELIST_PATHS contains `/ingestion/**` (consumed by AuthorizationCustomizer
+      for OAUTH2/LDAP and LoginFormSecurityConfiguration:50). UI auth chains
+      whitelist the entire `/ingestion/**` prefix.
+    multiplicity_per_trigger: 1
+
+terminal_side_effect:
+  side_effect_class: header-set
+  description: |-
+    Per-endpoint HTTP status returned to caller depending on the 80-cell
+    deployment matrix (5 endpoints × 4 UI modes × 2 filter × 2 S2S). The
+    observable for the operator is the response code AND the fact that
+    `application.yml` carries `auth.ingestion.filter.enabled: true` without
+    disclosing which paths it actually covers.
+  evidence: |-
+    odd-platform-api/src/main/resources/application.yml:46-48 (default false);
+    SecurityConstants.WHITELIST_PATHS line 95-96; IngestionDataEntitiesFilter
+    line 28 path matcher.
+
+observed_vs_expected:
+  facets:
+    - facet: property-name suggests namespace-wide ingestion auth coverage
+      observed: |-
+        `auth.ingestion.filter.enabled` reads operationally as
+        "enable authentication for the /ingestion/ namespace". The bean it
+        gates (IngestionDataEntitiesFilter at filter/IngestionDataEntitiesFilter.java:20
+        `@ConditionalOnProperty(value="auth.ingestion.filter.enabled", havingValue="true")`)
+        binds an EXACT-LITERAL `/ingestion/entities` POST matcher. The 3
+        sibling endpoints (`postDataSetStatsList`, `ingestMetrics`,
+        `getDataEntitiesByDEGOddrn`) are uncovered REGARDLESS of the toggle.
+        An operator auditing application.yml, seeing the property set to
+        `true`, and filing the audit ticket as "ingestion is locked down"
+        ships a deployment with 3 wide-open ingestion endpoints.
+      expected: |-
+        Either (a) rename the property to `auth.ingestion.entities.filter.enabled`
+        to truthfully name its narrow scope, OR (b) broaden the filter's path
+        matcher to `/ingestion/**` with appropriate exemption for
+        `/ingestion/datasources` (covered by the sibling unconditional
+        IngestionDataSourceFilter), OR (c) document the path coverage at the
+        `application.yml` comment level so the gap is visible at the
+        configuration surface (not just on the docs site).
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/filter/IngestionDataEntitiesFilter.java:20,28"
+        - "odd-platform-api/src/main/resources/application.yml:46-48"
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/ingestion/IngestionController.java:31-103"
+      drift_class: property_name_misdirection_narrow_scope
+      provenance: |-
+        STATIC — SHB-123 evidence enumeration; primary-source in 6 file:line
+        refs spanning filter / config / WHITELIST / 5 controller methods.
+    - facet: 5 ingestion endpoints, ZERO uniform auth coverage
+      observed: |-
+        Of 5 ingestion endpoints: createDataSource is unconditionally auth-required
+        (IngestionDataSourceFilter is @Component without @ConditionalOnProperty);
+        postDataEntityList is conditionally auth-required ONLY when
+        `auth.ingestion.filter.enabled=true`; postDataSetStatsList, ingestMetrics,
+        getDataEntitiesByDEGOddrn are unauthenticated in EVERY shipped
+        configuration. The 5-endpoint × 4-UI-auth-mode × 2-filter × 2-S2S =
+        80-cell deployment matrix is not enumerated anywhere in-repo. The
+        S2S filter only mounts on UI-API paths (not /ingestion/**).
+      expected: |-
+        Either (a) document the per-endpoint × per-mode auth coverage
+        matrix at the `developer-guides/api-reference` page so operators
+        can audit the deployment OR (b) ship a boot-time validation log:
+        at startup, the platform should log a WARN line per unauthenticated
+        ingestion endpoint under the current configuration.
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/ingestion/IngestionController.java:31-103"
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/filter/IngestionDataEntitiesFilter.java:28"
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/utils/SecurityConstants.java:95-96"
+      drift_class: ingestion_filter_path_coverage_incomplete_endpoint_dimension
+      provenance: |-
+        STATIC — SHB-123 evidence + cross-link to F-008's existing
+        `ingestion_filter_path_coverage_incomplete` facet. This thread
+        elevates the PROPERTY-NAME MISDIRECTION as the CAUSAL SOURCE
+        of the operator trap; F-008's facet names the SYMPTOM.
+    - facet: UI auth modes whitelist /ingestion/** entirely
+      observed: |-
+        Under `auth.type=LOGIN_FORM/OAUTH2/LDAP`, the SecurityWebFilterChain
+        is configured with `WHITELIST_PATHS` permitAll — and that array
+        contains `/ingestion/**`. UI auth modes treat the entire ingestion
+        namespace as exempt; only the per-endpoint AbstractIngestionFilter
+        subclasses (when their `@ConditionalOnProperty` is satisfied) gate
+        ingestion. The S2S filter `auth.s2s.enabled` doesn't help either
+        — its filter chain mounts on /api/** paths, NOT /ingestion/**.
+      expected: |-
+        Document at the configuration-and-deployment/enable-security live
+        doc page that the /ingestion/** namespace is REGARDLESS-OF-MODE
+        whitelisted from UI auth + only protected by the bean-conditional
+        AbstractIngestionFilter subclasses.
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/utils/SecurityConstants.java:95-96"
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/config/AuthorizationCustomizer.java:22-23"
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/config/LoginFormSecurityConfiguration.java:50"
+      drift_class: ui_auth_chain_whitelists_entire_ingestion_namespace
+      provenance: STATIC — SHB-123 evidence.
+
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+      - "IngestionDataEntitiesFilter path-matcher: assert exact `/ingestion/entities` match; assert `/ingestion/entities/datasets/stats` does NOT match"
+      - "SecurityConstants.WHITELIST_PATHS array snapshot test: assert `/ingestion/**` is present and document the implication"
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+      - "5-endpoint × 4-UI-mode × 2-filter × 2-S2S = 80-cell parameterised test that hits each endpoint and asserts the documented expected status code per cell"
+  performance:
+    state: GAP
+    covered: []
+    uncovered: []
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+      - "Anonymous request to each unauthenticated endpoint under bundled defaults — assert it reaches the side-effect path"
+      - "Authenticated request with filter=ON to postDataSetStatsList — confirm STILL anonymous-reachable (filter doesn't match this path)"
+
+control_summary: |-
+  0 of 4 cells PROBED. The 80-cell deployment matrix is the operator-observable
+  surface; ZERO of these cells have a parameterised integration test.
+
+related_refactoring_scopes: []
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+  - "Ingestion Authentication Filter"
+  - "Default-Off Ingestion Auth"
+  - "Ingestion Filter Path-Coverage Incomplete"
+
+related_features:
+  - F-008  # Ingestion-Replace Destruction Surface — same `auth.ingestion.filter.enabled` toggle; F-008's destruction surfaces are reachable BECAUSE the property name misleads
+  - F-007  # AlertManager webhook — another /ingestion/** endpoint unauthenticated in every configuration
+  - F-030  # Metrics Ingestion — same unauthenticated posture on `/ingestion/metrics`
+  - F-029  # Platform Public API Contract — the OpenAPI spec exposes all 5 endpoints without auth annotation
+
+related_retrospectives:
+  - LSN-001  # bundled-default-causes-data-loss class
+  - LSN-002  # silent SDK default that breaks documented behaviour — same class as the property-name-suggests-coverage-but-doesn't
+
+status: active
+ui_unverified: false
+maintainer_curated: false

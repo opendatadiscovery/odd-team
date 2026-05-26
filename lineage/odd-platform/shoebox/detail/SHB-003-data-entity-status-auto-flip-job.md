@@ -1,6 +1,6 @@
 # SHB-003 — Data Entity Status Auto-Flip job (DRAFT/DEPRECATED → DELETED on switch time)
 
-**Category**: clustering
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -37,5 +37,21 @@ Operators see a per-entity "auto-transition to DELETED on the planned date" beha
 ## Links
 
 - cluster_with: [SHB-004]
-- merged_into: (open)
+- merged_into: F-044
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduated — strong evidence
+  (6 file:line refs + 2 live-doc refs) spanning scheduling / repository / service / dto / migration
+  axes; clear product surface (operator sets switch_time → scheduled
+  auto-flip to DELETED → 30-day TTL); falsifiable hypothesis pinned by
+  the SHB-004 bug at file:line. Minted F-044 at
+  `lineage/odd-platform/feature-flows/detail/F-044.yaml` (P-01:F-008
+  Data Entity Status Lifecycle). Pillar anchor: Data Entity Statuses
+  sub-feature listed in system-mission.md P-01. SHB-004 (sibling
+  applyStatus bug) was MERGED INTO F-044 as drift_class
+  `status_updated_at_never_set_breaks_30_day_ttl` rather than minted as
+  its own F-NNN — the bug is a defect, the FEATURE is the lifecycle,
+  per APPROACH.md "bug-shaped findings become drift_class facets, NOT
+  standalone features".

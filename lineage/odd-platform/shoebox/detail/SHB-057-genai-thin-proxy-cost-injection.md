@@ -42,3 +42,7 @@ The GenAI endpoint exposes a feature-flagged proxy where ANY authenticated user 
 - cluster_with: [F-039]
 - merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — into F-039 GenAI Assistant. F-039's drift_class_summary already enumerates all 12 SHB-057 facets including `free_text_proxy_no_authorization_no_audit_no_rate_limit_no_pii_redaction`, `silent_misconfiguration_zero_timeout_default_immediate_failure`, `server_web_exchange_exposed_but_discarded_fix_anchor_for_audit`, `disabled_mode_anonymous_reach`, `request_body_unbounded_no_maxlength_no_validate`, `live_doc_acknowledges_no_authentication_no_retry_but_silent_on_no_authorization_no_rate_limit_no_audit_no_pii_redaction`. F-039 batch ZK adds the field-declaration-tier primary source from GenAIProperties.java:8-12 confirming the LSN-002-class silent-misconfiguration shape. Probes P-158/P-159/P-160/P-161 already authored on F-039. Thread marked merged. F-039: GenAI free-text proxy — drift_class facets already cover the full SHB-057 hypothesis.

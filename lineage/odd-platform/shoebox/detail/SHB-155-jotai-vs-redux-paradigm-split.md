@@ -1,6 +1,6 @@
 # SHB-155 — Two state-management paradigms coexist (Redux + jotai); per-feature stores reset on navigate-away with no operator warning
 
-**Category**: open
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -33,5 +33,9 @@ Four feature areas (`/data-quality`, OwnerAssociations, DEGLineage, DatasetStruc
 ## Links
 
 - cluster_with: [F-032]
-- merged_into: (open)
+- merged_into: F-104
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduate — minted F-104 at lineage/odd-platform/feature-flows/detail/F-104.yaml (P-08:F-014 Feature-Local State Persistence). Evidence list spans 5 file:line refs across 3 substrate axes (UI provider wrapper, atom store, route-mount, URL serialisation effect). Hypothesis is falsifiable (4 byte-identical Provider files); product surface is clear (operator-visible filter reset on navigate-away across 4 named feature areas). status: ui-incomplete because P-120 has not yet measured URL-search-param reconstruction extent.

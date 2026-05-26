@@ -1,6 +1,6 @@
 # SHB-145 — Catalog and Dictionary tab clicks produce silent no-op failures on backend rejection
 
-**Category**: open
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -30,5 +30,9 @@ If operators click the Catalog or Dictionary toolbar tab while the backend is un
 ## Links
 
 - cluster_with: [F-041, F-042]
-- merged_into: (open)
+- merged_into: F-041
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — adds a NEW facet to F-041 capturing the silent-failure shape at the Catalog/Dictionary thunk handlers + the orphan-search-id accumulation. Distinct from F-041's existing tab facets (which cover render-time visibility); this is post-click runtime drift. F-041: Application Toolbar — drift_class: tab_thunk_silent_failure_no_catch_orphan_search_id_mint.

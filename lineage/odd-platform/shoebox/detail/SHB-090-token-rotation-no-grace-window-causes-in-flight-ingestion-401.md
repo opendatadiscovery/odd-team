@@ -1,6 +1,6 @@
 # SHB-090 — Collector + Datasource token rotation has no grace window — in-flight ingestion 401s on the UPDATE commit
 
-**Category**: clustering
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -37,5 +37,9 @@ Operators rotating a collector or datasource token (Management → Collectors / 
 ## Links
 
 - cluster_with: [F-020, SHB-091, SHB-097]
-- merged_into: (open)
+- merged_into: F-020
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merged — F-020 already carries `token_rotation_no_grace_period_old_token_401s_immediately`; this thread STRENGTHENS the facet with operator-visible failure scenario + @ReactiveTransactional absence + cross-confirmation with DataSource sibling (SHB-097). F-020: shoebox_extensions_2026_05_26 → drift_class: token_rotation_no_grace_window_in_flight_ingestion_401_strengthens_existing. Category flipped clustering → merged.

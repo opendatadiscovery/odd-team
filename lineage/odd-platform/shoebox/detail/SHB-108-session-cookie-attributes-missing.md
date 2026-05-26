@@ -1,6 +1,6 @@
 # SHB-108 — Session cookie attributes never configured; sessions never expire
 
-**Category**: open
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -38,5 +38,9 @@ Operators deploying ODD Platform on session-based auth modes (LOGIN_FORM, OAUTH2
 ## Links
 
 - cluster_with: [F-011]
-- merged_into: (open)
+- merged_into: F-087
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduated — evidence ≥8 refs across application.yml + SessionConfiguration + JooqSessionRepository + PostgreSQLSessionHousekeepingJob + LoginFormSecurityConfiguration + live docs (3 substrate axes: config / repository / job-handler + spec + UI-adjacent). Genuinely new feature shape — no existing F-NNN anchors session cookie posture. Minted F-087 at lineage/odd-platform/feature-flows/detail/F-087.yaml (P-09:F-008 Session Cookie Security Posture & Lifetime). Cross-link with F-011 (principal flow) and REFACTOR-419 (cluster fragility under IN_MEMORY).

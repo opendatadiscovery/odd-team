@@ -37,10 +37,10 @@ The platform UI ships six locales (English, Spanish, Chinese, French, Ukrainian,
 
 ## Links
 
-- cluster_with: [F-043, F-041, F-026]
-- merged_into: (open — feature-flow-builder folds into F-043 as drift facet)
+- cluster_with: [F-043, F-041, F-026, SHB-147, SHB-148, SHB-149]
+- merged_into: (open — cluster pending Slice H1 i18n threads)
 - supersedes: []
 
 ## evaluation
 
-(feature-flow-builder will append a dated entry here on its next run.)
+- **feature-flow-builder 2026-05-26**: leave-as-note + cluster — i18n thread sits at the intersection of P-08 (F-043 Multilingual UI) and the cross-pillar surfaces (P-02 Query Examples, P-03 Lookup Tables) whose missing keys this thread enumerates. Per the slice brief's hint, SHB-147/148/149 from Slice H1 may carry sibling i18n threads — if so the cluster should be bidirectional. Without sight of those sibling threads in this slice, the safe verdict is leave-as-note with the cluster_with set extended to include SHB-147/148/149 speculatively (the next pass — if those siblings exist — will reciprocate). Next-pass graduation criterion: when Slice H1's i18n threads land their evaluations, reconsider as a single graduation — likely "P-08:F-014 i18n Build-Time Validation Contract" (Code↔Resource-bundle drift with CI guard). Current evidence (14+ enumerated missing keys, 6-locale fallback chain spec) is graduation-ready; deferring to allow bidirectional cluster reconciliation. F-NNN allocation range (F-054..F-063) has 4 unused slots after this slice (F-060..F-063) — sufficient capacity for the next pass to graduate.

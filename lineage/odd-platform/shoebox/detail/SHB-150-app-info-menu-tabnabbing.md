@@ -1,6 +1,6 @@
 # SHB-150 — App Info menu opens five external links in new tabs without rel='noopener noreferrer'
 
-**Category**: clustering
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -30,5 +30,9 @@ When operators click any of the four hardcoded App Info menu items (Documentatio
 ## Links
 
 - cluster_with: [F-035]
-- merged_into: (set when graduated)
+- merged_into: F-041
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — F-041 already carries the `tabnabbing_target_blank_without_rel_noopener_across_all_5_link_sites` facet which enumerates all 5 link sites verbatim (lines 41, 61, 95, 103, 112). F-035 owns the operator-configured-links subset (per F-041 cross-reference). No new drift class needed; thread is reinforcement of F-041's chrome-side anchor. F-041: Application Toolbar — drift_class: tabnabbing_target_blank_without_rel_noopener_across_all_5_link_sites (existing).

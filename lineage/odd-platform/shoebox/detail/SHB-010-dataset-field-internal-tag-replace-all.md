@@ -1,6 +1,6 @@
 # SHB-010 — Dataset Field per-column annotation surface (replace-all tags, BULK-REPLACE enums, description-link DELETE quirk, XSS verbatim storage)
 
-**Category**: clustering
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -49,5 +49,22 @@ Operators see a per-column annotation surface on the dataset Structure tab that 
 ## Links
 
 - cluster_with: [F-004, F-013]
-- merged_into: (open)
+- merged_into: F-047
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduated — strong evidence (10
+  refs across controller/service/repository/migration/spec/doc/UI),
+  per-column annotation surface NOT in any existing F-NNN, four
+  distinct correctness defects (tags replace-all, enum BULK-REPLACE,
+  description-link DELETE quirk, XSS verbatim) + two HIGH-severity
+  SecurityConstants wiring bugs. Minted F-047 at
+  `lineage/odd-platform/feature-flows/detail/F-047.yaml`
+  (P-01:F-011 Dataset Field per-Column Annotation Surface) with 9
+  drift facets + 4 proposed local probes (P-shb-010-001..004) +
+  companion_to F-004 (per-entity twin). The SecurityConstants:299
+  wiring bug also touches the cross-pillar P-06 (Glossary)
+  Term-to-Entity Linkage — surfaced in `related_pillar_features:`
+  with the note that the term-link permission misroute is the
+  load-bearing P-06 cross-cut.

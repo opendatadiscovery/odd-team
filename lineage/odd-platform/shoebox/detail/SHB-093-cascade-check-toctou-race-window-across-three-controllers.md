@@ -1,6 +1,6 @@
 # SHB-093 — Cascade-on-delete check is TOCTOU-racy across Owner / Namespace / DataSource (non-atomic with the soft-delete that follows)
 
-**Category**: clustering
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -35,5 +35,9 @@ Three Management-tab delete paths (Owner, Namespace, DataSource) use the same ar
 ## Links
 
 - cluster_with: [F-019, F-028, F-031]
-- merged_into: (open)
+- merged_into: F-076
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduated to F-076 (Cross-Management Cascade-on-Delete Protection Pattern, pillar P-08). The structural-class pattern across 3 Management surfaces (Owner/Namespace/DataSource) warrants a standalone feature anchor — F-076 cross-links to F-019/F-028/F-031 while each per-feature flow retains its specific cascade facet. The graduation is per the thread's own "worth one feature anchor + one ADR" recommendation. Concurrently F-019 was enriched with a back-link shoebox_extension noting the cross-feature pattern observation. Category flipped clustering → merged.

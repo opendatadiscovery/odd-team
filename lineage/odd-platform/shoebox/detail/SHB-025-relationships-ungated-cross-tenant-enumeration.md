@@ -1,6 +1,6 @@
 # SHB-025 — Relationships list endpoint enumerates the entire cross-tenant relationship catalog with WEAKER scoping than `/api/dataentities`
 
-**Category**: open
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -36,5 +36,9 @@ Operators see the Data Modelling → Relationships page (`/data-modelling/relati
 ## Links
 
 - cluster_with: [F-037, F-017, F-014]
-- merged_into: (open — likely enriches F-037)
+- merged_into: F-037
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merged into F-037 (P-02:F-001 ERD/Graph Relationships Listing) — thread is an enricher capturing the cross-tenant + filter-asymmetry facets (EXCLUDE_FROM_SEARCH bypass, HOLLOW bypass, no data-source-permission filter). F-037's existing `no_authorization_gate_at_any_layer_full_catalog_visibility` facet REAFFIRMED with the additional context that this is a STRICTLY-MORE-PERMISSIVE sibling of /api/dataentities. drift_class: read_collaborative_posture_undocumented_cross_pillar (existing facet) — STRENGTHENED with the EXCLUDE_FROM_SEARCH-bypass detail; the operator-visible information-hygiene control is silently bypassed.

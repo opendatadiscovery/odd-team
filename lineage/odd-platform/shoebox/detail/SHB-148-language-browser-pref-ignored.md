@@ -1,6 +1,6 @@
 # SHB-148 — Browser language preference is never consulted; six-locale UI defaults to English on first visit regardless of navigator.language
 
-**Category**: clustering
+**Category**: merged
 **Severity**: LOW
 
 ## Hypothesis
@@ -30,5 +30,9 @@ Operators with Spanish-, French-, Ukrainian-, Armenian-, or Chinese-configured b
 ## Links
 
 - cluster_with: [F-043, SHB-147]
-- merged_into: (open)
+- merged_into: F-043
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — F-043 already carries the `browser_language_navigator_language_never_consulted_localStorage_or_en_only` facet which captures verbatim what this thread proposes. No new drift class to add; thread is reinforcement. F-043: Multilingual UI — drift_class: i18n_browser_language_not_consulted_first_visit_english_only (existing).

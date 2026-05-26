@@ -1,6 +1,6 @@
 # SHB-107 — OAuth logout token-revocation is asymmetric across providers
 
-**Category**: open
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -38,5 +38,9 @@ Operators expecting "logout invalidates the user's session and revokes their tok
 ## Links
 
 - cluster_with: []
-- merged_into: (open)
+- merged_into: F-086
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduated — genuinely new feature shape. F-011 already carries Azure NPE + Cognito empty-uri facets at the principal-resolution chokepoint (the upstream-of-handler tier), but the operator-observable cross-provider TOKEN-REVOCATION matrix is the FEATURE — not a chokepoint sub-finding. The matrix as a documentation + integration-test target has no existing F-NNN. Minted F-086 at lineage/odd-platform/feature-flows/detail/F-086.yaml (P-09:F-007 OAuth Logout Token-Revocation Semantics). Cross-link with F-011 (chokepoint), F-089 (post-logout redirect provenance — sibling logout-hardening surface).

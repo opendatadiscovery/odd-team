@@ -1,6 +1,6 @@
 # SHB-124 — Operators see their datasources commingled because ingestion routes by payload ODDRN, not by collector token identity
 
-**Category**: clustering
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -37,5 +37,9 @@ Operators running multi-team or multi-tenant deployments expect that a Collector
 ## Links
 
 - cluster_with: [F-008]
-- merged_into: (open — folds into F-008's drift facet narrative)
+- merged_into: F-008
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — into F-008 (Ingestion-replace destruction surface) — appended the OPERATOR-VISIBLE FRAMING as a new facet `datasource_scoping_is_payload_driven_not_principal_driven_operator_visible_fused_namespace_shb_124` (drift_class: datasource_scoping_is_payload_driven_not_principal_driven). The thread's value is the Datasources-tab fused-namespace UI symptom + the system-mission "security-relevant implicit ADR" elevation; F-008 already carries the destruction-narrative for this scoping shape, so the SHB-124 evidence enriches rather than constitutes a new feature. ADR-NNN draft recommended next (the binary scoping decision is ADR-shaped).

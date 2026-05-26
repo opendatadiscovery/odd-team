@@ -1,6 +1,6 @@
 # SHB-091 — Collector + Datasource token entropy uses non-cryptographic `RandomStringUtils` → predictable tokens
 
-**Category**: open
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -34,5 +34,9 @@ The 40-character alphanumeric token issued by Collector / Datasource registratio
 ## Links
 
 - cluster_with: [F-020, SHB-090]
-- merged_into: (open)
+- merged_into: F-020
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merged — F-020 already carries `token_entropy_not_securerandom_randomstringutils` as a drift facet; this thread STRENGTHENS the facet with explicit TokenGeneratorImpl.java:39, 49 primary-source citations + attack model + one-line fix specification. F-020: shoebox_extensions_2026_05_26 → drift_class: token_entropy_non_cryptographic_rng_via_randomstringutils_alphanumeric_strengthens_existing. Cross-cut note re Slice F: this thread cross-cuts security threads in Slice F (token semantics); I MERGED in-place on F-020 (P-08, my pillar) and recorded a sliceF_cross_cut_note explaining why — Slice F should not race a parallel mutation on F-020's drift_class_summary. Category flipped open → merged.

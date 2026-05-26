@@ -1,0 +1,169 @@
+feature_id: F-075
+pillar_id: P-08
+pillar_anchored_id: P-08:F-015
+pillar_anchored_feature_name: User-Owner Association Request Flow (DIRECT_OWNER_SYNC self-mint-and-self-bind chain)
+feature_name: |-
+  User-Owner Association — `POST /api/owner_association_request` flow. The
+  flow has two operationally-distinct branches: (A) standard SELF-request
+  with PENDING status awaiting Admin approval (documented); (B) auto-approve
+  under `DIRECT_OWNER_SYNC` MANAGEMENT permission (UNDOCUMENTED on the live
+  `/user-owner-association` page). Branch B composes with the
+  `OwnerService.getOrCreate` side-door (F-019's
+  `service_tier_get_or_create_permission_bypass_owner_create_side_door`)
+  into a SELF-MINT-THEN-SELF-BIND chain: a user with DIRECT_OWNER_SYNC can
+  submit a never-seen `ownerName`, the service mints the Owner, the
+  permission auto-approves the request, and the user is bound to an Owner
+  they just created.
+seeded_from: SHB-087
+seeded_at: 2026-05-26
+discovered_from_entry_point: |-
+  rest:POST /api/owner_association_request (controller:
+  OwnerAssociationRequestController.createOwnerAssociationRequest) →
+  service: OwnerAssociationRequestServiceImpl.createOwnerAssociationRequest
+  → branches on `permissions.contains(Permission.DIRECT_OWNER_SYNC)`
+primary_subject:
+  - "odd-platform java OwnerAssociationRequestController controller-method:createOwnerAssociationRequest"
+  - "odd-platform java OwnerAssociationRequestServiceImpl service-method:createOwnerAssociationRequest"
+  - "odd-platform java OwnerServiceImpl service-method:getOrCreate"
+  - "odd-platform java UserOwnerMappingService"
+contributing_nodes:
+  - "odd-platform java OwnerAssociationRequestController:28-34"
+  - "odd-platform java OwnerAssociationRequestServiceImpl:55-67"
+  - "odd-platform java OwnerAssociationRequestServiceImpl:184-190"
+  - "odd-platform java OwnerServiceImpl:38-42"
+  - "odd-platform java PolicyPermissionDto:70"
+  - "odd-platform java SecurityConstants:148-162"
+chain:
+  - hop: 1
+    node: "ui_route:any user-owner-association form (Operator's own profile)"
+    sidecar: unresolved
+    evidence: "F-019 batch-V (OwnerAssociationRequestServiceImpl primary source)"
+    multiplicity_per_trigger: 1
+  - hop: 2
+    node: "rest:POST /api/owner_association_request"
+    sidecar: "controller-method:createOwnerAssociationRequest"
+    evidence: "OwnerAssociationRequestController.java:28-34"
+    multiplicity_per_trigger: 1
+    notes: "NO entry in SecurityConstants.SECURITY_RULES → any authenticated user reachable"
+  - hop: 3
+    node: "service:createOwnerAssociationRequest"
+    sidecar: "OwnerAssociationRequestServiceImpl.java:55-67"
+    evidence: "OwnerAssociationRequestServiceImpl.java:55-67"
+    multiplicity_per_trigger: 1
+  - hop: 4
+    node: "service:OwnerService.getOrCreate(ownerName) — side-door mint path"
+    sidecar: "OwnerServiceImpl.java:38-42"
+    evidence: "OwnerServiceImpl.java:38-42 (no permission check; cross-link F-019 facet)"
+    multiplicity_per_trigger: 1
+  - hop: 5
+    node: "branch: permissions.contains(DIRECT_OWNER_SYNC) ?"
+    sidecar: "PolicyPermissionDto:70"
+    evidence: "OwnerAssociationRequestServiceImpl.java:60-67"
+    multiplicity_per_trigger: 1
+  - hop: 6
+    node: "service:userOwnerMappingService.createRelation (auto-approve branch only)"
+    sidecar: "OwnerAssociationRequestServiceImpl.java:184-190"
+    evidence: "OwnerAssociationRequestServiceImpl.java:184-190"
+    multiplicity_per_trigger: 1
+terminal_side_effect:
+  side_effect_class: db-write
+  description: |-
+    Two-row INSERT chain on auto-approve branch:
+    (i) `owner(id, name, deleted_at=NULL)` — new Owner row (if name unseen)
+        via getOrCreate side-door (audit-silent — no @ActivityLog).
+    (ii) `user_owner_mapping(user_id, owner_id, ...)` — binding row tying
+        the requesting user to the freshly-minted Owner.
+    Combined effect: user is now bound to an Owner they themselves
+    chose-and-minted. Policy conditions `dataEntity:owner == 'X'` for the
+    chosen X become attacker-controllable.
+  evidence: "OwnerAssociationRequestServiceImpl.java:55-67 + :184-190"
+observed_vs_expected:
+  facets:
+    - drift_class: self_mint_then_self_bind_privilege_chain_via_direct_owner_sync
+      description: |-
+        DIRECT_OWNER_SYNC was designed for OIDC-group-mapped users where the
+        IdP authoritatively binds users to owners (per the auto-approve
+        branch's intent). The implementation does NOT verify the OIDC group
+        mapping; the permission alone is sufficient. Combined with the
+        getOrCreate side-door (F-019 facet), a user with the permission can
+        self-mint-and-self-bind to an arbitrary owner name.
+      evidence:
+        - "OwnerAssociationRequestServiceImpl.java:55-67 (permission-only check)"
+        - "OwnerServiceImpl.java:38-42 (mint side-door)"
+        - "PolicyPermissionDto.java:70 (DIRECT_OWNER_SYNC MANAGEMENT)"
+    - drift_class: openapi_permission_editor_does_not_warn_about_composition_hazard
+      description: |-
+        The OpenAPI-generated permission editor in the UI allows operators
+        to grant DIRECT_OWNER_SYNC to ad-hoc Policies without warning them
+        about composition with the getOrCreate side-door. Operators
+        reading the live `/permissions` page see only "Allows associating
+        a user with an owner without an approval request" — silent on the
+        self-mint hazard.
+      evidence:
+        - "live /permissions doc WebFetched 2026-05-25 (single-line description)"
+        - "PolicyPermissionDto.java:70"
+    - drift_class: live_doc_user_owner_association_silent_on_auto_approve_branch
+      description: |-
+        Live `/configuration-and-deployment/enable-security/authorization/user-owner-association`
+        (WebFetched 2026-05-20, status 200) documents ONLY the two-step
+        SELF-request + Admin-approve flow. The DIRECT_OWNER_SYNC
+        auto-approve branch is invisible — operators cannot discover this
+        capability from the docs.
+      evidence:
+        - "live doc page WebFetched 2026-05-20"
+    - drift_class: mint_path_audit_silent_on_self_mint
+      description: |-
+        The Owner mint side of the chain emits no `@ActivityLog` (audit
+        silence on Owner-create; F-019 root finding). The auto-approve
+        request itself DOES emit to `owner_association_request_activity`
+        with `isManual=false`, so the chain is forensically
+        partially-recoverable — but the mint itself is not.
+      evidence:
+        - "OwnerServiceImpl.java:38-122 (Grep zero @ActivityLog on the trinity + getOrCreate)"
+        - "OwnerAssociationRequestServiceImpl.java approval path emits to activity"
+    - drift_class: rest_path_no_security_rule_anyone_reaches_endpoint
+      description: |-
+        `POST /api/owner_association_request` has NO entry in
+        SecurityConstants.SECURITY_RULES → the DIRECT_OWNER_SYNC check is
+        in-service, not at the SecurityRule layer. Combined with
+        `auth.type=DISABLED`, anonymous callers reach the endpoint.
+      evidence:
+        - "SecurityConstants.java:148-162"
+        - "OwnerAssociationRequestController.java:28-34"
+test_matrix:
+  unit: GAP
+  integration: GAP
+  performance: GAP
+  security: GAP
+related_refactoring_scopes:
+  - REFACTOR-199
+  - REFACTOR-426
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+  - DIRECT_OWNER_SYNC-auto-approve-branch
+  - permission-bypass-via-owner-auto-create-side-door-write-path
+related_features:
+  - F-019  # Owner Lifecycle — primary parent for the getOrCreate side-door facet
+  - F-011  # Principal-to-Owner Resolution (P-09) — the binding that this chain creates is consumed by F-011's read path
+  - F-074  # Management read-collaborative posture — the activity-log surface that records the auto-approve is also enumerable under SHB-085
+related_retrospectives: []
+related_probes: []
+probe_verifications: []
+status: active
+maintainer_curated: false
+batch_origin: shoebox_step_0_2026_05_26
+created_in_batch: shoebox_triage_slice_E_2026_05_26
+notes: |-
+  Graduated from SHB-087. Pillar P-08 chosen because the Associations tab
+  is operator-facing Management surface (system-mission.md:241 P-08
+  sub-feature seed "Associations tab"). The security-relevant chain
+  composes ACROSS P-08 + P-09 (P-09's RBAC model authorises the
+  permission), but the FEATURE itself is the Management-tab association
+  flow. Cross-pillar relationship to P-09 captured in related_features
+  via F-011.
+  This is a UI-incomplete graduation: the operator-facing form that
+  triggers the request is not yet a fully-enriched UI sidecar. Backend
+  chain is composed and load-bearing; UI hop-1 is marked unresolved.
+  Per Rule 0b, all UI-meaning-dependent facets carry no UI assertion —
+  facets here are all backend-evidenced.

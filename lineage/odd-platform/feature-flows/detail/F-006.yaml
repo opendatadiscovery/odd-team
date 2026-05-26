@@ -1057,6 +1057,85 @@ batch_extensions:
     — LDAP-mode misconfiguration is operator-trap rather than
     bypass-class.
 
+- batch: 2026-05-26-shoebox-F
+  entry_point_added: |-
+    SHB-111 shoebox enrichment — the operator-visible catalogue-vs-grant
+    visibility asymmetry on the soft-deleted Policy lifecycle, concretised
+    with the race-window dimension that F-006 batch S established at the
+    service-tier non-atomic level. F-006 already carries the SQL-tier
+    JOIN finding (batch H) + the UI catalogue-vs-grant render asymmetry
+    (batch Q) + the service-tier non-atomic cascade-check (batch S);
+    this enrichment adds the OPERATOR INCIDENT-RESPONSE narrative + the
+    explicit three-concurrent-client race description + the
+    forensic-silence + cascade-detach UX dependency.
+  contributing_nodes_added: []
+  notes: |-
+    SHB-111 merges into F-006 with three operator-visible refinements
+    on existing drift facets — no new substrate evidence beyond what
+    batches H/Q/S established, but the operator-incident-response
+    framing is the load-bearing piece that the existing facets did
+    not name:
+
+    (1) OPERATOR_INCIDENT_RESPONSE_FRAMING (HIGH refinement on
+    catalogue_vs_grant_render_asymmetry_ui_visible_half). A security
+    incident necessitates removing a privileged policy. Operator clicks
+    DELETE in Management → Access Management → Policies. UI shows the
+    policy is gone. Operator believes privilege is revoked. Actual
+    state: policy row has `deleted_at = NOW()` but the role_to_policy
+    binding (and consequently every user attached to any binding role)
+    still resolves the policy's statements via getRolesPolicies. Incident
+    response is INCOMPLETE; the privilege grant persists. F-006 batch
+    Q already named the UI-tier render asymmetry; this enrichment
+    adds the INCIDENT-RESPONSE operator narrative — the asymmetry has
+    a SECURITY consequence beyond UX confusion.
+
+    (2) THREE_CONCURRENT_CLIENT_RACE_DESCRIPTION (refines
+    policy_service_cascade_check_non_atomic_with_soft_delete_mirror).
+    The race-window from SHB-111 is concrete: client A
+    `DELETE /api/policies/{id}`, client B
+    `POST /api/roles/{r}/policies` (adds binding to the same policy),
+    client C `GET /api/policies/{id}`. A reads
+    `isPolicyAttachedToRole=false` at PolicyServiceImpl.java:89; B
+    inserts the binding (non-transactional, no row-lock); A continues
+    to soft-delete at line 93. Result: a soft-deleted policy WITH a
+    surviving role binding — exactly the orphan state the defence
+    intended to block. C sees 404 on read (policy gone), but the
+    binding still grants. F-006 batch S established the non-atomic
+    pattern; SHB-111 names the specific three-client interleaving
+    that makes the race concretely reproducible (probe target).
+
+    (3) CASCADE_DETACH_UX_DEPENDENCY (NEW operator-surface drift —
+    refines forensic_silence_on_rbac_mutations). The cascade-defence at
+    PolicyServiceImpl.java:89-92 is the SOLE service-layer protection
+    against the orphan-binding state. ANY code path that bypasses the
+    service (a future repository-direct caller, a DB-direct hot-fix
+    `UPDATE policy SET deleted_at = NOW()`, a `delete()` refactor that
+    drops this filter) re-opens the gap. The defence is fragile.
+    Additionally: a scripted cleanup that catches HTTP 400 USR004
+    must detach roles FIRST (PUT on the ROLE side to drop the policy
+    binding) THEN delete the policy. The docs don't document this
+    dependency — a future operator writing cleanup automation rediscovers
+    it from the error response. NEW drift facet —
+    `policy_delete_cascade_detach_order_dependency_undocumented_in_authorization_policies_doc`.
+
+    Mitigation recommendation (unchanged from F-006 batch S): SEC-NNN
+    candidate — fix the unfiltered JOIN at
+    ReactivePolicyRepositoryImpl.getRolesPolicies to apply
+    `policy.deleted_at IS NULL`. This is the ROOT fix; the cascade-defence
+    at PolicyServiceImpl becomes belt-and-braces. Adding
+    @ReactiveTransactional to PolicyServiceImpl.update/delete (the
+    F-006 batch S service_tier_at_reactive_transactional_asymmetry_role_yes_policy_no
+    facet) closes the lost-update race AND tightens the cascade-defence
+    atomicity.
+
+    Coherence (LSN-018 Rule 6): STRENGTHENS=3 (F-006 batch H
+    permission_persistence_after_soft_delete with operator
+    incident-response framing; F-006 batch Q
+    catalogue_vs_grant_render_asymmetry_ui_visible_half with the
+    incident-response narrative; F-006 batch S
+    policy_service_cascade_check_non_atomic_with_soft_delete_mirror
+    with the three-client probe description). SUPERSEDES=0. CONFLICTS=0.
+
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: RBAC policy lifecycle — soft-delete with permission-grant persistence

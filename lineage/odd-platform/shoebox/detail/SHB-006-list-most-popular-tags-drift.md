@@ -1,6 +1,6 @@
 # SHB-006 — `listMostPopular` tags returns OLDEST tags re-sorted by usage_count, not the most-popular
 
-**Category**: clustering
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -37,5 +37,17 @@ Operators see a "Popular Tags" list that does NOT reflect the platform's most-us
 ## Links
 
 - cluster_with: [SHB-005, F-018]
-- merged_into: (open)
+- merged_into: F-018
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merged — Popular Tags ranking
+  is a UI consumer surface of the Manual Object Tagging feature (F-018);
+  the drift is a single named bug (paginate orders by TAG.ID ASC then
+  re-sorts the window). Appended as drift_class
+  `popular_tags_pagination_orders_by_id_asc_returning_oldest_not_most_popular`
+  (MEDIUM) on F-018. Per SHB-006's Next step 3: "Merge into F-018 — this
+  is a drift facet of an existing flow, not its own feature." The
+  empirical verification on demo.oddp.io 2026-05-20 pins the bug
+  conclusively.

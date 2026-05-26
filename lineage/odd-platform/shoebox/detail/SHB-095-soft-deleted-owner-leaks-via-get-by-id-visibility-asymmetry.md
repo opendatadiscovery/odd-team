@@ -1,6 +1,6 @@
 # SHB-095 — Soft-deleted Owner row visible via GET-by-id but hidden from list (visibility asymmetry leaks deleted PII)
 
-**Category**: open
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -37,5 +37,9 @@ Operators expect that deleting an Owner (whose `name` field commonly carries PII
 ## Links
 
 - cluster_with: [F-019, SHB-085, SHB-084]
-- merged_into: (open)
+- merged_into: F-019
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merged — F-019 already carries `soft_deleted_owner_visible_via_get_by_id_but_hidden_from_list` in its drift_class_summary; this thread STRENGTHENS the facet with GDPR-right-to-erasure operational scenario + cross-link to SHB-084 (mint side-doors) + SHB-085 (ungated list reads) + USER_OWNER_MAPPING persistence + cross-feature audit candidates (extend to Term/DataSource). F-019: shoebox_extensions_2026_05_26 → drift_class: getownerdtobyid_returns_soft_deleted_visibility_asymmetry_strengthens_existing. Category flipped open → merged.

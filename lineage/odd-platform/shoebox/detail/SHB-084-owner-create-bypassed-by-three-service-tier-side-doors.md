@@ -1,6 +1,6 @@
 # SHB-084 — Owner directory mintable from 3 service-tier side-doors, bypassing OWNER_CREATE permission
 
-**Category**: clustering
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -36,5 +36,9 @@ Operators authoring an RBAC policy expect that withholding `OWNER_CREATE` preven
 ## Links
 
 - cluster_with: [F-019, F-011, SHB-085, SHB-087]
-- merged_into: (open)
+- merged_into: F-019
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merged — F-019 already carries `service_tier_get_or_create_permission_bypass_owner_create_side_door`; this thread STRENGTHENS the facet with full three-callsite enumeration + path-anchored-vs-method-anchored distinction + audit-silence cross-reference. F-019: shoebox_extensions_2026_05_26 → drift_class: owner_create_bypassed_by_three_service_tier_side_doors_path_anchored_gate_misnamed_invariant. Category flipped clustering → merged.

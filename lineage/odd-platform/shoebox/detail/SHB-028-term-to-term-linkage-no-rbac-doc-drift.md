@@ -1,6 +1,6 @@
 # SHB-028 — Term-to-term linkage has NO SecurityRule — docs claim TERM_UPDATE gates "directly-linked terms" but runtime accepts any authenticated user
 
-**Category**: clustering
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -37,5 +37,9 @@ Operators reading the Business Glossary documentation (live `https://docs.openda
 ## Links
 
 - cluster_with: [F-002]
-- merged_into: (open — enriches F-002 with term-to-term linkage axis)
+- merged_into: F-002
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merged into F-002 (P-06:F-001 Term-to-Entity Linkage) — F-002 already carries `term_to_term_no_security_rule_unguarded_linkage` (HIGH) AND `term_to_term_no_activity_log_invisible_to_audit_feed` (MEDIUM) facets minted in batch U, both directly anchored on this same finding. SHB-028 STRENGTHENS both with the doc-vs-runtime drift framing (Business Glossary docs claim TERM_UPDATE gates "directly-linked terms"; runtime accepts any authenticated user). The auto-link cross-time bypass property is captured separately at SHB-030 → F-056.

@@ -1,6 +1,6 @@
 # SHB-012 — Directory level-4 page-vs-count predicate divergence (EXCLUDE_FROM_SEARCH inconsistency breaks pagination math)
 
-**Category**: open
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -39,5 +39,18 @@ Operators browsing the Directory (`/api/directory/datasources/{id}?type_id=&page
 ## Links
 
 - cluster_with: [F-023]
-- merged_into: (open)
+- merged_into: F-023
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merged — Directory level-4
+  page-vs-count divergence is a single named drift on F-023's
+  hierarchy-driven browse surface. Appended drift_class
+  `directory_level4_predicate_divergence_exclude_from_search` (MEDIUM)
+  to F-023 with the full 8 file:line evidence trail. The cross-cutting
+  bug-class note (PREDICATE-DIVERGENCE-IN-PAGINATION-WRAPPERS — same
+  pattern as REFACTOR-425, now confirmed at 2 sites) is preserved in
+  the merged facet's `cross_pillar_audit_note`. Per SHB-012's Next
+  step 4: cluster with REFACTOR-425 for the pagination-predicate-audit
+  sprint.

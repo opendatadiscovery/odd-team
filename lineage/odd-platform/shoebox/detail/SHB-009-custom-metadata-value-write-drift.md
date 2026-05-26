@@ -1,6 +1,6 @@
 # SHB-009 — Custom Metadata Value write drift (UPDATE-not-UPSERT silent 200, type validation absent, EXTERNAL overwrite, active=NULL regression, no activity event)
 
-**Category**: clustering
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -42,5 +42,18 @@ Operators see a "metadata successfully updated" toast on the entity-detail Metad
 ## Links
 
 - cluster_with: [F-013, F-004]
-- merged_into: (open)
+- merged_into: F-013
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merged — SHB-009's five drift
+  facets all align with existing F-013 entries (already at HIGH-confidence
+  in F-013's drift_class_summary). Appended five strengthening facets
+  to F-013 under `shoebox_merged_facets:` with `note_already_in_F013: true`
+  to mark them as STRENGTHENS (not new drift classes) per Rule 6
+  coherence semantics. F-013 anchors WRITE; F-046 (new this batch)
+  anchors READ; together they form the Custom Metadata feature
+  end-to-end. The F-004 cluster-link in SHB-009's body refers to the
+  silent-UPDATE-not-UPSERT class pattern — F-004 is already cross-linked
+  from F-013.

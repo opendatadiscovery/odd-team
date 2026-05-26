@@ -1,0 +1,220 @@
+feature_id: F-086
+feature_name: |-
+  OAuth Logout Token-Revocation Semantics — operator-observable per-provider
+  asymmetry: Google + GitHub actively revoke at the IdP; Azure + Cognito +
+  ODD_IAM invalidate only the local session, leaving IdP-issued tokens
+  valid for the rest of their natural TTL
+pillar_id: P-09
+pillar_anchored_id: P-09:F-007
+pillar_anchored_feature_name: OAuth Logout Token-Revocation Semantics
+seeded_from: SHB-107
+seeded_at: 2026-05-26
+discovered_from_entry_point: |-
+  logout-handler-tier: 5 *LogoutSuccessHandler classes
+  (AzureLogoutSuccessHandler / CognitoLogoutSuccessHandler /
+  GoogleLogoutSuccessHandler / GithubLogoutSuccessHandler /
+  ODDIAMLogoutSuccessHandler) fired by Spring Security's
+  ServerLogoutSuccessHandler chain after the user clicks Logout in the
+  AppToolbar (window.location.href = '/logout' per F-011 batch Q).
+primary_subject:
+  - odd-platform-api java auth logout:AzureLogoutSuccessHandler (session-only invalidation; protocol limitation)
+  - odd-platform-api java auth logout:CognitoLogoutSuccessHandler (session-only; /oauth2/revoke endpoint exists but NOT called)
+  - odd-platform-api java auth logout:GoogleLogoutSuccessHandler (POSTs to oauth2.googleapis.com/revoke)
+  - odd-platform-api java auth logout:GithubLogoutSuccessHandler (DELETE /applications/{client_id}/grant)
+  - odd-platform-api java auth logout:ODDIAMLogoutSuccessHandler (session-only)
+  - odd-platform-api java config:OAuthSecurityConfiguration (line 180-183 fallback handler — default OidcClientInitiatedServerLogoutSuccessHandler for non-enum'd providers)
+contributing_nodes:
+  - odd-platform java auth logout:AzureLogoutSuccessHandler
+  - odd-platform java auth logout:CognitoLogoutSuccessHandler
+  - odd-platform java auth logout:GoogleLogoutSuccessHandler
+  - odd-platform java auth logout:GithubLogoutSuccessHandler
+  - odd-platform java auth logout:ODDIAMLogoutSuccessHandler
+  - odd-platform java config:OAuthSecurityConfiguration
+chain:
+  - hop: 1
+    node: odd-platform ts react-component:AppToolbar
+    sidecar: unresolved
+    evidence: |-
+      AppToolbar.tsx:35-37 — `window.location.href = '/logout'` issues
+      full-page navigation; ALL session-termination logic is deferred to
+      backend handler chain. Identical click-handler across all 4 auth
+      modes; the asymmetry is entirely backend-controlled.
+    multiplicity_per_trigger: 1
+  - hop: 2
+    node: odd-platform java auth logout:GoogleLogoutSuccessHandler
+    sidecar: unresolved
+    evidence: |-
+      GoogleLogoutSuccessHandler.java:43-54 — POSTs to
+      https://oauth2.googleapis.com/revoke. Server-side token invalidation
+      IS performed.
+    multiplicity_per_trigger: 1
+  - hop: 2-alt
+    node: odd-platform java auth logout:GithubLogoutSuccessHandler
+    sidecar: unresolved
+    evidence: |-
+      GithubLogoutSuccessHandler.java:51-63 — issues
+      DELETE /applications/{client_id}/grant. Revokes ALL tokens for the
+      user+app pair. Server-side revocation IS performed.
+    multiplicity_per_trigger: 1
+  - hop: 2-alt2
+    node: odd-platform java auth logout:AzureLogoutSuccessHandler
+    sidecar: unresolved
+    evidence: |-
+      AzureLogoutSuccessHandler.java:31-48 — 302 + Location header
+      (Azure end-session URL) + WebSession::invalidate. NO outbound HTTP
+      to a token-revocation endpoint. Azure AD v2.0 does not expose
+      RFC 7009 revocation; even attempting would 404.
+    multiplicity_per_trigger: 1
+  - hop: 2-alt3
+    node: odd-platform java auth logout:CognitoLogoutSuccessHandler
+    sidecar: unresolved
+    evidence: |-
+      CognitoLogoutSuccessHandler.java:33-50 — 302 to Cognito /logout +
+      WebSession::invalidate. NO call to Cognito's /oauth2/revoke endpoint
+      (which DOES exist per AWS docs). Tokens remain valid until natural
+      TTL.
+    multiplicity_per_trigger: 1
+  - hop: 2-alt4
+    node: odd-platform java auth logout:ODDIAMLogoutSuccessHandler
+    sidecar: unresolved
+    evidence: |-
+      ODDIAMLogoutSuccessHandler.java:30-46 — session-only invalidation,
+      no outbound revocation.
+    multiplicity_per_trigger: 1
+terminal_side_effect:
+  side_effect_class: external-call
+  description: |-
+    Conditional external-call: Google → POST oauth2.googleapis.com/revoke;
+    GitHub → DELETE applications/{client_id}/grant. The OTHER three
+    providers (Azure / Cognito / ODD_IAM) issue ZERO outbound revocation
+    call — only redirect + local-session invalidation. The
+    operator-observable terminal state is "tokens revoked at IdP" (Google,
+    GitHub) vs "tokens valid at IdP for the rest of their natural TTL"
+    (Azure, Cognito, ODD_IAM).
+  evidence:
+    - "GoogleLogoutSuccessHandler.java:43-54"
+    - "GithubLogoutSuccessHandler.java:51-63"
+    - "AzureLogoutSuccessHandler.java:31-48 (no revocation call)"
+    - "CognitoLogoutSuccessHandler.java:33-50 (no revocation call)"
+observed_vs_expected:
+  facets:
+    - drift_class: cognito_revocation_endpoint_exists_but_handler_does_not_call
+      description: |-
+        Cognito's `/oauth2/revoke` endpoint IS documented by AWS as
+        available on every User Pool. CognitoLogoutSuccessHandler does
+        NOT call it. The asymmetry with Google/GitHub is a platform-
+        choice, not a protocol limitation. One-line code addition would
+        close the gap.
+      evidence:
+        - "CognitoLogoutSuccessHandler.java:33-50"
+        - "GoogleLogoutSuccessHandler.java:43-54 (counter-example)"
+      ui_unverified: false
+    - drift_class: azure_no_revocation_in_v2_protocol_handler_silent
+      description: |-
+        Azure AD v2.0 does not expose RFC 7009 revocation. The protocol
+        constraint is real. The platform does not document the constraint
+        anywhere — operators with stringent compliance requirements
+        (e.g. immediate revocation on logout for incident response)
+        cannot tell from docs which providers actually honour it.
+      evidence:
+        - "AzureLogoutSuccessHandler.java:31-48"
+      ui_unverified: false
+    - drift_class: token_exfiltration_window_60min_to_90day_post_logout
+      description: |-
+        Token exfiltration threat model: non-HttpOnly localStorage copy,
+        network-MITM-captured token, OS-keychain export. After logout
+        invalidates the platform session cookie, the OAuth2 token remains
+        valid against the IdP for the rest of its TTL: Azure 60-90 min
+        access; Cognito 1 hour; refresh tokens up to 90 days. An attacker
+        with a previously-captured token continues using it against
+        IdP-protected downstream resources for the full residual window.
+      evidence:
+        - "AzureLogoutSuccessHandler.java:31-48 (no revoke)"
+        - "CognitoLogoutSuccessHandler.java:33-50 (no revoke)"
+      ui_unverified: false
+    - drift_class: rp_initiated_logout_state_parameter_omitted_csrf_low_risk
+      description: |-
+        OIDC RP-Initiated Logout 1.0 §5 recommends `state` parameter to
+        bind the logout request to the user session and prevent CSRF.
+        NO handler emits state or nonce on the end-session redirect.
+        Shared across all 5 handlers. Low-severity attack (worst is
+        forcing a victim to log out); omission is platform-wide.
+      evidence:
+        - "AzureLogoutSuccessHandler.java:38-44"
+        - "CognitoLogoutSuccessHandler.java:40-46"
+      ui_unverified: false
+    - drift_class: okta_keycloak_fall_through_to_default_oidc_handler_no_revocation
+      description: |-
+        For Okta + Keycloak (documented as supported but not in Provider
+        enum), the OAuthSecurityConfiguration.java:180-183 fallback runs
+        — Spring Security's default OidcClientInitiatedServerLogoutSuccessHandler.
+        It issues an OIDC end_session_endpoint request IF the IdP supports
+        it. For OAuth2-only (non-OIDC) providers, no server-side
+        revocation happens.
+      evidence:
+        - "OAuthSecurityConfiguration.java:180-183 (defaultOidcLogoutHandler fallback)"
+      ui_unverified: false
+    - drift_class: ui_provides_no_feedback_on_revocation_outcome
+      description: |-
+        AppToolbar.tsx:35-37 issues window.location.href = '/logout'
+        without surfacing any feedback distinguishing "successful local
+        logout, no IdP revocation" (Azure / Cognito / ODD_IAM) from
+        "successful logout + IdP token revoked" (Google / GitHub).
+        Operators on shared workstations may believe they've fully
+        logged out when the IdP-issued tokens still work.
+      evidence:
+        - "AppToolbar.tsx:35-37"
+      ui_unverified: true   # observed via F-011 batch Q file:line; not live-probed
+    - drift_class: zero_logout_test_coverage
+      description: |-
+        `find odd-platform-api/src/test -name '*Logout*.java'` returns 0
+        matches. Six production classes (5 provider handlers + 1
+        dispatcher), 0 tests.
+      evidence:
+        - "odd-platform-api/src/test/* (zero *Logout* matches per SHB-107)"
+      ui_unverified: false
+test_matrix:
+  unit: GAP
+  integration: GAP
+  performance: GAP
+  security: GAP
+test_matrix_notes: |-
+  No test coverage at all. The integration target is per-provider logout
+  token-revocation behaviour: capture access token, click logout, verify
+  token validity at IdP for the remainder of TTL. Requires per-provider
+  mocks (Wiremock against oauth2.googleapis.com/revoke,
+  api.github.com/applications/.../grant, Cognito /oauth2/revoke).
+related_refactoring_scopes: []
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+  - oauth_provider_quirks_strategy_pattern
+related_features:
+  - F-011  # Principal-to-Owner Resolution — F-011 batch O already carries individual
+           # facets (azure_logout_npe_no_token_revoke_local_only, cognito_logout_silent_no_op_on_empty_uri).
+           # F-086 is the operator-observable surface that names the cross-provider matrix as a
+           # coherent contract — the principal-resolution side of F-011 is the upstream-OF-handler;
+           # logout is the downstream-of-handler.
+  - F-089  # Post-Logout Redirect Provenance (SHB-112) — shares the same logout flow; the redirect
+           # provenance is the OTHER half of "what does logout do?".
+status: active
+ui_completeness_note: |-
+  UI consumption surfaced via F-011 batch Q (AppToolbar logout click is a
+  simple full-page navigation, no SPA-side revocation participation).
+  The drift facet `ui_provides_no_feedback_on_revocation_outcome` carries
+  ui_unverified:true — the file:line is confirmed but not visually probed.
+maintainer_curated: false
+proposed_action: |-
+  Local docker-compose with Keycloak realm masquerading as 4 providers
+  (Azure-shape, Cognito-shape, Google-shape, GitHub-shape). Wiremock
+  for outbound revocation endpoints. Capture access token, log out,
+  verify token TTL behaviour per provider.
+notes: |-
+  Genuinely new feature shape — F-011 already carries the two LOGOUT
+  drift facets at the principal-resolution chokepoint:
+  `azure_logout_npe_no_token_revoke_local_only`,
+  `cognito_logout_silent_no_op_on_empty_uri`. F-086 is the
+  operator-observable SURFACE owner — names the per-provider
+  token-revocation matrix as a documentation + integration-test target.
+  Cross-link with F-011 (the chokepoint) and F-089 (SHB-112 redirect
+  provenance — different surface, same logout flow).

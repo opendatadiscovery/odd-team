@@ -1,6 +1,6 @@
 # SHB-029 — Term delete leaves orphan `term_to_term` rows AND stale `term_search_entrypoint` vectors — deleted terms remain visible in linked-terms panels and search-index storage
 
-**Category**: open
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -38,5 +38,9 @@ Operators deleting a term via `DELETE /api/terms/{id}` see the UI navigate them 
 ## Links
 
 - cluster_with: [F-002, SHB-028]
-- merged_into: (open)
+- merged_into: F-002
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merged into F-002 (P-06:F-001 Term-to-Entity Linkage) — F-002 already carries `term_delete_cascade_omits_term_to_term_rows` (MEDIUM) + `fts_write_path_term_delete_leaves_stale_vector` (MEDIUM) facets minted in batch U. SHB-029 STRENGTHENS both with (a) the V0_0_76 vs V0_0_91 schema-drift framing (dead column OR missing filter), (b) the 7-read-site enumeration of term_to_term reads that never filter deleted_at, (c) the operator-visible consequence (linked-terms panel of OTHER terms still shows the deleted term; clicking it 404s — broken click-through with no visual cue).

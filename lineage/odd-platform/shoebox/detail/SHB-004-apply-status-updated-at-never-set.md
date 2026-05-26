@@ -1,6 +1,6 @@
 # SHB-004 — applyStatus bug silently breaks `status_updated_at` and the 30-day retention window
 
-**Category**: clustering
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -37,5 +37,16 @@ Operators see a "soft-delete retention is broken end-to-end — DELETED entities
 ## Links
 
 - cluster_with: [SHB-003, F-010]
-- merged_into: (open — would graduate to a refactoring-scope, not a new feature; the FEATURE is the auto-flip + retention, the BUG is this)
+- merged_into: F-044
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merged — the bug is a defect on the
+  Data Entity Status Lifecycle feature (F-044 / P-01:F-008), not a
+  standalone feature. Folded as drift_class
+  `status_updated_at_never_set_breaks_30_day_ttl` (HIGH severity) on
+  F-044's observed_vs_expected.facets. F-044 lists SHB-004 in its
+  `absorbs_threads:` block as `role: drift-facet`. The two-character
+  fix lives in the F-044 proposed_local_probes (P-shb-003-001) — flip
+  a status, SELECT status_updated_at, assert NOT NULL after fix.

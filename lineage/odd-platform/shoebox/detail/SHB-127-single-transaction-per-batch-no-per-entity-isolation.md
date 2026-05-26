@@ -1,6 +1,6 @@
 # SHB-127 — Collectors that mix a single bad entity into a 1000-entity payload lose the entire batch with a 5xx body-shape, no per-entity error report, no DLQ
 
-**Category**: clustering
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -43,5 +43,9 @@ Operators authoring custom collectors against the OpenAPI ingestion contract rea
 ## Links
 
 - cluster_with: [F-008]
-- merged_into: (open — likely a new F-NNN)
+- merged_into: F-096
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduate — SHB-127 evidence (6 file:line refs across service / controller / test / spec; mechanism mature) clearly anchors a distinct OPERATOR-FACING CONTRACT (response shape, retry semantics, DLQ absence, per-item errors absence) from F-008's destruction-narrative. Minted F-096 at lineage/odd-platform/feature-flows/detail/F-096.yaml (pillar P-10:F-004). Seven drift facets captured: batch atomicity without signal; spec-vs-impl 201/200 drift; duplicate-ODDRN-in-batch 500 not 400; unknown-datasource 500 not 404; no 413 contract; zero service-tier logging; row-lock contention with no signal. Cross-links F-008 (same single-transaction pipeline; complementary destruction angle) + F-094.

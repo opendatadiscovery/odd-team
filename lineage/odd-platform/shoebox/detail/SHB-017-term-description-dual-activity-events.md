@@ -1,6 +1,6 @@
 # SHB-017 — Description-edit emits dual activity events + `[[ns:term]]` auto-linking + DELETE-term cannot remove description-linked terms
 
-**Category**: open
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -42,5 +42,20 @@ Operators see a "term auto-linking from description text" behaviour because ever
 ## Links
 
 - cluster_with: [F-002, F-004]
-- merged_into: (open)
+- merged_into: F-004
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merged (partial — description-side
+  only) — F-004 (Entity Description Editing) is the P-01 anchor for the
+  DESCRIPTION-SIDE facets (dual-event emission + permission-bypass via
+  auto-link). Appended two drift_class facets to F-004:
+  `description_edit_auto_links_terms_dual_activity_events` (MEDIUM) +
+  `description_link_permission_bypass_anyone_with_description_update_can_add_terms`
+  (MEDIUM). The DELETE-term cascade asymmetry
+  (IS_DESCRIPTION_LINK.isFalse() filter at TermRelationsRepositoryImpl.java:179)
+  is a TERM-MANAGEMENT contract concern that belongs in F-002 (P-06
+  Glossary) — NOT modified here per anti-pattern about cross-pillar
+  files. Surfaced as a `cross_pillar_note` on F-004's appended facet
+  for the maintainer's next P-06 pass.

@@ -1,6 +1,6 @@
 # SHB-126 — Stats ingestion is a side-channel into the global tag taxonomy — bypasses `TAG_CREATE` RBAC
 
-**Category**: open
+**Category**: clustering
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -38,6 +38,10 @@ Operators believe the Tags management UI is the platform's controlled vocabulary
 
 ## Links
 
-- cluster_with: [F-018, F-008, F-017]
-- merged_into: (open — likely enriches F-018)
+- cluster_with: [F-018, F-008, F-017, SHB-125]
+- merged_into: (cross-pillar — defer cluster decision to Slice A's pillar P-01 owner)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: cluster — SHB-126 is a CROSS-PILLAR enricher (target F-018 lives in P-01 Data Discovery — Slice A's pillar; Slice G owns P-10 + P-11). Per slice-G anti-pattern "do NOT modify F-NNN files OUTSIDE your slice's pillar", deferred to next pass. Strong evidence (5 file:line refs spanning service / TagOrigin enum / SecurityConstants + cross-pillar link to F-008's silent-destruction class on the stats-tag plane). Cluster maintains link to SHB-125 (both are stats-endpoint write surfaces) and SHB-123 (both fall under the unauthenticated-ingestion-namespace coverage gap). Next pass: Slice-A maintainer / P-01 pillar owner decides between (a) enricher facet on F-018, OR (b) new F-NNN — Tag Vocabulary Mint Surfaces.

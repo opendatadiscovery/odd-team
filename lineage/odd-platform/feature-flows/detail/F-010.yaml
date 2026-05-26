@@ -846,3 +846,90 @@ coherence_corrections:
   artefact: TEST-GAP-523
   summary: |-
     TEST-GAP-523 (batch M, 2026-05-19) originally claimed "search_facets unbounded growth, NO TTL eviction, V0_0_52 has no search_facets entry, TTL TODO never implemented." All four sub-claims contradicted F-010 (this feature, batch K) which correctly enumerates SearchFacetsHousekeepingJob as one of 5 active housekeeping jobs. Ground-truth verification on 2026-05-19 (SearchFacetsHousekeepingJob.java + V0_0_52__introduce_housekeeping.sql:1-7 + application.yml:169) confirmed F-010 is correct; TEST-GAP-523 was rewritten in-place to point to the LEGITIMATE gap (the job has zero test coverage despite being load-bearing), with feature_id reassigned from F-001 → F-010 and back-link `related_features: [F-010]` added. Root cause: the originating sidecar (SearchController.facets, batch M) inferred absence from controller-tier scope without grepping the housekeeping subsystem; the test-coverage-mapper reducer trusted the sidecar without coherence-checking against feature-flows/index.yaml. Methodology fix: pre-emit coherence check (every reducer) + post-batch coherence sweep (orchestrator) + back-link bidirectionality (artefact schema).
+
+shoebox_extensions_2026_05_26:
+- seeded_from: SHB-083
+  drift_class: java_vs_yaml_default_mismatch_silent_zero_day_purge_on_application_yml_override
+  description: |-
+    HousekeepingTTLProperties.java:8-12 declares three `private int` fields with
+    NO `= 30` initialiser. Spring binds primitive default `0` when the operator
+    overrides `application.yml` (Helm chart, --spring.config.location=,
+    Kubernetes ConfigMap mount, Spring Cloud Config) without re-supplying the
+    `housekeeping.ttl.*` block. The shipped application.yml:166-170 is the SOLE
+    place the `30`-day default lives. Next 15-minute housekeeping cycle computes
+    cutoff = `now() - 0 days = now()` and the predicate `STATUS_UPDATED_AT <= cutoff`
+    matches every row. Destructive cascade includes attachments + lineage +
+    ownership; no log above DEBUG level; LSN-001 shape exactly.
+  evidence:
+  - HousekeepingTTLProperties.java:8-12 (no `= 30` initialiser)
+  - application.yml:166-170 (sole defaults home)
+  - AlertHousekeepingJob.java:32-33 + SearchFacetsHousekeepingJob.java:25-26 + DataEntityHousekeepingJob.java:73 (3 call sites consume primitive-int getters)
+  - HousekeepingJobManager.java:25-26 (15-minute schedule + 14-min shedlock)
+  - DataEntityHousekeepingJob.java:71-128, 142 (~25-table cascade + S3 file deletion)
+  - HousekeepingJobManager.java:30, 45 (success at log.debug only)
+  fix_one_line: |-
+    `private int resolvedAlertsDays = 30;` on each field — OR
+    `@DefaultValue("30") @Min(0) @Validated` on each field (Spring Boot 2.6+).
+  cross_pillar_compounds_with:
+  - SHB-094 / strengthened-jooq-precedence-bug (manual RESOLVED deleted even when 30 is set)
+  - F-019 audit-silence (Owner cascade is part of the 25-table destruction surface)
+  severity: HIGH
+  retrospective_class: LSN-001-shape (silent default + destructive action + no preview + no metric)
+- seeded_from: SHB-094
+  drift_class: alert_housekeeping_jooq_precedence_bug_manual_resolved_zero_day_purge
+  description: |-
+    AlertHousekeepingJob.java:28-34 jOOQ predicate is
+    `.where(STATUS.eq(RESOLVED)).or(STATUS.eq(RESOLVED_AUTOMATICALLY)).and(STATUS_UPDATED_AT.lessOrEqual(cutoff))`.
+    SQL operator precedence binds `AND` tighter than `OR`, emitting
+    `WHERE (STATUS='RESOLVED') OR ((STATUS='RESOLVED_AUTOMATICALLY') AND (STATUS_UPDATED_AT <= cutoff))`.
+    TTL gate is BYPASSED for the entire manual-resolved class — operator clicks
+    "RESOLVED" on an alert, it is hard-deleted within 15 minutes regardless of
+    `housekeeping.ttl.resolved_alerts_days`. Live docs ALREADY ACKNOWLEDGE this
+    bug verbatim; source has no `// TODO` / no `// BUG` / no GitHub-issue link;
+    zero test coverage pins either the current buggy or future fixed behaviour.
+    SOC2 / SOX / HIPAA compliance implications.
+  evidence:
+  - AlertHousekeepingJob.java:28-34 (fluent-builder precedence bug)
+  - live /configuration-and-deployment/odd-platform#housekeeping doc-acknowledgement (verbatim quote, WebFetched 2026-05-19 and 2026-05-26)
+  - AlertHousekeepingJob.java:1-50 (no inline TODO/BUG/FIXME)
+  - Grep across <odd-platform-api>/src/test for `AlertHousekeepingJob` returns ZERO matches
+  fix_one_line: |-
+    `.where(STATUS.eq(RESOLVED).or(STATUS.eq(RESOLVED_AUTOMATICALLY))).and(STATUS_UPDATED_AT.lessOrEqual(cutoff))`
+    (parenthesise the OR-pair before chaining the AND).
+  cross_pillar_compounds_with:
+  - SHB-083 java-yaml-default-mismatch (zero-day purge when TTL is 0; manual-RESOLVED purge when TTL is set)
+  severity: HIGH
+  strengthens_existing_primary_drift_class: true
+  related_refactoring_scope: REFACTOR-142
+- seeded_from: SHB-089
+  drift_class: activity_and_message_tables_no_time_based_retention_partition_drop_requires_empty_silent_doc_drift
+  description: |-
+    The `housekeeping.ttl.*` POJO contains exactly three fields (alert,
+    search-facets, data-entity) — NO `activityDays` / `messageDays`. The
+    ActivityEmptyPartitionsHousekeepingJob + MessageEmptyPartitionsHousekeepingJob
+    drop EMPTY past partitions only (PartitionService.isPartitionEmpty enforces
+    `COUNT(*) = 0` before drop). High-volume activity-emitting deployments see
+    the `activity` and `message` tables grow without bound. Live
+    `/features/active-platform-features/activity-feed#configuration` page
+    implies `odd.activity.partition-period` controls retention — it controls
+    partition WIDTH only. Compliance frameworks requiring bounded audit-log
+    retention (SOX, GDPR records-of-processing) cannot be satisfied. Live
+    `/configuration-and-deployment/odd-platform#housekeeping` documents
+    "three cleanup tasks" matching the TTL fields, hiding the existence of
+    the two extra empty-partition reapers AND the absence of activity/message
+    retention.
+  evidence:
+  - HousekeepingTTLProperties.java:8-12 (three fields only — no activity, no message)
+  - ActivityEmptyPartitionsHousekeepingJob.java:9-19 + MessageEmptyPartitionsHousekeepingJob.java:12-25 (neither injects HousekeepingTTLProperties)
+  - PartitionServiceImpl.java:133-141 (isPartitionEmpty enforces COUNT(*) = 0)
+  - live /configuration-and-deployment/odd-platform#housekeeping (three-task framing — WebFetched 2026-05-26)
+  - live /features/active-platform-features/activity-feed#configuration (partition-period implies retention — WebFetched 2026-05-12)
+  cross_pillar_compounds_with:
+  - F-021 (Activity Feed — already carries `activity_table_monotonic_growth_no_delete_path`)
+  - F-038 (Data Collaboration — disabled by default; same class applies when enabled)
+  - SHB-083 (java-yaml-default-mismatch — even if TTL fields existed, the 0-default bug would still apply)
+  severity: MEDIUM
+  fix_proposal: |-
+    Add `activityDays` + `messageDays` fields to HousekeepingTTLProperties;
+    add corresponding TTL-driven jobs that DELETE rows older than cutoff
+    inside each partition before partition-empty-drop attempts.

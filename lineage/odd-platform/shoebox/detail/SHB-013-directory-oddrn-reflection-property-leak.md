@@ -1,6 +1,6 @@
 # SHB-013 — Directory reflection-based ODDRN-property leak (host / database / port / cluster / account exposed without redaction)
 
-**Category**: open
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -40,5 +40,20 @@ Operators see per-datasource detail rows in the Directory level-2 response that 
 ## Links
 
 - cluster_with: [F-023]
-- merged_into: (open)
+- merged_into: F-023
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merged — the level-2 reflection
+  property-leak is a discrete DRIFT facet on F-023's Directory feature
+  surface, not a standalone F-NNN. The leak ANCHORS on the Directory's
+  existing payload shape (DirectoryTest at lines 141-149 already
+  asserts host + database are part of the response — the leak is the
+  intended payload shape, not a stray addition). Appended drift_class
+  `directory_reflection_oddrn_property_leak_no_redaction_allow_list`
+  (MEDIUM) to F-023 with 8 file:line refs + cross-links to
+  REFACTOR-185 (DISABLED-mode bypass) + REFACTOR-203 (graph-shaped
+  cross-owner enumeration). Per SHB-013's Next step 5 — cluster with
+  F-023 + REFACTOR-185 + REFACTOR-203 captures the broader catalog
+  enumeration surface.

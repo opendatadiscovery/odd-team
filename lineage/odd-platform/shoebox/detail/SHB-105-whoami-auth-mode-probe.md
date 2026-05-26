@@ -1,6 +1,6 @@
 # SHB-105 — `/api/identity/whoami` is an anonymous auth-mode fingerprint probe
 
-**Category**: open
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -36,5 +36,9 @@ An anonymous network caller can determine the platform's active authentication m
 ## Links
 
 - cluster_with: [F-011, F-034]
-- merged_into: (open — should be promoted into a REFACTOR-185 IDENTITY-FACET enricher OR a new F-NNN "UI Permission-Gate Bypass Under DISABLED")
+- merged_into: F-085
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduated — genuinely new feature shape. The whoami endpoint's anonymous-fingerprint-via-response-code AND DISABLED-mode synthetic admin fallback (with Permission.values() dynamic blast radius) are operator-observable surfaces no existing F-NNN names. F-011 carries the principal-to-owner resolution chokepoint that fires AFTER an authenticated principal; whoami's DISABLED branch short-circuits BEFORE that. Minted F-085 at lineage/odd-platform/feature-flows/detail/F-085.yaml (P-09:F-005 Identity Probe & DISABLED-Mode Synthetic Admin Fallback). Cross-link with F-011 (chokepoint), F-034 (Platform Feature-Flag Exposure — parallel runtime-config-discovery endpoint).

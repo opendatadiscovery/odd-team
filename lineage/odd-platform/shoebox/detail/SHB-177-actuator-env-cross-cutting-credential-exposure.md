@@ -1,6 +1,6 @@
 # SHB-177 — Spring Boot Actuator `/env` exposure default-on; cross-cutting credentials enumeration surface
 
-**Category**: open
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -43,5 +43,9 @@ Operators running ODD inherit a Spring Boot Actuator default that exposes `/actu
 ## Links
 
 - cluster_with: [SHB-173, SHB-174, F-029]
-- merged_into: (open)
+- merged_into: F-122
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduate — SECURITY load-bearing. Evidence: 7+ file:line citations across config classes + Properties classes + R2DBC + SecurityConstants + application.yml. Minted F-122 (P-09:F-008 Management-Endpoint Exposure & Credential Handling). Cluster_with [SHB-173, SHB-174, F-029] preserved — F-119 (just-minted SHB-173 graduation) carries the AppInfo fingerprint; F-122 carries the broader actuator schema fingerprint.

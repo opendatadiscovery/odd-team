@@ -1,0 +1,145 @@
+feature_id: F-120
+feature_name: "R2DBC Connection-Pool Sizing — operator-tunable concurrency ceiling silently 20-per-replica"
+pillar_id: P-08
+pillar_anchored_id: P-08:F-014
+pillar_anchored_feature_name: "R2DBC Pool Operator-Tunability"
+seeded_from: SHB-175
+seeded_at: 2026-05-26
+discovered_from_entry_point: |-
+  config-properties-class:R2DBCConfiguration — boot-time wiring of TWO
+  `io.r2dbc.pool.ConnectionPool` beans (primary + customConnectionPool for
+  Lookup Tables) via `PropertyMapper.alwaysApplyingWhenNonNull()`. Every
+  request that resolves authorization goes through `getCurrentUserRoles`
+  which hits the primary pool; every Lookup-Table read goes through the
+  custom pool.
+primary_subject:
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/config/R2DBCConfiguration.java"
+  - "odd-platform-api/src/main/resources/application.yml:1-15"
+contributing_nodes:
+  - "odd-platform java R2DBCConfiguration config-class:R2DBCConfiguration"
+  - "odd-platform java config-key-consumer:spring.r2dbc.pool.* (10 keys)"
+chain:
+  - hop: 1
+    node: "boot:Spring autoconfigure"
+    sidecar: "R2DBCConfiguration"
+    evidence: "R2DBCConfiguration.java:41-50 + 75-84 (two byte-identical PropertyMapper blocks)"
+    multiplicity_per_trigger: 2
+  - hop: 2
+    node: "r2dbc.ConnectionPool.maxSize=10 (framework default)"
+    sidecar: unresolved
+    evidence: "Spring Boot 3.x + r2dbc-pool 1.0.0.RELEASE — gradle/libs.versions.toml:14,73"
+    multiplicity_per_trigger: 1
+  - hop: 3
+    node: "PG connection slot consumed"
+    sidecar: unresolved
+    evidence: |-
+      Each replica reserves 2 × 10 = 20 connections (primary + custom pool,
+      regardless of whether Lookup Tables are used); 5-replica deployment
+      reserves 100, at PG's default `max_connections=100`.
+    multiplicity_per_trigger: 1
+terminal_side_effect:
+  side_effect_class: external-call
+  description: |-
+    PostgreSQL connection allocation. At saturation, requests are queued
+    inside the Reactor scheduler (Mono backpressure) — symptom is latency
+    spike with no in-application observability gauge.
+  evidence: "R2DBCConfiguration.java:41-50,75-84"
+  cardinality_per_call: 1
+amplification_factor: 2
+observed_vs_expected:
+  facets:
+    - drift_class: pool_size_silent_framework_default_undocumented
+      description: |-
+        ZERO `spring.r2dbc.pool.*` keys shipped in `application.yml`; ZERO
+        `spring.r2dbc.pool.max-size` published on the operator docs page.
+        Spring Boot framework default `maxSize=10` per pool governs silently.
+        Doubled by the second `customConnectionPool` bean — 20 concurrent
+        DB queries per replica is the deployed ceiling.
+      evidence:
+        - "application.yml:1-15 (no spring.r2dbc.pool.* keys)"
+        - "R2DBCConfiguration.java:41-50,75-84"
+        - "WebFetch docs.opendatadiscovery.org/configuration-and-deployment/odd-platform (no spring.r2dbc.pool.* docs)"
+    - drift_class: custom_pool_instantiated_unconditionally_no_conditionalonproperty
+      description: |-
+        `customConnectionPool` is created at line 54 with NO
+        `@ConditionalOnProperty` gate — every deployment runs both pools
+        whether or not Lookup Tables are used, doubling the PG connection
+        footprint.
+      evidence:
+        - "R2DBCConfiguration.java:54"
+    - drift_class: authorization_hot_path_bound_by_pool_ceiling
+      description: |-
+        Per the concept catalog (`authorization-hot-path-getcurrentuserroles-per-request-no-cache.yaml:44-45`),
+        every authorized request resolves `getCurrentUserRoles → getByName(role)`
+        → R2DBC query. At high RPS `getCurrentUserRoles` saturates the pool
+        first — the 20-per-replica ceiling is the hard authorization-throughput
+        scaling limit.
+      evidence:
+        - "lineage/odd-platform/concepts/detail/invariants/authorization-hot-path-getcurrentuserroles-per-request-no-cache.yaml:44-45"
+    - drift_class: no_micrometer_pool_metrics_no_actuator_visibility
+      description: |-
+        `R2DBCConfiguration` registers NO Micrometer binder for the pool;
+        `/actuator/prometheus` exposes no `r2dbc.pool.acquired` /
+        `r2dbc.pool.allocated` / `r2dbc.pool.queued` gauges. Operators
+        cannot answer "am I pool-bound?" from the metrics endpoint;
+        observability is `org.jooq` log level only.
+      evidence:
+        - "R2DBCConfiguration.java (entire — no MeterBinder beans)"
+    - drift_class: framework_default_inheritance_no_platform_pin
+      description: |-
+        A future Spring Boot upgrade altering `R2dbcProperties.Pool.maxSize`
+        default (SB 4.x? r2dbc-pool 2.0?) would silently change ODD's deployed
+        ceiling with no PR / changelog / migration note. Platform makes no
+        pin commitment; framework-default-inheritance is the contract.
+      evidence:
+        - "R2DBCConfiguration.java:41-50 (PropertyMapper.alwaysApplyingWhenNonNull — no platform-side pin)"
+    - drift_class: cross_cutting_wired_but_undocumented_operator_knob_class
+      description: |-
+        Same shape repeats with `spring.task.scheduling.pool.size` (SHB-176),
+        `attachment.remote.connect-timeout-millis` (SHB-174). All three are
+        wired by Spring autoconfiguration / PropertyMapper but absent from
+        operator docs. A scanner pass against `application.yml` + docs would
+        surface every "wired but undocumented" config key.
+      evidence:
+        - "SHB-176 (scheduling pool size)"
+        - "SHB-174 (MinIO HTTP timeouts)"
+test_matrix:
+  unit: GAP
+  integration: GAP
+  performance: GAP
+  security: GAP
+related_refactoring_scopes: []
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+  - "authorization-hot-path-getcurrentuserroles-per-request-no-cache"
+status: active
+cross_pillar_relationships:
+  - pillar_id: P-09
+    kind: shares_data_with
+    via: |-
+      The authorization hot path (P-09 RBAC reads) is bound by the R2DBC pool
+      ceiling. F-011's `getCurrentUserRoles` chokepoint shares the
+      saturation surface.
+notes_for_maintainer: |-
+  Probe-needed (local-only docker-compose stack): empirically verify what
+  happens at request 21 to a single replica — does Spring R2DBC backpressure
+  via Mono queueing, or does it fail with `R2dbcTimeoutException` after
+  `maxAcquireTime`? Sidecar marks `PROBE-NEEDED`.
+
+  Follow-up scope candidates:
+  - DOC-NNN: publish `spring.r2dbc.pool.max-size` on the operator page with
+    the framework-default value stated.
+  - PERF-NNN: add R2DBC Micrometer binder so `/actuator/prometheus` exposes
+    pool utilisation.
+  - REFACTOR-NNN: gate `customConnectionPool` with
+    `@ConditionalOnProperty("spring.custom-datasource.url")` so deployments
+    without Lookup Tables don't pay the double-pool cost.
+provenance: |-
+  Graduated from SHB-175 by feature-flow-builder on 2026-05-26 (parallel
+  triage slice H2). Evidence spans 5 substrate axes: config class file:line
+  + application.yml absence + framework defaults + concept-catalog invariant
+  + WebFetch confirming docs silence. Graduation threshold easily met.
+  Cluster_with F-026 (Lookup Tables) per the source SHB; not folded because
+  the R2DBC pool ceiling is operator-infrastructure-shaped (Pillar P-08
+  operator config), not Lookup-Tables-specific (P-03).

@@ -1,6 +1,6 @@
 # SHB-094 — AlertHousekeepingJob jOOQ predicate bypasses TTL for manual RESOLVED alerts (docs-acknowledged, source-uncommented, un-tracked, untested)
 
-**Category**: open
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -34,5 +34,9 @@ Operators setting `housekeeping.ttl.resolved_alerts_days: 90` for compliance rev
 ## Links
 
 - cluster_with: [F-010, SHB-083]
-- merged_into: (open)
+- merged_into: F-010
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merged — F-010's existing primary_drift_class is `jooq_operator_precedence_bug_with_doc_acknowledgement_no_test` — the same class this thread anchors. The thread STRENGTHENS the primary drift class with explicit doc-acknowledgement-verbatim citations + the explicit absence-evidence on `// TODO`/`// BUG`/`// FIXME` inline annotations + the zero-test-match grep + the one-line parenthesisation fix. F-010: shoebox_extensions_2026_05_26 → drift_class: alert_housekeeping_jooq_precedence_bug_manual_resolved_zero_day_purge (marked `strengthens_existing_primary_drift_class: true`). Cross-link to REFACTOR-142 preserved. Category flipped open → merged.

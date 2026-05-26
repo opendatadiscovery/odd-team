@@ -1,0 +1,208 @@
+feature_id: F-124
+feature_name: "Cross-Provider ADMIN Promotion Semantics — six distinct admin-detection mechanisms diverge per auth provider"
+pillar_id: P-09
+pillar_anchored_id: P-09:F-009
+pillar_anchored_feature_name: "ADMIN Promotion Across Auth Providers"
+seeded_from: SHB-181
+seeded_at: 2026-05-26
+discovered_from_entry_point: |-
+  auth-handler:{LDAP,Cognito,GitHub,Google,Azure,ODD_IAM}UserHandler — six
+  distinct `*UserHandler.shouldHandle() + extractAdminAuthorities()`
+  implementations across LDAP + 5 OAuth2 providers. Plus LOGIN_FORM where
+  admin is granted at user-creation time via UI rather than via config.
+primary_subject:
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/properties/ODDLDAPProperties.java:31 (Group.adminGroups Set<String>)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/properties/ODDOAuth2Properties.java:32,45-49 (4 different admin-detection fields)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/config/LDAPSecurityConfiguration.java:48,94-98 (containsIgnoreCase substring match)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/handler/impl/CognitoUserHandler.java:26"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/handler/impl/GithubUserHandler.java:39,54-67,78-86"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/handler/impl/GoogleUserHandler.java:39,56-64"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/handler/impl/AzureUserHandler.java:26"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/handler/impl/ODDIAMUserHandler.java:28,36-38"
+contributing_nodes:
+  - "odd-platform java auth.properties class:ODDLDAPProperties"
+  - "odd-platform java auth.properties class:ODDOAuth2Properties"
+  - "odd-platform java auth.config class:LDAPSecurityConfiguration"
+  - "odd-platform java auth.handler.impl class:CognitoUserHandler"
+  - "odd-platform java auth.handler.impl class:GithubUserHandler"
+  - "odd-platform java auth.handler.impl class:GoogleUserHandler"
+  - "odd-platform java auth.handler.impl class:AzureUserHandler"
+  - "odd-platform java auth.handler.impl class:ODDIAMUserHandler"
+chain:
+  - hop: 1
+    node: "auth-provider:user-authenticates-via-{provider}"
+    sidecar: "*UserHandler"
+    evidence: "each handler's shouldHandle() matches the provider registrationId"
+    multiplicity_per_trigger: 1
+  - hop: 2
+    node: "extractAdminAuthorities() runs per-provider divergent logic"
+    sidecar: "see primary_subject"
+    evidence: |-
+      LDAP: containsIgnoreCase substring match against
+      auth.ldap.groups.admin-groups.
+      Cognito: cognito:groups claim exact-matched against
+      auth.oauth2.client.cognito.admin-groups.
+      GitHub: org+team API call gated by organization-name + read:org scope.
+      Google: allowed-domain + custom admin-attribute claim.
+      Azure: roles claim (or groups if groups-claim=groups) exact-match.
+      ODD_IAM: admin-user-info-flag boolean claim.
+    multiplicity_per_trigger: 1
+  - hop: 3
+    node: "principal granted ADMIN authority OR not"
+    sidecar: unresolved
+    evidence: "six distinct failure modes per provider (see facets)"
+    multiplicity_per_trigger: 1
+terminal_side_effect:
+  side_effect_class: db-write
+  description: |-
+    Authenticated principal's authority set is materialised into the
+    SecurityContext for the request; if ADMIN granted, every authorization
+    gate passes. Misconfiguration → over-privileged users (LDAP substring
+    match) OR no-admin-path users (GitHub missing scope, Okta/Keycloak
+    no handler).
+  evidence: "LDAPSecurityConfiguration.java:91-93 / each *UserHandler"
+  cardinality_per_call: 1
+amplification_factor: 1
+observed_vs_expected:
+  facets:
+    - drift_class: ldap_admin_groups_substring_match_overpromotion
+      description: |-
+        `LDAPSecurityConfiguration.java:96` uses
+        `OperationUtils.containsIgnoreCase(adminGroups, authority)` — case-
+        insensitive SUBSTRING containment, not equality. Operator config
+        `admin-groups: ['ops']` against LDAP groups `devops`, `noops`,
+        `appops`, `dataops` silently promotes EVERY member of EVERY one
+        of those groups to ADMIN. Mitigation is operator-side (use long
+        admin-group names like `ODD_PLATFORM_ADMINS`). Docs do NOT warn.
+        HIGHEST SEVERITY in this feature.
+      evidence:
+        - "LDAPSecurityConfiguration.java:48,94-98"
+        - "ODDLDAPProperties.java:31"
+        - "WebFetch docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/ldap (no substring warning)"
+    - drift_class: github_admin_requires_read_org_scope_silent_failure
+      description: |-
+        GitHub admin-detection (`GithubUserHandler.java:78-86`) calls
+        the GitHub API to enumerate the user's teams. Missing `read:org`
+        scope → 403 / empty result → handler returns no admin authorities
+        → user is USER regardless of team membership. No fail-fast at
+        boot, no log clue at sign-in time. Operator sees "admin promotion
+        isn't working" with no actionable info.
+      evidence:
+        - "GithubUserHandler.java:78-86"
+    - drift_class: azure_logout_uri_unvalidated_npe_on_first_logout
+      description: |-
+        Per ODDOAuth2Properties sidecar: Azure operators who omit `logout-uri`
+        get NullPointerException on first logout. `@PostConstruct validate()`
+        only checks clientId + provider non-empty; provider-required fields
+        are unvalidated. Same shape applies to Google's `allowed-domain`
+        and GitHub's `organization-name`.
+      evidence:
+        - "ODDOAuth2Properties.java @PostConstruct validate()"
+    - drift_class: okta_keycloak_documented_but_no_handler_implementation
+      description: |-
+        Live docs at `docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/oauth2-oidc`
+        claim support for 7 providers. The `Provider` enum has 5 values
+        (`COGNITO, GITHUB, GOOGLE, ODD_IAM, AZURE`). Okta + Keycloak get
+        generic OIDC routing — `*UserHandler.shouldHandle` checks fail —
+        no admin-detection logic runs — every Okta/Keycloak user is USER.
+        Documented as supported; mechanically not supported.
+      evidence:
+        - "Provider enum (5 values)"
+        - "WebFetch docs page (7 providers claimed)"
+        - "each *UserHandler.shouldHandle equalsIgnoreCase(Provider.X.name())"
+    - drift_class: ldap_groups_unset_silent_user_only_no_admin_path
+      description: |-
+        When `auth.ldap.groups` is null (default — application.yml ships
+        the ldap block commented out), LDAPSecurityConfiguration:91-93
+        returns a USER-only authority for every authenticated user. An
+        operator who uncomments LDAP but forgets `groups.admin-groups` has
+        NO path to ADMIN via LDAP AND no error message tells them.
+      evidence:
+        - "ODDLDAPProperties.java:18,28-32"
+        - "LDAPSecurityConfiguration.java:91-93"
+        - "application.yml:50-65 (ldap block commented out)"
+    - drift_class: oauth2_provider_field_free_string_no_enum_typo_silent_routing
+      description: |-
+        `OAuth2Provider.provider` field type is free String (not the
+        `Provider` enum). A typo like `provder: google` fails fast at
+        boot? No — it silently routes through generic OIDC discovery
+        (every `*UserHandler.shouldHandle` check fails on typo'd value,
+        so handler-chain falls through). No admin path; no fail-fast.
+      evidence:
+        - "ODDOAuth2Properties.java:32 (provider String, not Provider enum)"
+    - drift_class: login_form_admin_via_seeded_administrator_role_not_via_config
+      description: |-
+        Under `auth.type=LOGIN_FORM`, there is NO admin-detection
+        mechanism on form-login itself. Admin is granted at user-creation
+        time via the UI by binding the seeded `Administrator` Role to
+        the user's mapped Owner. Per F-011's drift class
+        `login_form_admin_for_all_hardcoded_no_role_discrimination`, this
+        is itself a load-bearing finding: the form-login mode has its
+        OWN admin-promotion shape that the OAuth2/LDAP docs don't
+        anticipate.
+      evidence:
+        - "F-011 drift class login_form_admin_for_all_hardcoded_no_role_discrimination"
+    - drift_class: six_admin_paths_no_unified_doc_page
+      description: |-
+        Six concrete shapes of "configure admins": (a) LDAP substring,
+        (b) Cognito exact-match, (c) GitHub org+team+scope, (d) Google
+        domain+attribute, (e) Azure roles-or-groups-claim, (f) ODD_IAM
+        userinfo-flag. Plus form-login's role-binding-at-creation. Live
+        docs treat each provider's admin page in isolation; no unified
+        "ADMIN Promotion Across Auth Providers" reference for operators
+        migrating between modes.
+      evidence:
+        - "WebFetch docs (per-provider pages; no unified reference)"
+test_matrix:
+  unit: GAP
+  integration: GAP
+  performance: GAP
+  security: GAP
+related_refactoring_scopes: []
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+  - "cross-provider-admin-promotion-mechanism-divergence-with-six-distinct-shapes"
+status: active
+cross_pillar_relationships:
+  - pillar_id: P-08
+    kind: shares_data_with
+    via: |-
+      ADMIN promotion is the operator-facing surface for elevating users
+      to platform-administrator privilege. Management UI's Owner/Role
+      tabs (F-019 + F-006) are the LOGIN_FORM-mode admin-binding flow;
+      OAuth2/LDAP modes bypass the Management UI and rely on external
+      identity provider claims.
+notes_for_maintainer: |-
+  Probe-needed (local-only): configure LDAP with `admin-groups: ['ops']`
+  against a fake LDAP server containing groups `devops` + `noops` + `appops`;
+  confirm the platform promotes every user in any of those groups to ADMIN.
+
+  Follow-up scope candidates:
+  - SEC-NNN (HIGH): change LDAP admin-group matching from `containsIgnoreCase`
+    SUBSTRING to `equalsIgnoreCase` EXACT match (one-line LDAPSecurityConfiguration.java:96).
+    Migration note for operators using substring tokens.
+  - SEC-NNN: cross-field validation in ODDOAuth2Properties.@PostConstruct
+    validate() — Azure requires logoutUri; GitHub requires read:org scope
+    when adminGroups non-empty; Google requires allowedDomain.
+  - REFACTOR-NNN: OAuth2Provider.provider field type-safe via Provider enum
+    (currently free String).
+  - DOC-NNN: create unified "ADMIN Promotion Across Auth Providers" page.
+  - DOC-NNN: Provider enum + handlers brought to parity with live docs'
+    7-provider claim (Okta + Keycloak need handlers).
+  - CONCEPT-CATALOG: promote
+    `cross-provider-admin-promotion-mechanism-divergence-with-six-distinct-shapes`
+    as a canonical concept entry.
+
+  Cluster_with [F-006, F-011] per source SHB. F-006 (RBAC Policy Lifecycle)
+  is the destination of an ADMIN authority; F-011 (Principal-to-Owner
+  Resolution) is the resolver layer that consumes the authority set; F-124
+  is the admin-promotion layer that PRODUCES the authority. The three are
+  complementary not overlapping.
+provenance: |-
+  Graduated from SHB-181 by feature-flow-builder on 2026-05-26 (parallel
+  triage slice H2). Evidence: 8 file:line citations across handler classes
+  + 2 Properties classes + WebFetched docs + concept-catalog cross-references.
+  Graduation threshold easily met. Cross-pillar with Slice F's SHB-103 ADMIN
+  surface — flagged via cluster_with [F-006, F-011] without modifying Slice F
+  F-NNNs (per slice discipline).

@@ -1,6 +1,6 @@
 # SHB-146 — Activity tab link carries a 5-day window baked at SPA-bundle load time, not click time
 
-**Category**: open
+**Category**: merged
 **Severity**: LOW
 
 ## Hypothesis
@@ -30,5 +30,9 @@ If an operator keeps the SPA tab open for days without reload (a common laptop-s
 ## Links
 
 - cluster_with: []
-- merged_into: (open)
+- merged_into: F-041
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — adds a NEW facet to F-041 capturing the module-load-time `new Date()` evaluation on the Activity tab's query window. The bug surfaces THROUGH the toolbar (the tab's `to=` href carries the stale dates), so F-041's chrome is the operator-visible site even though the root cause is in Activity/common.ts. F-041: Application Toolbar — drift_class: module_load_time_date_snapshot_stale_window_across_spa_session.

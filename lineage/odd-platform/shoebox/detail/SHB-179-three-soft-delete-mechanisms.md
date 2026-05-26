@@ -1,6 +1,6 @@
 # SHB-179 — Three soft-delete mechanisms coexist; operator-observable deletion semantics drift across the schema
 
-**Category**: open
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -41,5 +41,9 @@ Operators querying ODD's PostgreSQL database directly (BI tools, ETL jobs, admin
 ## Links
 
 - cluster_with: [F-019, F-020, F-028, F-031, F-006]
-- merged_into: (open)
+- merged_into: F-123
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduate — evidence rich (4 substrate axes: SQL migration files + repository sidecars + invariants sections + concept-catalog cross-refs). Minted F-123 (P-08:F-016 Deletion Semantics Per-Resource Contract) with `sme_consultation_recommended: true` because the intent question (deliberate contract vs accidental drift) is not resolvable from code alone — needs data-platform-architect SME validation. Cluster_with [F-019, F-020, F-028, F-031, F-006] preserved as related lifecycle features.

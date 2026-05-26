@@ -1,6 +1,6 @@
 # SHB-131 — `GET /ingestion/dataentitygroups/{degOddrn}/entities` lets any HTTP caller enumerate DEG membership in every deployment configuration
 
-**Category**: open
+**Category**: clustering
 **Severity**: HIGH
 
 ## Hypothesis
@@ -44,6 +44,10 @@ The read-side companion to the ingestion-controller's S2S write path is an unaut
 
 ## Links
 
-- cluster_with: [F-016, F-023, SHB-123, F-029]
-- merged_into: (open)
+- cluster_with: [F-016, F-023, F-094, F-097, F-008]
+- merged_into: (cross-pillar — defer to F-016 owner pillar P-05 OR F-023 owner pillar P-01)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: cluster — SHB-131 is a CROSS-PILLAR enricher (target F-016 lives in P-05 Data Lineage; target F-023 in P-01 Data Discovery — both outside Slice G's P-10/P-11 ownership). Defer to next pass. The endpoint `/ingestion/dataentitygroups/{degOddrn}/entities` IS technically in /ingestion/** namespace (Slice-G-relevant) — F-094 now anchors the auth-coverage gap and F-094's drift facets cover the unauthenticated-in-every-mode surface. The DEG-MEMBERSHIP-SPECIFIC angles (404-vs-empty-200 silent conflation; soft-delete leak via single-sided IS_DELETED filter; deterministic ODDRN enumeration enabling O(N) anonymous walk) merit a dedicated F-NNN OR an enricher of F-016 — but the home pillar is cross-slice. Cluster maintains link to F-094 (auth-coverage matrix), F-097 (Swagger UI exposes the endpoint), F-008 (already cites s2s_read_side_unauthenticated_get_data_entities_by_deg_oddrn in its drift summary).

@@ -1,0 +1,170 @@
+feature_id: F-121
+feature_name: "Scheduled-Job Executor Architecture — four jobs share one thread silently"
+pillar_id: P-08
+pillar_anchored_id: P-08:F-015
+pillar_anchored_feature_name: "Scheduled-Job Executor Concurrency Contract"
+seeded_from: SHB-176
+seeded_at: 2026-05-26
+discovered_from_entry_point: |-
+  config-class:SchedulingConfiguration — boot-time @EnableScheduling +
+  @EnableSchedulerLock setup. Four background jobs (housekeeping every 15min,
+  status-switch every 10min, partition-creation cron daily 00:01,
+  session-housekeeping every 1h) all run on Spring Boot's default
+  TaskScheduler with `poolSize=1`. No `@Bean TaskScheduler` declaration
+  anywhere overrides this default; no `spring.task.scheduling.pool.size`
+  in `application.yml` either.
+primary_subject:
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/config/SchedulingConfiguration.java"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/HousekeepingJobManager.java:25"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/DataEntityStatusSwitchJob.java:21"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/leader_election/PostgreSQLPartitionCreationJob.java:40"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/session/PostgreSQLSessionHousekeepingJobHandler.java:13-18"
+contributing_nodes:
+  - "odd-platform java config-class:SchedulingConfiguration"
+  - "odd-platform java service service:HousekeepingJobManager"
+  - "odd-platform java service:DataEntityStatusSwitchJob"
+  - "odd-platform java leader_election class:PostgreSQLPartitionCreationJob"
+  - "odd-platform java auth.session class:PostgreSQLSessionHousekeepingJobHandler"
+chain:
+  - hop: 1
+    node: "boot:Spring autoconfigure TaskScheduler"
+    sidecar: "SchedulingConfiguration"
+    evidence: "SchedulingConfiguration.java:12-26 (no @Bean TaskScheduler)"
+    multiplicity_per_trigger: 1
+  - hop: 2
+    node: "ThreadPoolTaskScheduler.poolSize=1 (framework default)"
+    sidecar: unresolved
+    evidence: |-
+      Zero `spring.task.*` keys in application.yml; Spring Boot
+      `TaskSchedulerBuilder` defaults to poolSize=1.
+    multiplicity_per_trigger: 1
+  - hop: 3
+    node: "four @Scheduled methods queue on single thread"
+    sidecar: "HousekeepingJobManager / DataEntityStatusSwitchJob / PostgreSQLPartitionCreationJob / PostgreSQLSessionHousekeepingJobHandler"
+    evidence: |-
+      HousekeepingJobManager.java:25 (@Scheduled 15min);
+      DataEntityStatusSwitchJob.java:21 (@Scheduled 10min);
+      PostgreSQLPartitionCreationJob.java:40 (@Scheduled cron 0 1 0 * * *);
+      PostgreSQLSessionHousekeepingJobHandler.java:13-18 (@Scheduled 1h).
+    multiplicity_per_trigger: 1
+terminal_side_effect:
+  side_effect_class: db-write
+  description: |-
+    Housekeeping DELETEs + partition CREATEs + status UPDATEs + session
+    cleanup DELETEs against PostgreSQL. Cron-misfire failure mode:
+    PostgreSQLPartitionCreationJob's daily 00:01 partition CREATE-TABLE-IF-NOT-EXISTS
+    deferred behind a long housekeeping cycle → if queue exceeds 23:59:59 of
+    the partition's first-use day, INSERTs against ACTIVITY / MESSAGE fail
+    with `no partition exists for the given key`.
+  evidence:
+    - "HousekeepingJobManager (15-min cycle)"
+    - "PostgreSQLPartitionCreationJob (daily 00:01)"
+  cardinality_per_call: 1
+amplification_factor: 1
+observed_vs_expected:
+  facets:
+    - drift_class: single_thread_executor_default_undocumented
+      description: |-
+        Spring's default TaskScheduler poolSize=1 is the deployed reality;
+        operator docs at `docs.opendatadiscovery.org/configuration-and-deployment/odd-platform#housekeeping`
+        mention the 15-minute housekeeping cadence + ShedLock multi-instance
+        coordination but do NOT mention single-thread executor OR the
+        `spring.task.scheduling.pool.size` knob. Mitigation is one line of
+        YAML; documenting it is the substantive gap.
+      evidence:
+        - "SchedulingConfiguration.java:12-26 (no @Bean TaskScheduler)"
+        - "application.yml (zero spring.task.* keys)"
+        - "WebFetch docs.opendatadiscovery.org/configuration-and-deployment/odd-platform#housekeeping (verified 2026-05-26 status 200)"
+    - drift_class: cron_misfire_partition_creation_blocked_behind_housekeeping
+      description: |-
+        PostgreSQLPartitionCreationJob daily 00:01 cron creates next-day
+        ACTIVITY / MESSAGE partitions. If long housekeeping runs past
+        00:01 — and the four jobs share ONE thread — the partition CREATE
+        is queued. Spring's default `MissedTaskBehavior` is queue-and-execute-ASAP
+        (PROBE-NEEDED per SchedulingConfiguration sidecar P-183). If queue
+        exceeds 23:59:59 of partition's first-use day, INSERT failures cascade
+        with no obvious cause.
+      evidence:
+        - "PostgreSQLPartitionCreationJob.java:40 (@Scheduled cron 0 1 0 * * *)"
+        - "HousekeepingJobManager.java:25 (@SchedulerLock lockAtLeastFor 14m)"
+    - drift_class: session_housekeeping_lacks_schedulerlock_asymmetric_pattern
+      description: |-
+        PostgreSQLSessionHousekeepingJobHandler is `@Scheduled` WITHOUT
+        `@SchedulerLock` — runs on EVERY replica simultaneously every hour.
+        Today the DELETE-by-expired-timestamp is idempotent so operationally
+        harmless; convention violation is real. A new maintainer adding a
+        `@Scheduled` method may copy this pattern and inherit the gap. The
+        `@EnableSchedulerLock(defaultLockAtMostFor="1h")` NAME promises
+        "enable scheduler lock" but mechanically only enables the AOP
+        advisor — bare `@Scheduled` is not locked.
+      evidence:
+        - "PostgreSQLSessionHousekeepingJobHandler.java:13-18 (no @SchedulerLock)"
+        - "SchedulingConfiguration.java (@EnableSchedulerLock defaultLockAtMostFor=1h — dead code today)"
+    - drift_class: defaultlockatmostfor_one_hour_dead_code
+      description: |-
+        `@EnableSchedulerLock(defaultLockAtMostFor="1h")` is DEAD CODE today —
+        all three `@SchedulerLock`-annotated methods (housekeeping 14m,
+        status-switch 9m, partition-creation 10m) declare their own
+        `lockAtMostFor`. Latent safety floor only.
+      evidence:
+        - "SchedulingConfiguration.java:12-26"
+    - drift_class: graceful_shutdown_lock_held_for_lockatmostfor_window
+      description: |-
+        `kubectl delete pod` mid-housekeeping rolls back the in-flight jOOQ
+        transaction (safe) but leaves the shedlock row held until
+        lockAtMostFor expires (~14min). No replica can run housekeeping
+        during the lock-hold window. `spring.task.scheduling.shutdown.await-termination`
+        is unset; Spring default interrupts running threads.
+      evidence:
+        - "HousekeepingJobManager @SchedulerLock(lockAtMostFor=14m)"
+    - drift_class: no_lockprovider_or_executor_micrometer_metrics
+      description: |-
+        ShedLock LockProvider has NO Micrometer instrumentation; lock-acquisition
+        outcomes + lock-hold duration are not surfaced. ThreadPoolTaskExecutor
+        active threads + queued tasks similarly invisible. Operators cannot
+        answer "is replica B failing to acquire because replica A is holding?"
+        from metrics.
+      evidence:
+        - "SchedulingConfiguration.java (entire — no MeterBinder)"
+test_matrix:
+  unit: GAP
+  integration: GAP
+  performance: GAP
+  security: GAP
+related_refactoring_scopes: []
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+  - "housekeeping-ttl-retention"
+  - "202-queue-postgres-advisory-lock-single-sender-pattern"
+status: active
+cross_pillar_relationships:
+  - pillar_id: P-07
+    kind: shares_data_with
+    via: |-
+      Activity-feed partition creation (P-07 Active Platform Features)
+      depends on PostgreSQLPartitionCreationJob completing on cadence; the
+      executor architecture is the load-bearing infrastructure for the
+      activity-feed surface.
+notes_for_maintainer: |-
+  Probe-needed (local-only): empirically verify Spring's default cron-misfire
+  behaviour when a long-running task blocks the executor across the cron
+  trigger time. Sidecar emits P-183. Set up a docker-compose stack with a
+  contrived 30-minute housekeeping cycle and observe the partition-creation
+  scheduling at the cron boundary.
+
+  The fix IS one line of YAML: `spring.task.scheduling.pool.size: 4`. The
+  substantive work is operator-page documentation + the `@SchedulerLock`
+  convention defence on the session-housekeeping handler.
+
+  Cluster_with F-010 (Housekeeping TTL Enforcement) — same source SHB
+  flagged. F-010 names WHAT runs in the housekeeping cycle; this feature
+  names HOW the executor schedules across the four-job set. The two cover
+  different boundaries and should remain distinct.
+provenance: |-
+  Graduated from SHB-176 by feature-flow-builder on 2026-05-26 (parallel
+  triage slice H2). Evidence rich: SchedulingConfiguration + 4 @Scheduled
+  job files + application.yml absence + WebFetch docs silence. Graduation
+  threshold met. Cross-pillar with F-010 (Slice E) — flagged at
+  cluster_with [F-010] without modifying F-010 (Slice F's pillar per slice
+  discipline).

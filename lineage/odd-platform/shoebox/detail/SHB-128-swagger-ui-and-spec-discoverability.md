@@ -1,6 +1,6 @@
 # SHB-128 — Every running platform serves the full 194-operation API spec at `/api/v3/api-docs` unauthenticated, including a "ProspectLog" legacy title and a personal contact email
 
-**Category**: open
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -43,5 +43,9 @@ Operators deploying ODD Platform receive — as a side effect of the springdoc-o
 ## Links
 
 - cluster_with: [F-029, SHB-123, SHB-129]
-- merged_into: (open)
+- merged_into: F-097
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduate — SHB-128 evidence (6 file:line refs across openapi spec / components / WHITELIST + live docs anchor explicitly directing operators to Swagger UI) anchors a distinct angle from F-029 (which covers the spec CONTENT contract). F-097 anchors the DISCOVERABILITY SURFACE — branding-legacy ProspectLog title + personal contact email `ndementev@provectus.com` + localhost stub server entry + no securitySchemes block + per-auth-mode availability matrix unknown. Minted F-097 at lineage/odd-platform/feature-flows/detail/F-097.yaml (pillar P-11:F-002). Per-auth-mode availability is the load-bearing unknown — probe required.

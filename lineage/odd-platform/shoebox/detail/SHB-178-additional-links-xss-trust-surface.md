@@ -1,6 +1,6 @@
 # SHB-178 — Operator-Configured Additional Links — URL scheme unvalidated + reverse-tabnabbing (enricher of F-035)
 
-**Category**: clustering
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -39,5 +39,9 @@ Operators who use the `odd.links[]` feature (F-035) to surface internal wikis / 
 ## Links
 
 - cluster_with: [F-035]
-- merged_into: (open — feature-flow-builder to fold into F-035)
+- merged_into: F-035
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — F-035 (P-08:F-009 Operator-Configured Additional Links) already enumerates `reverse_tabnabbing` + `url_scheme_not_validated` + `config_properties_boot_time_only` facets. Appended batch_extension ZL with primary-source strengthening of three existing facets + ADDED new facet `additional_links_no_rbac_global_visibility_internal_url_leak` (the no-RBAC posture was not previously enumerated). Recommendation per source SHB confirmed: F-035 is the right home; this thread fills in operator-trust drift class.

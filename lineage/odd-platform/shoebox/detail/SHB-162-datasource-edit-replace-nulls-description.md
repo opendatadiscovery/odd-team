@@ -30,6 +30,10 @@ When operators open "Edit datasource" to fix a typo in the Name field and click 
 
 ## Links
 
-- cluster_with: [F-031, SHB-161]
-- merged_into: (set when merged into F-031)
+- cluster_with: [F-031, SHB-160, SHB-161]
+- merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: cluster — joins the "Form UX class" cluster with SHB-160 + SHB-161 for cohesive next-batch graduation. The REPLACE-not-PATCH backend semantic is cross-cutting (DataSource / Term / Collector / LookupTable) — capturing it once at the cluster level rather than splintering across N F-NNNs is the maintainer-friendlier shape. HIGH severity per silent description nulling.

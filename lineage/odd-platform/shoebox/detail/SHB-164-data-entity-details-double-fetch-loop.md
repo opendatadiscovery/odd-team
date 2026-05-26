@@ -34,6 +34,10 @@ When operators open any data entity detail page (`/dataentities/{id}/*` — ever
 
 ## Links
 
-- cluster_with: [F-001, F-003]
-- merged_into: (set when merged into F-001)
+- cluster_with: [F-001, F-003, SHB-165]
+- merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: cluster — F-001 (Popular Entities Ranking) is P-01 Data Discovery (CROSS-PILLAR outside this H1 slice's P-08 boundary) AND has `maintainer_curated: true` — DEFER F-001 enrichment to a P-01-pillar batch with maintainer review. The thread's empirical evidence (probe P-004 PASS, +2 view_count per page-open) is the strongest UI-half anchor for F-001's existing inflation surface; the maintainer should fold this in directly on next P-01 pass. Cluster_with SHB-165 (5-thunk salvo on the same DataEntityDetails mount).

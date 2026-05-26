@@ -41,3 +41,7 @@ Operators enabling Data Collaboration ship a Slack OAuth bot token (`datacollabo
 - cluster_with: [F-038, SHB-056, SHB-062]
 - merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — into F-038 Data Collaboration. F-038's drift_class_summary already enumerates `slack_oauth_token_sole_workspace_secret_no_rotation` as a load-bearing drift facet, anchored at DataCollaborationConfiguration.java:21-29 + application.yml:206. The token-lifecycle / revocation-signal gap is the operator-visible consequence of that drift; F-038's existing facet covers the structural absence (no rotation, no in-app revocation signal, no `auth.test` validity check at boot). Adding a refinement note to F-038's batch ZF — surface the runbook gap "operator has no UI path to 'token revoked, update config and restart'" and the bot-channel-scope blast-radius (per Slack docs requiring channels:read + chat:write + chat:read scopes; SlackAPIClientImpl.java:45 `.filter(Conversation::isMember)`) — strengthens but does not contradict the existing facet. Thread marked merged. F-038: Data Collaboration — drift_class facet `slack_oauth_token_sole_workspace_secret_no_rotation` strengthened with the token-lifecycle / revocation-signal gap.

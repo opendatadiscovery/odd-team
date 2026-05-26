@@ -43,3 +43,7 @@ If an operator configures notifications and ANY single ALERT row produces a Runt
 - cluster_with: [F-009, SHB-053, SHB-055]
 - merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — into F-009 WAL-driven Notification Delivery. F-009's drift_class_summary already enumerates `poison_message_replay_loop` (batch K), `poison_message_wal_replay_loop_subscriber_layer_primary_source` (batch Y facet 1), `wal_retention_disk_exhaustion_under_poison_replay` (batch Y facet 2), `lazy_create_no_drop_replication_artefacts_operator_owns_cleanup` (batch Y facet 4), `thread_death_not_detected_no_future_retention_silent_subscriber_loss` (batch Y facet 5). F-009 batch Y notes 1-5 (NotificationSubscriber.java:77-91 + lines 104-126 + lines 128-158) are the load-bearing primary-source for SHB-054's full hypothesis including the WAL-retention disk-exhaustion compound and the NotificationSubscriberStarter silent-death case. No new facet to add. Thread marked merged. F-009: WAL-driven outbound alert notification fan-out — drift_class facets already cover the full SHB-054 hypothesis.

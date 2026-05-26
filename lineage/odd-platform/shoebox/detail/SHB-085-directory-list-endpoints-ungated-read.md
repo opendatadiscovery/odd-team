@@ -1,6 +1,6 @@
 # SHB-085 — Management-tab list endpoints are universally ungated reads (any authenticated user enumerates Owners / Datasources / Collectors / Titles / Namespaces)
 
-**Category**: open
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -40,5 +40,9 @@ Operators authoring a least-privilege policy expect that a user without `OWNER_C
 ## Links
 
 - cluster_with: [F-019, F-020, F-028, F-031, F-033, F-036, F-041]
-- merged_into: (open)
+- merged_into: F-074
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduated to F-074 (Management-Tab Read-Collaborative Posture, pillar P-08). The cross-Management-surface posture is a structural-class feature anchor; 7 contributing read endpoints + 7 drift facets. Note: thread proposed pillar P-09; I chose P-08 because the seven endpoints are all Management surfaces and the discoverability failure is at the Management/Authorization documentation interface — per Slice E's P-08 anchoring. F-074 cross-links to F-019 / F-020 / F-028 / F-031 / F-036 / F-041 and preserves the implicit-ADR-CANDIDATE-003 framing. Category flipped open → merged.

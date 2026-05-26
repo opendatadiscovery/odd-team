@@ -863,3 +863,82 @@ batch_origin_note: |-
   (DataEntityServiceImpl.getDataEntitiesByDatasourceAndType primary
   source). Cross-pillar back-links to P-10 (ingestion), P-09
   (security), P-05 (lineage), and across P-01 itself.
+shoebox_merged_facets:
+- batch: 2026-05-26-shoebox-slice-A
+  seeded_from: SHB-012
+  drift_class: directory_level4_predicate_divergence_exclude_from_search
+  description: |-
+    SHB-012 anchors the level-4 pagination-math defect: the page query
+    and the count query use DIFFERENT predicate sets.
+    ReactiveDataEntityRepositoryImpl.listByDatasourceAndType (the PAGE
+    path, via cteDataEntitySelect) applies addSoftDeleteFilter +
+    HOLLOW.isFalse() — TWO filters.
+    ReactiveDataEntityRepositoryImpl.countByDatasourceAndType (the COUNT
+    path, via getDataEntityDefaultConditions) applies THREE filters:
+    HOLLOW + STATUS != DELETED + (EXCLUDE_FROM_SEARCH IS NULL OR = FALSE).
+    Entities with EXCLUDE_FROM_SEARCH = TRUE are RETURNED by the page
+    query but NOT COUNTED by the count query. Operator sees "X of Y"
+    with X > Y; page-2 returns rows that "shouldn't exist according
+    to the count". This is the SECOND site of bug-class REFACTOR-425
+    (first site: ReactiveDataSourceRepositoryImpl.listDto).
+  evidence:
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/DirectoryController.java:36-44 (getDatasourceEntities)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/DataEntityServiceImpl.java:164-179 (composition page + count)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDataEntityRepositoryImpl.java:595-613 (PAGE path cteConditions)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDataEntityRepositoryImpl.java:909-939 (cteDataEntitySelect — missing EXCLUDE_FROM_SEARCH)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDataEntityRepositoryImpl.java:616-627 (COUNT path getDataEntityDefaultConditions)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDataEntityRepositoryImpl.java:970-976 (getDataEntityDefaultConditions definition)"
+  severity: MEDIUM
+  fix_shape: |-
+    Add EXCLUDE_FROM_SEARCH IS NULL OR = FALSE to cteDataEntitySelect's
+    conditions list, matching getDataEntityDefaultConditions. Eliminates
+    the divergence at this site.
+  cross_pillar_audit_note: |-
+    Cross-cutting bug class — PREDICATE-DIVERGENCE-IN-PAGINATION-WRAPPERS.
+    Same root pattern as REFACTOR-425. NOW confirmed at TWO sites. An
+    audit sweep across all repository list*/count* pairs is the
+    defensible follow-up.
+- batch: 2026-05-26-shoebox-slice-A
+  seeded_from: SHB-013
+  drift_class: directory_reflection_oddrn_property_leak_no_redaction_allow_list
+  description: |-
+    SHB-013 anchors the level-2 datasource-row leak:
+    DirectoryServiceImpl.getOddrnProperties uses Java reflection
+    (getDeclaredFields + getMethod get-prefix + invoke) on every
+    data-source row, enumerating EVERY @PathField-annotated field on
+    the OddrnPath subclass. For Postgres: host, database, port; for
+    Snowflake adds account, warehouse; for Kafka adds cluster, topic.
+    NO redaction step, NO allow-list, NO per-property visibility gate.
+    Combined with the read-collaborative posture on /api/directory
+    (no SecurityRule, falls through to .authenticated()) and the
+    auth.type=DISABLED bypass, ANY authenticated user (and any
+    anonymous DISABLED-mode caller) gets the FULL ODDRN-derived
+    internal-infrastructure map of the deployment.
+  evidence:
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/DirectoryServiceImpl.java:138-171 (reflection chain on every datasource row)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/DirectoryServiceImpl.java:153-171 (getOddrnPathProperties — every @PathField annotated property)"
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DirectoryTest.java:141-149 (the test confirms the response shape — host + database ARE the expected payload)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/util/SecurityConstants.java (no /api/directory matches)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/configuration/DisabledAuthSecurityConfiguration.java:14-17 (auth.type=DISABLED → anyExchange().permitAll())"
+  - "https://docs.opendatadiscovery.org/features/data-discovery/directory (verified 2026-05-20 status 200) — page mentions nothing about authorization, ownership, or ODDRN-derived properties"
+  severity: MEDIUM
+  cross_link:
+  - "REFACTOR-185 (auth.type=DISABLED bypass) — under DISABLED mode the leak is fully anonymous"
+  - "REFACTOR-203 (graph-shaped cross-owner enumeration via lineage) — Directory is the FLAT-LIST sibling of REFACTOR-203's graph-shaped enumeration"
+  fix_shape: |-
+    Implement an allow-list or @DirectoryHidden annotation on OddrnPath
+    fields. Recommend opt-in (operator declares which fields are
+    exposed). Memoise the reflection result per OddrnPath subclass
+    (single-entry cache; reflection is constant for a given class).
+shoebox_evaluation_log:
+- batch: 2026-05-26-shoebox-slice-A
+  agent: feature-flow-builder
+  notes: |-
+    SHB-012 (Directory page-vs-count predicate divergence) MERGED to F-023
+    as new drift facet — pagination-math defect at level-4. SHB-013
+    (Directory ODDRN reflection property leak) MERGED to F-023 as new
+    drift facet — level-2 datasource-row reflection-based property leak.
+    Both anchor on the Directory feature surface; both name F-023
+    explicitly in their cluster_with. Combined they expand F-023's
+    drift facets to include (a) correctness/pagination at level-4
+    and (b) information-disclosure at level-2 via reflection.

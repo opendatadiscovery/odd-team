@@ -961,3 +961,52 @@ related_probes: null
 probe_verifications: []
 maintainer_curated: false
 merge_candidate_with: null
+shoebox_merged_facets:
+- batch: 2026-05-26-shoebox-slice-A
+  seeded_from: SHB-016
+  drift_class: search_session_side_effect_read_update_dead_column_no_ttl
+  description: |-
+    SHB-016 surfaces FOUR operational drift facets on the search-session
+    surface that F-017's bearer-token observation doesn't fully
+    enumerate. (1) GET IS A WRITE — every read of a session row writes
+    last_accessed_at. Concurrent UI tabs on the same session contend
+    for the row lock; read replicas cannot serve these reads. (2) DEAD
+    COLUMN — last_accessed_at is updated but never read by any policy;
+    the implied eviction job has never landed (TODO at
+    V0_0_1__init.sql:207 acknowledges this). (3) UNBOUNDED TABLE
+    GROWTH — every POST /api/search adds a row; no TTL eviction; no
+    row deletion on logout; no archive policy. (4) PERSISTENT QUERY
+    TEXT TRAIL — query_string varchar(255) stores the raw user query
+    verbatim. PII / employee names / customer IDs / GDPR-protected
+    identifiers leave a DB trail readable by anyone with DB access.
+  evidence:
+  - "odd-platform-api/src/main/resources/db/migration/V0_0_1__init.sql:204-211 (search_facets table + TWO TODOs: uuid generation, TTL)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveSearchFacetRepositoryImpl.java:99-106 (get(UUID id) is an UPDATE search_facets SET last_accessed_at = currentOffsetDateTime() RETURNING — every GET is a write)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/search/SearchServiceImpl.java:75-82 (search creates row; does NOT capture principal)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/search/SearchServiceImpl.java:80 (persisted row carries full FacetStateDto with getQuery())"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/search/SearchServiceImpl.java:157-160 (fetchFacetState raw UUID lookup; no ownership check)"
+  - "odd-platform-api/src/main/resources/db/migration/V0_0_52__introduce_housekeeping.sql (grep search_facets returns ZERO matches — housekeeping has NO search_facets policy)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/SearchController.java:30-47 (no @PreAuthorize on getSearchFacetList or getFiltersForFacet)"
+  severity: MEDIUM
+  cross_cutting_note: |-
+    Cross-link with F-024 (Term Search & Browse): TermController,
+    QueryExampleController, ReferenceDataController all replicate the
+    same session-UUID pattern. The bug-class is platform-wide — fixing
+    one session implementation should fix all four (/api/search,
+    /api/terms/search, /api/queryexample/search, /api/referencedata/search).
+  fix_shape_options:
+  - "Add owner_id to search_facets; predicate every read/update on caller-principal match (closes bearer-token issue)"
+  - "Drop the side-effect UPDATE from the read path (make GET idempotent) — OR implement the TTL eviction job the column implies"
+  - "Column-level redaction for query_string (hash + truncate persisted version)"
+  - "Implement housekeeping.ttl.search_facets_days (default 30 like others); add search_facets policy to V0_0_52"
+shoebox_evaluation_log:
+- batch: 2026-05-26-shoebox-slice-A
+  agent: feature-flow-builder
+  notes: |-
+    SHB-016 (Search session side-effect read) MERGED to F-017 as new
+    drift facet covering FOUR sub-facets (GET-is-a-write, dead column,
+    unbounded growth, persistent query trail). The thread's cluster_with
+    list also names F-024 (Term Search) — the session-UUID pattern is
+    platform-wide; F-017 is the canonical home for the search-session
+    bearer-token observation and SHB-016 strengthens it with the
+    operational dimensions.

@@ -1,6 +1,6 @@
 # SHB-023 — Microservices lineage is rendered by the SAME hierarchy canvas as datasets, with no class-aware affordances
 
-**Category**: open
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -36,5 +36,9 @@ Operators clicking the Lineage tab on a microservice entity see the SAME hierarc
 ## Links
 
 - cluster_with: [F-005, F-016, SHB-002]
-- merged_into: (open)
+- merged_into: F-054
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduated — doc-promised distinct pillar surface (P-05 Microservices Lineage per system-mission.md:166-180) with NO code-side anchor today; 6+ evidence refs across pillar mission, UI, sidecars, backend service. The doc-vs-code asymmetry IS the feature. Minted F-054 at lineage/odd-platform/feature-flows/detail/F-054.yaml (P-05:F-003 Microservices Lineage). Three drift facets attached: indistinguishable_from_data_object_lineage_no_class_aware_ui, payload_silently_dropped_at_response_dto_mapper, cross_owner_enumeration_amplified_on_sensitive_class.

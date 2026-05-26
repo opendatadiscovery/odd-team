@@ -1,6 +1,6 @@
 # SHB-083 — Housekeeping TTL Java-vs-YAML default mismatch silently deletes all historical state on operator-customised config
 
-**Category**: clustering
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -35,5 +35,9 @@ Operators who override the shipped `application.yml` (Helm chart, `--spring.conf
 ## Links
 
 - cluster_with: [F-010, SHB-096]
-- merged_into: (open)
+- merged_into: F-010
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merged — Java vs YAML default mismatch is a new drift facet on F-010 (Housekeeping TTL Enforcement). F-010 already anchors the 5-job cycle; this is a primary-source enrichment of the silent-zero-day-purge scenario when operators override application.yml without re-supplying the `housekeeping.ttl.*` block. F-010: shoebox_extensions_2026_05_26 → drift_class: java_vs_yaml_default_mismatch_silent_zero_day_purge_on_application_yml_override. Category flipped clustering → merged.

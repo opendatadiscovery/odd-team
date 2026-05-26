@@ -31,6 +31,10 @@ Operators with misconfigured `auth.type` see a SURPRISING home-page state with n
 
 ## Links
 
-- cluster_with: [F-034, F-001, F-003]
+- cluster_with: [F-034, F-015, F-001, F-003]
 - merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: cluster — F-034 (P-09 Security) cross-pillar; F-015 (P-09); F-001/F-003 (P-01) — all outside H1 slice. The compound failure spans BOTH layers (backend @Value with no default + UI case-sensitive string-equality) — it's a single drift class but its home is ambiguous (P-09 SecurityConfiguration fail-open vs P-01 home-page Overview rendering). Cluster_with F-034 for next P-09 pass; the Overview-side facet is the UI symptom of the broader REFACTOR-185 cluster.

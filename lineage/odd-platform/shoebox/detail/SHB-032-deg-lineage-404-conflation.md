@@ -1,6 +1,6 @@
 # SHB-032 — `GET /api/dataentitygroups/{id}/lineage` returns the SAME 404 for "DEG not found", "entity is not a DEG", and "DEG has zero members" — three distinct conditions silently conflated
 
-**Category**: open
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -41,5 +41,9 @@ Operators (and third-party API consumers) calling `GET /api/dataentitygroups/{id
 ## Links
 
 - cluster_with: [F-016, F-005, SHB-023]
-- merged_into: (open)
+- merged_into: F-016
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merged into F-016 (P-05:F-002 DEG-Anchored Lineage) — thread captures the error-shape facet (three semantically-distinct failure conditions silently conflated as identical 404) that F-016 doesn't currently enumerate. drift_class: deg_lineage_404_conflates_three_distinct_failure_conditions (new facet). Sibling shape to SHB-023's "class-of-entity treated as data-driven rather than contract-validated" pattern at the same controller/service. ADR-NNN candidate ("validation-error vs not-found classification for path-param contract violations") noted on the thread; not a feature-flow concern. NOTE: not edited inline into F-016.yaml in this run because the merge target's facet table requires careful read; flagged for the next P-05-focused builder pass to fold this as a drift facet.

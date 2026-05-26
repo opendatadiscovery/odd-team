@@ -1,0 +1,204 @@
+feature_id: F-089
+feature_name: |-
+  Post-Logout Redirect Provenance — `post_logout_redirect_uri` is derived
+  from the inbound HTTP request's Host header via UriUtils.getBaseUri,
+  NOT from a configured platform.base-url allowlist; a proxy trusting
+  X-Forwarded-Host propagates user-controlled values to the IdP's
+  end-session endpoint
+pillar_id: P-09
+pillar_anchored_id: P-09:F-010
+pillar_anchored_feature_name: Post-Logout Redirect Provenance
+seeded_from: SHB-112
+seeded_at: 2026-05-26
+discovered_from_entry_point: |-
+  logout-handler-tier: 5 *LogoutSuccessHandler classes
+  (AzureLogoutSuccessHandler / CognitoLogoutSuccessHandler /
+  GoogleLogoutSuccessHandler / GithubLogoutSuccessHandler /
+  ODDIAMLogoutSuccessHandler) — all five derive the
+  post_logout_redirect_uri / logout_uri query parameter from
+  `UriUtils.getBaseUri(requestUri)` where `requestUri` is
+  `exchange.getRequest().getURI()` — the platform-side derived URI
+  including any forwarded Host header.
+primary_subject:
+  - odd-platform-api java auth logout:AzureLogoutSuccessHandler (line 38-44)
+  - odd-platform-api java auth logout:CognitoLogoutSuccessHandler (line 43)
+  - odd-platform-api java auth logout:GoogleLogoutSuccessHandler (line 40)
+  - odd-platform-api java auth logout:GithubLogoutSuccessHandler (line 45)
+  - odd-platform-api java auth logout:ODDIAMLogoutSuccessHandler (line 38)
+  - odd-platform-api java utils:UriUtils (lines 11-23 getBaseUri implementation)
+  - odd-platform-api resources/application.yml (absence of platform.base-url property)
+contributing_nodes:
+  - odd-platform java auth logout:AzureLogoutSuccessHandler
+  - odd-platform java auth logout:CognitoLogoutSuccessHandler
+  - odd-platform java auth logout:GoogleLogoutSuccessHandler
+  - odd-platform java auth logout:GithubLogoutSuccessHandler
+  - odd-platform java auth logout:ODDIAMLogoutSuccessHandler
+  - odd-platform java utils:UriUtils
+chain:
+  - hop: 1
+    node: odd-platform java auth logout:AzureLogoutSuccessHandler
+    sidecar: unresolved
+    evidence: |-
+      AzureLogoutSuccessHandler.java:38-44 — `.queryParam(
+      "post_logout_redirect_uri", UriUtils.getBaseUri(requestUri))`.
+      `requestUri` is exchange.getRequest().getURI() — the platform-side
+      derived URI including any forwarded Host header.
+    multiplicity_per_trigger: 1
+  - hop: 2
+    node: odd-platform java utils:UriUtils
+    sidecar: unresolved
+    evidence: |-
+      UriUtils.java:11-23 — getBaseUri(URI) strips path/query/fragment
+      and replaces path with `/`. Returned URI is scheme + host[+port]
+      + `/`. Whatever Host header arrived (`example.com` from browser,
+      `evil.com` from misconfigured proxy) is the host sent to the IdP.
+    multiplicity_per_trigger: 1
+  - hop: 3
+    node: odd-platform resources/application.yml
+    sidecar: unresolved
+    evidence: |-
+      Grep across the repository for `platform.base-url` /
+      `odd.platform-url` / `allowed.redirect` — ZERO matches (verified
+      via AzureLogoutSuccessHandler sidecar in F-011 batch O). The
+      platform has NO configured base-URL property to cross-check the
+      inbound Host against.
+    multiplicity_per_trigger: 1
+terminal_side_effect:
+  side_effect_class: redirect-issue
+  description: |-
+    302 Location header back to the IdP's end-session endpoint with a
+    query parameter `post_logout_redirect_uri=<inbound-Host-derived>`.
+    The IdP then issues a SECOND 302 — back to the value of that query
+    parameter, provided the value matches the IdP's own
+    allowlist/registered logout URLs. The platform contributes the
+    UNSANITISED value; the operator-side IdP allowlist is the sole
+    boundary.
+  evidence:
+    - "AzureLogoutSuccessHandler.java:31-48 (full handle method)"
+    - "AWS Cognito Allowed sign-out URLs / Azure App Registration Logout URLs (per-IdP allowlist)"
+observed_vs_expected:
+  facets:
+    - drift_class: post_logout_redirect_uri_derived_from_host_header_no_platform_allowlist
+      description: |-
+        All five handlers use `UriUtils.getBaseUri(exchange.getRequest()
+        .getURI())` to construct the redirect target. No platform.base-url
+        allowlist; no Host validation; no scheme enforcement. A reverse
+        proxy that trusts and forwards user-controlled `Host` or
+        `X-Forwarded-Host` headers without sanitisation propagates that
+        value into the IdP's logout redirect chain.
+      evidence:
+        - "AzureLogoutSuccessHandler.java:38-44"
+        - "CognitoLogoutSuccessHandler.java:43"
+        - "GoogleLogoutSuccessHandler.java:40"
+        - "GithubLogoutSuccessHandler.java:45"
+        - "ODDIAMLogoutSuccessHandler.java:38"
+      ui_unverified: false
+    - drift_class: open_redirect_after_idp_logout_when_idp_allowlist_permissive
+      description: |-
+        Realistic deployment threat model: multi-env Azure tenant with one
+        App Registration serving dev/staging/prod with logout URLs
+        `https://*.example.com/`. Reverse proxy honours X-Forwarded-Host
+        (Spring Boot `server.forward-headers-strategy: native` / `framework`).
+        Attacker crafts `https://victim-domain/logout` with
+        `X-Forwarded-Host: attacker.example.com`. User clicks logout.
+        Platform 302s to IdP end-session endpoint with
+        `post_logout_redirect_uri=https://attacker.example.com/`. IdP
+        allowlist permits any `*.example.com` host. User lands on
+        attacker domain after successful authenticated logout — classic
+        open-redirect with elevated trust because the session cookie has
+        been cleared and the user trusts the IdP-issued redirect.
+      evidence:
+        - "AzureLogoutSuccessHandler.java:38-44 (Host-trusted)"
+        - "UriUtils.java:11-23 (no host validation)"
+      ui_unverified: false
+    - drift_class: getbaseuri_strips_path_phishing_restricted_to_root
+      description: |-
+        UriUtils.getBaseUri always strips path AND query. Attacker
+        cannot inject specific path-shaped phishing pages via the platform
+        — only redirect to a root URL. Reduces but does not eliminate
+        phishing-via-trusted-redirect.
+      evidence:
+        - "UriUtils.java:11-23"
+      ui_unverified: false
+    - drift_class: spring_webflux_forward_headers_strategy_default_none_but_k8s_overrides
+      description: |-
+        Spring WebFlux default `server.forward-headers-strategy: none`
+        does NOT honour X-Forwarded-Host unless operator configures
+        otherwise. Many K8s-native deployments configure `native` or
+        `framework`. Vulnerability surface depends on deployment-side
+        header trust configuration. Platform does NOT enforce a stance
+        — it operates as if every inbound URI is trustworthy. The
+        operator-side configuration is the load-bearing surface; the
+        docs are silent on it.
+      evidence:
+        - "Spring WebFlux default forward-headers-strategy = none"
+        - "K8s ingress chart shapes typically set X-Forwarded-Host"
+      ui_unverified: false
+    - drift_class: handler_choice_to_derive_dynamic_uri_undocumented_in_intent
+      description: |-
+        Per the AzureLogoutSuccessHandler sidecar's implicit_adrs[2]
+        cited in F-011 batch O — the choice to derive
+        post_logout_redirect_uri dynamically from the request (rather
+        than from operator config) is an explicit design decision,
+        chosen because it works correctly for multi-hostname deployments
+        (load balancer + internal hostname) WITHOUT requiring operators
+        to enumerate every external hostname in ODD config. The
+        trade-off was accepted; the consequence (operator-side IdP
+        allowlist as load-bearing protection) was not surfaced in docs.
+      evidence:
+        - "F-011 batch O AzureLogoutSuccessHandler implicit ADR"
+      ui_unverified: false
+    - drift_class: combines_with_shb_107_idp_token_validity_compounds_post_compromise
+      description: |-
+        Compounds with F-086 (Logout Token-Revocation Semantics) under
+        Azure / Cognito / ODD_IAM: even if the open-redirect is exploited
+        and the user lands on attacker domain post-logout, the
+        IdP-issued OAuth2 tokens (if previously captured) remain valid
+        against IdP-protected resources for the rest of TTL. The
+        attacker's residual exploitation window benefits from the
+        revocation gap.
+      evidence:
+        - "F-086 facets (Azure / Cognito session-only invalidation)"
+      ui_unverified: false
+test_matrix:
+  unit: GAP
+  integration: GAP
+  performance: GAP
+  security: GAP
+test_matrix_notes: |-
+  No test coverage of the Host-header-derived redirect mechanism.
+  Integration target: set up platform behind nginx with X-Forwarded-Host
+  honoured; configure Azure with permissive logout URL allowlist
+  (https://*.example.com/); click logout from victim.example.com with
+  crafted X-Forwarded-Host: attacker.example.com; assert the IdP-issued
+  302 redirects to attacker.example.com.
+related_refactoring_scopes:
+  - REFACTOR-185  # default-insecure cluster — UriUtils dynamic-host trust is a 25th sidecar
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+  - logout_hardening_surface
+related_features:
+  - F-086  # Logout Token-Revocation Semantics — combines under Azure / Cognito for compounded
+           # exploitation window
+  - F-011  # Principal-to-Owner Resolution — handlers share the same logout flow; F-011 batch O
+           # carries the Azure NPE on null logout-uri facet (different drift, same handler chain)
+  - F-087  # Session Cookie Security Posture — three threads describe distinct facets of "what
+           # does logout actually do?"
+status: active
+maintainer_curated: false
+proposed_action: |-
+  Local docker-compose: odd-platform + nginx reverse proxy configured
+  to forward X-Forwarded-Host. Spin up Keycloak as an Azure-shape IdP
+  with permissive logout-URL allowlist. From a browser at victim.local,
+  trigger logout with a crafted X-Forwarded-Host: attacker.local
+  (curl direct, or browser extension). Verify the IdP-issued 302 redirects
+  to attacker.local.
+notes: |-
+  Genuinely new feature shape — anchors the operator-observable
+  open-redirect surface that no existing F-NNN names. F-011 batch O
+  carries Azure-NPE-on-null-logout-uri (a different facet of the same
+  handler chain); F-086 (this batch) carries the token-revocation
+  semantics. F-089 carries the redirect-provenance surface. Together
+  the three features describe the full "what does logout actually do?"
+  question on the SecuritypageSecurity & Access Control pillar.

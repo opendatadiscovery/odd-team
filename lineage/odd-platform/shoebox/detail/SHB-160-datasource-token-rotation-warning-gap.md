@@ -31,6 +31,10 @@ When operators click "Regenerate" on a datasource's collector token in Managemen
 
 ## Links
 
-- cluster_with: [F-031, F-020]
-- merged_into: (set when graduated)
+- cluster_with: [F-031, F-020, SHB-161, SHB-162]
+- merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: cluster — F-031 (Data Source Lifecycle, P-08) and F-020 (Collector Lifecycle, P-08) are both in this slice's pillar — within scope. But this thread is part of a 3-thread cluster (SHB-160 token-rotation warning + SHB-161 form-submit-fail-closes-modal + SHB-162 edit-replace-nulls) that collectively name the Data Source form UX class. The cluster's combined evidence is sufficient to graduate a "Data Source Form UX hardening" feature next batch — keeping these together (rather than splitting facets into F-031 piecemeal) preserves the form-class framing. HIGH severity per the destructive-rotation-no-warning operator impact.

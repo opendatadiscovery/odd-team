@@ -1,6 +1,6 @@
 # SHB-005 — Tag Origin Channel Ownership (Collector-vs-UI ownership boundary)
 
-**Category**: clustering
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -40,5 +40,17 @@ Operators see a "tags I assigned via the UI cannot be modified once a Collector 
 ## Links
 
 - cluster_with: [F-018]
-- merged_into: (open)
+- merged_into: F-018
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merged — thread's hypothesis is
+  the complementary facet of F-018's "Manual Object Tagging" feature
+  (F-018 anchors the directory side-door — who mints tag rows; SHB-005
+  anchors the per-relation channel ownership — who can modify them).
+  Appended two new drift_class facets to F-018:
+  `tag_origin_channel_ownership_asymmetric_external_protection` (MEDIUM)
+  + `tag_delete_cascade_asymmetric_dataset_field_orphans_survive`
+  (MEDIUM). Per the recommended approach in SHB-005's `Next` step 2
+  ("the feature-flow-builder may merge them into a larger F-018-extended").

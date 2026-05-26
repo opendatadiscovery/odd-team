@@ -1,6 +1,6 @@
 # SHB-008 — Custom Metadata Field Catalogue (auto-growth, pageInfo theatre, no read permission)
 
-**Category**: open
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -41,5 +41,19 @@ Operators see a global "custom metadata fields" autocomplete on every per-entity
 ## Links
 
 - cluster_with: [F-013]
-- merged_into: (open)
+- merged_into: F-046
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduated — strong evidence (8
+  refs across controller / service / repository / migration / UI /
+  spec / doc-side axes including a UI component file:line which makes
+  the feature UI-complete). The catalogue READ surface is genuinely
+  distinct from F-013's WRITE surface — together they form the
+  Custom Metadata feature end-to-end. Minted F-046 at
+  `lineage/odd-platform/feature-flows/detail/F-046.yaml`
+  (P-01:F-010 Custom Metadata Field Catalogue) with 8 drift facets
+  + companion_to F-013. SHB-008 hinted "clustering" but the evidence
+  + UI completeness supports graduation; the cluster with F-013 is
+  recorded via the `companion_to` block on F-046.

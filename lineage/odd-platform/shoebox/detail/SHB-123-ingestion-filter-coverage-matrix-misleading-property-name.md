@@ -1,6 +1,6 @@
 # SHB-123 — `auth.ingestion.filter.enabled` covers 1 of 5 ingestion endpoints, but its name suggests the whole namespace
 
-**Category**: open
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -38,5 +38,9 @@ Operators who enable `auth.ingestion.filter.enabled=true` believing they have "l
 ## Links
 
 - cluster_with: [F-008]
-- merged_into: (open — likely a new F-NNN OR a facet of F-008)
+- merged_into: F-094
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduate — SHB-123 evidence (6 file:line refs across filter / config / WHITELIST / 5 controller methods + live docs anchor) satisfies the graduation threshold; the operator-visible 5-endpoint × 4-mode × 2-filter × 2-S2S = 80-cell deployment matrix is a distinct user-observable shape from F-008's destruction angle. Minted F-094 at lineage/odd-platform/feature-flows/detail/F-094.yaml (pillar P-10:F-002). The property-name misdirection is elevated to a CAUSAL SOURCE facet (vs F-008's existing `ingestion_filter_path_coverage_incomplete` SYMPTOM facet); cluster_with F-008 retained as related_features cross-link.

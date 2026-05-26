@@ -1,6 +1,6 @@
 # SHB-125 — `POST /ingestion/entities/datasets/stats` lets any caller write field statistics to any dataset by knowing the field's ODDRN
 
-**Category**: open
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -40,5 +40,9 @@ The dataset-statistics ingestion endpoint resolves dataset_fields by the FIELD O
 ## Links
 
 - cluster_with: [F-008, F-022, F-040]
-- merged_into: (open)
+- merged_into: F-095
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduate — SHB-125 evidence (7 file:line refs across controller / service / filter / WHITELIST / live security docs + cross-link to F-008 silent-destruction class) is rich; the cross-dataset write surface + FTS-recalc-on-lying-parent + replay-with-fewer-tags shape composes a distinct user-observable feature anchored on the `/ingestion/entities/datasets/stats` endpoint. Minted F-095 at lineage/odd-platform/feature-flows/detail/F-095.yaml (pillar P-10:F-003). Pillar choice: P-10 (endpoint-surface) rather than P-04 (subject-domain DQ) — keeps slice-G ownership consistent and aligned with F-094's auth-coverage matrix. Cross-links F-008 (silent_destruction shared class) + F-022/F-032/F-040 (DQ consumers).

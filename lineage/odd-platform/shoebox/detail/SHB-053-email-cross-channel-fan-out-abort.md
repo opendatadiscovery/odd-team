@@ -37,3 +37,7 @@ Operators who configure Slack + Webhook + Email channels expect "an alert dispat
 - cluster_with: [F-009, SHB-054, SHB-055]
 - merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — into F-009 WAL-driven Notification Delivery. F-009's drift_class_summary already enumerates `cross_channel_runtime_exception_abort_email_first_aborts_remainder` (batch Y facet 8), `exception_type_asymmetry_across_senders` (batch K), and `sender_iteration_order_undefined` — all primary-source at EmailNotificationSender.java:58-60 + AlertNotificationMessageProcessor.java:25-36 + AbstractNotificationSender.java:16-30. F-009 batch Y note 8 is the load-bearing primary-source for SHB-053's full hypothesis. No new facet to add; SHB-053's evidence is the canonical narrative form of the existing drift facets. Thread marked merged; cluster_with relationship preserved as a cross-reference but the substantive content lives at F-009. F-009: WAL-driven outbound alert notification fan-out — drift_class facets already cover the full SHB-053 hypothesis.

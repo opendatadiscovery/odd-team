@@ -1,6 +1,6 @@
 # SHB-048 — Lookup-Table permissions are globally-scoped (NO_CONTEXT), inconsistent with Term / Data Entity per-resource scoping — any user with LOOKUP_TABLE_UPDATE can mutate ANY lookup table
 
-**Category**: clustering
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -37,9 +37,9 @@ The Lookup Tables RBAC promise (per the live docs page `features/master-data-man
 ## Links
 
 - cluster_with: [F-026, F-006]
-- merged_into: (open — feature-flow-builder folds into F-026 as drift facet)
+- merged_into: F-026
 - supersedes: []
 
 ## evaluation
 
-(feature-flow-builder will append a dated entry here on its next run.)
+- **feature-flow-builder 2026-05-26**: merged into F-026 (P-03:F-001 Lookup Tables — Reference Data Management) — F-026's primary_drift_class IS `lookup_table_global_no_context_scoped_permissions_no_per_owner_scope` per the existing detail file, directly anchored on this finding. SHB-048 STRENGTHENS that existing facet with (a) the architectural-class framing (NO_CONTEXT vs DATA_ENTITY / TERM scoping in the same SECURITY_RULES table — pattern recognisable across permission classes), (b) the doc-language implication of per-table scoping ("steward-curated reference lists") that the runtime does NOT honour, (c) the multi-team deployment blast radius (Team A's data steward → mutates Team B's lookup tables). Methodology canonical-case-law candidate: NO_CONTEXT vs entity-scoped resolver asymmetry across SecurityRules — noted for the next adversarial-panel review.

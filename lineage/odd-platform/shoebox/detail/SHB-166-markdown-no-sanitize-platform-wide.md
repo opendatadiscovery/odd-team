@@ -32,6 +32,12 @@ Every Markdown surface in the ODD Platform UI — entity descriptions, dataset-f
 
 ## Links
 
-- cluster_with: [F-004]
-- merged_into: (set when merged into F-004)
+- cluster_with: [F-004, SHB-167, SHB-168]
+- merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: cluster — F-004 (Entity Description Editing) is P-01 Data Discovery (CROSS-PILLAR outside H1 slice). This thread is also distinct from F-004 (which covers the description-surface instance); the platform-wide Markdown XSS posture is a CROSS-PILLAR cross-cutting concern spanning P-01 (descriptions), P-06 (glossary terms), P-07 (discussion messages + alert messages), P-02 (query examples), P-08 (owner descriptions). Strong graduation candidate as "Stored XSS Surface Audit" — but the pillar anchoring is ambiguous (5 plausible pillars). Marking `sme_consultation_recommended` because the right home is a maintainer decision: either supersede F-004's existing markdown facet with a platform-wide cross-pillar feature, OR keep it as a Cornerstone-3 caveat across N doc-gaps. Defer to maintainer triage with the P-009 probe evidence as the strong empirical anchor. HIGH severity but cross-pillar.
+
+**SME consultation recommended**: true — pillar anchoring ambiguous (P-01 / P-06 / P-07 / P-02 / P-08 all plausible homes); maintainer decides whether to graduate as a cross-cutting "Stored XSS Surface Audit" feature OR keep as N doc-gap caveats anchored on each pillar's content surface.

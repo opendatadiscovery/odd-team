@@ -1,6 +1,6 @@
 # SHB-014 — `view_count` as ungated popularity-rating channel (any caller inflates any entity to the top of Popular)
 
-**Category**: clustering
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -53,5 +53,21 @@ Operators see a "Popular Entities" recommendation panel on the catalog Overview 
 ## Links
 
 - cluster_with: [F-001, F-003]
-- merged_into: (open)
+- merged_into: F-003
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merged — F-001 (write side) +
+  F-003 (read/rank side) jointly anchor the view_count loop. F-003 is
+  the better merge target because the EMERGENT FEATURE — popularity
+  ranking inflatable by any caller — is the RANKING surface; F-001 is
+  the upstream contributor already enumerated in F-003's chain.
+  Appended drift_class `view_count_ungated_popularity_inflation_loop`
+  (MEDIUM) to F-003 with full operational_impact + fix_shape options
+  (per-user-entity-hour idempotency layer is the recommended fix).
+  Per SHB-014's Next step 5: "May graduate to its own F-NNN if the
+  maintainer decides the inflation channel is a distinct feature; OR
+  merge into F-003 as a drift facet" — merged to F-003 per the
+  default-best-practice "bug-shaped findings become drift_class facets,
+  NOT standalone features."

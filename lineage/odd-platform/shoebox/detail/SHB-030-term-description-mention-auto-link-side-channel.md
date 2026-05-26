@@ -1,6 +1,6 @@
 # SHB-030 — `[[ns:term]]` description-mention syntax silently creates term-link rows, bypassing `DATA_ENTITY_ADD_TERM` permission
 
-**Category**: open
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -41,5 +41,9 @@ Operators see two named permissions in the Business Glossary docs that gate term
 ## Links
 
 - cluster_with: [F-002, F-004, SHB-028, SHB-029]
-- merged_into: (open)
+- merged_into: F-056
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduated — the cross-time + cross-namespace + permission-bypass + audit-invisible properties together form an operator-mental-model feature in their own right (a user creates term X today; rows materialise from descriptions written WEEKS AGO by OTHER users; cross-namespace pollution; UI is_description_link invisible). F-002 carries a single `description_edit_auto_link_side_channel` drift facet covering the basic bypass; the four compounded properties warrant a dedicated feature anchor for operators authoring RBAC policies. Minted F-056 at lineage/odd-platform/feature-flows/detail/F-056.yaml (P-06:F-003 Term Description-Mention Auto-Link Side-Channel). Five drift facets attached: permission_bypass_via_description_mention, cross_time_auto_link_drain_on_term_create, cross_namespace_pollution_via_mention_regex, is_description_link_invisible_in_ui_audit_invisible (ui_unverified: true), f_004_xss_intersection_on_mention_payload. F-002 and F-056 cross-link.

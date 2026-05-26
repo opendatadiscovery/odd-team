@@ -1,0 +1,152 @@
+feature_id: F-119
+feature_name: "Deployment-Info Introspection Surface (`/api/appInfo`)"
+pillar_id: P-09
+pillar_anchored_id: P-09:F-007
+pillar_anchored_feature_name: "Deployment-Info Introspection Surface"
+seeded_from: SHB-173
+seeded_at: 2026-05-26
+discovered_from_entry_point: |-
+  rest:GET /api/appInfo — controller `AppInfoController#getAppInfo` returns
+  `{projectVersion, authType}` to any caller that reaches the HTTP port.
+  Consumed by the React SPA at boot to drive the login-flow rendering
+  (Overview.tsx:26 gates OwnerAssociation card on `appInfo.authType !==
+  'DISABLED'`).
+primary_subject:
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/AppInfoController.java"
+  - "odd-platform-api/src/main/resources/application.yml:34"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/config/DisabledAuthSecurityConfiguration.java"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/utils/SecurityConstants.java:95-96"
+  - "odd-platform-ui/src/components/Overview/Overview.tsx:26"
+contributing_nodes:
+  - "odd-platform java AppInfoController controller-method:getAppInfo"
+  - "odd-platform java auth.config config-class:DisabledAuthSecurityConfiguration"
+  - "odd-platform java utils class:SecurityConstants"
+  - "odd-platform ts react-component:Overview"
+chain:
+  - hop: 1
+    node: "ui_route:* (SPA boot)"
+    sidecar: unresolved
+    evidence: "App.tsx mounts; calls GET /api/appInfo for login-flow rendering"
+    multiplicity_per_trigger: 1
+  - hop: 2
+    node: "rest:GET /api/appInfo"
+    sidecar: "AppInfoController"
+    evidence: "AppInfoController.java:18-29"
+    multiplicity_per_trigger: 1
+  - hop: 3
+    node: "config-key-consumer:auth.type"
+    sidecar: "AppInfoController.java:18"
+    evidence: |-
+      `@Value("${auth.type}") String authType` — no default literal, no enum
+      validation; an operator who unsets the key produces a deployment with no
+      matching `@ConditionalOnProperty(havingValue=...)` bean.
+    multiplicity_per_trigger: 1
+terminal_side_effect:
+  side_effect_class: page-render
+  description: |-
+    HTTP 200 response carrying `{projectVersion, authType}` — both
+    deployment-distinguishing values reach the caller.
+  evidence: "AppInfoController.java:18-29"
+  cardinality_per_call: 1
+amplification_factor: 1
+observed_vs_expected:
+  facets:
+    - drift_class: disabled_mode_bypass_unauthenticated_fingerprint_surface
+      description: |-
+        Under shipped default `auth.type=DISABLED`, `DisabledAuthSecurityConfiguration`
+        wires `.anyExchange().permitAll()` — `/api/appInfo` returns both the
+        precise platform version (CVE-scoping) and the auth-mode value to any
+        unauthenticated caller. Live docs do not warn about this surface.
+      evidence:
+        - "application.yml:34 (auth.type=DISABLED shipped default)"
+        - "DisabledAuthSecurityConfiguration.java:13-18 (.anyExchange().permitAll())"
+        - "AppInfoController.java:18-29 (no @PreAuthorize)"
+    - drift_class: appinfo_path_not_in_whitelist_but_open_under_disabled
+      description: |-
+        `SecurityConstants.WHITELIST_PATHS` lists `/actuator/**`, `/favicon.ico`,
+        `/ingestion/**`, `/img/**`, `/api/slack/events` — NOT `/api/appInfo`.
+        Under LOGIN_FORM/OAUTH2/LDAP modes the path falls through to
+        `.authenticated()` and is gated; under DISABLED it is open. The
+        whitelist + the DISABLED mode interact to produce mode-dependent
+        exposure with no operator-facing documentation.
+      evidence:
+        - "SecurityConstants.java:95-96"
+    - drift_class: authtype_value_unvalidated_typo_silent_no_chain
+      description: |-
+        `@Value("${auth.type}")` at AppInfoController.java:18 has NO default
+        literal AND NO enum constraint. An operator typo (`OUATH2`,
+        `LOGINFORM`) silently produces a deployment with NO matching
+        `@ConditionalOnProperty(havingValue=...)` bean AND the UI's
+        OwnerAssociation gate (Overview.tsx:26 — `!== 'DISABLED'`) passes
+        through, so the UI renders OwnerAssociation in a deployment with
+        broken authentication.
+      evidence:
+        - "AppInfoController.java:18"
+        - "Overview.tsx:26 (`appInfo.authType !== 'DISABLED'`)"
+    - drift_class: openapi_no_security_element_on_appinfo_operation
+      description: |-
+        `odd-platform-specification/openapi.yaml:2704-2717` defines `getAppInfo`
+        with NO `security:` element on the operation; the generated AppInfoApi
+        interface has no `@PreAuthorize`. The spec layer does not encode the
+        intentional "open under DISABLED" posture; readers see an endpoint with
+        no security marker and may assume it is server-authenticated.
+      evidence:
+        - "odd-platform-specification/openapi.yaml:2704-2717"
+    - drift_class: appinfo_field_shape_is_odd_specific_zero_collision_with_other_products
+      description: |-
+        The JSON response field name `authType` is ODD-specific (no other product
+        ships that exact shape). An attacker scanning a network range receives
+        in one GET both ODD-confirmation and version + auth-mode. Combined with
+        SHB-177's `/actuator/env` exposure, the fingerprint is dense: deployment
+        is confirmed-ODD + version-known + auth-mode-known + configured-credentials
+        enumerable.
+      evidence:
+        - "AppInfoController.java:18-29"
+        - "documentation/docs/configuration-and-deployment/enable-security/ — page does not name /api/appInfo"
+test_matrix:
+  unit: GAP
+  integration: GAP
+  performance: GAP
+  security: GAP
+related_refactoring_scopes:
+  - "REFACTOR-185 (DISABLED-mode bypass 19-sidecar pattern — AppInfoController.java:18 is one of the sidecars)"
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+  - "deployment-fingerprint-surface"
+  - "auth-type-config-key-no-default"
+status: active
+cross_pillar_relationships:
+  - pillar_id: P-08
+    kind: shares_data_with
+    via: |-
+      AppInfo is the operator-management adjacency point — every Management
+      surface depends on `auth.type` being a real value. The endpoint informs
+      every Management UI affordance (OwnerAssociation gate, IdentityController
+      whoami's parallel surface).
+  - pillar_id: P-11
+    kind: feeds
+    via: |-
+      `/api/appInfo` is part of the platform's public API surface (P-11) but
+      is not enumerated on docs.opendatadiscovery.org/developer-guides/api-reference;
+      a DOC-NNN follow-up should add it.
+notes_for_maintainer: |-
+  This thread is the PER-ENDPOINT UX manifestation of REFACTOR-185 (the
+  broader 19-sidecar DISABLED-mode bypass pattern). The general fix is
+  three operator-facing follow-ups:
+  - SEC-NNN: document the fingerprint risk on the live security page
+  - SEC-NNN: add enum constraint on `auth.type`
+  - DOC-NNN: add `/api/appInfo` to the developer-guides/api-reference page
+
+  Probe candidate (local-only): replay a typo'd auth.type (`OUATH2`) against
+  a local docker-compose stack and observe (a) AppInfo response (echoes typo),
+  (b) downstream `@ConditionalOnProperty` resolution (no chain match), (c)
+  actual HTTP behaviour (does Spring Security autoconfiguration default-on,
+  or is there NO chain at all?).
+provenance: |-
+  Graduated from SHB-173 by feature-flow-builder on 2026-05-26 (parallel triage
+  slice H2). Cross-references SHB-105 (whoami auth-mode probe — Slice F) and
+  SHB-177 (Actuator /env exposure — same slice). Cluster_with [F-011, F-034]
+  per the source SHB; not folded because the deployment-info introspection
+  surface is conceptually distinct from Principal-to-Owner resolution (F-011)
+  and from Feature-Flag exposure (F-034).

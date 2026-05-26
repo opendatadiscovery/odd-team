@@ -1,6 +1,6 @@
 # SHB-026 — `relationship_id` path-param TRANSLATES_SILENTLY to `data_entity.id` — third-party callers 404 on real relationships.id values
 
-**Category**: open
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -39,5 +39,9 @@ Operators / SDK consumers reading the OpenAPI spec for `GET /api/relationships/e
 ## Links
 
 - cluster_with: [F-037]
-- merged_into: (open — enriches F-037)
+- merged_into: F-037
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merged into F-037 (P-02:F-001 ERD/Graph Relationships Listing) — thread captures the Category F TRANSLATES_SILENTLY drift on relationship_id vs data_entity.id. F-037's existing facet `relationship_id_translates_silently_to_data_entity_id` is REAFFIRMED with this thread's evidence; the SHB adds the bilateral-fix-constraint observation (changing SQL alone breaks UI round-trip; changing mapper alone breaks operator bookmarks) and the multi-row admissibility (no UNIQUE constraint on relationships.data_entity_id). STRENGTHENS the existing facet.

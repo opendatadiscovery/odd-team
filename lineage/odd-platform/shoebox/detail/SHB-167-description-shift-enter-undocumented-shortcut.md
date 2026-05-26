@@ -1,6 +1,6 @@
 # SHB-167 — Description editor saves on Shift+Enter — power-user shortcut hidden from the only operator-facing tooltip
 
-**Category**: open
+**Category**: clustering
 **Severity**: LOW
 
 ## Hypothesis
@@ -29,6 +29,10 @@ When operators edit a data entity description (or dataset-field description), pr
 
 ## Links
 
-- cluster_with: [F-004]
+- cluster_with: [F-004, SHB-166, SHB-168]
 - merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: cluster — F-004 is P-01 cross-pillar; defer to P-01-pillar batch. Cluster_with SHB-166 (Markdown sanitisation gap) + SHB-168 (cancel-discards-edits) — three threads describe DataEntity description-editing UX class. Next batch can graduate a "Data Entity Description Authoring UX" feature or split into facets on F-004.

@@ -1922,6 +1922,53 @@ observed_vs_expected:
       security.known_security_gaps[1] + IngestionController.java:53-55
       + AbstractIngestionFilter.java:40. Severity: LOW (info-leak) /
       MEDIUM (operator-debug misleading).
+  - facet: payload-driven datasource scoping — operator-visible fused-namespace framing (SHB-124, batch-shoebox-graduation 2026-05-26)
+    observed: |-
+      `IngestionServiceImpl.java:68` — `dataSourceRepository.getIdByOddrnForUpdate(dataEntityList.getDataSourceOddrn())`
+      is the ONLY datasource resolution. The service reads the ODDRN
+      string from the request body, NEVER from any principal / session /
+      collector-id. The interface itself
+      (`IngestionService.java:7-11`) takes only `DataEntityList` — no
+      principal parameter, no `Authentication`. The service is
+      ARCHITECTURALLY IGNORANT of the caller; the upstream filter is the
+      SOLE point at which caller→datasource binding could happen, and
+      when the filter is OFF (bundled default), there is NO scoping
+      anywhere. Operator-visible symptom: the Management → Datasources
+      tab shows a FUSED LIST of all datasources regardless of which
+      Collector last ingested into them. The `data_source.collector_id`
+      column is set ONLY by `POST /ingestion/datasources` (REGISTRATION
+      time), NOT by subsequent `POST /ingestion/entities` writes. A
+      datasource registered by Collector A but routinely ingested by
+      Collector B looks identical to a same-collector pipeline.
+      Multi-team / multi-tenant deployments cannot distinguish team A's
+      writes from team B's writes from runtime state. The protection
+      that IS enforced lives in the ADR-CANDIDATE-143
+      namespace-from-Collector inheritance at
+      `DataSourceIngestionServiceImpl.java:106` — but this only
+      constrains the namespace stamp at registration; it does NOT
+      constrain WHICH Collector can ingest into a registered datasource
+      subsequently. Cross-collector enumeration via the
+      namespace surface (REFACTOR-024) is SEPARATE but COMPOSED:
+      Collector A can see Collector B's datasource list, then choose
+      any ODDRN to write into.
+    expected: |-
+      Either (a) add a `data_source.last_ingested_by_collector_id`
+      column populated at `POST /ingestion/entities` time, surface it
+      in the Datasources tab so operators can audit ingestion provenance,
+      OR (b) explicitly bind every ingestion call to the
+      authenticated Collector's set of registered datasources and reject
+      payload-named ODDRNs outside that set with 403. The system
+      mission file flags this as a "security-relevant implicit ADR"
+      — a binary decision worth elevating to an ADR-NNN draft.
+    drift_class: datasource_scoping_is_payload_driven_not_principal_driven
+    provenance: |-
+      STATIC — SHB-124 evidence; verified across 7 file:line refs
+      (IngestionServiceImpl service-tier resolution + interface;
+      IngestionDataEntitiesFilter token-validation;
+      MetadataIngestionRequestProcessor / LineageIngestionRequestProcessor
+      destruction call sites; ReactiveCollectorRepositoryImpl getByToken
+      with no UNIQUE constraint visible at code level). System-mission
+      file flags this surface as elevation-worthy.
 test_matrix:
   unit:
     state: GAP

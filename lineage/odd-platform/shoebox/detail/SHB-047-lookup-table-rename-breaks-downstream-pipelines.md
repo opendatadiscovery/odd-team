@@ -1,6 +1,6 @@
 # SHB-047 — Renaming a lookup table renames the underlying Postgres table, silently breaking every downstream pipeline that joined against the old name
 
-**Category**: open
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -40,9 +40,9 @@ Operators editing a lookup table's name through the UI (the Edit Name dialog mou
 ## Links
 
 - cluster_with: [F-026, F-028]
-- merged_into: (open)
+- merged_into: F-059
 - supersedes: []
 
 ## evaluation
 
-(feature-flow-builder will append a dated entry here on its next run.)
+- **feature-flow-builder 2026-05-26**: graduated — doc-promised public SQL surface (lookup_tables_schema) is silently broken by UI rename action; the operator-visible action ("edit metadata") has a hidden side-effect (ALTER TABLE DDL) that breaks downstream pipelines with no signal. F-026 (RBAC + cross-table jump + XSS) and F-058 (listing UX) own different surfaces of P-03; SHB-047 is the LIFECYCLE / DATA-CONTRACT gap. 6 evidence refs spanning UI form, controller, service, repository DDL, docs-promised public surface, sister sidecar bugs[7]. Minted F-059 at lineage/odd-platform/feature-flows/detail/F-059.yaml (P-03:F-003 Lookup Table Rename Cascade). Three drift facets: rename_cascade_breaks_documented_public_surface_silently (HIGH), lsn_001_class_default_footgun_at_operator_action_layer (HIGH), no_audit_emission_on_lookup_table_rename (MEDIUM — cross-references F-057's DQ-severity audit-silence pattern). LSN-001-class characterisation explicit.

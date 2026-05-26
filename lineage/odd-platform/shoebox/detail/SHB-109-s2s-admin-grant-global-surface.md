@@ -1,6 +1,6 @@
 # SHB-109 — S2S `X-API-Key` grants ADMIN globally across ALL `/**` paths
 
-**Category**: open
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -40,5 +40,9 @@ Operators enabling `auth.s2s.enabled=true` for "server-to-server" integration ge
 ## Links
 
 - cluster_with: [F-008, F-011]
-- merged_into: (open)
+- merged_into: F-088
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduated — genuinely new feature shape distinct from F-008 (ingestion-path-specific) and F-011 (resolution chokepoint). The operator-observable NAMING DRIFT (`auth.s2s.enabled` reads as ingestion-shaped; actual scope is global ADMIN across /**) is the load-bearing claim; evidence spans 5 filter / config classes + AuthIdentityProviderImpl + live S2S docs. Minted F-088 at lineage/odd-platform/feature-flows/detail/F-088.yaml (P-09:F-009 S2S API Key — Global Admin Grant Surface). Cross-link with F-008 (ingestion side), F-011 (chokepoint), F-085 (whoami).

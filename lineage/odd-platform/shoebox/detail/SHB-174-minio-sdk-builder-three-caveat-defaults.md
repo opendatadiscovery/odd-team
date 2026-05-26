@@ -1,6 +1,6 @@
 # SHB-174 — MinIO SDK builder ships THREE caveat-defaulted parameters, not one — LSN-002 generalises
 
-**Category**: clustering
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -38,5 +38,9 @@ Operators running ODD's REMOTE attachment storage (`attachment.storage=REMOTE`) 
 ## Links
 
 - cluster_with: [F-027]
-- merged_into: (open)
+- merged_into: F-027
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — F-027 (P-08:F-005 Attachment Lifecycle) already enumerates `minio_builder_three_caveat_defaulted_params_region_httpclient_credentialsprovider_only_region_doc_mitigated` in its drift_class_summary. Appended batch_extension ZL with primary-source operator-experience framing for each of the three caveats (region us-east-1 / httpClient 5-min timeouts / credentialsProvider no IRSA support) + the credentialsProvider doc-mitigation gap as new evidence.

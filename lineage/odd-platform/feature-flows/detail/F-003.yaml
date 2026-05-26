@@ -372,3 +372,53 @@ probe_verifications:
   verdict: all assertions passed
   artefact: lineage/odd-platform/probe-runs/2026-05-19-P-006.yaml
 maintainer_curated: true
+shoebox_merged_facets:
+- batch: 2026-05-26-shoebox-slice-A
+  seeded_from: SHB-014
+  drift_class: view_count_ungated_popularity_inflation_loop
+  description: |-
+    SHB-014 anchors the EMERGENT FEATURE that F-001 + F-003 form together:
+    "popularity ranking that is inflatable by any caller". F-001 is the
+    WRITE side (GET /api/dataentities/{id} → view_count + 1). F-003 is
+    the READ-and-RANK side (getPopular orders by view_count). The
+    GET endpoint has NO authorization rule, no rate-limit, no
+    idempotency check, no per-IP throttle, AND under auth.type=DISABLED
+    is anonymous. ANY authenticated user (and any anonymous DISABLED-mode
+    caller) can script a `for id in 1..N: GET /api/dataentities/{id}` loop
+    to push ANY entity to the top of the Popular panel arbitrarily fast.
+  evidence:
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/DataEntityServiceImpl.java:197 (@ReactiveTransactional on getDetails)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/DataEntityServiceImpl.java:488-495 (incrementViewCount unconditional on every successful read)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDataEntityRepositoryImpl.java:173-180 (UPDATE data_entity SET view_count = view_count + 1)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/DataEntityController.java:139-147 (no @PreAuthorize, no rate-limit)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/DataEntityController.java:307-313 (getPopular consumer endpoint ranks by view_count)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/util/SecurityConstants.java (no SecurityRule for GET /api/dataentities/{id})"
+  severity: MEDIUM
+  operational_impact: |-
+    (a) Popular panel becomes adversarial-content-friendly: a
+    malicious actor promotes a misleading entity to top of the panel
+    where new users click first. (b) The view_count UPDATE makes the
+    GET non-idempotent at the DB layer; read replicas cannot serve
+    this GET; browser refresh / network retry doubles the count;
+    the hottest read is permanently primary-only. (c) Row-level write
+    contention on view_count for popular entities scales as O(reads);
+    at scale the hot row becomes a write-throughput bottleneck on a
+    nominally-read endpoint. (d) Audit confusion — forensic analyst
+    cannot distinguish operator-driven views from scripted inflation.
+  fix_shape: |-
+    Options enumerated by SHB-014: per-(user, entity, hour) idempotency
+    layer (Redis or DB-side dedup table); async fire-and-forget
+    increment via Sink + scheduled flush (read-replica friendliness);
+    sample-and-aggregate (increment with probability 1/N). Recommendation:
+    idempotency layer is the lowest-effort + closes the loop.
+shoebox_evaluation_log:
+- batch: 2026-05-26-shoebox-slice-A
+  agent: feature-flow-builder
+  notes: |-
+    SHB-014 (view_count rating inflation) MERGED to F-003 as new drift
+    facet. The thread explicitly names BOTH F-001 (write side) and F-003
+    (read/rank side); F-003 is the better anchor because the EMERGENT
+    FEATURE — "popularity ranking inflatable by any caller" — is the
+    ranking surface. F-001 is the upstream contributor (one of the
+    nodes already enumerated in F-003's chain). The cluster F-001+F-003+SHB-014
+    is now closed at the F-003 anchor.

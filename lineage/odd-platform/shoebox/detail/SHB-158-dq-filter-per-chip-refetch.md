@@ -1,6 +1,6 @@
 # SHB-158 — DQ Dashboard fires a full dashboard refetch on every single filter-chip toggle; no batch-apply, no debounce
 
-**Category**: open
+**Category**: clustering
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -30,6 +30,10 @@ Operators building a multi-chip filter slice on the DQ Dashboard see the dashboa
 
 ## Links
 
-- cluster_with: [F-032, SHB-157]
+- cluster_with: [F-032, SHB-156, SHB-157]
 - merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: cluster — F-032 is in P-04 (cross-pillar; defer F-032 enrichment to P-04-pillar batch). Cluster_with sibling DQ-filter UX threads (SHB-156/157) so a future graduation captures the per-chip-refetch facet alongside label-drift + debounce-gap as one comprehensive "DQ Dashboard Filter UX" feature.

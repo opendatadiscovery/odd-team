@@ -1,0 +1,204 @@
+feature_id: F-095
+feature_name: |-
+  Dataset-Field Statistics Ingestion — cross-dataset write surface
+  (`POST /ingestion/entities/datasets/stats`) accepts any field-ODDRN regardless
+  of payload parent-dataset claim
+pillar_id: P-10
+pillar_anchored_id: P-10:F-003
+pillar_anchored_feature_name: |-
+  Statistics ingestion endpoint cross-dataset write surface — field-ODDRN
+  resolves writes; payload's parent `datasetOddrn` is used only for FTS
+  recalc, never validated against the resolved field's actual parent
+seeded_from: SHB-125
+seeded_at: 2026-05-26
+batch_origin: 'batch-shoebox-graduation 2026-05-26 — slice G'
+
+discovered_from_entry_point: |-
+  rest:POST /ingestion/entities/datasets/stats → IngestionController.postDataSetStatsList
+  → DatasetFieldServiceImpl.updateStatistics (NOT covered by any filter; in
+  WHITELIST_PATHS via /ingestion/**)
+
+primary_subject:
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/ingestion/IngestionController.java"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/DatasetFieldServiceImpl.java"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/filter/IngestionDataEntitiesFilter.java"
+
+contributing_nodes:
+  - "controller:IngestionController#postDataSetStatsList"
+  - "service:DatasetFieldServiceImpl#updateStatistics"
+  - "service:DatasetFieldServiceImpl#updateFieldsStatistics"
+  - "filter:IngestionDataEntitiesFilter (NON-matching for this path)"
+
+chain:
+  - hop: 1
+    node: "rest:POST /ingestion/entities/datasets/stats"
+    sidecar: unresolved
+    evidence: |-
+      odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/ingestion/IngestionController.java:81-87
+      — 4-line proxy; no @PreAuthorize, no programmatic auth, no empty-payload
+      guard (unlike sibling postDataEntityList).
+    multiplicity_per_trigger: 1
+  - hop: 2
+    node: "service:DatasetFieldServiceImpl#updateStatistics"
+    sidecar: unresolved
+    evidence: |-
+      odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/DatasetFieldServiceImpl.java:158-181
+      — @ReactiveTransactional; payload's datasetOddrn used ONLY to feed
+      datasetOddrns for FTS recalc (lines 168-170, 179). Writes target
+      dataset_field rows resolved BY FIELD ODDRN from statistics.keySet()
+      (lines 172-174). No parent-child cross-check anywhere.
+    multiplicity_per_trigger: 1
+  - hop: 3
+    node: "service:DatasetFieldServiceImpl#updateFieldsStatistics"
+    sidecar: unresolved
+    evidence: |-
+      odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/DatasetFieldServiceImpl.java:233-251
+      — iterates existingFields (resolved by FIELD ODDRN), deserialises
+      supplied DataSetFieldStat, calls field.setStats(JSONB.jsonb(...)) +
+      bulkUpdate. No ownership check, no parent-validation, no @PreAuthorize.
+
+terminal_side_effect:
+  side_effect_class: db-write
+  description: |-
+    `dataset_field.stats` JSONB column overwritten with attacker-controlled
+    payload for any field whose ODDRN is known. Simultaneously, FTS vector
+    recompute fires on the lying parent `datasetOddrn`. Downstream effects:
+    Dataset Structure tab renders attacker-controlled values for
+    `nulls_count`, `low_value`, `mean_value`; Quality Dashboard rings
+    (F-022, F-032) consume the polluted stats; BI tools reading
+    `dataset_field.stats` (per cross-pillar consumer mapping) receive
+    poisoned values.
+  evidence: |-
+    odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/DatasetFieldServiceImpl.java:172-181
+    + DatasetFieldServiceImpl.java:233-251 (the JSONB.jsonb(...) write at
+    field.setStats + bulkUpdate(fieldsToUpdate)).
+
+observed_vs_expected:
+  facets:
+    - facet: payload-driven field scoping with no parent-child consistency check
+      observed: |-
+        The supplied `DataSetStatistics.datasetOddrn` is used ONLY as the
+        FTS-vector recalc target; the actual dataset_field rows updated
+        come from `statistics.keySet()` (which is `Map<field_oddrn, stat>`).
+        Submitting `{datasetOddrn: A, fields: {<oddrn-of-field-in-dataset-B>: stat}}`
+        writes the stat to dataset B's field while recalcing FTS on A.
+        getLastVersionDatasetFieldsByOddrns(statistics.keySet()) performs
+        NO JOIN to dataset_oddrn to enforce parent-child consistency.
+      expected: |-
+        Either (a) assert the resolved field's dataset_id matches the
+        payload's `datasetOddrn`-resolved dataset_id; on mismatch throw
+        BadUserRequestException("Field does not belong to declared dataset"),
+        OR (b) accept the payload's `datasetOddrn` as the ONLY identity and
+        look up child fields by parent-id (constrains the write to the
+        payload's named dataset).
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/DatasetFieldServiceImpl.java:158-181"
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/DatasetFieldServiceImpl.java:172-181 (getLastVersionDatasetFieldsByOddrns)"
+      drift_class: payload_driven_field_scoping_no_parent_validation
+      provenance: STATIC — SHB-125 evidence; mechanism verified.
+    - facet: unauthenticated in every supported configuration
+      observed: |-
+        The /ingestion/entities/datasets/stats endpoint is in
+        SecurityConstants.WHITELIST_PATHS via `/ingestion/**` and is NOT
+        matched by IngestionDataEntitiesFilter's exact-literal path matcher
+        (POST /ingestion/entities — F-094 facet). The endpoint is reachable
+        anonymously under bundled defaults AND under every supported
+        `auth.type` (DISABLED / LOGIN_FORM / OAUTH2 / LDAP).
+      expected: |-
+        Either (a) gate the endpoint under `auth.ingestion.filter.enabled`
+        by broadening the path matcher (see F-094), OR (b) ship a separate
+        `auth.ingestion.stats.filter.enabled` property, OR (c) require an
+        authenticated caller with TAG_CREATE or a new DATASET_STATS_WRITE
+        permission.
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/filter/IngestionDataEntitiesFilter.java:28"
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/utils/SecurityConstants.java:95-96"
+        - "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security — verbatim: 'All other /ingestion/* paths (e.g. /ingestion/alert/alertmanager, /ingestion/entities/degs/children, /ingestion/entities/datasets/stats) ... remain outside the ingestion filter's coverage.'"
+      drift_class: unauthenticated_under_every_supported_configuration
+      provenance: STATIC — SHB-125 evidence; cross-link to F-094.
+    - facet: FTS recalc on lying parent enables cheap DoS
+      observed: |-
+        Because `datasetOddrn` parent feeds the FTS recalc but is uncoupled
+        from actual write targets, an attacker can name a heavy dataset
+        as the parent (triggering an FTS recalc on it) while writing
+        nothing or trivial stats to a small unrelated field. Repeated
+        invocations cause Postgres CPU load on the named dataset's FTS
+        recompute.
+      expected: |-
+        Validate parent-child consistency BEFORE issuing the FTS recompute
+        OR rate-limit FTS-vector recomputes per dataset_oddrn.
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/DatasetFieldServiceImpl.java:168-170,179"
+      drift_class: fts_recompute_on_lying_parent_dos_amplifier
+      provenance: STATIC — SHB-125 mechanism inference; severity MEDIUM.
+    - facet: replay-with-fewer-tags silently destroys EXTERNAL_STATISTICS-origin tags
+      observed: |-
+        A re-POST of the stats payload with fewer tags causes
+        `reactiveTagRepository.deleteDatasetFieldRelations(...,EXTERNAL_STATISTICS)`
+        to remove the absent EXTERNAL_STATISTICS-origin tags from the
+        affected fields. Combined with the unauthenticated mint surface
+        (see F-094's matrix + SHB-126 tag-creation side-channel), this is
+        F-008's `silent_destruction_replace_not_merge` class applied to
+        per-field tags.
+      expected: |-
+        Merge semantics OR an explicit "destructive stats ingestion" mode
+        flag with audit logging.
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/DatasetFieldServiceImpl.java:218-223"
+      drift_class: silent_destruction_replace_not_merge
+      provenance: STATIC — SHB-125 + SHB-126 cross-link; mirrors F-008's class.
+
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+      - "DatasetFieldServiceImpl.updateStatistics: assert that a payload with mismatched (datasetOddrn, field-of-other-dataset) is REJECTED"
+      - "Replay-with-fewer-tags semantics: assert EXTERNAL_STATISTICS-origin tag absence triggers DELETE"
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+      - "End-to-end: anonymous POST /ingestion/entities/datasets/stats → confirm 201 + dataset_field.stats updated"
+      - "Cross-dataset write probe: payload `{datasetOddrn: A, fields: {<field-of-B>: stat}}` → confirm B's field is updated"
+      - "FTS-recalc-on-lying-parent: repeated empty-stats POSTs → measure Postgres CPU load on the named heavy dataset"
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+      - "FTS-vector recompute cost amplification on lying-parent payloads"
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+      - "Probe: cross-dataset payload → confirm write lands on field B"
+      - "Probe: attacker payload + fake parent → confirm FTS recalc on A"
+      - "Probe: unauthenticated payload → confirm 201"
+
+control_summary: |-
+  0 of 4 cells PROBED. Mechanism verified across 5 file:line refs (controller
+  + 2 service methods + filter + WHITELIST). Operator-visible symptom
+  (tampered stats on datasets) is one probe firing away from confirmed.
+
+related_refactoring_scopes: []
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+  - "Ingestion (External Webhook)"
+  - "Ingestion Authentication Filter"
+  - "Ingestion Filter Path-Coverage Incomplete"
+
+related_features:
+  - F-008  # `silent_destruction_replace_not_merge` class — stats-tag plane mirrors lineage/metadata plane
+  - F-022  # Per-Dataset DQ Test Reports & SLA — dataset_field.stats consumer
+  - F-032  # Catalog-wide DQ Dashboard — Quality Dashboard rings consume stats
+  - F-040  # DQ Test Run History — both surfaces are "DQ-related ships attacker-controlled text into a visible field" — F-040 is the READ-side leak, F-095 is the WRITE-side leak
+  - F-094  # Ingestion auth coverage matrix — F-095 is one of the 3 unauthenticated endpoints F-094 enumerates
+
+related_retrospectives:
+  - LSN-001
+  - LSN-017
+
+status: active
+ui_unverified: false
+maintainer_curated: false

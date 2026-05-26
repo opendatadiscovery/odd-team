@@ -1,6 +1,6 @@
 # SHB-106 — `auth.ingestion.filter.enabled` only protects one of four `/ingestion/*` paths
 
-**Category**: open
+**Category**: clustering
 **Severity**: HIGH
 
 ## Hypothesis
@@ -41,6 +41,10 @@ Operators reading `auth.ingestion.filter.enabled: true` reasonably believe the t
 
 ## Links
 
-- cluster_with: [F-007, F-008]
-- merged_into: (open)
+- cluster_with: [F-007, F-008, SHB-123]
+- merged_into: (open — clustering with SHB-123)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: clustered — Slice F mining-hint guidance explicitly identifies SHB-123 (Slice G's `ingestion-filter-coverage-matrix-misleading-property-name`) as a cluster sibling describing the SAME ingestion-coverage-matrix surface. The two threads together provide a stronger graduation candidate than either alone (SHB-106 anchors on per-path coverage; SHB-123 anchors on the property-name misleading-ness — same operator-observable feature framed from two angles). Set bidirectional `cluster_with` here; the Slice G triage instance handles the sibling. Next run reconsiders the cluster as a single graduation candidate (likely P-09:F-005 or similar; verifies the four-way path coverage probe). Deferring graduation preserves the maintainer's ability to fold SHB-123's framing into the eventual feature without prematurely committing to either thread's emphasis.

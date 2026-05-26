@@ -50,3 +50,22 @@ Operators deploying odd-platform with multiple instances behind a load balancer 
 - cluster_with: [F-027]
 - merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: deferred — F-027 (the natural
+  merge target) is pillar P-08 Management & Administration, OUTSIDE
+  this slice's pillar (P-01 Data Discovery). Per the slice-A
+  anti-pattern: "Do NOT modify F-NNN files OUTSIDE your slice's
+  pillar." NOTE: Attachments are listed as a SUB-FEATURE of P-01
+  Data Discovery in `system-mission.md` ("Data Entity Attachments
+  (files + links; LOCAL vs REMOTE storage; LSN-001 caveat)") — the
+  F-027 pillar assignment of P-08 may itself be a migration-artefact
+  worth maintainer-triage. The hypothesis is strong (8 refs across
+  controller / service / utils / config / spec / live-doc / sidecar /
+  refactoring-scopes axes); evidence pattern matches F-027's anchor.
+  NEXT-RUN ACTION: a P-08 slice (or a maintainer-triage pass to
+  reclassify F-027 to P-01) merges SHB-015 into F-027 as new drift
+  facets (`chunk_base_path_hardcoded_per_instance_multi_instance_failure`
+  + `cross_entity_upload_id_hijack` + `same_index_race_no_idempotency`).
+  Thread stays `clustering` with cluster_with: [F-027] preserved.

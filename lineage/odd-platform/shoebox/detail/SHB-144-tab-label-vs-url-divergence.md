@@ -1,6 +1,6 @@
 # SHB-144 — Primary navigation tab labels diverge from URL paths, breaking the operator's URL-mental-model
 
-**Category**: open
+**Category**: merged
 **Severity**: LOW
 
 ## Hypothesis
@@ -31,5 +31,9 @@ Operators see a "Catalog" tab label that navigates to `/search/<uuid>` (not `/ca
 ## Links
 
 - cluster_with: [SHB-143, F-041]
-- merged_into: (open)
+- merged_into: F-041
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — F-041 already carries 4 distinct facets that cover the label/URL drift comprehensively: `dictionary_label_vs_termsearch_url_drift_through_i18n_natural_keys`, `catalog_label_vs_search_url_drift_through_i18n_natural_keys`, `data_modelling_label_lands_on_query_examples_specifically_not_pillar_overview`, plus the substring-match fragility facet `tab_selectedness_substring_match_fragile_under_route_rename`. The thread's hypothesis is verbatim covered. F-041: Application Toolbar — drift_class: ui_label_vocabulary_disagrees_with_url_vocabulary (existing).

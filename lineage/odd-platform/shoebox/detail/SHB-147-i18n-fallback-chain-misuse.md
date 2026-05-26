@@ -1,6 +1,6 @@
 # SHB-147 — i18next fallbackLng walks all six locales before reaching English, occasionally surfacing Spanish or Chinese to non-English users
 
-**Category**: clustering
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -31,5 +31,9 @@ Operators in non-English locales occasionally see Spanish or Chinese phrases mix
 ## Links
 
 - cluster_with: [F-043]
-- merged_into: (set when graduated)
+- merged_into: F-043
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — adds a NEW facet to F-043 capturing the fallback-chain misuse. The drift class is distinct from F-043's existing missing-key facets (those cover en-as-fallback; this covers the multi-locale walk between user-locale and en). Coordinated with Slice BC's SHB-049 via cross-pillar enricher reference. F-043: Multilingual UI — drift_class: i18n_fallback_chain_misconfigured_walks_all_locales_before_english.

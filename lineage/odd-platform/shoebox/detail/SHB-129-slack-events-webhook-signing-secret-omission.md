@@ -1,6 +1,6 @@
 # SHB-129 — Slack Events webhook (`POST /api/slack/events`) accepts forged events from any internet host because the Slack signing-secret verification is not implemented
 
-**Category**: open
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -45,5 +45,9 @@ Operators enabling Data Collaboration follow the live docs to set up a Slack app
 ## Links
 
 - cluster_with: [F-038]
-- merged_into: (open — likely an enricher for F-038)
+- merged_into: F-098
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduate — SHB-129 evidence (7 file:line refs across controller / parser / WHITELIST / migration / repository + live docs + Slack's published mandate) is mature; the inbound-webhook security surface is distinct from F-038's Data Collaboration product-feature angle (the brief explicitly notes this distinction). Minted F-098 at lineage/odd-platform/feature-flows/detail/F-098.yaml (pillar P-10:F-005) — anchored on the inbound INTEGRATION RECEIVER boundary rather than the P-07 feature, consistent with slice-G ownership of "Integrations & Ingestion". Six drift facets: HMAC signature unverified; WHITELIST_PATHS unauthenticated in every mode; no (provider, event_id) uniqueness for at-least-once dedup; no forensic trail; URL-verification-challenge enumeration leak; unused `incoming-webhook` scope. Cross-links F-038 (Data Collaboration product feature) + F-094 (same unauthenticated-every-mode class) + F-097 (Swagger exposes the endpoint).

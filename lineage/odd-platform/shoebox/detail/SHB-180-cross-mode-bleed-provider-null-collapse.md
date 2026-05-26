@@ -1,6 +1,6 @@
 # SHB-180 — LOGIN_FORM ↔ LDAP ↔ S2S cross-mode owner bleed via `provider=null` collapse
 
-**Category**: clustering
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -39,5 +39,9 @@ Operators running ODD with multiple authentication modes over a deployment's lif
 ## Links
 
 - cluster_with: [F-011]
-- merged_into: (open — feature-flow-builder to fold into F-011)
+- merged_into: F-011
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — F-011 (P-09:F-002 Principal-to-Owner Resolution) already lists `login_form_ldap_provider_null_cross_mode_bleed` (drift_class_summary line 8) and `provider_null_cross_mode_bleed_sql_primary_source` (line 14). Appended batch_extension ZL with FIVE primary-source citations (AuthIdentityProviderImpl resolver / SQL condition builder / DB partial unique index / IdentityServiceImpl masking / concept-catalog cross-ref) + the realistic LDAP-after-LOGIN_FORM migration attack surface as new evidence on existing facets. Confirmed F-011 is the correct merge target.

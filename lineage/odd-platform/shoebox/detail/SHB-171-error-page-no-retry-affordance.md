@@ -1,6 +1,6 @@
 # SHB-171 — AppErrorPage has no Try Again / Reload affordance; operators must manually navigate to recover from transient backend errors
 
-**Category**: open
+**Category**: merged
 **Severity**: LOW
 
 ## Hypothesis
@@ -30,5 +30,9 @@ When an operator hits a transient backend hiccup (5xx, network blip) on a detail
 ## Links
 
 - cluster_with: [F-042]
-- merged_into: (set when merged into F-042)
+- merged_into: F-042
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — F-042 already carries the `no_retry_cta_only_home_page_navigation` facet (severity LOW) with verbatim file:line citation. No new drift class needed. F-042: Page-level UI Error Display — drift_class: ui_error_widget_no_retry_only_home_page_button (existing).

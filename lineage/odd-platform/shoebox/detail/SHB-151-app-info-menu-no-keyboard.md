@@ -1,6 +1,6 @@
 # SHB-151 — App Info menu is hover-only and keyboard-inaccessible despite ARIA claims
 
-**Category**: open
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -30,5 +30,9 @@ Operators using keyboard-only navigation (or screen readers, or touch devices li
 ## Links
 
 - cluster_with: [F-041]
-- merged_into: (open)
+- merged_into: F-041
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — F-041 already carries the `app_info_menu_hover_only_wcag_2_1_violation_no_keyboard_activation` facet verbatim. F-041: Application Toolbar — drift_class: app_info_menu_hover_only_wcag_2_1_violation_no_keyboard_activation (existing).

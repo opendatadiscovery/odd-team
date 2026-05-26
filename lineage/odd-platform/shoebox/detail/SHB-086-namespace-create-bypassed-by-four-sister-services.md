@@ -1,6 +1,6 @@
 # SHB-086 — Namespace directory mintable from 4 sister services (TermService / DataSourceService / CollectorService / DataEntityGroupService), bypassing NAMESPACE_CREATE
 
-**Category**: clustering
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -35,5 +35,9 @@ Operators authoring an RBAC policy that grants `TERM_CREATE` (or `DATA_SOURCE_CR
 ## Links
 
 - cluster_with: [F-028, F-031, F-020, F-002, SHB-085, SHB-084]
-- merged_into: (open)
+- merged_into: F-028
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merged — F-028 already carries `namespace_create_side_door_bypass_via_four_sister_services` as primary drift class; this thread STRENGTHENS the facet with full four-callsite primary-source citations (TermServiceImpl + DataSourceServiceImpl + CollectorServiceImpl + DataEntityGroupServiceImpl). F-028: shoebox_extensions_2026_05_26 → drift_class: namespace_create_side_door_bypass_via_four_sister_services_full_callsite_enumeration. Category flipped clustering → merged.

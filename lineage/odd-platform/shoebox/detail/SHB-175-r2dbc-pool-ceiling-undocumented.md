@@ -1,6 +1,6 @@
 # SHB-175 — R2DBC pool ceiling silently 20-per-replica; ten `spring.r2dbc.pool.*` knobs wired but undocumented
 
-**Category**: open
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -39,5 +39,9 @@ Operators running ODD at high request rates hit a silent per-replica concurrency
 ## Links
 
 - cluster_with: [F-026]
-- merged_into: (open)
+- merged_into: F-120
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduate — evidence rich across 5 substrate axes (config class file:line + application.yml absence + framework defaults + concept-catalog invariant + WebFetch confirming docs silence). Minted F-120 (P-08:F-014 R2DBC Pool Operator-Tunability). Cluster_with F-026 preserved as related cross-reference; not folded because the R2DBC pool ceiling is operator-infrastructure shape, not Lookup-Tables-specific.

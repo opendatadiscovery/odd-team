@@ -44,3 +44,7 @@ Operators of multi-team or multi-namespace ODD deployments expect "route Critica
 - cluster_with: [F-007, F-009, SHB-053, SHB-055]
 - merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — into F-009 WAL-driven Notification Delivery. F-009 batch K already lists `unconditional_broadcast_no_routing` in drift_class_summary, primary-source at AlertNotificationMessageProcessor.java:25-36 (fan-out loop with no filter/predicate) + AlertNotificationMessageTranslator.java:73-83 (populates owners/namespace/dataSourceName but dispatcher never reads them) + SlackNotificationSender.java:27 + WebhookNotificationSender.java:11 + EmailNotificationSender.java:36 (single-URL-per-bean construction). The SHB-064 thread elevates the existing drift facet from "implementation reality" to "missing operator-visible feature" — but F-009's facet already names the absence. The compound with the missing alert.severity field (AlertManager labels.severity discarded by handleExternalAlerts) is captured under F-007's batch P secondary facet on DTO silently dropping wire fields. Thread marked merged. F-009: WAL-driven outbound alert notification fan-out — drift_class facet `unconditional_broadcast_no_routing` already captures the full SHB-064 hypothesis.

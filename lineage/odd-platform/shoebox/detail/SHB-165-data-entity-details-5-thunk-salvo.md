@@ -1,6 +1,6 @@
 # SHB-165 — Opening any data entity detail page fires a 5-thunk parallel salvo; no batching, no de-dup, no rate-limit
 
-**Category**: open
+**Category**: clustering
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -34,3 +34,7 @@ Every detail-page open fires FIVE parallel backend requests within the same rend
 - cluster_with: [SHB-164, F-001]
 - merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: cluster — F-001 is P-01 cross-pillar (and maintainer_curated). Cluster_with SHB-164 for cohesive next-batch P-01 enrichment of DataEntityDetails-mount thunk coordination. The "5-thunk salvo" is a performance-class observation distinct from SHB-164's view_count-doubling bug — both belong to the same UI surface but are separable facets. Defer F-001 modification to maintainer review.

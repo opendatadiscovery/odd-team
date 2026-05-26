@@ -1,6 +1,6 @@
 # SHB-111 — Soft-deleted Policy still grants permissions (catalogue-vs-grant asymmetry)
 
-**Category**: open
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -38,5 +38,9 @@ Operators deleting an RBAC Policy via `DELETE /api/policies/{id}` see it disappe
 ## Links
 
 - cluster_with: [F-006]
-- merged_into: (open — ENRICHER for F-006)
+- merged_into: F-006
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merged — thread explicitly self-flags as ENRICHER for F-006 in its Notes block; substrate evidence overlaps with F-006 batches H/Q/S (catalogue-vs-grant render asymmetry, service-tier non-atomic cascade-check, @ReactiveTransactional asymmetry are all existing F-006 drift facets). Operator-incident-response narrative + three-concurrent-client race description are NEW operator-visible framings worth folding in. Appended a 2026-05-26-shoebox-F batch extension to F-006 with three refinements: operator_incident_response_framing (refines `catalogue_vs_grant_render_asymmetry_ui_visible_half`), three_concurrent_client_race_description (refines `policy_service_cascade_check_non_atomic_with_soft_delete_mirror`), and one NEW drift facet `policy_delete_cascade_detach_order_dependency_undocumented_in_authorization_policies_doc`. STRENGTHENS=3; SUPERSEDES=0; CONFLICTS=0.

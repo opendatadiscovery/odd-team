@@ -38,5 +38,9 @@ The platform's authorization model is **READ-COLLABORATIVE by deliberate design*
 ## Links
 
 - cluster_with: [F-006, F-014, F-015, F-017, F-021]
-- merged_into: (open — should be promoted to BOTH an ADR + an F-NNN)
+- merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: deferred — this thread is FIRST an ADR candidate (architectural posture cutting across ~12 features) and SECOND a feature candidate. The graduation decision is genuinely ambiguous: should it be (a) an F-NNN naming the operator-observable read surface enumeration, (b) an ADR-CANDIDATE-NNN in adrs/drafts/ for the read-collaborative doctrine itself, OR (c) both — an ADR + a feature that anchors the operator-visible consequences? The feature-flow-builder agent contract calls this exact shape "the kind of cross-cutting backbone … consider sme_consultation_recommended" (Slice F hint). **sme_consultation_recommended: true** — consultation archetype: ODD product-direction / threat-model framing; question: should the read-collaborative posture surface as F-NNN, as ADR, or as both? The substrate evidence is strong (≥6 controller files + SecurityConstants + AuthorizationCustomizer + 12+ downstream feature cross-references), but the SHAPE of the artefact (feature vs ADR) is a maintainer decision. ADR-archaeologist subagent may be the proper home for the ADR half. Re-evaluate after maintainer triage. The thread's substantive content is fully preserved; deferring does not lose evidence.

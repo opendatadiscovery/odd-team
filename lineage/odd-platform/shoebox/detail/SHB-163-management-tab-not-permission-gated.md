@@ -1,6 +1,6 @@
 # SHB-163 — Every Management sub-area except Associations is reachable by deep-link to any authenticated user
 
-**Category**: clustering
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -33,5 +33,9 @@ Operators with zero Management-tier permissions — including a fresh user under
 ## Links
 
 - cluster_with: [F-006, F-019, F-020, F-026, F-028, F-031, F-034]
-- merged_into: (open)
+- merged_into: F-105
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduate — minted F-105 at lineage/odd-platform/feature-flows/detail/F-105.yaml (P-08:F-015 Management Section Route Gating). Evidence list spans 5 file:line refs across 3 substrate axes (App.tsx route mount, Management.tsx root, ManagementRoutes.tsx wrappers, WithPermissionsProvider.tsx context-only, NamespaceList.tsx representative fetch). Distinct from F-006 (RBAC lifecycle — mutation gates) and F-041 (toolbar tab visibility — chrome-level only). Distinct primary subject: route-level read-side reachability of 8 of 9 Management sub-areas. HIGH severity per anonymous-disclosure-under-DISABLED amplification (REFACTOR-185 cluster).

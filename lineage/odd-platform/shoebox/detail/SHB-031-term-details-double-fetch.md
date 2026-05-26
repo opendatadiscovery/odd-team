@@ -1,6 +1,6 @@
 # SHB-031 — TermDetails shell + Overview tab both fire `GET /api/terms/{id}` — 2× cost on a 12-JOIN hot path per page-open
 
-**Category**: open
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -36,5 +36,9 @@ Operators opening a Term detail page (`/terms/{id}/overview`) trigger TWO indepe
 ## Links
 
 - cluster_with: [F-002]
-- merged_into: (open)
+- merged_into: F-002
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merged into F-002 (P-06:F-001 Term-to-Entity Linkage) — F-002 already carries `get_term_details_dto_12_join_hot_path_amplification` (MEDIUM) facet (batch N) which captures the 12-JOIN hot path semantics, AND the F-002 chain hop ui-detail (TermDetails) already records the double-fetch evidence at TermDetails.tsx:37-45 + Overview.tsx:19-21 (with explicit "DOUBLE-FETCH amplification on the 12-JOIN hot path per page-open (sibling pattern to LSN-017, different mechanism)" wording). SHB-031 STRENGTHENS that existing facet with the cross-component composition framing — same finding from a different angle. The LSN-NNN candidate (cross-component-fetch-duplication-on-hot-backend-path) is a methodology-level case-law observation noted for the next adversarial-panel review, not a feature-flow concern.

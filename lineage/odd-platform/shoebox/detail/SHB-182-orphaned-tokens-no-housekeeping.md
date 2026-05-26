@@ -1,6 +1,6 @@
 # SHB-182 — Orphaned ingestion credentials persist forever; TOKEN table has no housekeeping
 
-**Category**: open
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -44,5 +44,9 @@ Operators rotating collector tokens (`POST /api/collectors/{id}/token` regenerat
 ## Links
 
 - cluster_with: [F-020, F-031]
-- merged_into: (open)
+- merged_into: F-125
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduate — SECURITY load-bearing. Evidence: 6 file:line citations across migrations + TokenGeneratorImpl + repository + service + HousekeepingJobManager absence-of-cleanup. Minted F-125 (P-08:F-017 Ingestion Credential Storage & Lifecycle). Cluster_with [F-020, F-031] preserved as related lifecycle cross-references — F-125 is the storage-layer + housekeeping-gap; F-020/F-031 are the WHAT-it-does of token creation. Cross-pillar with F-010 (housekeeping fix-location) acknowledged via related_features without modifying F-010 (Slice E).

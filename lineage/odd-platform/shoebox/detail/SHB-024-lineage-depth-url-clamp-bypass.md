@@ -1,6 +1,6 @@
 # SHB-024 — Operator can drive arbitrary backend lineage depth by hand-editing `?d=` URL despite UI dropdown caps
 
-**Category**: open
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -39,5 +39,9 @@ Operators see a depth slider in `LineageControls` capped at `[1..20]` (constants
 ## Links
 
 - cluster_with: [F-005, F-016]
-- merged_into: (open)
+- merged_into: F-055
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduated — 8 evidence refs spanning UI dropdown / URL parser / controller / service / repository / SQL CTE all confirming the same three-layer absent-validation pattern; security-impacting (Authenticated-DoS surface). Falsifiable via probe (load /dataentities/{id}/lineage?d=10000 + observe Postgres pg_stat_activity). Minted F-055 at lineage/odd-platform/feature-flows/detail/F-055.yaml (P-05:F-004 Lineage Depth Boundary Contract). Three drift facets: ui_dropdown_cap_is_not_validation_boundary, click_through_compounds_depth_monotonically, cyclic_diamond_amplification_no_cycle_guard. Distinct from F-005 (which captures default-depth semantics) — F-055 captures the END-TO-END boundary contract the dropdown advertises.

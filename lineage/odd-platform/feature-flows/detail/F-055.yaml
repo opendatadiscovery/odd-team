@@ -1,0 +1,220 @@
+feature_id: F-055
+pillar_id: P-05
+pillar_anchored_id: P-05:F-004
+pillar_anchored_feature_name: Lineage Depth Boundary Contract
+feature_name: Lineage depth boundary — UI dropdown advertises [1..20] cap; URL parser / API / SQL accept any positive integer
+seeded_from: SHB-024
+seeded_at: 2026-05-26
+discovered_from_entry_point: |-
+  ui_route:/dataentities/{id}/lineage?d=N — the URL query parameter that
+  controls recursive-CTE depth. The UI advertises a 20-cap via the
+  AppSelect dropdown; every layer below accepts any positive integer.
+primary_subject:
+  - odd-platform-ui/src/components/DataEntityDetails/Lineage/HierarchyLineage/lineageLib/useQueryParams.ts:33-36
+  - odd-platform-ui/src/components/DataEntityDetails/Lineage/HierarchyLineage/lineageLib/constants.ts:97-99
+  - odd-platform-api/src/main/java/.../ReactiveLineageRepositoryImpl.java:174,183
+contributing_nodes:
+  - node_id: odd-platform ts useQueryParams
+    role: ui-url-param-parser
+    sidecar: '(referenced from LineageGraph sidecar bugs[1])'
+    note: |-
+      parseNumbers: true accepts any integer as `d`; no Math.min(d, 20) clamp.
+      The URL is the actual contract; the dropdown is presentation.
+    unresolved: true
+  - node_id: odd-platform ts lineageLib constants
+    role: ui-dropdown-options-array
+    sidecar: '(referenced from LineageGraph sidecar)'
+    note: 'lineageDepth = [1..20] — dropdown options list, NOT a validation constant.'
+    unresolved: true
+  - node_id: odd-platform ts react-component:HierarchyLineage
+    role: ui-thunk-dispatch
+    sidecar: '(referenced from LineageGraph sidecar)'
+    note: 'HierarchyLineage.tsx:47 — d flows straight to fetchDataEntityDownstreamLineage({lineageDepth: d}) with no clamp.'
+    unresolved: true
+  - node_id: odd-platform ts react-component:LineageGraph
+    role: ui-render-and-click-amplification
+    sidecar: lineage/odd-platform/understanding/odd-platform__ts__react-component__component__LineageGraph.md
+    note: |-
+      bugs[1]: "No upper bound on `d` URL param parsing — useQueryParams.ts:36
+      uses parseNumbers: true which converts ?d=999999999 to d: 999999999".
+      Click-through compounds depth monotonically per click.
+  - node_id: odd-platform java DataEntityController controller-method:getDataEntityDownstreamLineage
+    role: rest-entry-point
+    sidecar: lineage/odd-platform/understanding/odd-platform__java__DataEntityController__controller-method__getDataEntityDownstreamLineage.md
+    note: |-
+      bugs HIGH: "No server-side lineage_depth upper-bound cap... a client can
+      request lineage_depth=10000 and the query will attempt to enumerate the
+      entire reachable subgraph."
+  - node_id: odd-platform java service:LineageServiceImpl
+    role: service-tier
+    sidecar: lineage/odd-platform/understanding/odd-platform__java__service__service__LineageServiceImpl.md
+    note: |-
+      bugs[2]: "No upper-bound check on lineageDepth at this service —
+      getLineage builds LineageDepth.of(lineageDepth) and hands the primitive
+      int directly to the repository." line 185.
+  - node_id: odd-platform java repository:ReactiveLineageRepositoryImpl
+    role: persistence-tier
+    sidecar: lineage/odd-platform/understanding/odd-platform__java__repository_reactive__repository__ReactiveLineageRepositoryImpl.md
+    note: |-
+      bugs[3]: "No upper bound on lineageDepth.getDepth() at the repository
+      layer — the value is consumed directly at line 174
+      (tDepth.lessThan(lineageDepth.getDepth())) with no defensive
+      Math.min(...) or boundary check."
+      bugs[0]: "No cycle-detection inside the recursive CTE... only
+      termination is tDepth.lessThan(lineageDepth.getDepth())." line 177.
+chain:
+  - hop: 1
+    node: odd-platform ts useQueryParams
+    sidecar: '(referenced from LineageGraph sidecar)'
+    evidence: 'useQueryParams.ts:33-36 parseNumbers: true — accepts any integer'
+    multiplicity_per_trigger: 1
+    unresolved: true
+  - hop: 2
+    node: odd-platform ts react-component:HierarchyLineage
+    sidecar: '(referenced from LineageGraph sidecar)'
+    evidence: 'HierarchyLineage.tsx:47 — d flows to fetchDataEntityDownstreamLineage'
+    multiplicity_per_trigger: 1
+    unresolved: true
+  - hop: 3
+    node: odd-platform java DataEntityController controller-method:getDataEntityDownstreamLineage
+    sidecar: lineage/odd-platform/understanding/odd-platform__java__DataEntityController__controller-method__getDataEntityDownstreamLineage.md
+    evidence: 'No server-side @Max; only @Min(1)'
+    multiplicity_per_trigger: 1
+    unresolved: false
+  - hop: 4
+    node: odd-platform java service:LineageServiceImpl
+    sidecar: lineage/odd-platform/understanding/odd-platform__java__service__service__LineageServiceImpl.md
+    evidence: 'LineageServiceImpl.java:96 — LineageDepth.of(lineageDepth) hands the primitive int through'
+    multiplicity_per_trigger: 1
+    unresolved: false
+  - hop: 5
+    node: odd-platform java repository:ReactiveLineageRepositoryImpl
+    sidecar: lineage/odd-platform/understanding/odd-platform__java__repository_reactive__repository__ReactiveLineageRepositoryImpl.md
+    evidence: 'lines 174, 183 — tDepth.lessThan(lineageDepth.getDepth()) with no clamp'
+    multiplicity_per_trigger: 1
+    unresolved: false
+terminal_side_effect:
+  side_effect_class: db-write
+  description: |-
+    Recursive CTE materialises rows up to requested depth in Postgres work_mem
+    before the outer selectDistinct prunes; JVM heap holds the full edge list
+    via .collectList() at LineageServiceImpl.java:102. With no cycle guard
+    AND no upper bound, a cyclic subgraph at ?d=10000 is materialised at
+    Postgres + JVM resource costs that scale with the cyclic edge count.
+    NOT a db-write (read-only query); but the resource impact is observable
+    via slow query log + JVM heap pressure metrics.
+  evidence: 'ReactiveLineageRepositoryImpl.java:174 (depth termination) + LineageServiceImpl.java:102 (.collectList)'
+observed_vs_expected:
+  facets:
+    - facet_id: ui_dropdown_cap_is_not_validation_boundary
+      drift_class: ui_visible_safety_boundary_does_not_validate_at_any_layer_below
+      severity: HIGH
+      observed: |-
+        Three-layer absent-validation pattern: (1) UI dropdown shows [1..20]
+        cap as the operator-visible safety boundary; (2) URL ?d= parser via
+        query-string with parseNumbers:true accepts any positive integer
+        unclamped; (3) controller has @Min(1) only, no @Max; (4) service hands
+        the primitive int through unchanged; (5) repository consumes the value
+        directly in the recursive CTE termination. The 20-cap is UI-presentation-only.
+      expected: |-
+        Layered defence: (a) Math.min(d, 20) at URL-parse layer for
+        defence-in-depth; (b) backend @Max(20) on the OpenAPI spec for SDK
+        clients; (c) hard ceiling at the service layer
+        (Math.min(lineageDepth, MAX_DEPTH)); (d) Postgres statement_timeout
+        for the lineage CTE specifically.
+      evidence:
+        - 'useQueryParams.ts:33-36'
+        - 'constants.ts:97-99'
+        - 'HierarchyLineage.tsx:47'
+        - 'LineageGraph.md:176 bugs[1]'
+        - 'ReactiveLineageRepositoryImpl.md:174,183 bugs[3]'
+        - 'LineageServiceImpl.md:185 bugs[2]'
+        - 'DataEntityController__getDataEntityDownstreamLineage.md:115 bugs HIGH'
+      ui_unverified: false
+    - facet_id: click_through_compounds_depth_monotonically
+      drift_class: ui_amplification_via_url_routing_chain
+      severity: MEDIUM
+      observed: |-
+        Per LineageGraph sidecar bugs[3] + implicit_adrs[4]: clicking a node
+        title at depth N navigates to that node's Lineage tab with ?d=N —
+        drilling 5 hops out from root opens a new view with depth=5. A user
+        accidentally navigates to a depth=N view where N grows monotonically
+        per click; no slider state intervenes. Operators casually exploring
+        a graph drive deeper queries without intent.
+      expected: |-
+        Either (a) the click resets ?d to user's last-selected dropdown value,
+        OR (b) the click preserves a CLAMPED depth value (Math.min(currentDepth, 20)),
+        OR (c) document the monotonic compounding explicitly.
+      evidence:
+        - 'LineageGraph.md:bugs[3] + implicit_adrs[4]'
+      ui_unverified: false
+    - facet_id: cyclic_diamond_amplification_no_cycle_guard
+      drift_class: postgres_resource_exhaustion_via_unbounded_recursive_cte
+      severity: HIGH
+      observed: |-
+        With no cycle guard at the repository layer (REFACTOR-202) AND no
+        depth ceiling, a user requesting ?d=10000 against a cyclic lineage
+        subgraph causes the CTE to materialise rows up to depth 10000 in
+        Postgres work_mem before the outer selectDistinct prunes. JVM heap
+        then holds the full edge list via .collectList() (LineageServiceImpl.java:102).
+        Authenticated DoS surface: every authenticated user has the affordance;
+        under auth.type=DISABLED the affordance is unauthenticated.
+      expected: |-
+        (a) Cycle detection inside the recursive CTE (track visited entity
+        oddrns), OR (b) Postgres statement_timeout for lineage queries
+        specifically, OR (c) per-user / per-tenant query throttling.
+      evidence:
+        - 'ReactiveLineageRepositoryImpl.md:177 bugs[0]'
+        - 'LineageServiceImpl.java:102 (collectList)'
+        - 'REFACTOR-202 (cycle-detection backlog)'
+      ui_unverified: false
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+      - URL-parse clamp test (Math.min(d, 20) at useQueryParams.ts)
+      - Service-tier ceiling test (Math.min(lineageDepth, MAX_DEPTH) at LineageServiceImpl)
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+      - WebTestClient — assert ?d=10000 either (a) clamps to 20 and returns 20-deep result, OR (b) returns 4xx
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+      - Performance regression test — bound the CTE row count for a known-cyclic seeded subgraph
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+      - Authenticated-DoS regression test — assert that authenticated callers cannot drive Postgres beyond a documented resource budget
+  control_summary: 0/4
+  highest_leverage_uncovered: |-
+    Security — a single Authenticated-DoS regression test pinning the depth
+    cap at the controller layer would also catch the cyclic-amplification
+    case if the seeded subgraph is cyclic. Three drift facets, ONE test.
+related_refactoring_scopes:
+  - REFACTOR-202
+  - REFACTOR-185
+related_test_gaps: []
+related_doc_gaps: []
+related_features:
+  - F-005
+  - F-016
+related_concepts:
+  - lineage-depth-traversal
+  - data-lineage
+ui_unverified: false
+status: active
+note: |-
+  Graduated 2026-05-26 from SHB-024. The feature is the operator-visible
+  safety boundary (the dropdown cap). The bug is that no layer below the
+  dropdown validates the boundary. Sibling-related to F-005 (which captures
+  the recursive-CTE walk semantics) — F-055 captures the END-TO-END boundary
+  contract that the dropdown advertises. The thread proposes a layered fix
+  (REFACTOR-NNN at four sites); the feature flow anchors the operator-visible
+  expectation. LSN-001-shape ADR candidate per SHB-024 Notes: "if the
+  operator sees a control with limited options, every layer below must
+  enforce the same options OR document the asymmetry."

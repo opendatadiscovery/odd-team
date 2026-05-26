@@ -1,6 +1,6 @@
 # SHB-132 — Collector tokens have no DB-level uniqueness; soft-deleting a Collector does not revoke its token; both shapes allow cross-collector identity confusion that operators cannot recover from runtime state
 
-**Category**: open
+**Category**: clustering
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -51,6 +51,10 @@ Operators managing the Management → Collectors tab assume each Collector's bea
 
 ## Links
 
-- cluster_with: [F-020, SHB-124]
-- merged_into: (open — likely enriches F-020)
+- cluster_with: [F-020, SHB-124, F-008]
+- merged_into: (cross-pillar — defer to F-020 owner pillar P-08)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: cluster — SHB-132 is a CROSS-PILLAR enricher (target F-020 Collector Lifecycle Management lives in P-08 Management & Administration — outside Slice G's P-10/P-11 ownership). Per slice-G anti-pattern, do NOT modify cross-pillar F-NNN directly; defer to Slice E or next pass. Strong evidence (6 file:line refs across repository getByToken / getDto / filter / service / parent filter). Two distinct drift facets ready: token_uniqueness_not_enforced_at_schema; soft_deleted_collector_token_still_valid_with_5xx_not_401_downstream. Cross-link maintained to SHB-124 (both surface "operator cannot reconstruct ingestion provenance from runtime state") and F-008 (which already carries `token_value_no_unique_constraint_cross_collector_share_race` + `soft_deleted_collector_orphaned_token_persists_indefinitely` in its drift_class_summary — F-008 may be the more natural absorber via its CollectorsList batch-Q sidecar's cross-link). The Slice-E or P-08-owner pass picks the home.

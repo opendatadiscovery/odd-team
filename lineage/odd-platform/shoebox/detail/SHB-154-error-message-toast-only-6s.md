@@ -1,6 +1,6 @@
 # SHB-154 — Backend error messages flash for 6 seconds in a toast; operators have no persistent way to recover the diagnostic
 
-**Category**: open
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -30,5 +30,9 @@ When a page-level data fetch rejects, operators see two error surfaces with asym
 ## Links
 
 - cluster_with: [F-042, SHB-153]
-- merged_into: (open)
+- merged_into: F-042
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merge — F-042 already carries the `toast_side_channel_carries_message_for_6s_then_lost` facet which captures the asymmetric-lifetime drift verbatim. No new drift class to add. F-042: Page-level UI Error Display — drift_class: ui_error_message_short_side_channel_then_lost (existing).

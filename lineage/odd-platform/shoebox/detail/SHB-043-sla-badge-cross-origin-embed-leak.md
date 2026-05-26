@@ -1,6 +1,6 @@
 # SHB-043 — SLA badge PNG endpoint leaks per-dataset health colour cross-origin via cookie-bearing `<img>` embed
 
-**Category**: open
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -34,9 +34,9 @@ The `/api/datasets/{id}/sla` endpoint is the documented BI-embeddable SLA badge 
 ## Links
 
 - cluster_with: [F-022]
-- merged_into: (open)
+- merged_into: F-022
 - supersedes: []
 
 ## evaluation
 
-(feature-flow-builder will append a dated entry here on its next run.)
+- **feature-flow-builder 2026-05-26**: merged into F-022 (P-04:F-001 Per-Dataset DQ Test Reports & SLA) — thread is an enricher capturing the cross-origin embed security-boundary facet F-022 doesn't currently enumerate. drift_class: sla_badge_cross_origin_resource_policy_missing_cookie_bearing_image_side_channel (new facet). The doc-side framing encourages cross-origin embed without naming the cookie / SameSite caveat — operator-visible defect. Mitigation per thread: Cross-Origin-Resource-Policy: same-origin header + token-bearing BI variant. SEC-NNN refactor candidate flagged; not a graduation-shape thread. Confirmation via probe (embed <img> against local ODD) cited in thread's Next; deferred to maintainer probe pass.

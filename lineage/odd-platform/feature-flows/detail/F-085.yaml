@@ -1,0 +1,221 @@
+feature_id: F-085
+feature_name: |-
+  Identity Probe & DISABLED-Mode Synthetic Admin Fallback — the
+  /api/identity/whoami endpoint is an anonymous auth-mode fingerprint AND
+  (under auth.type=DISABLED) returns a synthetic `admin` identity with
+  every Permission, unlocking every UI control for any caller
+pillar_id: P-09
+pillar_anchored_id: P-09:F-005
+pillar_anchored_feature_name: Identity Probe & DISABLED-Mode Synthetic Admin Fallback
+seeded_from: SHB-105
+seeded_at: 2026-05-26
+discovered_from_entry_point: |-
+  controller-method:GET /api/identity/whoami (IdentityController.java:23-33)
+  — the canonical runtime probe endpoint consumed by the SPA on every
+  page load + the auth-mode fingerprint surface anonymously reachable
+  under DISABLED-mode and via response-code differentiation under
+  LOGIN_FORM/OAUTH2/LDAP modes.
+primary_subject:
+  - odd-platform-api java controller:IdentityController (12-line whoami method)
+  - odd-platform-api java config:DisabledAuthSecurityConfiguration (no ServerSecurityContextRepository wired)
+  - odd-platform-api java auth:SecurityConstants (WHITELIST_PATHS — whoami NOT in whitelist)
+  - odd-platform-api java auth:AuthorizationCustomizer (29-30 catch-all authenticated())
+  - odd-platform-ui ts components/shared/contexts/Permission/PermissionProvider.tsx (consumes Identity.permissions)
+  - odd-platform-ui ts redux/selectors/profile.selectors.ts (getGlobalPermissions reads identity.permissions)
+contributing_nodes:
+  - odd-platform java controller:IdentityController
+  - odd-platform java config:DisabledAuthSecurityConfiguration
+  - odd-platform java auth:SecurityConstants
+  - odd-platform java auth:AuthorizationCustomizer
+  - odd-platform ts react-component:PermissionProvider
+  - odd-platform ts redux:profile.selectors
+chain:
+  - hop: 1
+    node: odd-platform java controller:IdentityController
+    sidecar: unresolved
+    evidence: |-
+      IdentityController.java:23-33 — 12-line whoami method. Line 27
+      `.switchIfEmpty(Mono.just(new ResponseEntity<>(dummyOwner(),
+      HttpStatus.OK)))` fires when the principal Mono is empty
+      (DISABLED-mode condition). Lines 30-33 construct
+      `new Identity().username('admin').permissions(Arrays.asList(Permission.values()))`
+      — Permission.values() dynamically expands to whatever enum values
+      exist (~70+ per components.yaml:158-235). NO @PreAuthorize.
+    multiplicity_per_trigger: 1
+  - hop: 2
+    node: odd-platform java config:DisabledAuthSecurityConfiguration
+    sidecar: unresolved
+    evidence: |-
+      DisabledAuthSecurityConfiguration.java:11-19 — DISABLED mode wires
+      NO ServerSecurityContextRepository; ReactiveSecurityContextHolder.getContext()
+      emits empty; the switchIfEmpty fallback at IdentityController is
+      the sole defining surface for the DISABLED-mode operator experience.
+    multiplicity_per_trigger: 1
+  - hop: 3
+    node: odd-platform java auth:AuthorizationCustomizer
+    sidecar: unresolved
+    evidence: |-
+      AuthorizationCustomizer.java:29-30 + SecurityConstants.java:95-96
+      (WHITELIST_PATHS) — /api/identity/whoami is NOT in the whitelist.
+      Under LOGIN_FORM/OAUTH2/LDAP the SecurityWebFilterChain blocks
+      anonymous callers with 302 (LOGIN_FORM) or 401 (OAUTH2/LDAP). The
+      four response shapes are themselves the fingerprint: 200+admin →
+      DISABLED; 302 → LOGIN_FORM; 401 → OAUTH2/LDAP.
+    multiplicity_per_trigger: 1
+  - hop: 4
+    node: odd-platform ts react-component:PermissionProvider
+    sidecar: unresolved
+    evidence: |-
+      PermissionProvider.tsx:17-32 + profile.selectors.ts:17-20 — the SPA
+      reads whoami's permissions list directly. Under DISABLED,
+      isAllowedTo(<any Permission>) is TRUE; every Permission-gated UI
+      control is unlocked (Lookup Tables CRUD, Policy/Role/Owner mutation,
+      attachment upload, lookup-row delete, etc.).
+    multiplicity_per_trigger: 1
+terminal_side_effect:
+  side_effect_class: page-render
+  description: |-
+    Two terminal side effects on a single request:
+    (a) Response body — 200 OK + JSON `{username: 'admin', permissions: [...all]}`
+        (under DISABLED), or 302/401 (other modes) — the auth-mode fingerprint
+        and (under DISABLED) the synthetic-admin identity wire.
+    (b) Client-side state — Redux profile slice populated; PermissionProvider
+        unlocks every Permission-gated UI affordance for the rest of the
+        session lifetime.
+  evidence:
+    - "IdentityController.java:30-33 (response body)"
+    - "PermissionProvider.tsx:17-32 (client-side consumption)"
+observed_vs_expected:
+  facets:
+    - drift_class: anonymous_auth_mode_fingerprint_via_response_code_differentiation
+      description: |-
+        Anonymous network caller can determine the deployment's active
+        auth.type by issuing ONE GET /api/identity/whoami and observing
+        the response code: 200+`admin` body → DISABLED; 302 → LOGIN_FORM;
+        401 → OAUTH2/LDAP. The endpoint is the canonical reconnaissance
+        surface; docs do not name the endpoint at all.
+      evidence:
+        - "IdentityController.java:23-33"
+        - "SecurityConstants.java:95-96 (WHITELIST_PATHS — whoami absent)"
+      ui_unverified: false
+    - drift_class: disabled_mode_admin_with_all_permissions_dynamic_blast_radius
+      description: |-
+        Under auth.type=DISABLED, an anonymous caller receives 200 +
+        Identity with permissions = Arrays.asList(Permission.values()) —
+        EVERY current and future Permission enum value, dynamically. Adding
+        a new Permission to the OpenAPI spec AUTOMATICALLY enters the
+        DISABLED-mode admin grant, no code change in the controller.
+        Decision intent is "DISABLED-admin should always be maximally
+        permissive"; consequence is "every new sensitive capability lands
+        inside the default-insecure blast radius unattended".
+      evidence:
+        - "IdentityController.java:30-33 (Arrays.asList(Permission.values()))"
+        - "components.yaml:158-235 (Permission enum surface)"
+      ui_unverified: false
+    - drift_class: ui_unlocks_all_controls_under_disabled_because_spa_trusts_whoami
+      description: |-
+        The SPA's WithPermissionsProvider trusts the whoami response
+        verbatim. Under DISABLED, isAllowedTo(any) → true; every
+        Permission-gated UI control is unlocked: Lookup Tables CRUD,
+        Policy/Role/Owner mutation, attachment upload, lookup-row delete.
+        The UI is not the authorisation boundary — but operators inspecting
+        the rendered UI may believe they're seeing admin capabilities
+        because they ARE the admin in this auth-mode.
+      evidence:
+        - "PermissionProvider.tsx:17-32"
+        - "profile.selectors.ts:17-20 (getGlobalPermissions)"
+      ui_unverified: true   # UI rendering claim — confirmed by file:line but not by live probe
+    - drift_class: dummy_owner_lowercase_admin_vs_s2s_uppercase_ADMIN_collision_footgun
+      description: |-
+        IdentityController's dummyOwner uses lowercase literal `admin`
+        (line 32). S2sAuthenticationFilter uses uppercase literal `ADMIN`
+        (S2sAuthenticationFilter.java:31-34). Two distinct identity
+        surfaces, two distinct hardcoded literals, both undocumented.
+        Operator-named LOGIN_FORM/LDAP user `admin` (lowercase) collides
+        with DISABLED-mode fallback; operator-named user `ADMIN`
+        (uppercase) collides with S2S filter. Both collisions cause
+        cross-mode bleed via the principal-to-owner resolution chain
+        (cross-link F-011).
+      evidence:
+        - "IdentityController.java:32 (lowercase 'admin')"
+        - "S2sAuthenticationFilter.java:31-34 (uppercase 'ADMIN')"
+      ui_unverified: false
+    - drift_class: no_cache_control_header_potential_intermediate_caching
+      description: |-
+        IdentityController constructs the response via bare ResponseEntity::ok
+        / new ResponseEntity<>(...) — no Cache-Control / Pragma / Expires
+        header configuration. Spring Security's WebFluxSecurityHeadersConfiguration
+        stamps no-cache headers ONLY when the security chain runs; under
+        DISABLED the chain is `.anyExchange().permitAll()`, so no headers
+        are stamped. A shared HTTP intermediate (corporate proxy,
+        misconfigured CDN) could serve a prior caller's body to a later
+        caller. Low-probability under realistic browser caches.
+      evidence:
+        - "IdentityController.java:25-28 (no header config)"
+      ui_unverified: false
+    - drift_class: zero_audit_trail_on_anonymous_probe
+      description: |-
+        IdentityController carries @Slf4j but the body emits NO log call.
+        Grep `AuditLog | @Auditable` returns 0 matches platform-wide.
+        An attacker probing whoami repeatedly leaves NO trace in
+        application logs — combined with the anonymous reachability
+        under DISABLED, the endpoint is the silent reconnaissance pivot.
+      evidence:
+        - "IdentityController.java:19 (Slf4j present, never used in body)"
+      ui_unverified: false
+    - drift_class: dummy_owner_owner_is_null_decoupled_from_user_owner_mapping
+      description: |-
+        Under DISABLED, an admin manually inserting
+        USER_OWNER_MAPPING `('admin', NULL, <owner_id>)` does NOT affect
+        the dummyOwner response — the controller's switchIfEmpty
+        short-circuits BEFORE the AuthIdentityProvider-fetched-owner step.
+        So the dummyOwner identity always has `owner=null` regardless of
+        any operator binding. Latent regression — a future refactor that
+        "fixed" the dummy path to also resolve an Owner would activate
+        the username-collision footgun.
+      evidence:
+        - "IdentityController.java:23-33 (switchIfEmpty short-circuits)"
+      ui_unverified: false
+test_matrix:
+  unit: GAP
+  integration: GAP
+  performance: GAP
+  security: GAP
+test_matrix_notes: |-
+  No direct test coverage of IdentityController. The four-way response
+  fingerprint (200+admin / 302 / 401 / 401) per auth.type mode is the
+  natural integration-test target.
+related_refactoring_scopes:
+  - REFACTOR-185  # default-insecure cluster — this is the IDENTITY-LAYER 17th/19th sidecar facet
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+  - default_insecure_cluster_disabled_mode
+  - anonymous_auth_mode_fingerprint
+related_features:
+  - F-011  # Principal-to-Owner Resolution — Identity wire schema HAS no provider field; F-011 batch Q
+           # carries the UI-tier rendering of Identity. This feature owns the controller-tier
+           # synthetic-admin fallback semantics.
+  - F-034  # Platform Feature-Flag Exposure — parallel runtime-config-discovery endpoint contract
+status: active
+ui_completeness_note: |-
+  UI consumption side (PermissionProvider + getGlobalPermissions) is
+  primary-source confirmed by F-011 batch Q and the SHB-105 evidence
+  (file:line). The drift facet `ui_unlocks_all_controls_under_disabled_because_spa_trusts_whoami`
+  carries ui_unverified:true because the rendering claim is from the
+  permission framework code path; a live probe would confirm visually.
+maintainer_curated: false
+proposed_action: |-
+  Local docker-compose: spin up odd-platform per auth-mode (DISABLED /
+  LOGIN_FORM / OAUTH2-mock / LDAP-mock); curl /api/identity/whoami
+  anonymously per mode; confirm the four-way response fingerprint.
+notes: |-
+  Genuinely new feature shape — distinct from F-011 (the principal-to-owner
+  resolution that fires AFTER an authenticated principal is established;
+  whoami's DISABLED branch short-circuits BEFORE that), distinct from
+  F-034 (Platform Feature-Flag Exposure surfaces `auth.type` deliberately
+  alongside this endpoint; whoami exposes the identity wire). Together
+  whoami + appInfo form the runtime-config-discovery pair F-011 batch T
+  named "the two endpoints the React SPA hits for runtime configuration
+  discovery". This feature is the IDENTITY half; F-034 is the
+  feature-flag/version half. Cross-link both directions.

@@ -1,6 +1,6 @@
 # SHB-027 — Query Examples render `definition` AND `query` through Markdown without sanitisation — 4th member of the stored-XSS family
 
-**Category**: clustering
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -39,5 +39,9 @@ Operators authoring Query Examples (Data Modelling → Query Examples) enter Mar
 ## Links
 
 - cluster_with: [F-025, F-004]
-- merged_into: (open — enriches F-025 with F-004 family membership)
+- merged_into: F-025
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: merged into F-025 (P-02:F-001 Query Examples — Note: P-02 has two F-NNN sharing pillar_anchored_id; the existing index reflects this) — thread is the 4th surface in the F-004 stored-XSS family extending to Query Example `definition` + `query` fields. drift_class: stored_xss_via_md_editor_no_rehype_sanitize_extends_to_query_examples (new facet). Catalog-row rendering DOUBLES the surface vs F-004 family (which is per-detail-page only) — XSS fires for any user scrolling the Query Examples list, not just opening a single detail page. Fix is at Markdown.tsx chokepoint (closes all 5 surfaces simultaneously). NOTE: not edited inline into F-025.yaml in this run because that's a P-02 pillar file outside Slice B+C's primary scope — flagged for the next P-02-focused builder pass.

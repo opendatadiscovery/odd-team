@@ -41,3 +41,7 @@ Operators running ODD Platform in production for alerting need to monitor the no
 - cluster_with: [F-009, F-010, F-038, F-039, SHB-053, SHB-054, SHB-057]
 - merged_into: (open)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: leave as note — deferred. SHB-066 is a cross-cutting observability gap that spans F-009 + F-010 + F-038 + F-039; the natural pillar slot would be P-08 Management & Administration's "subsystem observability baseline" — but that slot is the SAME canonicalisation candidate as F-065 (Platform-Internal Operational Infrastructure). Graduating SHB-066 as a separate F-NNN would create two pillar-P-08 features that should likely be ONE unified "operational infrastructure" feature once that canonicalisation candidate resolves. The existing F-009 + F-010 + F-038 + F-039 already enumerate the metric-absence as drift facets; the cross-cutting feature graduation should wait for the system-mission.md canonicalisation decision OR a maintainer dialogue about whether to graduate it as a sibling to F-065. What would unblock: maintainer decides whether the "operational observability baseline" is (a) a sibling to F-065 inside the same P-08 sub-feature family OR (b) merged INTO F-065 as a compound facet OR (c) graduates as its own F-NNN with broader scope than the four named subsystems. Recommendation: defer one more batch and reconsider once F-065 lands and the maintainer evaluates whether to merge.

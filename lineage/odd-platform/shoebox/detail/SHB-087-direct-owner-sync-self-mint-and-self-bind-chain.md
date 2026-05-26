@@ -1,6 +1,6 @@
 # SHB-087 — DIRECT_OWNER_SYNC + getOrCreate compose into a self-mint-then-self-bind privilege escalation chain
 
-**Category**: open
+**Category**: merged
 **Severity**: HIGH
 
 ## Hypothesis
@@ -35,5 +35,9 @@ A user holding `DIRECT_OWNER_SYNC` (a MANAGEMENT permission per `PolicyPermissio
 ## Links
 
 - cluster_with: [SHB-084, F-019, F-011]
-- merged_into: (open)
+- merged_into: F-075
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: graduated to F-075 (User-Owner Association Request Flow — DIRECT_OWNER_SYNC self-mint-and-self-bind chain, pillar P-08). The thread originally proposed pillar P-09; I chose P-08 because the Associations tab is the operator-facing Management surface (system-mission.md:241 P-08 sub-feature seed) and the audit-silence + permission-editor-no-warning failure modes are at the Management/Authorization interface. Cross-pillar relationship to P-09 captured via F-011 + F-006 related_features. The feature is UI-incomplete — the operator-facing form is not yet a fully-enriched UI sidecar; UI hop-1 marked unresolved per Rule 0b. All facets are backend-evidenced. Category flipped open → merged.

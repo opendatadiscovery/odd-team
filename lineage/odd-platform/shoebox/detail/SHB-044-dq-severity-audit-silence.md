@@ -1,6 +1,6 @@
 # SHB-044 — Data-quality test severity changes leave NO audit trail; compliance can't answer "who set this to Critical?"
 
-**Category**: open
+**Category**: merged
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -35,9 +35,9 @@ When an operator sets or changes a Data-Quality test's severity (`MINOR | MAJOR 
 ## Links
 
 - cluster_with: [F-022, F-021, F-019]
-- merged_into: (open)
+- merged_into: F-057
 - supersedes: []
 
 ## evaluation
 
-(feature-flow-builder will append a dated entry here on its next run.)
+- **feature-flow-builder 2026-05-26**: graduated — thread explicitly notes "open rather than clustering because no F-NNN owns the DQ severity-mutation lifecycle today; F-022 stops at 'Test Reports tab shows results.'" F-022 owns the READ surface (Test Reports + SLA badge); SHB-044's hypothesis is about the WRITE-AND-AUDIT lifecycle of severity, which is operator-impactful for compliance audiences via the SLA-colour feeds-BI-tools surface (cross-pillar blast radius). 6 evidence refs spanning controller / service / repository / SecurityConstants / doc-side framing. Minted F-057 at lineage/odd-platform/feature-flows/detail/F-057.yaml (P-04:F-004 DQ Test Severity Lifecycle). Three drift facets attached: severity_mutation_no_activity_event, sla_blast_radius_amplification_via_bi_integration, severity_lifecycle_history_unrecoverable. Cross-pillar links to F-022 (read surface) + F-021 (audit channel) + F-019 (sibling six-sidecar mute-on-write pattern) + F-040 (DQ test run history).

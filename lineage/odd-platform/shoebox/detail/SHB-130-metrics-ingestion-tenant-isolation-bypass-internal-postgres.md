@@ -1,6 +1,6 @@
 # SHB-130 — `odd.tenant-id` does nothing for metric storage on INTERNAL_POSTGRES (the default), making the documented per-tenant scoping a silent no-op for most deployments
 
-**Category**: open
+**Category**: clustering
 **Severity**: MEDIUM
 
 ## Hypothesis
@@ -50,6 +50,10 @@ Operators running multi-tenant deployments configure `odd.tenant-id=tenantA` per
 
 ## Links
 
-- cluster_with: [F-030]
-- merged_into: (open — likely enriches F-030)
+- cluster_with: [F-030, F-094, F-097]
+- merged_into: (cross-pillar — defer to F-030 owner pillar P-07)
 - supersedes: []
+
+## evaluation
+
+- **feature-flow-builder 2026-05-26**: cluster — SHB-130 is a CROSS-PILLAR enricher (target F-030 Metrics Ingestion lives in P-07 Active Platform Features — outside Slice G's P-10/P-11 ownership). Per slice-G anti-pattern, do NOT modify cross-pillar F-NNN directly; deferred to next pass with the P-07 owner. Strong evidence (8 file:line refs spanning Internal vs External extractor @ConditionalOnProperty / Pojo lack-of-tenant-id / extractor @Value / application.yml default empty / WebFetched live docs anchor on the documented-Prometheus-only-semantics). Drift facet candidates already drafted: tenant_id_only_applies_to_prometheus_path; oddrn_by_payload_attack; pii_label_propagation; cross_storage_migration_one_way. The bundle is ADR-shaped (schema change vs documentation + WARN log). Cluster also pulls SHB-128 (F-097) into scope because Swagger UI exposes /ingestion/metrics in the spec.

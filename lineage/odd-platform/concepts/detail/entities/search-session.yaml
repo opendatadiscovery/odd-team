@@ -33,13 +33,60 @@ description: |-
   on the highlight path; invariant:has-next-true-contract-bug-pagination-loop
   is the Category B drift on getSearchResults that produces
   pagination-loop for third-party API consumers.
+
+  ## STRENGTHENED batch ZI (2026-05-26) — UI-route surface + Category F drift
+
+  Batch ZI adds the OPERATOR-FACING SURFACE — the `searchRoutes.ts`
+  module that declares the URL form `/search/{searchId}` and exposes
+  `useSearchRouteParams()` to consumers. Key additions:
+
+    (a) The URL form is `/search/{searchId}` where `searchId` is the
+        server-side session UUID. The route module's
+        `searchPath(searchId?)` builder produces `/search` (no-arg)
+        or `/search/{uuid}` (with arg). Consumed by `App.tsx:61` (route
+        mount), `Search.tsx:27` (param read), `useCreateSearch.ts:17`
+        (post-create navigate target), `ToolbarTabs.tsx:38, 93` (top-
+        nav tab link + active-tab matchPath).
+
+    (b) **Category F drift at the URL-PARAM-NAME layer** (captured
+        separately as
+        `invariant:search-id-route-param-is-session-uuid-not-saved-search-category-f`):
+        the URL param is named `searchId`, suggesting a saved-search
+        / durable-handle semantic. The implementation binds to the
+        server-side transient session row with no user binding, 30-day
+        TTL, and mutated on every facet change. Three operator-visible
+        consequences:
+          - Bookmark fragility — `/search/{uuid}` 404s after 30-day TTL.
+          - Cross-user link sharing exposes session state at fetch time
+            (which may differ from when the link was sent).
+          - Top-nav Catalog tab DROPS the session UUID (links to
+            `searchPath()` no-arg → `/search`), creating a fresh
+            session via `POST /api/search`. The previous session
+            UUID becomes an orphan row.
+
+    (c) **Naming triplet drift**: tab label `t('Catalog')` ↔ URL
+        `/search` ↔ doc feature label "Search and Filtering". Three
+        different strings for the same feature; operators searching
+        the codebase for "Catalog" find nothing.
+
+    (d) **`/search/*` wildcard accepts garbage** (captured separately
+        as `invariant:search-route-wildcard-accepts-garbage-no-uuid-validation`):
+        any string in the `:searchId` segment routes to `<Search/>`;
+        garbage UUIDs produce empty Catalog rendering indistinguishable
+        from "no matches".
+
+  The UI-route layer is the FIRST encounter point with the bearer-
+  token semantic — operators see the URL bar with the UUID before
+  they see the API; the drift presents at the URL layer first.
 axes_present:
   - controllers
+  - ui_routes
 nodes:
   - odd-platform java SearchController controller-method:search
   - odd-platform java SearchController controller-method:facets
   - odd-platform java SearchController controller-class:SearchController
   - odd-platform java org.opendatadiscovery.oddplatform.housekeeping.config config-properties-class:HousekeepingTTLProperties
+  - odd-platform ts routes route:search
 contributors:
   - |-
     SearchController.search: entities[SearchFacetsPojo (persisted search-session
@@ -56,6 +103,18 @@ contributors:
     the bearer-token semantic; highlightDataEntity additionally has the
     .formatted SQL-injection vector; getSearchResults has the hasNext
     contract bug.
+  - |-
+    NEW batch ZI search route: concepts.entities[Server-side search
+    session UUID — the actual semantic content of the :searchId URL
+    segment; route module is unaware of this — it just transports a
+    string]; concepts.invariants[searchId is a SERVER-SIDE session UUID
+    not a saved-search id not a query parameter; URL form permits
+    link-sharing of a session's current state but the recipient sees
+    state as of the LAST updateSearchFacets mutation]; bugs_limitations_corner_cases[
+    Deep-link sharing — :searchId UUID has NO user binding; Tab navigation
+    drops session; Bookmark fragility under unspecified TTL];
+    stress_findings.request_inputs[searchId DRIFT_INPUT_NAME_VS_IMPLEMENTATION
+    — Category F drift at the URL layer]
 evidence:
   - search.md:concepts.entities + concepts.invariants.[2]
   - search.md:implicit_adrs.[0]
@@ -67,6 +126,16 @@ evidence:
     odd-platform__java__SearchController__controller-class__SearchController.md
     concepts.invariants.[2] + bugs_limitations_corner_cases.[2,6] +
     security.known_security_gaps.[1,2]
+  - |-
+    NEW batch ZI search.md (searchRoutes UI surface):
+    concepts.entities (Server-side search session UUID) +
+    concepts.invariants.[1] (searchId is server-side session UUID, not
+    saved-search id, not query parameter) +
+    bugs_limitations_corner_cases.[2,3,5] (tab-drops + cross-user share
+    + bookmark fragility) +
+    stress_findings.request_inputs (Category F drift at URL layer) +
+    docs_link_semantic.doc_drift_findings.[0,1] (live doc silent on URL
+    form AND on access model)
 security_aggregate:
   overall: LOW
   auth_modes_relevant:
@@ -81,7 +150,10 @@ security_aggregate:
       ALL SEVEN /api/search* endpoints fall through to .authenticated();
       none has a SECURITY_RULES entry. Under DISABLED, anonymously
       reachable end-to-end. Batch ZE class-level confirms the seven-
-      endpoint surface.
+      endpoint surface. Batch ZI confirms the UI-route layer ALSO has
+      no permission gate — `/search/*` is mounted bare at App.tsx:61
+      without WithPermissionsProvider; the route is reachable by every
+      authenticated user and anonymously under DISABLED.
   owner_scoping:
     verdict: BYPASSES
     detail: |-
@@ -125,6 +197,21 @@ security_aggregate:
       regardless of remaining rows on getSearchResults; third-party API
       consumers pagination-loop indefinitely. Category B drift.
       Cross-link invariant:has-next-true-contract-bug-pagination-loop.
+    - |-
+      NEW batch ZI — URL-layer Category F drift exposes the bearer-
+      token semantic to the operator as a misleading `searchId` route
+      param. Operators bookmarking, sharing, and tab-navigating with
+      saved-search expectations get session-handle behaviour. The
+      WORST-EXPERIENCE-FIRST surface — operators see the misleading
+      URL before they see anything else. Cross-link
+      invariant:search-id-route-param-is-session-uuid-not-saved-search-category-f
+      AND invariant:tab-click-drops-session-state-cross-route-pattern.
+    - |-
+      NEW batch ZI — `/search/*` wildcard accepts garbage URL segments;
+      malformed URLs render an empty Catalog INDISTINGUISHABLE from
+      "no matches" rather than surfacing an explicit "session expired"
+      or "invalid URL" message. Graceful-degradation gap. Cross-link
+      invariant:search-route-wildcard-accepts-garbage-no-uuid-validation.
   cross_file_inconsistencies:
     - Live features/data-discovery/search page (200) silent on WHO can search;
       code enforces "any authenticated user"; facet counts catalog-wide; doc-vs-code
@@ -135,16 +222,24 @@ security_aggregate:
     - |-
       NEW batch M + ZE — live page does not mention search-session UUIDs
       at all; bearer-token risk undocumented.
+    - |-
+      NEW batch ZI — live page ALSO does not mention the `/search/{searchId}`
+      URL form at all (separate doc-gap confirmed at the UI-route layer);
+      cross-batch: doc page is silent on UUID structure AND on URL form
+      AND on access model — three independent doc gaps converge at the
+      Search/Catalog page.
   contributing_files:
     - search.md
     - facets.md
     - HousekeepingTTLProperties.md
     - SearchController-class.md
+    - odd-platform__ts__routes__route__search.md
   evidence:
     - search.md:security.known_security_gaps.[0-3]
     - search.md:bugs_limitations_corner_cases.[0-8]
     - facets.md:security.known_security_gaps + bugs_limitations_corner_cases + implicit_adrs
     - SearchController-class.md:security.known_security_gaps.[0-5] + bugs_limitations_corner_cases.[0-10]
+    - "odd-platform__ts__routes__route__search.md (full sidecar — UI-route layer evidence; Category F drift, tab-drops-session, wildcard accepts garbage, bookmark fragility)"
 performance_aggregate:
   overall: LOW
   hot_paths:
@@ -163,6 +258,9 @@ performance_aggregate:
     - |-
       NEW batch ZE — GET /api/search/{id}/data_entities/{id}/highlights —
       3-Mono zip + ts_headline CPU-intensive SQL
+    - |-
+      NEW batch ZI — searchPath()/useSearchRouteParams() at UI render
+      time — O(1) per render; module-init at App.tsx:61. Negligible.
   throughput_shape:
     verdict: SINGLE_ITEM_ONLY
     detail: |-
@@ -187,15 +285,23 @@ performance_aggregate:
     - Deep-pagination cost on OFFSET LOW
     - NEW batch ZE — `ts_headline` CPU cost not cached
     - NEW batch ZE — per-keystroke autocomplete cost (no client cache)
+    - |-
+      NEW batch ZI — Top-nav Catalog tab DROPS the session UUID on each
+      click → unconditional INSERT into search_facets. Frequent tab-
+      switching by a single user accumulates orphan rows at a rate
+      proportional to tab clicks — bounded by 30-day TTL but visible
+      as housekeeping job work.
   cross_file_inconsistencies: []
   contributing_files:
     - search.md
     - facets.md
     - SearchController-class.md
+    - odd-platform__ts__routes__route__search.md
   evidence:
     - search.md:performance.known_performance_gaps.[0-3]
     - facets.md:performance.* (full block)
     - SearchController-class.md:performance.known_performance_gaps.[0-8]
+    - "odd-platform__ts__routes__route__search.md:performance (UI-route layer; tab-drops-session orphan-row weakness)"
 notes: |-
   STRENGTHENED batch ZE (2026-05-25) — class-level controller surface
   brings the full 7-endpoint picture together. Four batch-ZE additions:
@@ -207,6 +313,21 @@ notes: |-
         vector);
     (d) tsquery-injection 7th + 8th invocation sites (findByState +
         getQuerySuggestions).
+
+  STRENGTHENED batch ZI (2026-05-26) — UI-route layer adds the
+  OPERATOR-FACING SURFACE. Three batch-ZI additions:
+    (e) Category F drift at the URL-PARAM-NAME layer (`searchId`
+        promises saved-search; binds to transient session UUID).
+        Cross-link
+        invariant:search-id-route-param-is-session-uuid-not-saved-search-category-f.
+    (f) `/search/*` wildcard accepts garbage; malformed URLs render
+        empty Catalog indistinguishable from "no matches". Cross-link
+        invariant:search-route-wildcard-accepts-garbage-no-uuid-validation.
+    (g) Top-nav Catalog tab drops session UUID + naming triplet drift
+        (`t('Catalog')` ↔ `/search` ↔ "Search and Filtering"). Cross-
+        link invariant:tab-click-drops-session-state-cross-route-pattern.
+    (h) Doc-side silence triple-confirmed — live page is silent on
+        URL form AND access model AND TTL semantics.
 
   Cross-references:
     - tsquery operator-injection via persisted state — the injection
@@ -220,6 +341,11 @@ notes: |-
     - REFACTOR-141 housekeeping default-leak.
     - get-highlighted-result-formatted-sql-injection (NEW batch ZE).
     - has-next-true-contract-bug-pagination-loop (NEW batch ZE).
+    - search-id-route-param-is-session-uuid-not-saved-search-category-f
+      (NEW batch ZI).
+    - search-route-wildcard-accepts-garbage-no-uuid-validation
+      (NEW batch ZI).
+    - tab-click-drops-session-state-cross-route-pattern (NEW batch ZI).
 related_features: []
 related_pillar_features:
   - P-01

@@ -1,0 +1,237 @@
+name: |-
+  Search route mounts at `/search/*` wildcard with no UUID-shape validation — any string routes to Search; doomed API call surfaces as empty Catalog
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+description: |-
+  **NEW MEDIUM-severity GRACEFUL-DEGRADATION INVARIANT, batch ZI
+  (2026-05-26)** — the Search/Catalog UI surface mounts at `/search/*`
+  (wildcard) in `App.tsx:61`:
+
+      <Route path={`${searchPath()}/*`} element={<Search/>}/>
+
+  The `/*` wildcard suffix means React Router matches ANY URL beginning
+  with `/search` to the `<Search/>` component, regardless of what
+  follows the prefix. `/search`, `/search/abc-def`, `/search/anything/
+  nested/garbage/123` ALL route to `<Search/>`. React Router 6's
+  wildcard semantics capture ONLY the first path segment into
+  `useParams().searchId` — subsequent segments are discarded.
+
+  **There is NO validation that the `:searchId` segment is a real
+  (or even well-formed) UUID before mounting `<Search/>`.** The
+  declared path template `${BASE_PATH}/${SEARCH_ID_PARAM}` does not
+  carry React Router's parameter-pattern syntax (`:searchId(\\w{8}-...)`)
+  that would enforce a shape.
+
+  **The downstream failure path** is observable but not surfaced as
+  an error to the operator:
+
+    1. User opens `/search/<garbage-string>` (typo, stale bookmark,
+       shared link to a deleted session).
+    2. `<Search/>` mounts; `useSearchRouteParams()` returns
+       `{searchId: '<garbage-string>'}`.
+    3. `Search.tsx:44-48` sees `routerSearchId` is truthy and
+       dispatches `getDataEntitiesSearch({searchId: <garbage>})`.
+    4. `searchApi.getSearchFacetList({searchId: <garbage>})` produces
+       `GET /api/search/<garbage>`.
+    5. Backend at `SearchController.getFacetList(searchId)` → service
+       layer attempts `UUID.fromString(<garbage>)` which throws
+       `IllegalArgumentException`; OR the service queries
+       `search_facets WHERE id = <garbage>::uuid` and Postgres rejects
+       the cast; either way the controller returns a 400-class error.
+    6. The redux thunk's `handleResponseAsyncThunk` (per
+       `redux/lib/handleResponseThunk` pattern) either surfaces the
+       error as a toast OR silently swallows it (NOT pinned by the
+       search route sidecar — depends on which error-handler path
+       fires).
+    7. **The user sees an EMPTY CATALOG (zero results) which is
+       INDISTINGUISHABLE from 'no matches' for an authentic search.**
+       No error page, no "session expired" message, no "invalid URL"
+       indicator.
+
+  **The graceful-degradation gap is operator-facing**: a typo'd URL or
+  a stale bookmark (after the 30-day TTL reaper deletes the
+  `search_facets` row — see
+  `invariant:search-id-route-param-is-session-uuid-not-saved-search-category-f`)
+  renders a CATALOG that LOOKS EMPTY rather than one that indicates a
+  navigation failure. Operators have no signal that their URL is
+  malformed or expired.
+
+  **Compounding factor — the wildcard `/*` is broader than necessary**.
+  The Search component tree has NO nested routes. The mount could be
+  `/search/:searchId?` (optional param) instead, which would limit
+  matches to exactly `/search` and `/search/{one-segment}`. The
+  wildcard accepts `/search/anything/nested/garbage` (renders Search
+  with `searchId='anything'`, ignores the rest) — harmless today but
+  invites future drift (a developer adding a nested route in the
+  Search subtree may not realise the wildcard already matched the URL).
+
+  **Cross-batch context**: the same wildcard-broader-than-necessary
+  pattern exists at multiple sites:
+    - `App.tsx:61` `/search/*` (this finding)
+    - `App.tsx:72` `${directoryPath()}/*` (directory subtree DOES use
+      nested Routes for level-2/3/4 — legitimate use)
+    - `App.tsx:74` `${dataModellingPath()}/*` (Data Modelling subtree
+      uses nested Routes — legitimate)
+    - `App.tsx:75-88` `lookupTablesPath()/*` (Lookup Tables subtree
+      uses nested Routes — legitimate)
+
+  Search is the ONLY top-level pillar where the `/*` wildcard mounts
+  a component with no nested routes — the wildcard accepts garbage
+  silently and the result is the empty-catalog failure mode.
+
+  **Fix surfaces**:
+
+    1. **Replace the wildcard with an optional-param mount**:
+
+           <Route path={searchPath()} element={<Search/>}/>
+           <Route path={`${searchPath()}/:searchId`} element={<Search/>}/>
+
+       Two discrete routes; React Router matches one or the other; no
+       wildcard. URLs like `/search/anything/nested/garbage` no longer
+       match Search and instead fall through to the 404 / NotFound
+       route.
+
+    2. **Add a UUID-shape validator in `useSearchRouteParams`**:
+
+           const { searchId } = useParams<keyof SearchRouteParams>();
+           if (searchId && !isValidUuid(searchId)) {
+             return { searchId: undefined };  // treat as no-UUID
+           }
+           return { searchId };
+
+       The Search.tsx orchestrator already handles the `!routerSearchId`
+       case by creating a fresh session; treating malformed UUIDs as
+       no-UUID makes the failure mode "operator gets a fresh session"
+       which is at least a navigable state.
+
+    3. **Surface the 404 explicitly** at `Search.tsx:44-48` — when the
+       `getDataEntitiesSearch` thunk returns 404 or 400, render an
+       AppErrorPage with a "Search session not found — start a new
+       search?" message. Cost: one error-handler branch.
+
+  **Test gap**: no integration test asserts the empty-catalog failure
+  mode. A Playwright test that navigates to `/search/garbage` and
+  asserts EITHER an explicit error message OR a fresh-session URL
+  redirect would catch this regression.
+
+  vocabulary_status: codebase-anchored. The live doc page at
+  `/features/data-discovery/search` (WebFetched 2026-05-26 status 200)
+  does NOT mention the URL form at all (see also
+  `invariant:search-id-route-param-is-session-uuid-not-saved-search-category-f`).
+  Operators have no documented signal that URLs can be malformed.
+vocabulary_status: codebase-anchored
+axes_present:
+  - ui_routes
+  - react_components
+nodes:
+  - odd-platform ts routes route:search
+contributors:
+  - |-
+    search route batch ZI:
+      concepts.invariants[Route ALWAYS mounts at /search/* wildcard, never as a discrete /search + /search/:searchId pair; the wildcard does NOT impose a 'must be UUID' shape];
+      bugs_limitations_corner_cases[No validation that :searchId is a real (or even well-formed) UUID before mounting <Search/>];
+      bugs_limitations_corner_cases[The /* wildcard at App.tsx:61 (searchPath() + '/*') is broader than necessary — Search component tree has no nested routes];
+      tests_coverage_semantic.uncovered_behaviours[End-to-end test — user navigating to /search/<garbage-string> sees an empty-state / error, not a crash]
+evidence:
+  - |-
+    search.md:concepts.invariants.[0] (Route ALWAYS mounts at /search/*
+    wildcard — wildcard does NOT impose a 'must be UUID' shape)
+  - |-
+    search.md:bugs_limitations_corner_cases.[0] (no validation that :searchId
+    is a real UUID before mounting <Search/>; the full failure chain enumerated
+    — App.tsx:61 + Search.tsx:44-48)
+  - |-
+    search.md:bugs_limitations_corner_cases.[4] (the /* wildcard at App.tsx:61
+    is broader than necessary — Search component tree has no nested routes)
+  - |-
+    search.md:tests_coverage_semantic.uncovered_behaviours.[End-to-end test
+    for /search/<garbage-string> empty-state path — MEDIUM criticality]
+security_aggregate:
+  overall: HIGH
+  auth_modes_relevant: []
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: N/A
+    detail: |-
+      Not a security finding — graceful-degradation gap at the routing
+      layer.
+  owner_scoping:
+    verdict: N/A
+    detail: ''
+  strengths:
+    - |-
+      The downstream failure is bounded — the backend correctly rejects
+      malformed UUIDs with 4xx (no crash, no exception leakage). The
+      gap is at the UI's error-surfacing layer.
+    - |-
+      The 30-day TTL on `search_facets` IS finite — a stale bookmark
+      eventually fails clearly (404 at the backend) rather than
+      returning stale data.
+  weaknesses:
+    - |-
+      The empty-catalog rendering is INDISTINGUISHABLE from "no
+      matches" for an authentic search. Operators have no signal
+      their URL is malformed.
+    - |-
+      The wildcard `/*` accepts garbage segments that aren't part of
+      any nested route — invites future drift (a developer adding
+      nested routes may not realise the wildcard already matched).
+  cross_file_inconsistencies: []
+  contributing_files:
+    - odd-platform__ts__routes__route__search.md
+  evidence: []
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths: []
+  throughput_shape:
+    verdict: N/A
+    detail: |-
+      Not a performance hot-path concept.
+  scaling_shape:
+    verdict: N/A
+    detail: ''
+  strengths: []
+  weaknesses:
+    - |-
+      Every malformed-URL hit produces a doomed backend API call. The
+      cost is bounded by the backend's 400 response time, but a bot
+      fetching many `/search/abc`/`/def`/... URLs produces equally
+      many doomed API calls before the 400 returns. Not a DoS vector
+      at typical operator scale; recorded for completeness.
+  cross_file_inconsistencies: []
+  contributing_files:
+    - odd-platform__ts__routes__route__search.md
+  evidence: []
+triangulation_count: 1
+cross_batch: false
+cross_batch_refs:
+  - batch-ZI (search route sidecar — primary source)
+severity: MEDIUM
+severity_dim: ux
+related_features: []
+related_pillar_features:
+  - P-01
+related_concepts:
+  - invariant:search-id-route-param-is-session-uuid-not-saved-search-category-f
+  - entitie:search-session
+  - invariant:useparams-type-lie-parseint-nan-coercion
+  - invariant:app-error-page-as-error-render-surface-suppressed-toasts
+notes: |-
+  Coherence (Rule 6): grepped `concepts/detail/invariants/` for
+  "wildcard" + "validation" + "graceful degradation" — found
+  `invariant:app-error-page-as-error-render-surface-suppressed-toasts`
+  (the suppressed-toast pattern is the GENERIC error-surfacing gap;
+  this invariant is the SPECIFIC routing-layer instance for /search).
+
+  STRENGTHENS the broader graceful-degradation gap; the Search route's
+  empty-catalog-vs-error rendering is a UX inconsistency with the
+  AppErrorPage pattern.
+
+  Companion to `invariant:search-id-route-param-is-session-uuid-not-saved-search-category-f`
+  — the Category F drift makes the URL look bookmarkable; the wildcard
+  failure mode makes broken URLs invisible. Together they account for
+  why operators report "my saved search disappeared" without diagnostic
+  signal.
+maintainer_curated: false

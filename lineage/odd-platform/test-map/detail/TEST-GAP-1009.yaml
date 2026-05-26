@@ -1,0 +1,149 @@
+---
+gap_id: TEST-GAP-1009
+category: missing-edge-case
+criticality: CRITICAL
+node_ids:
+  - "odd-platform ts routes route:directory"
+surfaced_by:
+  - "odd-platform__ts__routes__route__directory.md:tests_coverage_semantic.uncovered_behaviours.[5]"
+  - "odd-platform__ts__routes__route__directory.md:bugs_limitations_corner_cases.[1]"
+  - "odd-platform__ts__routes__route__directory.md:concepts.invariants.[3]"
+related_pillar_features:
+  - "P-01:F-Directory"
+pillars_affected: ["P-01"]
+related_features: []
+feature_id: null
+test_class: missing-edge-case
+strengthens:
+  - TEST-GAP-849   # cross-component NaN propagation pattern (DataEntityDetails + Lineage)
+  - TEST-GAP-422   # useDataEntityRouteParams parseInt NaN
+  - TEST-GAP-1000  # useTermsRouteParams parseInt NaN
+  - TEST-GAP-997   # useIntegrationRouteParams type-assertion lie
+behaviour: |-
+  **CRITICAL pattern density — `useDirectoryRouteParams()` at
+  `directoryRoutes.ts:37` calls `parseInt(dataSourceId, 10)` with NO `isNaN`
+  guard.** A deep-link to `/directory/postgresql/abc/all` produces
+  `dataSourceId: NaN` in **six consumers** (the highest count among all
+  route-param NaN findings in the codebase):
+
+  - `DataSourceList.tsx:27` reads `dataSourceId`
+  - `Entities.tsx:20` reads `dataSourceId` (passes to
+    `useGetDataSourceEntities({dataSourceId: NaN})` line 36-41 → backend
+    `directoryApi.getDatasourceEntities({dataSourceId: NaN})` →
+    `GET /api/directory/datasources/NaN/...`)
+  - `DirectoryBreadCrumbs.tsx:13` reads `dataSourceId`
+  - `EntitiesTabs.tsx:13` reads `dataSourceId`
+  - `EntityItem.tsx:40` reads `dataSourceId`
+  - `TableHeader.tsx:13` reads `dataSourceId`
+
+  Plus the hook ALSO has a typeId coercion at line 34:
+  `typeId === 'all' ? undefined : parseInt(typeId, 10)`. A URL
+  `/directory/postgresql/1/garbage` yields `typeId: NaN`. The
+  `TableHeader.tsx:22 if (!typeId)` check evaluates true on NaN (NaN is
+  falsy in JavaScript), so the Type column renders — but `useGetDataSourceEntities`
+  fires the backend call with `typeId: NaN`, the backend rejects, the UI
+  surfaces an AppErrorPage. The UX path is inconsistent (column shows but
+  data fails).
+
+  **This is the FOURTH instance of the same project-wide anti-pattern**:
+  `useDataEntityRouteParams()` (TEST-GAP-422, TEST-GAP-849), `useTermsRouteParams()`
+  (TEST-GAP-1000), `useIntegrationRouteParams()` (TEST-GAP-997). The
+  Directory case has the HIGHEST consumer count (six callers, each
+  potentially propagating NaN to a backend call) — making it the most
+  load-bearing instance of the pattern.
+
+  **Why criticality is CRITICAL** (escalated from the sibling LOW
+  classifications): the operator-impact-multiplier on Directory is HIGHER
+  than the three sibling routes because:
+
+  (a) Six consumers vs ≤2 in the sibling routes — each is a separate
+  potential 400/404 error surface;
+  (b) The Directory is the catalog's ENTRY POINT navigation surface
+  (per the live doc page, the "browse drill-down" feature). A NaN-bearing
+  bookmark / Slack-link / email-link fails more visibly than a single
+  data-entity detail page;
+  (c) The level-3 Navigate redirect (`<Navigate to='all' replace />` at
+  `DirectoryRoutes.tsx:15-17`) fires BEFORE the NaN coercion, masking the
+  bug — an operator typing `/directory/postgresql/abc` gets bounced to
+  `/directory/postgresql/abc/all`, THEN the NaN propagates. The redirect
+  makes the bug less debuggable;
+  (d) The `'all'` literal at line 34 is the in-band sentinel; the
+  parseInt(typeId, 10) branch handles all OTHER strings, NaN included,
+  with no fallback — making this the same anti-pattern with a sentinel
+  veneer.
+
+  **A single-file fix** at `directoryRoutes.ts:34-37` adding
+  `Number.isFinite(parsed) && parsed > 0` after each parseInt would close
+  the six-consumer fan-out at the source. The unit test cost is one file;
+  the leverage is preventing NaN propagation across the entire Directory
+  feature.
+
+  **Project-wide structural fix recommendation**: a shared
+  `safeParseRouteParamId(raw): number | undefined` helper in
+  `routes/index.ts` consumed by ALL `use*RouteParams` hooks would
+  eliminate the four-instance pattern at the source. Pairs with the
+  meta-anchor TEST-GAP-1003 (CROSS-CUTTING DIRECTORY-WIDE GAP) — a single
+  scaffold change unlocks regression-pin tests on all four hooks.
+test_files_existing: []
+test_files_proposed:
+  - path: "odd-platform-ui/src/routes/__tests__/directoryRoutes.useDirectoryRouteParams.test.tsx"
+    name: "useDirectoryRouteParams_matchingRoute_returnsParsedNumericDataSourceId"
+    description: |-
+      Vitest + MemoryRouter + React Testing Library. Render hook inside
+      MemoryRouter initialEntries=['/directory/postgresql/42/all'] with
+      route '/directory/:dataSourceTypePrefix/:dataSourceId/:typeId'.
+      Assert dataSourceId === 42 (typeof number), typeId === undefined
+      (the 'all' sentinel translated). Pins the happy-path parsing.
+  - path: "odd-platform-ui/src/routes/__tests__/directoryRoutes.useDirectoryRouteParams.test.tsx"
+    name: "useDirectoryRouteParams_nonNumericDataSourceId_returnsNaNAndAllSixConsumersPropagate"
+    description: |-
+      Same fixture but URL '/directory/postgresql/abc/all'. Assert
+      dataSourceId is NaN AND Number.isNaN(dataSourceId) === true.
+      Document the swallowing explicitly. Pair with six SHALLOW renders
+      of each consumer (DataSourceList, Entities, DirectoryBreadCrumbs,
+      EntitiesTabs, EntityItem, TableHeader) with a mocked
+      useDirectoryRouteParams returning {dataSourceId: NaN}; assert each
+      consumer either short-circuits to NotFoundPage OR dispatches with
+      NaN. Pins the current six-consumer NaN fan-out.
+  - path: "odd-platform-ui/src/routes/__tests__/directoryRoutes.useDirectoryRouteParams.test.tsx"
+    name: "useDirectoryRouteParams_garbageTypeId_returnsNaNAndTypeColumnStillRenders"
+    description: |-
+      URL '/directory/postgresql/1/garbage'. Assert typeId === NaN (NOT
+      undefined; the 'all' sentinel is not matched). Verify
+      `TableHeader.tsx:22 if (!typeId)` evaluates true on NaN (NaN is
+      falsy) → the Type column renders. PINS the inconsistent UX path
+      (column renders but the backend call still fires with NaN).
+  - path: "odd-platform-ui/src/routes/__tests__/safeParseRouteParamId.test.ts"
+    name: "safeParseRouteParamId_helperAcceptsValidNumberRejectsNaNZeroNegative"
+    description: |-
+      Forward-looking test for the SHARED HELPER that would close this
+      pattern project-wide. Once the helper is authored, the four sibling
+      hooks (useDirectoryRouteParams, useTermsRouteParams,
+      useDataEntityRouteParams, useIntegrationRouteParams) consume it and
+      each return `{id: number | undefined}` — making the type system
+      honest. Tests on the helper itself: accepts '42' → 42; rejects 'abc'
+      → undefined; rejects '0' → undefined (per the queryExamples falsy-id
+      pattern); rejects '-1' → undefined; rejects undefined → undefined.
+      Pair with consumer-side guards that bail with NotFoundPage on
+      undefined.
+evidence:
+  - "directory.md:concepts.invariants.[3] verbatim: 'useDirectoryRouteParams coerces dataSourceId via parseInt(dataSourceId, 10) (line 37) with NO isNaN guard. A deep-link to /directory/postgresql/abc/all produces dataSourceId: NaN; consumers (DataSourceList.tsx:27, Entities.tsx:20, DirectoryBreadCrumbs.tsx:13, EntitiesTabs.tsx:13, EntityItem.tsx:40, TableHeader.tsx:13) receive NaN and call backend APIs with dataSourceId=NaN; the backend responds 400/404 — same shape as the useTermsRouteParams NaN-swallowing pattern (terms sidecar invariants[2]).'"
+  - "directory.md:bugs_limitations_corner_cases.[1]: 'useDirectoryRouteParams coerces dataSourceId via parseInt(dataSourceId, 10) (line 37) with NO isNaN guard. Same shape as the useTermsRouteParams NaN-swallowing pattern.'"
+  - "directory.md:tests_coverage_semantic.uncovered_behaviours.[5]: 'useDirectoryRouteParams() handles non-numeric dataSourceId (NaN-swallowing under malformed URL)'"
+  - "Grep against test files for useDirectoryRouteParams in odd-platform-ui/src/.../__tests__/: 0 matches (verified 2026-05-26)"
+  - "Primary source: directoryRoutes.ts:29-41 (the hook) + six consumer files (DataSourceList.tsx:27, Entities.tsx:20, DirectoryBreadCrumbs.tsx:13, EntitiesTabs.tsx:13, EntityItem.tsx:40, TableHeader.tsx:13) — all read dataSourceId without isNaN/Number.isFinite guard"
+cross_references:
+  - "TEST-GAP-422 (useDataEntityRouteParams parseInt NaN)"
+  - "TEST-GAP-849 (cross-component NaN propagation pattern; STRENGTHENS via FOURTH instance)"
+  - "TEST-GAP-997 (useIntegrationRouteParams type-assertion lie)"
+  - "TEST-GAP-1000 (useTermsRouteParams parseInt NaN)"
+  - "TEST-GAP-1003 (META cross-cutting routes/ directory-wide gap; THIS gap is one of the contributing instances)"
+  - "Project-wide pattern: four `use*RouteParams` hooks all share the parseInt(NaN-unsafe) + as-cast(type-lie) anti-pattern. A shared safeParseRouteParamId helper would close the family."
+proposed_action: |-
+  (Short-term) Add the four Vitest tests above + a one-line Number.isFinite
+  guard at directoryRoutes.ts:34-37.
+  (Long-term — high-leverage) Author a shared safeParseRouteParamId helper
+  in routes/index.ts; refactor the FOUR sibling hooks to consume it; rewrite
+  the four parallel test files to import the shared helper's tests. The
+  short-term fix closes Directory; the long-term fix closes the family.
+maintainer_curated: false

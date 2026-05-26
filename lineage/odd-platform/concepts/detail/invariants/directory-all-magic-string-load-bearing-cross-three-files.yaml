@@ -1,0 +1,224 @@
+name: |-
+  Directory `'all'` literal is a load-bearing magic string shared across THREE files with no named constant
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+description: |-
+  **NEW LOW-severity ARCHITECTURE INVARIANT, batch ZI (2026-05-26)** —
+  the Directory feature's level-3 URL surface `/directory/{prefix}/{dsId}/all`
+  relies on the literal string `'all'` as an IN-BAND SENTINEL meaning
+  "no type filter; show all entity types of this data source". The
+  literal appears in THREE coordinated locations with NO named constant
+  uniting them:
+
+    (a) `odd-platform-ui/src/routes/directoryRoutes.ts:34` (the hook's
+        recognition of the sentinel):
+
+            typeId === 'all' ? undefined : parseInt(typeId, 10)
+
+        This is the COERCION point — the hook reads the URL segment,
+        recognises the literal `'all'`, and converts it to `undefined`
+        so downstream code can branch on `typeId === undefined` to mean
+        "show all types".
+
+    (b) `odd-platform-ui/src/components/Directory/DirectoryRoutes.tsx:16`
+        (the Navigate target):
+
+            <Route
+              path=':dataSourceTypePrefix/:dataSourceId'
+              element={<Navigate to='all' replace />}
+            />
+
+        When the user types `/directory/postgresql/1`, React-Router
+        Navigate-replaces them to `/directory/postgresql/1/all`. The
+        target string `'all'` IS the same literal — but a different
+        SOURCE OF TRUTH.
+
+    (c) `odd-platform-ui/src/components/Directory/Entities/EntitiesTabs.tsx:26`
+        (the explicit builder caller):
+
+            link: directoryDataSourcePath(prefix, dsId, 'all')
+
+        The "All" tab in the entity-list page explicitly passes the
+        literal `'all'` to the builder to produce the level-3 URL via
+        the level-4 branch (the builder's `typeId` arg is typed
+        `number | 'all'`, so the literal IS a first-class argument).
+
+  **Downstream branches that depend on this consistency**:
+
+    (d) `Directory/Entities/EntitiesList/TableHeader/TableHeader.tsx:22`
+        — `if (!typeId) cells.splice(1, 0, { name: t('Type'), ... })`
+        — the Type column appears ONLY in the "All" view (where
+        `typeId === undefined` after the hook's coercion).
+
+    (e) `Directory/Entities/EntitiesList/EntityItem/EntityItem.tsx:81-85`
+        — renders the type cell ONLY when `typeId` is undefined (i.e.
+        in the "All" view).
+
+  **Rename failure shape**: replacing `'all'` with e.g. `'any'` in ONE
+  of the three locations (a/b/c) silently desynchronises the system:
+
+    - If (a) changes to `'any'` but (b) stays `'all'`: the Navigate
+      sends the user to `/directory/postgresql/1/all`, the hook reads
+      `'all'`, fails the `'any'` check, falls into `parseInt('all', 10)
+      = NaN`, the consumer's `TableHeader.tsx:22` `if (!typeId)` is
+      truthy (NaN is falsy) so the Type column DOES render — but the
+      entity-fetch sends `typeId=NaN` which the backend rejects with
+      400/404.
+
+    - If (b) changes to `'any'` but (a/c) stay `'all'`: clicking a
+      data-source row redirects to `/directory/postgresql/1/any`, the
+      hook reads `'any'`, fails the `'all'` check, `parseInt('any', 10)
+      = NaN`, same failure as above. The EntitiesTabs builder still
+      emits links with `'all'` so the tabs are inconsistent with the
+      page URL.
+
+    - If (c) changes to `'any'` but (a/b) stay `'all'`: the "All" tab
+      link becomes `/directory/postgresql/1/any` but the hook reads
+      `'any'`, fails the `'all'` check, same NaN downstream failure.
+      The data-source-row click still works (hits b/a, fine).
+
+  **The fix is single-line — export a named constant**:
+
+      // directoryRoutes.ts
+      export const DIRECTORY_ALL_TYPES_SENTINEL = 'all' as const;
+
+  ... and reference it from all three files. Any rename then is a
+  one-file change visible in a single grep over the constant name.
+
+  **CLASS MEMBERSHIP** — this is the same RENAME-FRAGILITY pattern as:
+    - The `alertsRoutes` path-segment literals (`'all'`, `'my'`,
+      `'dependents'`) duplicated between the routes module and the
+      AlertsRoutes object literal (alerts sidecar
+      `bugs_limitations_corner_cases[1]`).
+    - The Directory inner Routes' RE-HARDCODING of `:dataSourceTypePrefix`,
+      `:dataSourceId`, `:typeId` instead of importing the constants from
+      `directoryRoutes.ts:10,12,14` (directory sidecar
+      `bugs_limitations_corner_cases[3]`).
+
+  The general pattern: ODD's route layer uses cross-file string
+  duplication where a single named constant would catch rename
+  desynchronisation at compile time. The fix shape is uniform — export
+  the constant, import it everywhere.
+
+  vocabulary_status: codebase-anchored. The literal IS documented in
+  the live doc page (`/features/data-discovery/directory` lists
+  `/directory/{type-prefix}/{data-source-id}/all` verbatim) — but the
+  doc does NOT explain `all` is an in-band sentinel (vs e.g. a literal
+  data-entity-type id). Captured as a LOW-severity doc gap in the
+  directory sidecar's `docs_link_semantic.doc_drift_findings[2]`.
+vocabulary_status: codebase-anchored
+axes_present:
+  - ui_routes
+  - react_components
+nodes:
+  - odd-platform ts routes route:directory
+contributors:
+  - |-
+    directory route batch ZI:
+      concepts.invariants[The 'all' literal is a load-bearing magic string shared across THREE files; the hook coercion (line 34), the inner Routes Navigate fallback (DirectoryRoutes.tsx:16), and EntitiesTabs.tsx:26 — NO named constant unites them];
+      implicit_adrs[The literal 'all' is the in-band sentinel for 'no type filter at the entity-list level' — deliberate convention, observable across four code sites];
+      bugs_limitations_corner_cases[The literal 'all' is a load-bearing magic string shared across THREE files with no named constant uniting them — renaming desynchronises silently];
+      docs_link_semantic.doc_drift_findings[Doc gap — the 'all' magic string is NOT explained in the live doc page]
+evidence:
+  - |-
+    directory.md:concepts.invariants.[1] (The 'all' literal is a load-bearing
+    magic string shared across THREE files; no named constant unites them)
+  - |-
+    directory.md:implicit_adrs.[2] (The literal 'all' is the in-band sentinel
+    for 'no type filter at the entity-list level' — full ADR with
+    intent_anchor at line 47 `typeId?: number | 'all'`)
+  - |-
+    directory.md:bugs_limitations_corner_cases.[2] (load-bearing magic string
+    shared across THREE files with no named constant — rename desynchronisation
+    failure shape enumerated)
+  - |-
+    directory.md:docs_link_semantic.doc_drift_findings.[2] (doc page does NOT
+    explain that 'all' is in-band sentinel meaning 'no type filter')
+security_aggregate:
+  overall: HIGH
+  auth_modes_relevant: []
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: N/A
+    detail: |-
+      Not a security finding — code-consistency rename-fragility
+      pattern.
+  owner_scoping:
+    verdict: N/A
+    detail: ''
+  strengths:
+    - |-
+      The type annotation `typeId?: number | 'all'` at
+      `directoryRoutes.ts:47` IS the type-system documentation of the
+      sentinel — callers know they can pass either a number OR the
+      literal `'all'`, never an arbitrary string.
+    - |-
+      The runtime behaviour IS consistent today — the literal is
+      stable across the three files; the documented URL pattern
+      `/directory/{prefix}/{dsId}/all` is what the code actually
+      produces and reads.
+  weaknesses:
+    - |-
+      No named constant unites the three locations. A rename in one
+      location without the others produces silent NaN downstream
+      coercion AND inconsistent inter-component navigation. Failure
+      shapes enumerated in the description (three rename-asymmetry
+      scenarios).
+    - |-
+      Doc-side does not explain the sentinel — operators reading
+      `/directory/{prefix}/{dsId}/all` URL form have no signal that
+      `'all'` is meaningful vs a literal data-entity-type id.
+  cross_file_inconsistencies: []
+  contributing_files:
+    - odd-platform__ts__routes__route__directory.md
+  evidence: []
+performance_aggregate:
+  overall: HIGH
+  hot_paths: []
+  throughput_shape:
+    verdict: N/A
+    detail: |-
+      Not a performance concept — code-consistency pattern.
+  scaling_shape:
+    verdict: N/A
+    detail: ''
+  strengths: []
+  weaknesses: []
+  cross_file_inconsistencies: []
+  contributing_files:
+    - odd-platform__ts__routes__route__directory.md
+  evidence: []
+triangulation_count: 1
+cross_batch: false
+cross_batch_refs:
+  - batch-ZI (directory route sidecar — primary source)
+severity: LOW
+severity_dim: developer-ergonomics
+related_features: []
+related_pillar_features:
+  - P-01
+related_concepts:
+  - invariant:directory-level-3-url-via-navigate-redirect-not-builder
+  - entitie:directory
+  - entitie:ui-route-path-builder-convention
+notes: |-
+  Coherence (Rule 6): grepped `concepts/detail/invariants/` for
+  "magic string" + "sentinel" + "in-band" — found
+  `invariant:lineage-depth-empty-sentinel-magic-number` (the lineage
+  sentinel is a NUMERIC magic value, not a string literal). No
+  existing concept describes the Directory's specific cross-three-files
+  string-literal sentinel pattern.
+
+  STRENGTHENS the broader RENAME-FRAGILITY pattern in the route layer.
+  Cross-link to `invariant:directory-level-3-url-via-navigate-redirect-not-builder`
+  (the architectural decision) — these two invariants TOGETHER explain
+  the level-3 surface's full posture (the redirect-driven shape PLUS
+  the magic-string-literal rename surface).
+
+  Next-batch surface: similar magic-string patterns in `alertsRoutes`
+  (path-segment literals) and `dataModellingRoutes` (sub-path literal
+  duplication) — worth a follow-up audit if a refactor of the route
+  layer is contemplated.
+maintainer_curated: false

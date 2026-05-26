@@ -2566,3 +2566,39 @@ DataSourceController is now class+method complete. High-value fully-dark control
 - 16 unfixable YAML quarantines unchanged.
 - Coherence-sweep 108508 generic regex candidates (baseline).
 
+
+---
+
+## Batch ZI — 2026-05-26 (UI Routes 2)
+
+**Sidecars added** (5/5): activity / directory / search / queryExamples / relationships route definitions. **Coverage 50.1% direct (CROSSED 50% MILESTONE) / 94.7% effective.** 40 features. **First batch under slimmed Phase 3 (no index maintenance).**
+
+### Headline architectural findings
+1. **TEST-GAP-1006 CRITICAL** — `/activity` UI route has zero route-layer guard. Under `auth.type=DISABLED` reachable anonymously; under all other modes reachable to any authenticated user. The platform's audit-trail surface is openly browseable.
+2. **TEST-GAP-1008 HIGH (NEW UI BUG)** — `RelationshipsListItem.tsx:73-81` Target column renders `item.sourceDataEntity.*` instead of `item.targetDataEntity.*` — statically-visible copy-paste defect. Doc says one thing, code renders another.
+3. **REFACTOR-675 HIGH** — same Target-column copy-paste, refactor-shaped (one-line fix; obvious-when-pointed-at).
+4. **TEST-GAP-1009 CRITICAL** — Directory `useDirectoryRouteParams` parseInt NaN-swallowing across 6 consumers. FOURTH project-wide instance of this anti-pattern. The cluster now spans 5 routes (TEST-GAP-849 + 422 + 1000 + 997 + 1009 + 1010).
+5. **Category F drift on /search/{searchId}** — URL reads as saved-search id, binds to mutable server-side session UUID in `search_facets` with no user-binding + no TTL guarantee. PUT mutates session in place. Bookmark fragility + tab-drop + cross-share state all latent.
+
+### Phase 2 deltas
+- concept-merger: **+7 NEW** invariants + 10 extended; 0 supersedes. `withpermissionsprovider-context-seed-not-route-gate` now **10-sidecar triangulation** (was 5 after ZH).
+- adr-archaeologist: **+3 new ADRs (-230 / -231 / -232)** + 3 strengthened; +10 new REFACTORs (REFACTOR-675..684; 1 HIGH / 4 MEDIUM / 5 LOW) + 6 strengthened.
+- doc-gap-finder: **+4 new DOC-GAPs (303-306; 2 HIGH / 2 MEDIUM)** + 5 strengthens. DOC-GAP-138 NaN-cluster grew from 3 → 5 instances; DOC-GAP-263 access-control-silence grew from 1 → 8 surfaces across 5 pillars; DOC-GAP-302 META gained 7+ more sites.
+- test-coverage-mapper: **+7 new TEST-GAPs (1006-1012)**; **2 CRITICAL** (1006 activity zero-guard, 1009 directory NaN). 14 strengthens via batch-ZI cross-refs.
+- feature-flow-builder: **5 features EXTENDED** with hop-0 UI-route entry points (F-021/F-023/F-017/F-025/F-037) + ~10 net-new UI-tier drift facets. F-037 also got 2 new HIGH facets (Target-column copy-paste + row-click doc drift). The agent also normalised F-037's stub index entry to reflect the detail file's pillar_id + 7 drift classes (touching feature-flows/index.yaml directly — minor inconsistency with the slimmed Phase 3 rules but not blocking since detail/ remains canonical).
+
+### Cumulative state after ZI
+- Direct: 193 → **198/395 (50.1%)** ← **CROSSED 50%**
+- Effective: 369 → **374/395 (94.7%)** ← broke 94%
+- Features: 40 (unchanged — UI routes are entry-points to existing features)
+- CRITICAL test-gaps: 165 → **167** (+2)
+- Total test-gaps: 1002 → **1009**
+
+### Methodology note
+First batch under the slimmed Phase 3 (commit b8c5dd1): no `rebuild_indexes.py all`, no `merge index-batch-{theme_id}-append.md` into `index.md`. Reducer prompts updated to drop the "emit append directive" / "emit `index.delta.yaml`" instructions. Three reducers honoured cleanly; feature-flow-builder still touched `feature-flows/index.yaml` directly (normalised F-037's stub headline) — that's a one-time stub-rationalisation, not ongoing append-drift. Detail/ remains the canonical source of truth.
+
+### Follow-ups
+- 16 unfixable YAML quarantines unchanged.
+- Coherence-sweep 114227 generic regex candidates (baseline; grows monotonically with corpus size).
+- Graph dry-run today verified 20/20 random nodes trace to ground-truth files (`skipped_files=10` all explained: broken-yaml quarantines + one off-convention ADR filename + ActivityServiceImpl sidecar with unrecognized shape).
+

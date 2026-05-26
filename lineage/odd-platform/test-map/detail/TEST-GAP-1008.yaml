@@ -1,0 +1,122 @@
+---
+gap_id: TEST-GAP-1008
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform ts routes route:relationships"
+  - "odd-platform ts react-component:RelationshipsListItem"
+surfaced_by:
+  - "odd-platform__ts__routes__route__relationships.md:tests_coverage_semantic.uncovered_behaviours.[3]"
+  - "odd-platform__ts__routes__route__relationships.md:bugs_limitations_corner_cases.[0]"
+  - "odd-platform__ts__routes__route__relationships.md:docs_link_semantic.doc_drift_findings.[0]"
+  - "odd-platform__ts__routes__route__relationships.md:stress_findings.name_behavior_pairs.[Relationships]"
+related_pillar_features:
+  - "P-02"
+pillars_affected: ["P-02"]
+related_features: []
+feature_id: null
+test_class: missing-integration
+strengthens: []
+behaviour: |-
+  **HIGH — Statically-visible UI bug in `RelationshipsListItem.tsx:73-81`:
+  the Target column renders Source data for every row.** The Target cell is
+  declared with `dataEntityId={item.sourceDataEntity.id}` /
+  `name={item.sourceDataEntity.internalName || item.sourceDataEntity.externalName || ''}` /
+  `oddrn={item.sourceDataEntity.oddrn || ''}` — identical to the Source cell
+  at lines 64-72. The `item.targetDataEntity` field IS available on the
+  `DataEntityRelationship` interface and IS consumed correctly by sibling
+  components (`elements/Relationships/RelationshipTypes/EntityRelationship.tsx:33-35`
+  and `GraphRelationship.tsx:32-34`); the bug is a copy-paste in the row
+  renderer only.
+
+  Operator-visible consequence: every row of the
+  `/data-modelling/relationships` table shows the SAME dataset in both the
+  Source and Target columns. The user has no way to see what each
+  relationship POINTS TO from the list page. The bug is pure DOM
+  observation — `Source.href == Target.href` for every row.
+
+  **The doc page at `https://docs.opendatadiscovery.org/features/data-modelling/relationships`
+  (WebFetched 2026-05-26, status 200)** explicitly describes the table as
+  having distinct "Source entity, Target entity" columns:
+  - "A table displaying 'Name, Type (ERD or GRAPH), Namespace + Datasource,
+    Source entity, Target entity'"
+  - The doc is RIGHT; the code is WRONG.
+
+  **Why this regressed**: the bug is type-correct (`item.sourceDataEntity.id`
+  is a number per the OpenAPI-generated DTO; TypeScript cannot detect
+  copy-paste between two identically-shaped fields). The build doesn't catch
+  it. Zero tests exist that target `RelationshipsListItem` (Grep across
+  `odd-platform-ui/src/` for `RelationshipsListItem` in `*.test.*` /
+  `*.spec.*` returned zero matches at commit 4ec2b20).
+
+  **Why this is operator-load-bearing**: relationships are the THIRD column
+  of the operator's catalog navigation (Data Modelling → Relationships).
+  The Target column is THE essential information for the feature — the
+  user opens the page to see "what relates to what". A bug that shows
+  `A → A` for every row makes the feature functionally useless until the
+  user clicks through to a relationship's detail page (where the type-
+  specific rendering at `OverviewRelationshipStats/OverviewRelationshipType/*.tsx`
+  uses `targetDataEntity` correctly).
+
+  **A single integration test would catch this**: assert `Source !== Target`
+  on a seeded relationship row where source and target are distinct data
+  entities. The current zero-test posture means the bug ships green and is
+  caught only by an operator filing a defect report.
+
+  P-167 Block D (the relationships sidecar's emitted probe) pins the
+  runtime confirmation that the bug is operator-visible.
+test_files_existing: []
+test_files_proposed:
+  - path: "odd-platform-ui/src/components/DataModelling/Relationships/__tests__/RelationshipsListItem.test.tsx"
+    name: "RelationshipsListItem_distinctSourceAndTargetDataEntity_targetColumnRendersTargetData"
+    description: |-
+      Vitest + React Testing Library. Render <RelationshipsListItem item={...}
+      /> with a fixture where `sourceDataEntity = { id: 1, internalName: 'src' }`
+      and `targetDataEntity = { id: 2, internalName: 'tgt' }`. Assert the
+      Source-column DOM contains 'src' (or src/href to dataentities/1); assert
+      the Target-column DOM contains 'tgt' (or tgt/href to dataentities/2).
+      Pins the contract that Source and Target columns render DISTINCT data.
+      This test would FAIL on the current buggy code; once the fix is shipped
+      (`item.sourceDataEntity` → `item.targetDataEntity` at lines 73-81), the
+      test passes and the regression is locked.
+  - path: "odd-platform-ui/src/components/DataModelling/Relationships/__tests__/RelationshipsListItem.test.tsx"
+    name: "RelationshipsListItem_clickRow_navigatesToDataEntityOverviewPageForSource_pinsDocClaimSurprise"
+    description: |-
+      Same fixture. Simulate a click on the row. Assert navigation goes to
+      `/dataentities/1/overview` (the source entity's overview), NOT to a
+      relationship-type-specific detail URL. Pins the doc-drift finding
+      (relationships sidecar `doc_drift_findings.[4]`): the doc says
+      "routing determined by the relationship type" but the code always
+      navigates to dataEntityDetailsPath(item.id). A future doc fix that
+      clarifies "row click goes to source data-entity overview, not a
+      type-specific URL" anchors this test.
+  - path: "odd-platform-ui/src/components/DataModelling/Relationships/__tests__/Relationships.integration.test.tsx"
+    name: "relationshipsTable_seededRowsWithDistinctSourceTarget_tableColumnsMatchDocs"
+    description: |-
+      Higher-level integration: mount <Relationships /> in a MemoryRouter at
+      /data-modelling/relationships. Mock the GET /api/relationships response
+      with two rows: row1 (src=A, tgt=B), row2 (src=C, tgt=D). Assert the
+      rendered table contains 4 distinct data-entity references (A, B, C, D).
+      Catches the bug at the integration tier; pairs with the unit test for
+      regression-pin completeness.
+evidence:
+  - "relationships.md:bugs_limitations_corner_cases.[0] verbatim: 'HIGH-severity UI bug — Target column displays Source data: RelationshipsListItem.tsx:73-81 renders the Target cell with RelationshipDatasetInfo dataEntityId={item.sourceDataEntity.id} name={item.sourceDataEntity.internalName || item.sourceDataEntity.externalName || \"\"} oddrn={item.sourceDataEntity.oddrn || \"\"} — identical to the Source cell at lines 64-72.' severity: HIGH"
+  - "relationships.md:docs_link_semantic.doc_drift_findings.[0]: 'Target column doc-vs-code drift (operator-visible UI bug): the live doc describes Source entity, Target entity columns; the code renders Source data in the Target cell. The doc is RIGHT; the code is WRONG. Severity HIGH.'"
+  - "relationships.md:tests_coverage_semantic.uncovered_behaviours.[3] verbatim: 'Target column on RelationshipsListItem.tsx:73-81 renders Source data, not Target data — the buggy assignment statically visible in the file' criticality: HIGH"
+  - "Grep against test files for RelationshipsListItem in odd-platform-ui/src/.../__tests__/: 0 matches (verified 2026-05-26)"
+  - "Primary source: RelationshipsListItem.tsx:64-81 (Source cell at 64-72 + Target cell at 73-81 — both reading item.sourceDataEntity) + sibling components RelationshipTypes/EntityRelationship.tsx:33-35 + GraphRelationship.tsx:32-34 (which DO use item.targetDataEntity correctly) + WebFetch https://docs.opendatadiscovery.org/features/data-modelling/relationships (2026-05-26, status 200, returned table-columns sentence verbatim)"
+cross_references:
+  - "P-167 Block D (probe for the runtime confirmation; emitted by relationships sidecar)"
+  - "TEST-GAP-953 (the backend ERD/GRAPH filter test gap on the same feature; complementary — TEST-GAP-1008 is the UI-renderer bug, TEST-GAP-953 is the backend filter contract)"
+  - "TEST-GAP-952 (the backend zero-authz posture on /api/relationships; complementary — TEST-GAP-1008 is operator-visible UI defect, TEST-GAP-952 is the security posture)"
+  - "Doc page section 'A table displaying Name, Type, Namespace + Datasource, Source entity, Target entity' — DOC is correct, CODE is wrong"
+proposed_action: |-
+  (1) Fix the bug at RelationshipsListItem.tsx:73-81 (replace
+  item.sourceDataEntity.* with item.targetDataEntity.*). (2) Add a Vitest
+  test pinning Source != Target rendering in the row. (3) Add an
+  integration test pinning the table-level column-distinctness contract.
+  All three together close the gap. The fix is one-line; the test cost is
+  ~30 min; the value is preventing the SAME copy-paste regression on
+  future similar row renderers (and the leverage of a regression-pin
+  scaffold the next renderer can copy).
+maintainer_curated: false

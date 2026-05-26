@@ -1,0 +1,217 @@
+---
+probe_id: P-169
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__routes__route__directory.md
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-Directory          # P-01:F-Directory — the four-level Directory browse surface
+test_class: security
+verified_against_commit: ede5d277
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category D, frontend-layer route reachability + end-to-end
+  visual outcome): the /directory URL is registered in App.tsx:72 as
+  `<Route path={`${directoryPath()}/*`} element={<DirectoryRoutes />} />`
+  with NO WithPermissionsProvider wrapper — unlike the sibling /lookup-tables
+  route (App.tsx:75-88) which IS wrapped in WithPermissionsProvider gating on
+  LOOKUP_TABLE_CREATE/UPDATE/DELETE. Even if it WERE wrapped, the ZH finding
+  establishes that WithPermissionsProvider is non-blocking
+  (WithPermissionsProvider.tsx:12-49 — provides a permission context but
+  ALWAYS renders the children/Component regardless of permissions; only
+  inner controls hide via the isAllowedTo callback). The 'Directory' top-bar
+  tab (ToolbarTabs.tsx:40-44) is rendered unconditionally — no permission
+  check around the tab entry. The component therefore appears reachable by
+  any authenticated user regardless of role/permission.
+
+  The backend DirectoryController has NO @PreAuthorize (per the backend
+  DirectoryController sidecar `security.authorization_assertions = []`) and
+  NO entry in SecurityConstants.SECURITY_RULES; the only gate is the global
+  authenticated() SecurityFilterChain rule (skipped under DISABLED).
+
+  Hypothesis: a minimum-privilege authenticated user (LOGIN_FORM, no
+  Policies granting any Permission, no Owner association) successfully
+  navigates the full four-level Directory hierarchy AND sees the complete
+  registered-data-source inventory including ODDRN-derived properties
+  (host, database, port, account, warehouse, cluster, topic). The visual
+  outcome confirms the cross-owner read-collaborative posture for the UI
+  surface end-to-end (matching the backend sidecar's MEDIUM-severity
+  reconnaissance finding).
+
+  If the hypothesis holds, the catalog inventory is leaked to every
+  authenticated principal regardless of role/ownership, and the doc-side
+  silence (live `/features/data-discovery/directory` 2026-05-26 status 200
+  makes no mention of access control) is a MEDIUM-severity doc gap that
+  pairs with the backend sidecar's already-recorded finding.
+
+  If the hypothesis fails — e.g. status_plain on `/api/directory` is 403,
+  or the level-2 list returns empty for the minimum-privilege user, or the
+  ODDRN-property reflection fields are redacted — the finding downgrades
+  and we have evidence of a backend-level scoping mechanism the static
+  analysis missed; the probe's failure-mode then triggers a deeper read
+  of the SecurityConfiguration / SecurityFilterChain.
+---
+arrange:
+  - kind: docker-compose-up
+    note: odd-minimal stack with auth.type=LOGIN_FORM so role distinctions exist
+  - kind: sql
+    query: |
+      -- seed three data sources of TWO distinct ODDRN prefixes so level 1
+      -- has at least two cards (postgresql + snowflake) and level 2 has
+      -- multiple rows under each prefix; one of them has a recognisable
+      -- "infrastructure-revealing" host value to confirm the reflection
+      -- leak is observable from the response payload.
+      INSERT INTO namespace (id, name, is_deleted)
+      VALUES (9001, 'p169-ns-a', false), (9002, 'p169-ns-b', false);
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, name, oddrn, namespace_id, type_id)
+      VALUES
+        (9001, 'p169-pg-prod',  '//postgresql/host/p169-pg-prod.internal:5432/dbX', 9001, 1),
+        (9002, 'p169-pg-stage', '//postgresql/host/p169-pg-stage.internal:5432/dbY', 9001, 1),
+        (9003, 'p169-sf-prod',  '//snowflake/account/p169.eu-central-1/warehouses/wh1', 9002, 1);
+  - kind: sql
+    query: |
+      INSERT INTO data_entity (id, oddrn, external_name, internal_name,
+                               data_source_id, namespace_id, hollow, exclude_from_search, type_id)
+      VALUES
+        (9101, '//postgresql/host/p169-pg-prod.internal/dbX/schemas/public/tables/orders', 'orders', NULL, 9001, 9001, false, false, 1),
+        (9102, '//postgresql/host/p169-pg-prod.internal/dbX/schemas/public/tables/users',  'users',  NULL, 9001, 9001, false, false, 1),
+        (9103, '//snowflake/account/p169.eu-central-1/databases/dbA/schemas/sch/tables/events', 'events', NULL, 9003, 9002, false, false, 1);
+  - kind: env
+    note: |
+      Two test principals:
+        - 'p169-admin' — default seeded admin (has ROLE_ADMIN policy granting
+          all Permissions). Acts as the control: full inventory MUST render
+          for this principal.
+        - 'p169-plain' — freshly created LOGIN_FORM user with NO Policy
+          granting any Permission AND NO ownership association to any
+          owner. This is the minimum-privilege authenticated principal.
+        - 'p169-anon' — no session cookie; tests the unauthenticated case
+          under LOGIN_FORM (should be redirected to login by the global
+          SecurityFilterChain).
+act:
+  - kind: rest
+    description: level-1 (data source types) — control
+    method: GET
+    path: /api/directory
+    auth_as: p169-admin
+    capture_as: level1_admin
+  - kind: rest
+    description: level-1 (data source types) — minimum-privilege
+    method: GET
+    path: /api/directory
+    auth_as: p169-plain
+    capture_as: level1_plain
+  - kind: rest
+    description: level-2 (data sources of postgresql) — minimum-privilege
+    method: GET
+    path: /api/directory/datasources?prefix=postgresql
+    auth_as: p169-plain
+    capture_as: level2_plain
+  - kind: rest
+    description: level-3 (entity types within data source 9001) — minimum-privilege
+    method: GET
+    path: /api/directory/datasources/9001/types
+    auth_as: p169-plain
+    capture_as: level3_plain
+  - kind: rest
+    description: level-4 (entities within data source 9001, type 1, paged) — minimum-privilege
+    method: GET
+    path: /api/directory/datasources/9001?type_id=1&page=1&size=30
+    auth_as: p169-plain
+    capture_as: level4_plain
+  - kind: rest
+    description: level-1 — unauthenticated (under LOGIN_FORM)
+    method: GET
+    path: /api/directory
+    auth_as: none
+    capture_as: level1_anon
+  - kind: dom-probe
+    description: |
+      Frontend reachability — navigate Playwright (logged in as p169-plain)
+      to / (catalog overview), confirm 'Directory' tab is visible in the
+      ToolbarTabs strip, click it, capture the rendered Directory cards;
+      then click a card (postgresql), capture the rendered level-2 list;
+      then click a data source row, capture the level-3 redirect to
+      `/directory/postgresql/9001/all`, then capture the level-4 entity
+      list.
+    auth_as: p169-plain
+    capture_as: ui_walk_plain
+observe:
+  - kind: http-status
+    of: level1_admin
+    capture_as: status_l1_admin
+  - kind: http-status
+    of: level1_plain
+    capture_as: status_l1_plain
+  - kind: http-status
+    of: level2_plain
+    capture_as: status_l2_plain
+  - kind: http-status
+    of: level3_plain
+    capture_as: status_l3_plain
+  - kind: http-status
+    of: level4_plain
+    capture_as: status_l4_plain
+  - kind: http-status
+    of: level1_anon
+    capture_as: status_l1_anon
+  - kind: payload
+    of: level2_plain
+    capture_as: payload_l2_plain
+  - kind: payload
+    of: ui_walk_plain
+    capture_as: payload_ui_plain
+assert:
+  - "status_l1_admin == 200  # control — admin sees the level-1 cards"
+  - "status_l1_plain == 200  # HYPOTHESIS: minimum-privilege user ALSO sees level-1 (cross-owner read-collaborative posture)"
+  - "status_l2_plain == 200  # HYPOTHESIS: minimum-privilege user sees level-2 (registered data sources)"
+  - "status_l3_plain == 200  # HYPOTHESIS: minimum-privilege user sees level-3 (entity types within the data source)"
+  - "status_l4_plain == 200  # HYPOTHESIS: minimum-privilege user sees level-4 (entities, paged)"
+  - "payload_l2_plain.items != []  # the level-2 list is NOT empty — the minimum-privilege user sees all registered postgresql data sources"
+  - "any('p169-pg-prod.internal' in str(item.get('properties', {})) for item in payload_l2_plain.items)  # the ODDRN-property reflection LEAKS the internal hostname to the minimum-privilege user — confirms the backend sidecar's MEDIUM-severity finding"
+  - "any('5432' in str(item.get('properties', {})) for item in payload_l2_plain.items)  # the port number is also leaked"
+  - "status_l1_anon == 401 OR status_l1_anon == 403 OR status_l1_anon == 302  # unauthenticated is rejected by the global auth filter (302 if redirected to login form)"
+  - "payload_ui_plain.directory_tab_visible == true  # the toolbar tab is visible for the minimum-privilege user"
+  - "payload_ui_plain.level1_cards_rendered >= 2  # two ODDRN prefixes (postgresql + snowflake) → at least two cards"
+  - "payload_ui_plain.level2_rows_rendered >= 2  # two postgresql data sources → at least two rows"
+  - "payload_ui_plain.level3_redirect_url == '/directory/postgresql/9001/all'  # the Navigate redirect fires for the level-3 deep-link"
+  - "payload_ui_plain.level4_entity_count >= 2  # two entities in data source 9001 → at least two entity rows"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__routes__route__directory
+    - odd-platform__java__DirectoryController__controller-class__DirectoryController
+  retrospectives: [LSN-017, LSN-023]
+realism_caveats: |
+  This probe pins the END-TO-END VISUAL OUTCOME of the Directory feature for
+  a minimum-privilege authenticated user — both the backend authorization
+  posture of the four /api/directory endpoints AND the frontend route
+  reachability of the four UI levels. It does NOT verify the auth.type=DISABLED
+  case (REFACTOR-185); that is covered by the broader DISABLED-mode sweep
+  probe-set. It does NOT pin the OAUTH2 or LDAP auth modes; LOGIN_FORM is
+  the closest-cost local-runnable mode (no external IDP needed) and the
+  expected outcomes for OAUTH2/LDAP are identical post-authentication
+  (the backend's authenticated() global rule applies uniformly across the
+  three authenticated modes).
+
+  If status_l1_plain comes back 403 (or any 4xx/5xx), the backend DOES gate
+  the Directory and the finding downgrades to "frontend tab is shown to
+  users who will get a 403 on data fetch — a UX defect, not a data-exposure
+  defect"; the static analysis missed a hidden gating mechanism and the
+  probe-runner should re-read the SecurityConfiguration to find it.
+
+  If the ODDRN-property leakage assertions FAIL (no internal hostname or
+  port in payload_l2_plain), the reflection-based extractor at
+  DirectoryServiceImpl.java:138-171 is producing redacted output — the
+  static analysis missed a redaction step and the file-analyser should
+  re-read the extractor.
+
+  The DOM-probe portion is the highest-value end-to-end verification; it
+  catches a class of cross-layer bug the REST-only probes cannot — e.g.
+  the toolbar tab being conditionally hidden by a CSS class set elsewhere
+  in the app, or the route being protected by a not-yet-discovered
+  router-level guard.

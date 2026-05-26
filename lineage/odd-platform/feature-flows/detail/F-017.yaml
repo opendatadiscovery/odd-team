@@ -14,8 +14,141 @@ drift_class_summary:
 - search_session_no_user_binding
 - workaround_doc_silent_on_facet_count_scoping
 - catalog_wide_count_design_my_objects_not_a_boundary
+batch_extensions:
+- batch: ZI
+  entry_point_added: |-
+    ui_route:/search/* — URL-shape contract module
+    `routes/searchRoutes.ts` (19 lines) exporting `searchPath(searchId?)`
+    + `useSearchRouteParams()` (typed `useParams` wrapper). Mounted at
+    `App.tsx:61` as `<Route path={`${searchPath()}/*`} element={<Search/>}>`
+    — BARE, NO `WithPermissionsProvider` wrapper. The `searchId` URL
+    parameter is the SERVER-SIDE `search_facets` row UUID (the same
+    UUID surfaced by F-017's existing
+    `bearer_token_shaped_session_uuids` facet — NOT a saved-search id,
+    NOT a query parameter, NOT user-meaningful text). hop-0 UI entry
+    point that mints the session (via `useCreateSearch.ts:17`
+    navigate-after-POST) and restores the session (via
+    `useSearchRouteParams` → Search.tsx:27-48 `getDataEntitiesSearch`
+    dispatch on URL with UUID present). Global toolbar Catalog tab in
+    `ToolbarTabs.tsx:38` deep-links via `searchPath()` (NO UUID — drops
+    any current session on tab-click). hop-0 closes the UI half of
+    F-017 from the URL-shape side.
+  contributing_nodes_added:
+  - odd-platform ts routes route:search
+  notes: |-
+    The route module sidecar (session-2026-05-26-ZI-search-route)
+    corroborates F-017's existing facet-enumeration posture from the UI
+    direction PLUS surfaces FOUR novel UI-layer drift findings:
+
+    (1) F-017 ENTIRE 10-FACET DRIFT SUMMARY REAFFIRMED AT UI ROUTE TIER
+    (HIGH, refinement). The Catalog page is reachable by every
+    authenticated user (and every caller under `auth.type=DISABLED`).
+    Bare Route mount, NO `WithPermissionsProvider`. SecurityConstants
+    has NO `/api/search` SecurityRule (zero matches confirmed by Grep).
+    SearchController falls through to `pathMatchers('/**').authenticated()`.
+    The only permission-gated affordance on the Search subtree is the
+    Add-Group CTA at `Results.tsx:125` inside the page — NOT a route
+    gate. STRENGTHENS F-017's existing `cross_owner_facet_enumeration`
+    + `bearer_token_shaped_session_uuids` + `disabled_mode_bypass`
+    facets with the UI-layer primary-source confirmation. The chain is
+    unguarded end-to-end at every layer.
+
+    (2) NEW UI-TIER DRIFT FACET — `searchId` URL PARAM NAME PROMISES
+    SAVED-SEARCH ID; IMPLEMENTATION USES IT AS SERVER-SIDE SESSION ROW
+    UUID (HIGH, CATEGORY F drift_input_name_vs_implementation). The
+    URL form `/search/{searchId}` + the `searchId` field name promise
+    "the identifier of a search" — a naive reading suggests a
+    saved-search id, or a user-meaningful query id ('search #42'), or
+    a saved-filter token. The implementation uses it as a SERVER-SIDE
+    SESSION ROW UUID in `search_facets` that was minted by the most
+    recent `POST /api/search` and that has no user binding, no TTL
+    guarantee, no "saved search" semantics. The same row gets MUTATED
+    on every facet change (`PUT /api/search/{searchId}/facets`). Three
+    operator-visible consequences enumerated by the sidecar:
+    (a) BOOKMARK FRAGILITY — bookmarking `/search/{uuid}` 404s when
+    the server-side row is cleaned up (no docs on TTL; probe P-168
+    pins this); user sees empty Catalog or toast.
+    (b) CROSS-USER SHARING EXPOSES MUTABLE LATEST STATE — User A
+    shares `/search/{uuid}` with User B; if A keeps clicking the same
+    row mutates via PUT /facets; the URL B opens 30 seconds later
+    shows state B never expected. The URL behaves like
+    "pointer-to-whatever-this-row-currently-holds", NOT a saved-search
+    id.
+    (c) TAB NAVIGATION DROPS THE SESSION — clicking the Catalog
+    top-nav tab (`ToolbarTabs.tsx:38` → `searchPath()` no arg → `/search`)
+    drops the UUID; `Search.tsx:37-42` then creates a fresh empty
+    session. The user expected their "saved search" would persist
+    across tab-clicks. It doesn't.
+    NEW DRIFT FACET to add to drift_class_summary:
+    `searchid_url_param_promises_saved_search_id_translates_silently_to_mutable_session_row_uuid_bookmark_share_tab_all_break`.
+
+    (3) NEW UI-TIER DRIFT FACET — NO UUID-SHAPE VALIDATION ON `:searchId`
+    PATH SEGMENT (MEDIUM, defensive-coding gap). React Router routes
+    `/search/<any-string>` to `<Search/>`; Search.tsx:44-48 fires
+    `GET /api/search/{garbage}` which returns 404; the redux thunk's
+    `handleResponseAsyncThunk` typically surfaces the error as a toast
+    OR silently — the user sees an empty Catalog (zero results)
+    indistinguishable from "no matches" for an authentic search. No
+    react-router param-pattern constraint like
+    `:searchId(\w{8}-...)` enforces UUID shape at the route layer.
+    NEW DRIFT FACET candidate:
+    `search_route_no_uuid_validation_typo_404_indistinguishable_from_zero_matches`.
+
+    (4) NEW UI-TIER DRIFT FACET — `searchPath` LABEL DRIFT VS USER-FACING
+    "CATALOG" VOCABULARY (LOW, semantic). The URL is `/search`; the
+    top-nav tab is labelled `t('Catalog')` (`ToolbarTabs.tsx:38`); the
+    live doc page (WebFetched 2026-05-26 status 200) describes the
+    feature as "Search and Filtering" inside the Data Discovery
+    Catalog. Three vocabulary surfaces for the same affordance.
+    A new developer searching the codebase for "Catalog" would not
+    find this module; a maintainer reading `searchPath()` would not
+    immediately associate it with the Catalog UI. Cosmetic
+    inconsistency but documents a real fragmentation. NEW DRIFT FACET
+    candidate (LOW):
+    `search_path_label_drift_url_search_tab_catalog_feature_search_and_filtering_three_vocabularies`.
+
+    (5) NEW UI-TIER DRIFT FACET — `useSearchRouteParams` TYPE-SAFETY LIE
+    (LOW). The hook casts `useParams<keyof SearchRouteParams>()` as
+    `SearchRouteParams` — claiming `searchId: string` while at runtime
+    on the bare `/search` URL `useParams()` returns `{}` and the
+    `searchId` field is `undefined`. Search.tsx:27 happens to handle
+    it correctly via `if (!routerSearchId)` truthy-checks, but a new
+    caller could write
+    `useSearchRouteParams().searchId.toUpperCase()` and crash at
+    runtime. The correct type would be `{searchId?: string}` or
+    `{searchId: string | undefined}`. NEW DRIFT FACET candidate (LOW):
+    `use_search_route_params_type_system_lies_searchId_undefined_on_bare_route_caller_must_truthy_check`.
+
+    (6) DOC-PAGE URL-FORM SILENCE (HIGH, refinement). The live
+    `/features/data-discovery/search` page (WebFetched 2026-05-26
+    status 200) describes free-text + faceted search and lists the 7
+    facets but the ENTIRE URL-shape / session-persistence /
+    deep-link-sharing story is undocumented. An operator reading the
+    doc has no way to know that (a) the URL bar carries a session
+    UUID, (b) the UUID is shareable, (c) the UUID represents a
+    persisted server-side row, (d) tab-clicking the Catalog tab
+    drops the session. STRENGTHENS F-017's existing
+    `workaround_doc_silent_on_facet_count_scoping` +
+    `bearer_token_shaped_session_uuids` facets — the operator-facing
+    silence on the URL semantics is the user-visible surface of the
+    backend's no-user-binding shape.
+
+    Probe emitted by the sidecar: P-168 pins whether `search_facets`
+    rows are cleaned up by any background job, TTL, or reaper —
+    pinning the bookmark-fragility consequence to a concrete TTL
+    value (or its absence — extending F-017's existing
+    `session_state_accumulates_forever` facet with the deep-link
+    semantics).
+
+    Coherence sweep STRENGTHENS=3 (F-017 existing facets reaffirmed at
+    UI tier; F-001 Detail-page view tracking — related discovery
+    sibling under P-01; F-024 Term Search & Browse — identical
+    session-create + URL-restore pattern, the searchRoutes.ts shape
+    is the canonical/older instance of the TermSearch clone).
+    SUPERSEDES=0. CONFLICTS=0.
 discovered_from_entry_point: rest:GET /api/search/{search_id}/facet/{facet_type}
 contributing_nodes:
+- odd-platform ts routes route:search (batch ZI — UI ROUTE hop-0 — /search/* URL-shape contract; mounted at App.tsx:61 BARE; searchId URL param is server-side session UUID NOT saved-search id — Category F drift; toolbar Catalog tab uses no-arg searchPath drops sessions on click)
 - odd-platform ts react-component:Search (batch ZA — UI Catalog page root at `/search/*`; the OPERATOR-facing surface that consumes the F-017 facet API; identical session-create + URL-restore + facet-debouncer + WithPermissionsProvider pattern as TermSearch.tsx — Search is the canonical/older instance, TermSearch is the clone; REFACTOR-229 FTS injection 3rd invocation site via raw-text dispatch from MainSearchInput.tsx; broken debouncer clone of TermSearch — useCallback recreated on every facet click)
 - odd-platform java SearchController controller-method:facets
 - odd-platform java service service:SearchServiceImpl
@@ -107,6 +240,26 @@ facets_summary: |-
   it does not) + catalog-wide count is by design (myObjectsCount is
   EXTRA scope, NOT a boundary) + zero test coverage at any layer.
 chain:
+- hop: 0
+  node: odd-platform ts routes route:search
+  sidecar: odd-platform__ts__routes__route__search.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    routes/searchRoutes.ts:1-19 — declares `BASE_PATH = '/search'`,
+    exports `searchPath(searchId?)` + `useSearchRouteParams()`. Mounted
+    at `App.tsx:61` as
+    `<Route path={`${searchPath()}/*`} element={<Search/>}>` — BARE,
+    NO `WithPermissionsProvider`. The `:searchId` URL parameter is the
+    SERVER-SIDE `search_facets` row UUID (the same UUID surfaced by
+    F-017's `bearer_token_shaped_session_uuids` facet — Category F
+    drift_input_name_vs_implementation: name promises saved-search id;
+    implementation is mutable session row pointer). Three consumers:
+    `Search.tsx:27` (param-read, decides session-create vs
+    session-restore), `useCreateSearch.ts:17`
+    (navigate(searchPath(searchId)) after POST /api/search resolves),
+    `ToolbarTabs.tsx:38+93` (top-nav Catalog tab + active-tab
+    matchPath, both via no-arg searchPath()). Source batch: ZI.
+  unresolved: false
 - hop: 1
   node: odd-platform java SearchController controller-method:facets
   sidecar: odd-platform__java__SearchController__controller-method__facets.md

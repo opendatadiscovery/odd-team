@@ -2,12 +2,51 @@ name: WithPermissionsProvider is a context-seed, NOT a route gate (operator ment
 canonical_in_docs: false
 canonical_candidate: true
 pillar_affinity:
-  - P-08
+  - P-01
   - P-02
   - P-03
   - P-04
   - P-06
+  - P-08
+  - P-09
 description: |-
+  ## STRENGTHENED — batch ZI (2026-05-26)
+
+  Batch ZI confirms the finding at FIVE MORE routes (activity / directory
+  / search / queryExamples / relationships):
+
+    - activity / directory / search / relationships — BARE mounts (no
+      WithPermissionsProvider at all); inherited expectation from this
+      invariant — would not change behaviour even if added.
+    - queryExamples — wrapped at `DataModellingRoutes.tsx:19-25` (LIST,
+      QUERY_EXAMPLE_CREATE) and `:31-37` (DETAILS, QUERY_EXAMPLE_UPDATE +
+      _DELETE). Both routes render to ALL authenticated users; the
+      `WithPermissions` HOC on the +Add button (`QueryExamples.tsx:36-46`)
+      and the Edit (`QueryExampleDetailsContainerActions.tsx:40`) and
+      Delete (`:53`) buttons are the actual gates.
+
+  **The queryExamples sidecar's contribution is the SHARPEST evidence
+  yet** of the context-seed-not-gate behaviour at PRIMARY-SOURCE: the
+  details page explicitly carries a SECOND `WithPermissionsProvider`
+  inside `QueryExampleDetailsContainer.tsx:53-64` — this one
+  CARRIES the RESOURCE-PERMISSIONS from `useResourcePermissions({
+  resourceId: exampleId, ... })` (i.e. the resource-scoped permission
+  check is applied at the actions wrapper, not at the route). The
+  layering is now triple:
+    1. Route mount wrapper (context-only — global permission CONTEXT
+       seeded for inner action buttons)
+    2. Inner wrapper inside Container (context-only — RESOURCE
+       permission CONTEXT seeded for the same buttons)
+    3. WithPermissions HOC on each button (DOES BLOCK — returns null
+       if permission absent)
+
+  A reviewer reading either of the two `WithPermissionsProvider`
+  layers reasonably concludes that some gating happens; in fact, only
+  the innermost HOC gates. The cross-batch pattern is now confirmed
+  at 10 route sidecars across batches ZH + ZI.
+
+  ## ORIGINAL — batch ZH (2026-05-26)
+
   **NEW HIGH-severity INVARIANT, batch ZH (2026-05-26)**. The
   `<WithPermissionsProvider allowedPermissions={[...]}>` wrapper used
   at React Router route mounts across the SPA — visible in App.tsx,
@@ -30,7 +69,7 @@ description: |-
   permissions — when in fact only the inner `<WithPermissions>` HOCs
   (on individual buttons, individual form sections) actually block.
 
-  **Confirmed across 5 route sidecars in batch ZH**:
+  **Confirmed across 5 route sidecars in batch ZH + 5 in batch ZI**:
     - dataModelling route: Query Examples + Query Example Details
       wrapped in WithPermissionsProvider (QUERY_EXAMPLE_CREATE /
       _UPDATE+_DELETE) — both render to ALL authenticated users; only
@@ -51,6 +90,26 @@ description: |-
       WithPermissionsProvider on the header (TermDetails.tsx:59-70 for
       TERM_UPDATE / TERM_DELETE) which seeds context for inner
       WithPermissions buttons.
+    - **NEW batch ZI** — activity route: bare at App.tsx:65; no
+      wrapper. The platform-wide audit trail is reachable end-to-end.
+    - **NEW batch ZI** — directory route: bare at App.tsx:72 (`/directory/*`);
+      no wrapper. The four-level browse hierarchy is reachable end-to-end
+      by every authenticated user.
+    - **NEW batch ZI** — search route: bare at App.tsx:61 (`/search/*`);
+      no wrapper. The Catalog page is reachable; only the inner
+      "Add group" CTA has a WithPermissions HOC.
+    - **NEW batch ZI** — queryExamples route: wrapped at
+      `DataModellingRoutes.tsx:19-25` (LIST) and `:31-37` (DETAILS)
+      with explicit permission lists; both wrappers are
+      context-only and do not block. The details container ADDS a
+      THIRD WithPermissionsProvider inside the page carrying
+      resource-permissions — same context-only semantic.
+    - **NEW batch ZI** — relationships route: bare at
+      `DataModellingRoutes.tsx:40`; the ONLY inner route of the Data
+      Modelling pillar that is NOT wrapped at all. Combined with the
+      ZE finding (RelationshipController has zero authz at any layer),
+      the entire chain from URL to repository is open to any
+      authenticated caller.
 
   **The architectural intent IS read-collaborative** (consistent with
   ADR-CANDIDATE-003, REFACTOR-024, the
@@ -108,6 +167,11 @@ nodes:
   - odd-platform ts routes route:management
   - odd-platform ts routes route:dataQuality
   - odd-platform ts routes route:terms
+  - odd-platform ts routes route:activity
+  - odd-platform ts routes route:directory
+  - odd-platform ts routes route:search
+  - odd-platform ts routes route:queryExamples
+  - odd-platform ts routes route:relationships
 contributors:
   - |-
     dataModelling route batch ZH:
@@ -134,6 +198,28 @@ contributors:
       understanding[the /terms mount has NO route-level permission gate, unlike sibling /lookup-tables mount four lines later];
       implicit_adrs[Route module owns no auth gating; all gating is consumer-side];
       stress_findings.auth_gates[At the UI level: the route module itself has NO gate; the gate is delegated to the inner TermDetails component]
+  - |-
+    activity route batch ZI:
+      bugs_limitations_corner_cases[Even where WithPermissionsProvider IS used elsewhere, it ONLY provides a permission context for descendants to consult; it does NOT block render or redirect; all three branches of WithPermissionsProvider.tsx:12-49 unconditionally render the child];
+      security.known_security_gaps[Even when WithPermissionsProvider IS used elsewhere, it ONLY provides a permission context for descendants to consult — it does NOT block render or redirect; the wrapper is named like a gate but behaves like a context]
+  - |-
+    directory route batch ZI:
+      bugs_limitations_corner_cases[Even if it WERE wrapped, WithPermissionsProvider is non-blocking — the wrapper would need to be combined with a render-block check at the wrapped component's top];
+      security.known_security_gaps[The frontend route mount has NO permission gate; the WithPermissionsProvider wrapper is non-blocking even if used — ZH non-blocking finding establishes WithPermissionsProvider.tsx:12-49 ALWAYS renders the children/Component regardless of permissions]
+  - |-
+    search route batch ZI:
+      bugs_limitations_corner_cases[ZH batch's WithPermissionsProvider non-blocking finding (WithPermissionsProvider.tsx:18-48 — it's a CONTEXT provider, not a gate; always renders children regardless of permission) reinforces that even where it IS used in Search.tsx:81-85, it only context-provides for the <WithPermissions> consumer inside Results];
+      security.known_security_gaps[No route-level permission gate — Catalog page reachable by every authenticated user without any role check; intentional per the read-collaborative posture]
+  - |-
+    queryExamples route batch ZI:
+      bugs_limitations_corner_cases[Sub-route inherits the non-blocking-guard semantics from the parent (per the ZH dataModelling parent sidecar) — the WithPermissionsProvider at DataModellingRoutes.tsx:19-25 (LIST) and :31-37 (DETAILS) wraps the rendered component in a permission CONTEXT (NOT a gate); a user without QUERY_EXAMPLE_CREATE who navigates to /data-modelling/query-examples sees the page; the Add button is hidden by WithPermissions inside];
+      stress_findings.auth_gates[The gate at the route level does NOT exist (the WithPermissionsProvider does not block — Category B finding inherited from the ZH parent); the real gates are at the action button (WithPermissions) and the backend (3 of 13 endpoints @PreAuthorize via SECURITY_RULES)];
+      security.known_security_gaps[The sub-route's WithPermissionsProvider wrapper at DataModellingRoutes.tsx:19-25, 31-37 does NOT block rendering — inherited from the ZH parent sidecar]
+  - |-
+    relationships route batch ZI:
+      concepts.invariants[No WithPermissionsProvider wrapper at DataModellingRoutes.tsx:40 — the Relationships route is the only inner route of the Data Modelling pillar that is NOT wrapped in a permission context];
+      implicit_adrs[The Relationships sub-route does NOT carry a WithPermissionsProvider wrapper — deliberate read-collaborative shape; pillar members can choose to skip the permission wrapper when the underlying controller is read-only and the read posture is collaborative];
+      security.known_security_gaps[The /data-modelling/relationships route is ungated end-to-end — no WithPermissionsProvider at the route, no @PreAuthorize on RelationshipController, no SECURITY_RULES entry]
 evidence:
   - "dataModelling.md:bugs_limitations_corner_cases.[1] (the wrapper at DataModellingRoutes.tsx:19-25, 31-37 does not block; only inner WithPermissions buttons gate)"
   - "dataModelling.md:stress_findings.name_behavior_pairs.[WithPermissionsProvider — DRIFT_NAME_VS_BEHAVIOR]"
@@ -144,6 +230,18 @@ evidence:
   - "management.md:security.known_security_gaps.[0] HIGH (Management surface NO route-level guard; any authenticated user reads full Owner/Role/Policy/Namespace/Tag/Collector/DataSource/Integration catalogs)"
   - "dataQuality.md:bugs_limitations_corner_cases.[1] (no client-side permission gate at the URL declaration's only mount site App.tsx:73)"
   - "terms.md:implicit_adrs.[3] (Route module owns no auth gating; all gating is consumer-side)"
+  - "activity.md:bugs_limitations_corner_cases.[no WithPermissionsProvider] HIGH (route bare; ZH non-blocking pattern referenced)"
+  - "activity.md:security.known_security_gaps.[WithPermissionsProvider non-blocking] HIGH (named like a gate but behaves like a context)"
+  - "directory.md:bugs_limitations_corner_cases.[0] MEDIUM (no permission gate at App.tsx:72 mount; ZH non-blocking pattern referenced)"
+  - "directory.md:security.known_security_gaps.[0] MEDIUM (WithPermissionsProvider would not gate even if added)"
+  - "search.md:bugs_limitations_corner_cases.[1] MEDIUM (No UI route guard; ZH non-blocking pattern referenced for Search.tsx:81-85 inner provider)"
+  - "search.md:security.known_security_gaps.[0] MEDIUM"
+  - "queryExamples.md:bugs_limitations_corner_cases.[5] (Sub-route inherits the non-blocking-guard semantics from the parent)"
+  - "queryExamples.md:stress_findings.auth_gates (route-level gate does NOT exist; real gates at action button + backend)"
+  - "queryExamples.md:security.known_security_gaps.[0] MEDIUM (Sub-route's WithPermissionsProvider wrapper does NOT block rendering)"
+  - "relationships.md:concepts.invariants.[2] (No WithPermissionsProvider wrapper at DataModellingRoutes.tsx:40)"
+  - "relationships.md:implicit_adrs.[0] MEDIUM (Read-collaborative shape — pillar members can choose to skip the permission wrapper)"
+  - "relationships.md:security.known_security_gaps.[0] LOW (ungated end-to-end)"
 security_aggregate:
   overall: LOW
   auth_modes_relevant:
@@ -162,6 +260,12 @@ security_aggregate:
       and a few specific cases. Every other 'wrapped' route renders for
       any authenticated user; the inner WithPermissions HOCs hide
       individual buttons.
+
+      Batch ZI extends this to 10 route sidecars across pillars P-01
+      Discovery (activity / directory / search), P-02 Data Modelling
+      (queryExamples / relationships), P-03 Master Data, P-04 Data
+      Quality, P-06 Glossary, P-08 Management. No batch-ZI route
+      contradicts the finding.
   owner_scoping:
     verdict: BYPASSES
     detail: |-
@@ -179,6 +283,14 @@ security_aggregate:
       consistently HIDE-not-DISABLE when permission absent (return null
       per WithPermissions.tsx:27-29). The HOC name and behaviour align —
       drift is in the Provider sibling.
+    - |-
+      **NEW batch ZI** — the QueryExampleDetailsContainer pattern of
+      LAYERING multiple WithPermissionsProvider wrappers (route-level +
+      resource-permissions inside container) IS architecturally sound
+      for the context-seeding use case — global permissions seed inner
+      button gates; resource permissions seed resource-specific gates;
+      the same HOC consumes either. The drift is purely in the
+      Provider-suffix's misleading name, NOT in the layered architecture.
   weaknesses:
     - |-
       The wrapper name promises an access gate; the behaviour is context
@@ -197,23 +309,35 @@ security_aggregate:
       Audit surface is opaque.
   cross_file_inconsistencies:
     - |-
-      The 5 contributing sidecars TRIANGULATE on the same finding —
-      WithPermissionsProvider does not block rendering — across 5
-      independent route mounts spanning P-02 (Data Modelling),
-      P-03 (Master Data), P-04 (Data Quality), P-06 (Glossary), P-08
-      (Management). No contributing sidecar disputes the claim.
+      The 10 contributing sidecars TRIANGULATE on the same finding —
+      WithPermissionsProvider does not block rendering — across 10
+      independent route mounts spanning P-01 (Discovery: activity,
+      directory, search), P-02 (Data Modelling: queryExamples,
+      relationships), P-03 (Master Data), P-04 (Data Quality), P-06
+      (Glossary), P-08 (Management). No contributing sidecar disputes
+      the claim.
   contributing_files:
     - odd-platform__ts__routes__route__dataModelling.md
     - odd-platform__ts__routes__route__masterData.md
     - odd-platform__ts__routes__route__management.md
     - odd-platform__ts__routes__route__dataQuality.md
     - odd-platform__ts__routes__route__terms.md
+    - odd-platform__ts__routes__route__activity.md
+    - odd-platform__ts__routes__route__directory.md
+    - odd-platform__ts__routes__route__search.md
+    - odd-platform__ts__routes__route__queryExamples.md
+    - odd-platform__ts__routes__route__relationships.md
   evidence:
     - "dataModelling.md:security.known_security_gaps.[0]"
     - "masterData.md:security.known_security_gaps.[0]"
     - "management.md:security.known_security_gaps.[0]"
     - "dataQuality.md:security.known_security_gaps.[0]"
     - "terms.md:security.known_security_gaps.[0]"
+    - "activity.md:security.known_security_gaps.[1]"
+    - "directory.md:security.known_security_gaps.[0]"
+    - "search.md:security.known_security_gaps.[0]"
+    - "queryExamples.md:security.known_security_gaps.[0]"
+    - "relationships.md:security.known_security_gaps.[0]"
 performance_aggregate:
   overall: HIGH
   hot_paths: []
@@ -234,17 +358,25 @@ performance_aggregate:
     - odd-platform__ts__routes__route__management.md
     - odd-platform__ts__routes__route__dataQuality.md
     - odd-platform__ts__routes__route__terms.md
+    - odd-platform__ts__routes__route__activity.md
+    - odd-platform__ts__routes__route__directory.md
+    - odd-platform__ts__routes__route__search.md
+    - odd-platform__ts__routes__route__queryExamples.md
+    - odd-platform__ts__routes__route__relationships.md
   evidence: []
-triangulation_count: 5
-cross_batch: false
+triangulation_count: 10
+cross_batch: true
 cross_batch_refs:
   - batch-ZH (5 route sidecars)
+  - batch-ZI (5 additional route sidecars — pattern extended across all primary user-facing routes)
 severity: HIGH
 severity_dim: security
 related_features:
   - F-002
   - F-032
 related_pillar_features:
+  - "P-01:F-001"
+  - "P-01:F-002"
   - "P-02:F-001"
   - "P-03:F-001"
   - "P-04:F-002"
@@ -253,6 +385,7 @@ related_pillar_features:
   - "P-08:F-002"
   - "P-08:F-003"
   - "P-08:F-004"
+  - "P-09:F-008"
 related_concepts:
   - invariant:ui-route-no-permission-guard-data-quality-vs-lookup-tables-contrast
   - invariant:partial-permission-gating-edit-button-gated-content-unconditional
@@ -274,6 +407,15 @@ notes: |-
   permissions for descendant mutation affordances per the existing
   partial-permission invariant line 22-25). No contradicting claim
   found. STRENGTHENS the existing finding by adding 5 route-mount
-  contributors and surfacing the wrapper's name-vs-behaviour drift
-  as a distinct first-class concept.
+  contributors (ZH) + 5 more (ZI) and surfacing the wrapper's
+  name-vs-behaviour drift as a distinct first-class concept across
+  10 independent route mounts.
+
+  Batch ZI adds a notable variant — the queryExamples details
+  container layers THREE WithPermissionsProvider wrappers (route +
+  resource-permissions in container + inner WithPermissions HOC).
+  All three layers exhibit the same context-only semantic at the
+  Provider; only the innermost HOC blocks. This is the SHARPEST
+  evidence of the layered context-seed pattern's intentional use
+  — the architecture IS deliberate; the NAME is the drift.
 maintainer_curated: false

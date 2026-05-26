@@ -1,0 +1,257 @@
+---
+probe_id: P-167
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__routes__route__relationships.md
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: P-02
+test_class: integration
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress questions on the `/data-modelling/relationships` sub-route — the
+  pillar member that ZE (RelationshipController) showed has ZERO authorization
+  at any layer (no @PreAuthorize, no SECURITY_RULES match for
+  `/api/relationships/**`, no service check, no owner-scoping). This probe
+  pins THREE behaviours that the static analysis predicts but cannot prove
+  from code alone, all observable through the UI route:
+
+  (1) Category D — `relationshipsPath()` is the entry point for the
+  `/data-modelling/relationships` URL. ZE's analysis says any authenticated
+  user (regardless of permissions) reaches the page AND sees every
+  relationship the platform has ever ingested. The route module has no
+  `WithPermissionsProvider` wrapper at `DataModellingRoutes.tsx:40`
+  (contrast siblings at lines 19-25, 31-37). Hypothesis: a user with
+  ZERO query-example permissions and ZERO data-entity-write permissions
+  STILL renders the Relationships page and STILL sees the full list.
+
+  (2) Category C — the `type` query parameter (driven by
+  `RelationshipsTabs.tsx:34-43`) is read at `Relationships.tsx:19` and
+  passed verbatim to the backend `GET /api/relationships?type=...`.
+  Hypothesis: ALL / ERD / GRAPH tab switches translate into different
+  backend result sets via the `RelationshipsType` enum at
+  `components.yaml:4193-4198`. The list page does NOT re-sort or filter
+  client-side beyond the type selector — every refinement is a fresh
+  backend round-trip.
+
+  (3) Cross-pillar gap — at `RelationshipsListItem.tsx:73-81`, the
+  Target column passes `dataEntityId={item.sourceDataEntity.id}` (a copy
+  of the Source column) instead of `item.targetDataEntity.id`. The
+  `targetDataEntity` field IS present on `DataEntityRelationship` per
+  the elements/Relationships/RelationshipTypes/*.tsx siblings (which DO
+  consume it correctly). The list page renders Source TWICE — the user
+  sees no Target indication. This is a UI bug, NOT a backend posture
+  question. Hypothesis: confirmed by DOM observation — the Target cell
+  link href equals the Source cell link href for every row.
+
+  If all three hypotheses confirm: (a) ZE's zero-authz posture is the
+  operator-visible reality (low severity given read-collaborative intent,
+  but worth recording); (b) ERD vs GRAPH tab is a URL-state ping (high
+  signal for the eventual P-02 feature shape); (c) the Target column
+  bug is real and route a HIGH-severity bugs_limitations_corner_cases
+  follow-up against `RelationshipsListItem.tsx`. The first two are
+  posture confirmations; the third is a defect.
+---
+arrange:
+  - kind: docker-compose-up
+    profile: odd-minimal
+    services: [odd-platform-api, odd-platform-ui, postgres]
+    note: |
+      Standard odd-minimal stack. Auth mode: LOGIN_FORM so test users
+      have explicit permission profiles. Required because we need two
+      relationships of different types ingested.
+  - kind: wait-for
+    target: http://localhost:8080/actuator/health
+    timeout_seconds: 60
+  - kind: sql
+    query: |
+      -- Seed a 'reader' Owner + Role with NO write permissions
+      -- (the question is whether Relationships renders for ANY auth'd user)
+      INSERT INTO owner (id, name) VALUES (9201, 'p167_reader') ON CONFLICT DO NOTHING;
+      INSERT INTO role (id, name) VALUES (9301, 'p167_reader_role') ON CONFLICT DO NOTHING;
+      INSERT INTO policy (id, name, policy_schema) VALUES (
+        9401, 'p167_reader_policy',
+        '{"statements":[{"resource":{"type":"DATA_ENTITY"},"permissions":["DATA_ENTITY_VIEW"]}]}'::jsonb
+      ) ON CONFLICT DO NOTHING;
+      INSERT INTO role_to_policy (role_id, policy_id) VALUES (9301, 9401) ON CONFLICT DO NOTHING;
+  - kind: sql
+    query: |
+      -- Seed two relationship-class data_entity rows (one ERD, one GRAPH)
+      -- + paired relationships table rows. data_entity_class_id = 9
+      -- (DATA_RELATIONSHIP per DataEntityClassDto.java:51).
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, hollow, exclude_from_search)
+      VALUES
+        (9501, '//probe-source/p167/erd-rel-1', 'p167_erd_rel_1', 1, false, false),
+        (9502, '//probe-source/p167/graph-rel-1', 'p167_graph_rel_1', 1, false, false)
+      ON CONFLICT DO NOTHING;
+      -- Mark both as relationship-class
+      INSERT INTO data_entity_to_class (data_entity_id, data_entity_class_id)
+      VALUES (9501, 9), (9502, 9) ON CONFLICT DO NOTHING;
+      -- Seed source/target dataset entities the relationships will reference
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, hollow, exclude_from_search)
+      VALUES
+        (9601, '//probe-source/p167/source-ds-1', 'p167_src_ds', 1, false, false),
+        (9602, '//probe-source/p167/target-ds-1', 'p167_tgt_ds', 1, false, false)
+      ON CONFLICT DO NOTHING;
+      -- Create the relationships rows pointing data_entity_id -> 9501/9502
+      INSERT INTO relationships (id, data_entity_id, source_data_entity_id, target_data_entity_id, type)
+      VALUES
+        (9701, 9501, 9601, 9602, 'ENTITY_RELATIONSHIP'),
+        (9702, 9502, 9601, 9602, 'GRAPH_RELATIONSHIP')
+      ON CONFLICT DO NOTHING;
+  - kind: register-user
+    method: LOGIN_FORM
+    username: p167-reader-user
+    password: p167-reader-pass
+    bind_to_owner_id: 9201
+    bind_to_role_id: 9301
+act:
+  # Block A — Category D: reader (no write perms) lands on /data-modelling/relationships
+  - kind: dom-probe
+    tool: playwright
+    auth_as: p167-reader-user
+    url: http://localhost:8080/data-modelling/relationships
+    wait_for: networkidle
+    capture_as: reader_all_tab
+    capture:
+      - selector: 'main h1'
+        property: textContent
+        capture_as: reader_h1
+      - selector: "[id='relationships-list'] > div, [data-testid='RelationshipsListItem']"
+        mode: count
+        capture_as: reader_all_row_count
+      - selector: "input#relationships-search"
+        mode: exists
+        capture_as: reader_search_input_present
+      - selector: "button:has-text('All'), [role='tab']:has-text('All')"
+        mode: exists
+        capture_as: reader_all_tab_present
+      - selector: "button:has-text('ERD'), [role='tab']:has-text('ERD')"
+        mode: exists
+        capture_as: reader_erd_tab_present
+      - selector: "button:has-text('Graph'), [role='tab']:has-text('Graph')"
+        mode: exists
+        capture_as: reader_graph_tab_present
+      - kind: url-after-navigate
+        capture_as: reader_final_url
+  # Block B — Category C: click ERD tab; assert URL changes to ?type=ERD + backend call
+  - kind: dom-probe
+    tool: playwright
+    auth_as: p167-reader-user
+    url: http://localhost:8080/data-modelling/relationships
+    actions:
+      - click: "[role='tab']:has-text('ERD'), button:has-text('ERD')"
+      - wait_for: networkidle
+    capture_as: reader_erd_tab
+    capture:
+      - kind: url-after-navigate
+        capture_as: reader_erd_url
+      - selector: "[id='relationships-list'] > div, [data-testid='RelationshipsListItem']"
+        mode: count
+        capture_as: reader_erd_row_count
+      - kind: backend-http-trace
+        path_pattern: /api/relationships
+        capture_as: reader_erd_backend_calls
+  # Block C — Category C: click Graph tab; assert URL -> ?type=GRAPH
+  - kind: dom-probe
+    tool: playwright
+    auth_as: p167-reader-user
+    url: http://localhost:8080/data-modelling/relationships?type=ERD
+    actions:
+      - click: "[role='tab']:has-text('Graph'), button:has-text('Graph')"
+      - wait_for: networkidle
+    capture_as: reader_graph_tab
+    capture:
+      - kind: url-after-navigate
+        capture_as: reader_graph_url
+      - selector: "[id='relationships-list'] > div, [data-testid='RelationshipsListItem']"
+        mode: count
+        capture_as: reader_graph_row_count
+  # Block D — RelationshipsListItem Target-column bug: assert Source and Target
+  # cells link to the SAME dataEntityId (the bug) for at least one row
+  - kind: dom-probe
+    tool: playwright
+    auth_as: p167-reader-user
+    url: http://localhost:8080/data-modelling/relationships?type=ALL
+    wait_for: networkidle
+    capture_as: list_item_target_cell
+    capture:
+      - selector: "[id='relationships-list'] > div:first-child a, [data-testid='RelationshipsListItem']:first-child a"
+        mode: list
+        property: href
+        capture_as: first_row_link_hrefs
+observe:
+  - description: "Block A - reader sees Relationships page with full row set"
+    captures: [reader_h1, reader_all_row_count, reader_search_input_present,
+               reader_all_tab_present, reader_erd_tab_present, reader_graph_tab_present,
+               reader_final_url]
+  - description: "Block B - ERD tab translates to ?type=ERD and a backend call with type=ERD"
+    captures: [reader_erd_url, reader_erd_row_count, reader_erd_backend_calls]
+  - description: "Block C - Graph tab translates to ?type=GRAPH"
+    captures: [reader_graph_url, reader_graph_row_count]
+  - description: "Block D - RelationshipsListItem Target column href bug"
+    captures: [first_row_link_hrefs]
+assert:
+  # Block A — zero-authz posture: reader sees Relationships
+  - "reader_h1 == 'Relationships'"
+  - "reader_final_url.endsWith('/data-modelling/relationships')  # no 403/redirect"
+  - "reader_all_row_count >= 2  # both seeded relationships visible to reader"
+  - "reader_search_input_present == true"
+  - "reader_all_tab_present == true and reader_erd_tab_present == true and reader_graph_tab_present == true"
+  # Block B — ERD tab is URL-state + backend round-trip
+  - "reader_erd_url.includes('type=ERD')"
+  - "reader_erd_row_count >= 1  # at least the ERD-typed seeded row"
+  - "any(call.url.includes('type=ERD') for call in reader_erd_backend_calls)"
+  # Block C — Graph tab is URL-state
+  - "reader_graph_url.includes('type=GRAPH')"
+  - "reader_graph_row_count >= 1  # at least the GRAPH-typed seeded row"
+  # Block D — Target column bug: Source href and Target href are identical
+  # (the first row has 3 links — Name, Source, Target — and they all point
+  # to the same data_entity. Per the static read of RelationshipsListItem.tsx,
+  # the Source and Target cells both render
+  # `RelationshipDatasetInfo dataEntityId={item.sourceDataEntity.id}`.)
+  - "len(first_row_link_hrefs) >= 3"
+  - "first_row_link_hrefs[1] == first_row_link_hrefs[2]  # Source.href == Target.href (BUG)"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM relationships WHERE id IN (9701, 9702);
+      DELETE FROM data_entity_to_class WHERE data_entity_id IN (9501, 9502);
+      DELETE FROM data_entity WHERE id IN (9501, 9502, 9601, 9602);
+      DELETE FROM role_to_policy WHERE role_id = 9301;
+      DELETE FROM policy WHERE id = 9401;
+      DELETE FROM role WHERE id = 9301;
+      DELETE FROM owner WHERE id = 9201;
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__routes__route__relationships
+    - odd-platform__ts__routes__route__dataModelling
+    - odd-platform__java__RelationshipController__controller-class__RelationshipController
+  retrospectives:
+    - LSN-019
+    - LSN-020
+realism_caveats: |
+  Three independent hypotheses; the cleanup of any one does not depend on
+  the others. The probe fails open: if the reader cannot reach the page,
+  the static analysis is falsified at Block A and the methodology should
+  re-read SECURITY_RULES + DataModellingRoutes.tsx end-to-end. If Blocks
+  B/C fail (URL doesn't change, or rows don't filter), the
+  `RelationshipsTabs.tsx`'s `setSearchParams` call is broken — that's a
+  UI defect that would surface to any operator using the type filter.
+
+  Block D's assert is the cleanest of the three because it's purely a
+  DOM observation — no auth assumptions, no backend behaviour expected.
+  The bug is **statically visible** in `RelationshipsListItem.tsx:64-81`
+  (the Source and Target Cell components both render
+  `RelationshipDatasetInfo dataEntityId={item.sourceDataEntity.id}
+  name={item.sourceDataEntity.internalName || item.sourceDataEntity.externalName || ''}
+  oddrn={item.sourceDataEntity.oddrn || ''}`) — but a runtime confirmation
+  pins the operator-visible failure mode. Once the assertion passes, the
+  follow-up is a one-line patch + a regression test.
+
+  Local-only stack — Playwright headless + local docker-compose; no
+  remote infrastructure required. backend-http-trace is captured via
+  Playwright's request interceptor (no external tracer dependency).

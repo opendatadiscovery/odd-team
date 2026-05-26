@@ -1,0 +1,204 @@
+name: |-
+  Relationships list — Target column renders Source data (copy-paste UI bug, doc-vs-code drift)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-02
+description: |-
+  **NEW HIGH-severity UI BUG, batch ZI (2026-05-26)** — surfaced via the
+  relationships route sidecar's primary read of
+  `components/DataModelling/Relationships/RelationshipsListItem.tsx:73-81`.
+
+  The Relationships list page (`/data-modelling/relationships`) renders
+  a table with five columns: Name, Type, Namespace+Datasource, Source,
+  Target — per the live doc page at
+  `https://docs.opendatadiscovery.org/features/data-modelling/relationships`
+  (WebFetched 2026-05-26, status 200) which verbatim names
+  "Source entity, Target entity" as distinct columns.
+
+  The implementation in `RelationshipsListItem.tsx:64-72` renders the
+  Source cell correctly:
+
+      <RelationshipDatasetInfo
+        dataEntityId={item.sourceDataEntity.id}
+        name={item.sourceDataEntity.internalName ||
+              item.sourceDataEntity.externalName || ''}
+        oddrn={item.sourceDataEntity.oddrn || ''}
+      />
+
+  Lines 73-81 render the Target cell with the SAME fields (literal copy-
+  paste of the Source cell):
+
+      <RelationshipDatasetInfo
+        dataEntityId={item.sourceDataEntity.id}      // BUG: should be item.targetDataEntity.id
+        name={item.sourceDataEntity.internalName ||  // BUG: should be item.targetDataEntity.*
+              item.sourceDataEntity.externalName || ''}
+        oddrn={item.sourceDataEntity.oddrn || ''}    // BUG: should be item.targetDataEntity.oddrn
+      />
+
+  Result — every row displays the Source dataset in BOTH the Source AND
+  Target column. The user has no way to see what each relationship
+  POINTS TO from the list page.
+
+  **The bug is in the row renderer ONLY** — `item.targetDataEntity` IS
+  present on the `DataEntityRelationship` interface (verified by reading
+  the OpenAPI-generated type) and IS consumed correctly by sibling
+  components:
+    - `components/shared/elements/Relationships/RelationshipTypes/EntityRelationship.tsx:33-35`
+      uses `targetDataEntity` to render ERD details.
+    - `components/shared/elements/Relationships/RelationshipTypes/GraphRelationship.tsx:32-34`
+      uses `targetDataEntity` to render Graph details.
+
+  Backend correctness is unaffected — the
+  `RelationshipController.getRelationships` response payload populates
+  `targetDataEntity` correctly per
+  `ReactiveDataEntityRelationshipRepositoryImpl.java:57-131`. The
+  rendering layer simply ignores the target field at the list-page
+  layer (the detail pages render it).
+
+  **TYPE-SYSTEM IS NOT A SAFETY NET** — `item.sourceDataEntity.id` is
+  type-correct (it IS a `DataEntityRef['id']`); the field name is what
+  is wrong. TypeScript catches missing fields, not copy-paste bugs
+  that ARE structurally valid in the wrong column. Only a Playwright
+  / RTL integration test asserting `source.href !== target.href` for
+  at least one seeded row would catch this — and no such test exists
+  (Grep across `odd-platform-ui/src/` for `RelationshipsListItem` in
+  `*.test.*` / `*.spec.*` returns zero matches at commit 4ec2b20).
+
+  **Probe P-167 Block D** pins the runtime observation (the
+  relationships route sidecar emits this).
+
+  **Routing context**: the bug is operator-visible on the
+  `/data-modelling/relationships` URL which is reachable by every
+  authenticated user (per
+  `ui-route-no-permission-guard-data-quality-vs-lookup-tables-contrast`)
+  AND by every caller able to reach the application port under
+  `auth.type=DISABLED` (per the un-gated RelationshipController
+  posture — see
+  `relationships-no-exclude-from-search-asymmetry-vs-dataentities`).
+
+  **Fix surface**:
+    1. Single 3-line correction at `RelationshipsListItem.tsx:73-81`:
+       replace `item.sourceDataEntity` with `item.targetDataEntity` in
+       lines 75, 77-79, 80.
+    2. ADD an integration test under
+       `components/DataModelling/Relationships/__tests__/` asserting
+       `Source !== Target` on a seeded row.
+
+  vocabulary_status: codebase-anchored. The live doc at
+  `/features/data-modelling/relationships` (WebFetched 2026-05-26
+  status 200) IS correct; the code IS wrong. No documentation
+  refresh required after the code fix.
+vocabulary_status: codebase-anchored
+axes_present:
+  - react_components
+  - ui_routes
+nodes:
+  - odd-platform ts routes route:relationships
+contributors:
+  - |-
+    relationships route batch ZI:
+      understanding[Statically-visible UI bug — RelationshipsListItem.tsx:73-81 renders the Target column with dataEntityId={item.sourceDataEntity.id} instead of item.targetDataEntity.id; the Target column displays Source data for every row];
+      bugs_limitations_corner_cases[HIGH-severity UI bug — Target column displays Source data];
+      docs_link_semantic.doc_drift_findings[Target column doc-vs-code drift — doc is right; code is wrong];
+      stress_findings.name_behavior_pairs[Relationships route-name + pillar-member-name — MINOR drift: the Target column is bugged; the rest matches the doc];
+      tests_coverage_semantic.uncovered_behaviours[HIGH integration test — Target column displays Source data]
+evidence:
+  - |-
+    relationships.md:bugs_limitations_corner_cases.[0] (the primary statement —
+    HIGH severity copy-paste bug at RelationshipsListItem.tsx:73-81)
+  - |-
+    relationships.md:docs_link_semantic.doc_drift_findings.[0] (the doc-vs-code
+    contrast — live doc correctly names 'Target entity' column; code renders
+    Source data)
+  - |-
+    relationships.md:stress_findings.name_behavior_pairs.[Relationships]
+    (MINOR drift — the Target column is bugged; the rest matches the doc)
+  - |-
+    relationships.md:tests_coverage_semantic.uncovered_behaviours.[Target
+    column on RelationshipsListItem.tsx:73-81 renders Source data, not Target
+    data — HIGH-criticality integration]
+  - |-
+    relationships.md:stress_findings.probes_emitted.P-167 Block D
+    (lineage/odd-platform/probes/P-167.yaml — pins the runtime observation
+    Source.href === Target.href for every row)
+security_aggregate:
+  overall: HIGH
+  auth_modes_relevant: []
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: N/A
+    detail: |-
+      Not a security finding — UX correctness defect at the rendering
+      layer. The backend payload is correct; the row renderer ignores
+      the target field at the list-page layer.
+  owner_scoping:
+    verdict: N/A
+    detail: ''
+  strengths:
+    - |-
+      Backend payload IS correct — `targetDataEntity` is populated by
+      `ReactiveDataEntityRelationshipRepositoryImpl.java:57-131`.
+      Other components (EntityRelationship.tsx / GraphRelationship.tsx
+      detail renderers) use the field correctly. The defect is
+      isolated to one row-rendering site.
+  weaknesses:
+    - |-
+      No test coverage catches the bug — zero `RelationshipsListItem`
+      tests in `*.test.*` / `*.spec.*` at commit 4ec2b20. A typo /
+      copy-paste error in row rendering ships silently.
+    - |-
+      The type system passed compilation — `item.sourceDataEntity` IS
+      a valid `DataEntityRef` for the cell; TypeScript catches missing
+      fields, not wrong-field-in-the-right-shape errors.
+  cross_file_inconsistencies: []
+  contributing_files:
+    - odd-platform__ts__routes__route__relationships.md
+  evidence:
+    - |-
+      relationships.md:bugs_limitations_corner_cases.[0] HIGH +
+      docs_link_semantic.doc_drift_findings.[0]
+performance_aggregate:
+  overall: HIGH
+  hot_paths: []
+  throughput_shape:
+    verdict: N/A
+    detail: |-
+      Not a performance concept — UX correctness defect.
+  scaling_shape:
+    verdict: N/A
+    detail: ''
+  strengths: []
+  weaknesses: []
+  cross_file_inconsistencies: []
+  contributing_files:
+    - odd-platform__ts__routes__route__relationships.md
+  evidence: []
+triangulation_count: 1
+cross_batch: false
+cross_batch_refs:
+  - batch-ZI (relationships route sidecar — primary source)
+severity: HIGH
+severity_dim: ux
+related_features: []
+related_pillar_features:
+  - P-02
+related_concepts:
+  - entitie:data-entity-relationship
+  - operation:get-data-entity-relationships-list
+  - invariant:ui-route-no-permission-guard-data-quality-vs-lookup-tables-contrast
+  - invariant:relationships-no-exclude-from-search-asymmetry-vs-dataentities
+notes: |-
+  Coherence (Rule 6): grepped `feature-flows/`, `concepts/`, and
+  retrospectives for "Target column" / "RelationshipsListItem" /
+  "sourceDataEntity" — no existing concept describes this bug. Pure
+  batch-ZI net-new. STRENGTHENS nothing; CONTRADICTS nothing.
+
+  This is the ONLY net-new operator-visible-UI-bug surfaced in batch
+  ZI. The other findings in the batch are auth posture, naming drift,
+  and structural fragility. This one is a 3-line fix that materially
+  improves the operator's ability to use the Relationships list page.
+
+  Surface for next maintainer pass: candidate for the smallest
+  highest-leverage single-line fix in the platform UI right now.
+maintainer_curated: false

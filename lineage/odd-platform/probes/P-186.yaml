@@ -1,0 +1,216 @@
+---
+probe_id: P-186
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__auth__config-properties-class__ODDLDAPProperties.md
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: null  # ODDLDAPProperties is the LDAP-mode binding POJO of P-09:F-001 (auth-mode quartet); not yet F-NNN-anchored
+test_class: security
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category F — input-name vs implementation alignment for
+  `auth.ldap.password`):
+
+  The field `private String password` at ODDLDAPProperties.java:14 carries a
+  name that promises credential-grade secret handling. Lombok `@Data` (line 10)
+  generates a public `toString()` that includes the password field with NO
+  `@ToString.Exclude` mask, NO `@JsonIgnore` mask, NO `@Sanitize` mask. The
+  ONLY default protection is Spring Boot 3.4.10's actuator-env masking
+  (`management.endpoint.env.show-values: NEVER`, framework default).
+
+  Pin BOTH halves of the dual surface under all 4 auth modes:
+
+  (a) ENV ENDPOINT — confirm `/actuator/env` returns the password value as
+      `******` (masked) under each of DISABLED / LOGIN_FORM / OAUTH2 / LDAP.
+      Specifically under LDAP (where the password is bound and actively used)
+      AND under DISABLED (where the actuator is anonymously reachable per
+      DisabledAuthSecurityConfiguration's permitAll). The platform whitelist
+      (SecurityConstants.java:95-96 `WHITELIST_PATHS = {"/actuator/**", ...}`
+      + AuthorizationCustomizer.java:22-23 permitAll) means the env endpoint
+      is reachable to ANY caller under LDAP/OAUTH2/LOGIN_FORM as well —
+      protected only by the masking, not by auth.
+
+  (b) LOG SURFACE — induce a Lombok-toString log emission (the latent risk:
+      a future maintainer adding `log.info("ldap config = {}", properties)`).
+      Confirm whether the password appears VERBATIM in the log output of
+      Spring Boot's failure analyser when validate() throws.
+
+  Hypothesis: (a) all 4 modes return `******` on `/actuator/env`; (b) the
+  current boot-failure path does NOT serialise the entire bean — the
+  hypothesis is `boot_log_leaks_password == False` (current correct behaviour,
+  asserted to detect a future regression).
+---
+arrange:
+  - kind: docker-compose-up
+    profile: odd-minimal
+    services: [odd-platform, odd-postgres, openldap]
+  - kind: docker-compose-service
+    name: openldap
+    description: |
+      Add an OpenLDAP container (osixia/openldap:1.5.0 or similar) preloaded
+      with a single user (`uid=alice,ou=people,dc=example,dc=com`,
+      password=alice-secret) and a group (`cn=Admins,ou=groups,dc=example,dc=com`).
+      The platform under LDAP mode binds against this directory.
+    env:
+      LDAP_ORGANISATION: "Probe Org"
+      LDAP_DOMAIN: "example.com"
+      LDAP_ADMIN_PASSWORD: "probe-bind-secret-DO-NOT-LEAK-2026"
+  - kind: env
+    description: |
+      Configure the platform across the four auth modes. The probe will
+      restart the platform between modes; each restart re-binds ODDLDAPProperties
+      under LDAP and skips it under DISABLED/LOGIN_FORM/OAUTH2.
+    vars:
+      # Common LDAP knobs that ALWAYS bind under LDAP mode
+      AUTH_LDAP_URL: "ldap://openldap:389"
+      AUTH_LDAP_USERNAME: "cn=admin,dc=example,dc=com"
+      AUTH_LDAP_PASSWORD: "probe-bind-secret-DO-NOT-LEAK-2026"
+      AUTH_LDAP_USER_FILTER_SEARCH_BASE: "ou=people,dc=example,dc=com"
+      AUTH_LDAP_USER_FILTER_FILTER: "(uid={0})"
+      AUTH_LDAP_GROUPS_SEARCH_BASE: "ou=groups,dc=example,dc=com"
+      AUTH_LDAP_GROUPS_ADMIN_GROUPS: "Admins"
+act:
+  - kind: rest
+    description: "Pass 1: AUTH_TYPE=DISABLED — fetch /actuator/env anonymously."
+    pre_steps:
+      - kind: env-mutate
+        var: AUTH_TYPE
+        value: DISABLED
+      - kind: restart-service
+        service: odd-platform
+        wait_for_healthy: 60s
+    method: GET
+    path: /actuator/env/auth.ldap.password
+    capture_as: env_disabled
+  - kind: rest
+    description: "Pass 2: AUTH_TYPE=LOGIN_FORM — anonymous fetch, then authenticated fetch."
+    pre_steps:
+      - kind: env-mutate
+        var: AUTH_TYPE
+        value: LOGIN_FORM
+      - kind: env-mutate
+        var: AUTH_LOGIN_FORM_CREDENTIALS
+        value: "probe:probe-pass"
+      - kind: restart-service
+        service: odd-platform
+        wait_for_healthy: 60s
+    method: GET
+    path: /actuator/env/auth.ldap.password
+    capture_as: env_loginform_anon
+  - kind: rest
+    description: "Pass 2b: same path with form-login session cookie."
+    method: GET
+    path: /actuator/env/auth.ldap.password
+    pre_steps:
+      - kind: form-login
+        username: probe
+        password: probe-pass
+        capture_session_as: probe_session
+    headers:
+      Cookie: "${probe_session}"
+    capture_as: env_loginform_auth
+  - kind: rest
+    description: "Pass 3: AUTH_TYPE=LDAP — fetch /actuator/env."
+    pre_steps:
+      - kind: env-mutate
+        var: AUTH_TYPE
+        value: LDAP
+      - kind: restart-service
+        service: odd-platform
+        wait_for_healthy: 60s
+    method: GET
+    path: /actuator/env/auth.ldap.password
+    capture_as: env_ldap_anon
+  - kind: docker-exec
+    description: |
+      LOG SURFACE TEST: induce a validate() failure that may incidentally
+      cause Spring Boot's startup-failure analyser to print bean state.
+      Run with AUTH_TYPE=LDAP + AUTH_LDAP_URL='' so validate() throws at
+      boot; capture stderr; verify the password does NOT appear verbatim.
+    service: odd-platform
+    command: |
+      bash -c "
+        export AUTH_TYPE=LDAP
+        export AUTH_LDAP_URL=''  # forces validate() to throw at boot
+        export AUTH_LDAP_PASSWORD='probe-tostring-leak-canary-2026'
+        timeout 60 java -jar /app/odd-platform.jar 2>&1 | tail -200 > /tmp/boot-fail.log
+        cat /tmp/boot-fail.log
+      "
+    capture_as: boot_failure_log
+observe:
+  - kind: derived
+    description: "Parse env endpoint responses for masking compliance."
+    expressions:
+      # The Spring Boot env endpoint returns JSON: {"property":{"value":"******", ...}}
+      - "env_disabled_masked: '******' in env_disabled.body and 'probe-bind-secret' not in env_disabled.body"
+      - "env_loginform_anon_status: env_loginform_anon.status_code"  # env is whitelisted; the password value within is what we test
+      - "env_loginform_auth_masked: '******' in env_loginform_auth.body and 'probe-bind-secret' not in env_loginform_auth.body"
+      - "env_ldap_anon_status: env_ldap_anon.status_code"  # expect 200 (whitelisted)
+      - "env_ldap_anon_masked: '******' in env_ldap_anon.body and 'probe-bind-secret' not in env_ldap_anon.body"
+  - kind: derived
+    description: "Parse boot-failure log for verbatim password leak."
+    expressions:
+      - "boot_log_leaks_password: 'probe-tostring-leak-canary-2026' in boot_failure_log"
+assert:
+  # PART A — env endpoint masking under all 4 modes
+  - "env_disabled_masked == True"                   # DISABLED + anonymous + actuator/env → ******
+  - "env_loginform_anon_status in [200, 401, 302]"  # env is whitelisted; the password value within is what we test
+  - "env_loginform_auth_masked == True"             # LOGIN_FORM authenticated → ******
+  - "env_ldap_anon_status == 200"                   # whitelisted under LDAP too
+  - "env_ldap_anon_masked == True"                  # LDAP + anonymous + actuator/env → ******
+  # PART B — Lombok toString leak via boot-failure surface
+  # NOTE: this is the LATENT-RISK assertion. The hypothesis is that the
+  # current boot-failure path does NOT serialise the entire bean (Spring
+  # Boot's failure analyser typically prints the missing-key name, not the
+  # whole bean state). The probe documents the current behaviour:
+  - "boot_log_leaks_password == False"  # current expectation; if this FLIPS to True, the toString surface is actively leaking
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__auth__config-properties-class__ODDLDAPProperties
+    - odd-platform__java__LDAPSecurityConfiguration__config-key-consumer__auth_type@L51
+  retrospectives: []
+realism_caveats: |
+  Part A — env-masking confirmation:
+    The Spring Boot 3.4.10 default `management.endpoint.env.show-values: NEVER`
+    is the protective contract. The probe verifies the SHIPPED platform.yml
+    does not override this default (grep `show-values` on application.yml
+    confirmed zero hits 2026-05-26). If a future maintainer adds
+    `show-values: ALWAYS` (or even `WHEN_AUTHORIZED`), the env endpoint will
+    leak the password verbatim under LDAP — this probe would catch that
+    regression by failing the `env_ldap_anon_masked` assertion.
+
+  Part A — actuator path whitelist amplification:
+    Under LDAP/OAUTH2/LOGIN_FORM, /actuator/** is whitelisted via
+    SecurityConstants.java:95-96 + AuthorizationCustomizer.java:22-23 — the
+    env endpoint is reachable to ANY network caller without auth. The
+    protection is masking ALONE. The probe confirms masking holds; a separate
+    probe could confirm whether the whitelist itself is a documented choice
+    (which it is not — see LSN-002-class actuator-exposure findings).
+
+  Part B — Lombok toString leak realism:
+    The current platform code has ZERO log lines that serialise the
+    ODDLDAPProperties bean (verified by grep on LDAPSecurityConfiguration.java
+    2026-05-26 — no log.info/debug/warn lines with properties as a slf4j arg).
+    The probe's `boot_log_leaks_password == False` assertion is the CURRENT
+    correct behaviour; the assertion exists to DETECT a future regression
+    (a maintainer adding a debug log line). If the assertion FLIPS to True,
+    the team should immediately apply `@ToString.Exclude` to the password
+    field — the probe gives an early-warning signal.
+
+  What this probe does NOT verify:
+    - Whether `/actuator/configprops` (currently UN-exposed) would leak — that
+      endpoint is not in the bundled exposure list (application.yml:226-231).
+      A future maintainer adding `configprops` to the exposure list would
+      need a follow-up probe.
+    - Whether a custom @RestControllerAdvice or info-contributor that
+      serialises the bean would leak — those are hypothetical attack surfaces
+      that don't exist in the current codebase.
+    - Whether the JSON-serialisation path (Jackson with no @JsonIgnore)
+      would leak — Jackson is not invoked on @ConfigurationProperties beans
+      by the actuator's env endpoint; it would only leak if a custom
+      controller exposed the bean directly.

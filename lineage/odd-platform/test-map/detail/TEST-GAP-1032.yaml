@@ -1,0 +1,40 @@
+gap_id: TEST-GAP-1032
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java org.opendatadiscovery.oddplatform.config.properties config-properties-class:AdditionalLinkProperties"
+  - "odd-platform java LinksController controller-class:LinksController"
+pillars_affected: [P-09]
+surfaced_by:
+  - "AdditionalLinkProperties.md:tests_coverage_semantic.uncovered_behaviours.[2] (Record handles partial entries — title set, url unset — MEDIUM)"
+  - "AdditionalLinkProperties.md:bugs_limitations_corner_cases.[0] (No validation on either field — title and url can be null, empty string, or any malformed string — MEDIUM)"
+behaviour: |-
+  **`AdditionalLinkProperties.java:8` declares `record Link(String title, String url)` with NO `@NotBlank`, NO `@NotNull`, NO `@URL`, NO `@Pattern`, NO `@Size` on either field.** Spring Boot's relaxed-binder accepts entries with one or both fields missing/null/empty; the operator's misconfiguration produces a silently-broken UI menu item rather than a fail-fast at boot.
+
+  Concrete failure modes:
+  1. `odd.links[0].title: "Documentation"` + `odd.links[0].url:` (unset) → binds `Link("Documentation", null)`. UI renders `<a href={null}>Documentation</a>` which most browsers interpret as a relative-empty href (same-page reload on click) or a literal `href="null"` (404).
+  2. `odd.links[0].title:` (empty) + `odd.links[0].url: "https://example.com"` → binds `Link("", "https://example.com")`. UI renders a clickable but visually-empty `<a>` element (zero text width — operationally invisible, but still reachable via Tab key).
+  3. `odd.links[0].title: null` + `odd.links[0].url: null` → binds `Link(null, null)`. The entry is in the list but renders nothing.
+
+  The `LinksController.java:27` returns `Flux.empty()` when the whole list is null (via `CollectionUtils.isEmpty` guard), but it does NOT filter partially-populated entries; the broken `<a>` reaches the UI.
+
+  Test gap shape: integration test driving `@ConfigurationProperties` binding with each partial-shape combination and asserting the bound state; pair with a UI-tier render test (under the AppInfoMenu sidecar surface) asserting the broken-link UX. The HIGHEST-LEVERAGE test would force a `@NotBlank` + `@Validated` refactor at the AdditionalLinkProperties layer, eliminating the broken-UI class of misconfiguration at boot.
+test_class: integration
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/config/AdditionalLinkPropertiesPartialEntryBindingTest.java"
+  name: "linkWithTitleButNullUrl_bindsSuccessfully_demonstratesBrokenUiContract"
+evidence:
+  - 'AdditionalLinkProperties.md says (uncovered_behaviours.[2] verbatim): ''Record handles partial entries gracefully — odd.links[0].title set but odd.links[0].url unset ... No @NotBlank on either field; current behaviour is to bind url=null. Operator''s mistake produces a silently-broken UI menu item (clickable label rendering as <a href=null>).'''
+  - 'AdditionalLinkProperties.md says (bugs_limitations_corner_cases.[0] verbatim): ''Record has NO validation annotations on either field — title and url can be null, empty string, or any malformed string; binder accepts the entry silently. Operator misconfiguration produces a broken UI entry (button with empty label or null href) instead of a fail-fast at boot.'''
+  - 'Verified: AdditionalLinkProperties.java:8 — `record Link(String title, String url)` with no validation annotations'
+cross_references:
+  - "TEST-GAP-954 (odd.links URL-scheme passthrough + reverse-tabnabbing — sister AdditionalLink quality concern)"
+  - "AppInfoMenu sidecar (UI render tier — the broken-link consequence)"
+  - "REFACTOR-NNN candidate: add `@NotBlank String title` + `@NotBlank @URL String url` + `@Validated` on AdditionalLinkProperties; reject partial entries at boot"
+related_features: [F-007]
+related_pillar_features: ["P-09:F-007"]
+proposed_action: |-
+  `@SpringBootTest(properties = {"odd.links[0].title=Docs"})` (note url omitted). Assert (a) bean binding succeeds (current silent behaviour), (b) `properties.links().get(0).url() == null`. Pair with two sibling tests: title-empty/url-set and both-null. Pin the silent-partial-acceptance contract. When the maintainer ships `@NotBlank` + `@Validated`, the test fails at context startup with `ConstraintViolationException`; the maintainer re-authors all three assertions to pin the new fail-fast posture.
+batch: 2026-05-26-ZK
+feature_id: null

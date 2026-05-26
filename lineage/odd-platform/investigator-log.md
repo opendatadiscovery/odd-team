@@ -2633,3 +2633,35 @@ First batch under the slimmed Phase 3 (commit b8c5dd1): no `rebuild_indexes.py a
 ### Follow-ups
 - 16 unfixable YAML quarantines unchanged (5 concept + 2 test-map persistent quarantines + 8-9 new from the multi-thousand churn — investigation deferred).
 - Coherence-sweep 120250 generic regex candidates (baseline grows monotonically).
+
+---
+
+## Batch ZK — 2026-05-26 (Config-properties)
+
+**Sidecars added** (5/5): SchedulingConfiguration + ODDLDAPProperties + GenAIProperties + HousekeepingTTLProperties + AdditionalLinkProperties. **Coverage 51.9% direct / 96.7% effective.** 43 features.
+
+### Headline findings
+1. **ODDLDAPProperties** — password field unmasked (Lombok @Data toString leaks); no LDAPS enforcement; adminGroups substring-collision = admin escalation class; empty adminGroups means no admin under LDAP mode. Probes P-184/185/186.
+2. **GenAIProperties** — `request_timeout` YAML key actually means RESPONSE timeout (DRIFT_NAME_VS_BEHAVIOR); primitive-int default 0 ships disabled-but-broken-when-enabled (LSN-002 family). P-178/179/180.
+3. **AdditionalLinkProperties** — zero JSR-303 validation; `javascript:`/`data:`/`file:`/`vbscript:` URLs accepted by binding; defence pushed entirely to React + browser. Pairs with ZJ AppInfoMenu 5 link-sites missing rel=noopener. P-177.
+4. **HousekeepingTTLProperties** — governs ONLY 3 non-partitioned tables (ALERT/SEARCH_FACETS/DATA_ENTITY); activity/message partition-empty-drop is sibling subsystem ignoring this POJO. Java-vs-YAML default mismatch (LSN-001-shape). AlertHousekeepingJob jOOQ operator-precedence bypass + absent @Min(0). P-181.
+5. **SchedulingConfiguration** — single-thread ThreadPoolTaskScheduler default; all 4 `@Scheduled` jobs share one executor thread; cron-misfire policy unverified; session-housekeeping has `@Scheduled` without `@SchedulerLock`. P-182/183.
+
+### Phase 2 deltas (4 of 5 reducers succeeded — doc-gap-finder socket-failed early)
+- concept-merger: +4 new + 9 extended; 0 supersedes. **1 CONTRADICTS surfaced** (Rule 6) — ODDLDAPProperties substring-collision vs auth-mode-quartet full-string-equality on `OperationUtils.containsIgnoreCase`; resolution pending primary-source pin; logged to `state/coherence-conflicts-batch-ZK.md`.
+- adr-archaeologist: **+4 new ADRs (-240..-243)** + 2 strengthened (ADR-CANDIDATE-103 + -213); **+7 new REFACTORs (REFACTOR-698..704)** + 2 strengthened (REFACTOR-630 + -631). REFACTOR-698 single-thread executor = HIGH.
+- doc-gap-finder: **FAILED** (socket error mid-run; "API Error: The socket connection was closed unexpectedly"). No detail files written. Continue per SKILL.
+- test-coverage-mapper: +7 new TEST-GAPs (1026-1032); the 4 user-flagged CRITICAL items (LDAP triad / GenAI LSN-002 / AdditionalLink URL passthrough / Housekeeping precedence) are ALREADY at CRITICAL in TEST-GAP-159/161/196/209/211/954 — strengthened via re-anchor at commit 4ec2b20.
+- feature-flow-builder: 5 features EXTENDED (F-010 / F-006 / F-011 / F-039 / F-035) at config-tier — 18 drift facets surfaced; 2 entirely-new drift facets (GenAI no-auth-field, AdditionalLink no-validation full-form). No new features.
+
+### Cumulative state after ZK
+- Direct: 203 → **205/395 (51.9%)**
+- Effective: 383 → **382/395 (96.7%)** (-1; chain-edge churn in feature-flow back-links)
+- Features: 43 (unchanged — ZK is config-tier closure for existing features)
+- CRITICAL test-gaps: 168 (no NEW critical this batch — re-anchor strengthens to existing CRITICAL entries)
+- Total test-gaps: 1022 → **1029**
+
+### Follow-ups
+- **doc-gap-finder failure (socket error)** — batch ZK doc-gap deltas NOT captured. Re-run as a separate task or fold into next batch ZL Phase 2 prompt. Headlines to recover: LDAP doc gaps (password masking + LDAPS + adminGroups substring), GenAI request_timeout vs responseTimeout drift, AdditionalLink URL validation absence, HousekeepingTTL partition-vs-non-partition disambiguation, Scheduling single-thread default.
+- **1 CONTRADICTS surfaced** by concept-merger (Rule 6) — logged in state/coherence-conflicts-batch-ZK.md; ODDLDAPProperties substring-collision claim vs full-string-equality (need maintainer triage).
+- 16 unfixable YAML quarantines unchanged.

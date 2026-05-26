@@ -63,6 +63,63 @@ description: |-
   explicit IllegalArgumentException paths. The discipline is local to this one bean
   method; the asymmetry within the same file (mailSender validates, downstream-depth
   doesn't) is itself the LSN-002-class pattern made explicit.
+
+  **BATCH ZK STRENGTHENING (2026-05-26)** — three NEW config-properties-class
+  layer instances surface in batch ZK, each at the config-properties-POJO
+  type (a fourth axis distinct from the @Value-consumer + config-class +
+  SDK-builder instances enumerated in prior batches):
+
+    1. **HousekeepingTTLProperties.java:9-11** — three `private int` fields
+       (`resolvedAlertsDays`, `searchFacetsDays`, `dataEntityDeleteDays`)
+       with NO `= 30` initializer. The `30`-day safety floor lives ONLY in
+       the shipped `application.yml:168-170`. An operator overriding
+       `application.yml` without re-supplying the `housekeeping.ttl.*`
+       block (e.g. via `--spring.config.location=` mounting a custom
+       config, Spring Cloud Config, Kubernetes ConfigMap mount) binds
+       `0` for all three fields and the next 15-minute housekeeping cycle
+       hard-deletes ALL resolved alerts + ALL search-facets + ALL
+       soft-deleted data-entities cascading through ~25 child tables.
+       This is the CANONICAL LSN-001-shape silent-data-loss compounded
+       with LSN-002 primitive-default. Fix shape: `private int
+       resolvedAlertsDays = 30;` etc., or use Spring `@DefaultValue` on
+       the field, or move to `Integer` boxed type + `@NotNull` for
+       fail-fast.
+
+    2. **GenAIProperties.java:11** — `private int requestTimeout;` with
+       no initializer + no `@Min(1)` + no `@Validated`. When operator sets
+       `genai.enabled=true` and forgets to set `genai.request_timeout`,
+       the `genAiWebClient` is built with `Duration.ofMinutes(0)`
+       (`Duration.ZERO`), Reactor Netty's
+       `HttpClient.responseTimeout(Duration.ZERO)` does NOT throw at
+       construction, and every outbound `POST /api/genai/ask` fails with
+       `ReadTimeoutException` surfaced as "Gen AI request take longer
+       that 0 min" — a confusing user error rather than a configuration
+       error at boot. The live doc page DOES warn operators with an
+       explicit admonition, but the source itself has no field-level
+       safety. P-179 probe was emitted in batch ZK to pin Reactor
+       Netty's N=0 / N=negative behaviour empirically.
+
+    3. **AdditionalLinkProperties.java:7-9** — outer record + inner
+       `Link(String title, String url)` record. The `links` field defaults
+       to `null` (record fields with no default are null-on-binding when
+       `odd.links` is absent), forcing downstream consumers to repeat
+       the null-guard. LinksController.java:27 does the null-guard via
+       `CollectionUtils.isEmpty`; ANY future consumer (a metrics
+       extractor, an audit-log emitter) must repeat the null-handling.
+       The record could safely default the field to `List.of()` in a
+       compact constructor and absorb the downstream null-handling
+       burden. Lower-severity than (1) and (2) — the consequence is
+       NOT data-loss but maintenance-burden and consumer-side-failure
+       surface.
+
+  The LSN-002 pattern now spans 13 distinct sidecars across config-prefix
+  consumers (5) + config-classes (4) + config-properties-classes (4 —
+  GenAIProperties existing + HousekeepingTTLProperties ZK NEW +
+  AdditionalLinkProperties ZK NEW + GenAIProperties ZK REV-2
+  re-confirmation). The HousekeepingTTLProperties instance is
+  particularly load-bearing because it COMPOUNDS with LSN-001 (silent
+  default produces production data loss) — the worst class of the
+  LSN-002 family.
 nodes:
 - odd-platform java org.opendatadiscovery.oddplatform.config.properties config-properties-class:GenAIProperties
 - odd-platform java AttachmentServiceImpl config-key-consumer:attachment.max-file-size@L27
@@ -74,6 +131,8 @@ nodes:
 - odd-platform java LoginFormSecurityConfiguration config-class:LoginFormSecurityConfiguration
 - odd-platform java NotificationConfiguration config-class:NotificationConfiguration
 - odd-platform java R2DBCConfiguration config-class:R2DBCConfiguration
+- odd-platform java org.opendatadiscovery.oddplatform.housekeeping.config config-properties-class:HousekeepingTTLProperties
+- odd-platform java org.opendatadiscovery.oddplatform.config.properties config-properties-class:AdditionalLinkProperties
 contributors:
 - 'GenAIProperties.bugs_limitations_corner_cases[0]: silent misconfiguration HIGH severity'
 - 'GenAIProperties.implicit_adrs[1]: defaults are deliberately unsafe-when-enabled'
@@ -141,10 +200,38 @@ evidence:
 - |-
   R2DBCConfiguration.md (batch X NEW):bugs_limitations_corner_cases.[3,4]
   + the unconditional-PropertyMapper observation (10 keys wired, zero shipped)
+- |-
+  HousekeepingTTLProperties REV-2.md (batch ZK NEW config-properties-class
+  layer instance — COMPOUND LSN-001/LSN-002 case):
+  bugs_limitations_corner_cases.[0] HIGH (three `private int` fields
+  with no `= 30` initializer; 30-day safety floor lives ONLY in shipped
+  application.yml; operator override without re-supplying the block
+  silently rebinds 0 → next housekeeping cycle hard-deletes EVERYTHING
+  + ~25-table cascade). The most severe LSN-002 family instance in
+  the catalog.
+- |-
+  GenAIProperties REV-2.md (batch ZK NEW config-properties-class layer
+  instance — explicit DRIFT_NAME_VS_BEHAVIOR pairing):
+  bugs_limitations_corner_cases.[0] HIGH (silent misconfiguration when
+  genai.enabled=true is the only key set — primitive int default 0 →
+  Duration.ZERO → immediate timeout on every request);
+  bugs_limitations_corner_cases.[1] HIGH (requestTimeout=0 silently
+  accepted at startup, no @Min(1), no @Validated); stress_findings
+  Reactor Netty N=0 / N=negative probe P-179 NEW.
+- |-
+  AdditionalLinkProperties.md (batch ZK NEW config-properties-class
+  layer instance — null-vs-empty-list at record layer):
+  bugs_limitations_corner_cases.[5] LOW (outer record's `links` field
+  defaults to null when odd.links is absent; downstream consumers
+  must repeat null-guard; record could absorb with compact constructor).
+  Lower-severity than HousekeepingTTLProperties or GenAIProperties
+  (consequence is maintenance-burden + consumer-failure-surface, NOT
+  data-loss).
 axes_present:
 - config_classes
 - config_prefixes
-triangulation_count: 10
+- config_properties
+triangulation_count: 13
 cross_batch: true
 notes: |-
   STRENGTHENED batch 2026-05-20X — added 4 NEW config-class layer instances of the

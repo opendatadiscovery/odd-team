@@ -1,0 +1,39 @@
+gap_id: TEST-GAP-1029
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java org.opendatadiscovery.oddplatform.housekeeping.config config-properties-class:HousekeepingTTLProperties"
+pillars_affected: [P-04]
+surfaced_by:
+  - "HousekeepingTTLProperties.md:bugs_limitations_corner_cases.[6] (No @Min(0) or @PositiveOrZero validation — Spring binds negative integers without complaint — MEDIUM)"
+behaviour: |-
+  **`HousekeepingTTLProperties.java:8-12` declares three `private int` fields (`resolvedAlertsDays`, `searchFacetsDays`, `dataEntitiesDays`) with NO `@Min(0)`, NO `@PositiveOrZero`, NO `@Validated` on the class.** Spring Boot `@ConfigurationProperties` binds negative integers without complaint. An operator setting `housekeeping.ttl.resolved_alerts_days: -1` binds `-1` successfully; the downstream jOOQ chain computes the cutoff as `now() - (-1) days` = `now() + 1 day`, which matches ALL alert rows with `STATUS_UPDATED_AT <= tomorrow` — i.e. every resolved alert.
+
+  Concretely the AlertHousekeepingJob.java code path is:
+  ```
+  final OffsetDateTime cutoff = DSL.currentOffsetDateTime().minus(housekeepingTTLProperties.getResolvedAlertsDays());
+  ```
+  With `getResolvedAlertsDays()` returning `-1`, the cutoff becomes `current_timestamp + interval '1 day'` (jOOQ days-flipped via negative). Combined with the pre-existing jOOQ operator-precedence bug (TEST-GAP-211) which makes manual RESOLVED rows ignore the cutoff entirely, this is silent data loss across both manual and automatic resolved alerts in a single misconfigured deploy.
+
+  The mitigation (`@Min(0)` on each field + `@Validated` at the class level) would fail-fast at boot with a clear `ConstraintViolationException` instead of silently producing wrong-cutoff deletions. The constraint annotations are available in the classpath (jakarta.validation is used elsewhere in the codebase per LDAPSecurityConfiguration patterns).
+
+  Test gap shape: pin the current binding behaviour with negative integers AND assert the cutoff-flip propagates to the SQL emitted; pair with a positive-control test asserting `@Min(0)` (when added) rejects negative values at startup with a clear error.
+test_class: integration
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/housekeeping/HousekeepingTTLNegativeBindingTest.java"
+  name: "negativeResolvedAlertsDays_bindsSuccessfully_cutoffFlipsToFuture_pinsCurrentMissingValidation"
+evidence:
+  - 'HousekeepingTTLProperties.md says (bugs_limitations_corner_cases.[6] verbatim): ''Spring Boot @ConfigurationProperties binds negative integers without complaint. An operator setting `housekeeping.ttl.resolved_alerts_days: -1` binds -1 successfully; the downstream jOOQ chain computes cutoff = now() - (-1) days = now() + 1 day, and the predicate matches all rows.'''
+  - 'Verified: HousekeepingTTLProperties.java:8-12 contains no `@Min`, `@PositiveOrZero`, or `@Validated` annotations'
+cross_references:
+  - "TEST-GAP-209 (Java-vs-YAML default mismatch — sister silent-data-loss concern)"
+  - "TEST-GAP-211 (Alert jOOQ precedence — compounds with negative TTL into full alert wipe)"
+  - "TEST-GAP-213 (SearchFacets jOOQ .minus — sister negative-flip concern at the jOOQ tier)"
+  - "concepts.yaml:entities[Housekeeping TTL retention].security_aggregate.weaknesses.[no constraint validation on TTL fields]"
+related_features: [F-010]
+related_pillar_features: ["P-04:F-010"]
+proposed_action: |-
+  Integration test with `@SpringBootTest(properties = {"housekeeping.ttl.resolved_alerts_days=-1"})`. Assert (a) the bean binds successfully (current behaviour: no fail-fast), (b) `properties.getResolvedAlertsDays() == -1`, (c) the cutoff `DSL.currentOffsetDateTime().minus(-1)` renders SQL `current_timestamp - interval '-1 days'` which PG evaluates to `current_timestamp + interval '1 day'`. Pin the current silent-acceptance contract. When the maintainer adds `@Min(0)` + `@Validated`, the test fails with a `ConstraintViolationException` at context startup; the maintainer rewrites the test to assert the new fail-fast posture.
+batch: 2026-05-26-ZK
+feature_id: null

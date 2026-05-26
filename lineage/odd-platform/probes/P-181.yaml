@@ -1,0 +1,116 @@
+---
+probe_id: P-181
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__housekeeping_config__config-properties-class__HousekeepingTTLProperties.md
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-NNN  # housekeeping pillar feature (P-08:F-002 Housekeeping TTL Enforcement per LSN-018)
+test_class: integration
+verified_against_commit: ede5d277
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress questions: boundary behaviour of HousekeepingTTLProperties fields under
+  pathological values. The fields are `private int` primitives bound from YAML —
+  if an operator typo'd `resolved_alerts_days: -1` or shell-substitution produced
+  a huge value, what happens?
+
+  Three boundary hypotheses to confirm:
+
+  H1 — N = -1 (negative): `now() - (-1) days` = `now() + 1 day`. Predicate
+       `STATUS_UPDATED_AT <= now() + 1 day` matches all rows. ALL
+       RESOLVED_AUTOMATICALLY alerts deleted on next cycle. (Manual RESOLVED
+       still deleted due to precedence bug — confirmed already via static
+       analysis.) This is a silent-data-loss boundary.
+
+  H2 — N = Integer.MAX_VALUE: `LocalDateTime.minusDays(2_147_483_647L)` throws
+       `DateTimeException: Invalid value for Year`. Cycle's runHousekeepingJob
+       catches Exception (HousekeepingJobManager.java:42-46) and logs ERROR;
+       the OTHER housekeeping jobs in the same cycle continue to run (the
+       try/catch is per-job, not per-cycle).
+
+  H3 — Java primitive default (N = 0): exhaustively covered by the LSN-001-shape
+       reasoning already in the sidecar — at N=0 the predicate is
+       `STATUS_UPDATED_AT <= now()` which matches ALL rows. This boundary is
+       NOT the subject of THIS probe (it would be its own integration test).
+
+  The probe answers whether housekeeping is resilient to operator YAML errors
+  or silently destroys data under them.
+---
+arrange:
+  - kind: docker-compose-up
+    services: [odd-platform-postgres]
+  - kind: sql
+    query: |
+      -- seed 10 RESOLVED_AUTOMATICALLY alerts at varying ages
+      INSERT INTO alert (id, data_entity_oddrn, type, description, status, status_updated_at, created_at, last_created_at, messenger_entity_oddrn)
+      SELECT
+        i,
+        '//probe-source/p-stress/de-' || i,
+        'BACKWARDS_COMPATIBILITY_VIOLATION',
+        'probe alert ' || i,
+        2, -- RESOLVED_AUTOMATICALLY code
+        NOW() - (i * INTERVAL '1 day'),
+        NOW() - (i * INTERVAL '1 day'),
+        NOW() - (i * INTERVAL '1 day'),
+        NULL
+      FROM generate_series(0, 9) AS i;
+  - kind: env-override
+    key: HOUSEKEEPING_TTL_RESOLVED_ALERTS_DAYS
+    value: "-1"  # H1 — negative boundary
+  - kind: env-override
+    key: HOUSEKEEPING_ENABLED
+    value: "true"
+act:
+  - kind: docker-compose-up
+    services: [odd-platform-api]
+    wait_for_log: "Started OddPlatformApplication"
+  - kind: trigger
+    note: |
+      This probe REQUIRES either (a) a test-only debug endpoint that exposes
+      HousekeepingJobManager.runHousekeepingJobs(), or (b) a test-profile
+      override that drops the fixedRate from 15 minutes to e.g. 10 seconds
+      via a `housekeeping.test.fixed-rate-seconds` property (no such override
+      exists today). The probe-runner should arrange this BEFORE marking
+      this probe runnable. Without one of these, the probe must wait the
+      full 15-minute cycle, making it impractical for normal CI.
+observe:
+  - kind: sql
+    query: |
+      SELECT COUNT(*) AS remaining FROM alert WHERE status = 2;
+    capture_as: alerts_remaining_after_N_minus_1
+  - kind: log-capture
+    pattern: "Housekeeping job deleted .* resolved alerts"
+    capture_as: deletion_log_line
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+assert:
+  - "alerts_remaining_after_N_minus_1.remaining == 0  # H1: all RESOLVED_AUTOMATICALLY alerts deleted (cutoff = now() + 1 day matches all)"
+  - "deletion_log_line is not None  # the debug-level log fires (with proper log config)"
+# follow-up sub-probes (run with separate env-override values):
+#   H2 — Integer.MAX_VALUE:
+#     - env-override HOUSEKEEPING_TTL_RESOLVED_ALERTS_DAYS=2147483647
+#     - act: trigger cycle
+#     - observe: log line for ERROR + count of alerts UNCHANGED
+#     - assert: alerts_remaining == 10 (no deletion happened) + error logged
+cross_references:
+  related_sidecars:
+    - odd-platform__java__housekeeping_config__config-properties-class__HousekeepingTTLProperties
+    - odd-platform__java__housekeeping_job__housekeeping-job__AlertHousekeepingJob  # (when enriched)
+  retrospectives:
+    - LSN-018  # the canonical retro on housekeeping subsystem coherence
+    - LSN-001  # the LSN-001-shape silent-data-loss pattern this boundary tests for
+realism_caveats: |
+  The probe targets `AlertHousekeepingJob` because it has the simplest test
+  setup (single table + cascade to ALERT_CHUNK). Equivalent boundary behaviour
+  on `SearchFacetsHousekeepingJob` (negative → all facets deleted) and
+  `DataEntityHousekeepingJob` (negative → all soft-deleted entities cascade-
+  purged) are STRONGLY EXPECTED but not asserted by this specific probe;
+  they would be covered by separate probes if the maintainer wants to
+  mechanise the full TTL surface.
+
+  Negative-value bind: Spring Boot @ConfigurationProperties binds negative
+  integers without complaint (no `@Min(0)` validation on this POJO — that
+  itself is a finding worth recording in REFACTOR-NNN). The probe does NOT
+  need to bypass any validation layer to inject N = -1.

@@ -1,0 +1,39 @@
+gap_id: TEST-GAP-1028
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java org.opendatadiscovery.oddplatform.config config-class:SchedulingConfiguration"
+pillars_affected: [P-04]
+surfaced_by:
+  - "SchedulingConfiguration.md:tests_coverage_semantic.uncovered_behaviours.[0] (LockProvider bean type + usingDbTime — MEDIUM)"
+  - "SchedulingConfiguration.md:tests_coverage_semantic.uncovered_behaviours.[3] (shedlock timestamps come from PG now() — MEDIUM)"
+  - "SchedulingConfiguration.md:implicit_adrs.[DB-time for lock arbitration via .usingDbTime() — HIGH]"
+  - "SchedulingConfiguration.md:stress_findings.tunables.[.usingDbTime()] (boolean-shaped categorical toggle — WITH/WITHOUT semantics)"
+behaviour: |-
+  **`SchedulingConfiguration.java:22` explicitly calls `.usingDbTime()` on the `JdbcTemplateLockProvider` builder** — without this call the provider uses JVM-side `Instant.now()` for `lock_until` / `locked_at` timestamps, which means two replicas with skewed clocks would write different lock_until values and the lock semantics would be vulnerable to clock drift. The explicit call IS the multi-replica safety mechanism for clock-skew tolerance.
+
+  The contract is invisible to operators reading the docs page; the live config-and-deployment page does not mention `.usingDbTime()` or its clock-skew implications. A refactor that swapped the LockProvider implementation (e.g. JDBC → Redis) or that re-wrote the JdbcTemplateLockProvider construction would silently lose `.usingDbTime()` without any test catching the regression. Subsequent multi-replica deployments would become vulnerable to split-brain lock decisions under clock skew between JVMs.
+
+  Test gap shape: integration test querying the `shedlock` table mid-cycle and asserting `lock_until` is close to PG's `current_timestamp + lockAtMostFor`, NOT close to the JVM's `Instant.now() + lockAtMostFor`. The difference is only observable if the JVM clock is artificially skewed — but the pin can be done indirectly by:
+
+  1. Verifying the LockProvider bean is exactly `JdbcTemplateLockProvider` and not a custom subclass.
+  2. Running a `@SchedulerLock(name = "test", lockAtMostFor = "10s")` test, sleeping 1 second after acquisition, then asserting `SELECT EXTRACT(EPOCH FROM (lock_until - NOW())) FROM shedlock WHERE name = 'test'` returns ~9 seconds (lock_until is anchored to PG-time at acquisition, not relative to JVM's slightly-later current time).
+test_class: integration
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/config/SchedulingDbTimeLockProviderTest.java"
+  name: "lockProviderBean_usesDbTime_shedlockTimestampAnchoredToPostgresClockNotJvmClock"
+evidence:
+  - 'SchedulingConfiguration.md says (implicit_adrs verbatim): ''SchedulingConfiguration.java:22 explicitly invokes `.usingDbTime()` on the JdbcTemplateLockProvider''s builder. The JdbcTemplateLockProvider default WITHOUT this call uses JVM-side timestamps (`Instant.now()`), which means two replicas with skewed clocks would write different lock_until values and the lock semantics would be vulnerable to clock drift.'''
+  - 'SchedulingConfiguration.md says (stress_findings.tunables.[.usingDbTime()]): ''WITH `.usingDbTime()` (current state): multi-replica deployments tolerate JVM clock drift. WITHOUT (hypothetical refactor that removed the call): clock skew between replicas would cause incorrect lock-validity decisions.'''
+  - 'Verified: SchedulingConfiguration.java:22 contains `.usingDbTime()` call on JdbcTemplateLockProvider.Configuration.builder()'
+cross_references:
+  - "P-182 probe (multi-instance correctness verification — pinned in SchedulingConfiguration sidecar)"
+  - "TEST-GAP-214 (multi-instance ShedLock race — sister concern that depends on usingDbTime correctness)"
+  - "REFACTOR-NNN candidate: if LockProvider implementation is ever changed (e.g. Redis-backed), the clock-arbitration contract must be re-validated"
+related_features: [F-010]
+related_pillar_features: ["P-04:F-010"]
+proposed_action: |-
+  Two-assertion integration test using Testcontainers PG. **Assert A** — Spring-context test: `applicationContext.getBean(LockProvider.class)` is `instanceof JdbcTemplateLockProvider`. **Assert B** — Behavioural pin: declare a test-only `@SchedulerLock(name = "dbTimeProbeLock", lockAtMostFor = "PT10S")` method; sleep 1 second after first fire; query `SELECT lock_until - now() FROM shedlock WHERE name = 'dbTimeProbeLock'`; assert the delta is within `[8s, 10s]` (anchored to PG-time at acquisition). When the maintainer refactors LockProvider construction, both assertions break — forcing a deliberate re-validation of the clock-arbitration semantics.
+batch: 2026-05-26-ZK
+feature_id: null

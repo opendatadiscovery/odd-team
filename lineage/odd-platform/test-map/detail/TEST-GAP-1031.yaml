@@ -1,0 +1,37 @@
+gap_id: TEST-GAP-1031
+category: missing-integration
+criticality: LOW
+node_ids:
+  - "odd-platform java org.opendatadiscovery.oddplatform.config.properties config-properties-class:AdditionalLinkProperties"
+pillars_affected: [P-09]
+surfaced_by:
+  - "AdditionalLinkProperties.md:bugs_limitations_corner_cases.[1] (@ConfigurationProperties odd claims whole odd prefix; if anyone ever adds ignoreUnknownFields=false the platform fails to boot — MEDIUM)"
+  - "AdditionalLinkProperties.md:tests_coverage_semantic.uncovered_behaviours.[4] (sibling key collision under odd namespace — LOW)"
+behaviour: |-
+  **`@ConfigurationProperties("odd")` at `AdditionalLinkProperties.java:6` claims the entire `odd.*` Spring prefix, but the record only binds the `links` sub-field.** The other `odd.*` keys are consumed elsewhere via `@Value` reads:
+  - `odd.tenant-id` — `ExternalMetricReader.java:53` (verified)
+  - `odd.platform-base-url` — `SlackMessageGeneratorConfiguration.java:15` (verified)
+  - `odd.data-entity-stale-period` — `DataEntityStaleDetector.java:10` (verified)
+  - `odd.activity.partition-period` — additional `@Value` consumer
+
+  This is a legitimate Spring pattern (relaxed-binder + `@ConfigurationProperties` only binds the declared fields, ignoring siblings by default) but a FRAGILE one: if anyone ever adds `(ignoreUnknownFields = false)` to this annotation — a common hardening change in security audits or in upgrading to stricter binding — the application will FAIL TO BOOT because the binder sees `tenant-id`, `platform-base-url`, `data-entity-stale-period`, etc. as "unknown" sibling keys under the `odd` prefix.
+
+  Test gap shape: integration test forcing `ignoreUnknownFields=false` (via test-only override of the annotation, or via a custom `Binder` config) and asserting the platform fails to boot — pinning the latent foot-gun.
+
+  LOW because (a) the failure mode requires someone to deliberately add `ignoreUnknownFields=false`, (b) the failure is fail-fast (no silent corruption), (c) the mitigation is to refactor each `@Value` consumer onto its own `@ConfigurationProperties` POJO or to narrow this annotation's prefix to `odd.links`.
+test_class: integration
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/config/AdditionalLinkPropertiesIgnoreUnknownFieldsTest.java"
+  name: "ignoreUnknownFieldsFalse_oddSiblingKeys_failsContextStartup_documentsLatentFootgun"
+evidence:
+  - 'AdditionalLinkProperties.md says (bugs_limitations_corner_cases.[1] verbatim): ''@ConfigurationProperties("odd") claims the entire odd Spring prefix but the record only binds the links sub-field. ... if anyone ever adds (ignoreUnknownFields = false) to this annotation — a common hardening change — the application will FAIL TO BOOT because the binder sees tenant-id, platform-base-url, etc. as unknown sibling keys.'''
+  - 'Verified: ExternalMetricReader.java:53 + SlackMessageGeneratorConfiguration.java:15 + DataEntityStaleDetector.java:10 all consume `odd.*` keys via @Value, not via this @ConfigurationProperties POJO'
+cross_references:
+  - "REFACTOR-NNN candidate: narrow AdditionalLinkProperties prefix to `odd.links` OR consolidate all odd.* @Value consumers into a single OddProperties @ConfigurationProperties POJO"
+related_features: [F-007]
+related_pillar_features: ["P-09:F-007"]
+proposed_action: |-
+  Integration test in `@SpringBootTest` with a custom `BeanFactoryPostProcessor` that overrides the `@ConfigurationProperties` annotation on `AdditionalLinkProperties` to include `ignoreUnknownFields = false`. Assert that the context startup fails with a `BindException` mentioning `tenant-id` (or any other `odd.*` sibling). Pin the latent foot-gun; when the maintainer ships the refactor (narrow prefix or consolidate), the test must be re-authored to reflect the new contract.
+batch: 2026-05-26-ZK
+feature_id: null

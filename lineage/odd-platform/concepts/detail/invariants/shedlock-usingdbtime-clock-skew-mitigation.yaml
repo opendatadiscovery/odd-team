@@ -1,0 +1,182 @@
+name: 'ShedLock .usingDbTime() — PG-arbitrated lock time neutralises JVM clock-skew across replicas'
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-08
+description: |-
+  **NEW INVARIANT, batch ZK (2026-05-26) — POSITIVE implicit ADR pin at
+  SchedulingConfiguration.java:22.**
+
+  `SchedulingConfiguration.lockProvider(DataSource)` (`SchedulingConfiguration.java:17-25`)
+  constructs the platform's `LockProvider` Bean as a
+  `JdbcTemplateLockProvider` over the auto-wired primary `DataSource`,
+  with an EXPLICIT call to `.usingDbTime()` on the configuration
+  builder. This single method call is the LOAD-BEARING positive choice
+  for multi-replica deployments.
+
+  **WHY IT MATTERS**: the JdbcTemplateLockProvider has TWO time sources
+  available:
+
+    (a) Default (without `.usingDbTime()`) — JVM-side `Instant.now()`
+        on the platform replica acquiring/releasing the lock. Two
+        replicas with skewed clocks would write DIFFERENT `lock_until`
+        values to the `shedlock` PG table for the same lock, and the
+        lock-validity decisions would be vulnerable to clock drift. A
+        replica with a fast clock could prematurely consider an
+        expired-lock-row as still-held by another replica, OR consider
+        a still-held lock as expired and incorrectly grab it
+        (split-brain on lock arbitration).
+
+    (b) With `.usingDbTime()` (the ODD platform's choice at line 22) —
+        PostgreSQL's `current_timestamp` (server-side `now()`) is the
+        authoritative time. Both `lock_until` (written on lock
+        acquisition) and the lock-expiry check (read on subsequent
+        acquisition attempts) use the SAME PG clock. Clock-skew between
+        JVM replicas is NEUTRALISED. The trade-off: one extra DB
+        round-trip per lock operation (a `SELECT now()` per
+        UPSERT/UPDATE), at the platform's sub-1-QPS shedlock-write
+        rate — negligible cost.
+
+  **WHY THIS IS AN IMPLICIT ADR**: the JdbcTemplateLockProvider's
+  default WITHOUT this call is JVM-side timestamps. The deliberate
+  invocation of `.usingDbTime()` at line 22 IS the architectural
+  decision — it cannot have happened by accident (the method must be
+  called explicitly on the Configuration builder). The choice encodes
+  the intent: 'arbitrate via PostgreSQL's `current_timestamp`, not
+  the JVM's clock'.
+
+  **DOC GAP**: this is NOT documented anywhere in the live ODD docs.
+  WebFetch `/configuration-and-deployment/odd-platform` 2026-05-26
+  (HTTP 200) mentions ShedLock for housekeeping coordination but does
+  NOT state how clock-skew between replicas is handled. An operator
+  considering 'do I need to install chrony on my K8s nodes to keep
+  replicas in sync?' has no way to learn from the docs that the
+  platform tolerates clock skew because PG arbitrates the lock time.
+
+  **REGRESSION RISK** — a future refactor could silently remove this
+  protection:
+
+    (a) Switching to a different LockProvider (e.g. Redis-based
+        `RedisLockProvider` for a multi-database deployment) would
+        lose `.usingDbTime()` without anyone noticing. The shedlock
+        semantics would shift from DB-authoritative-time to
+        Redis-server-time; multi-replica clock-skew assumptions would
+        change.
+
+    (b) A maintainer simplifying the builder chain ("Configuration
+        builder feels unnecessary — let's just call `.builder().build()`
+        with defaults") would drop `.usingDbTime()` accidentally.
+
+    (c) ShedLock library upgrades that change the meaning of
+        `.usingDbTime()` (unlikely but not impossible).
+
+  No integration test pins the `.usingDbTime()` contract. P-182 probe
+  NEW (batch ZK) — multi-instance lock-race verification under
+  `.usingDbTime()`: two JVMs boot simultaneously, both
+  `@SchedulerLock("housekeepingJob")` methods fire at the same wall-clock
+  moment; with `.usingDbTime()` enabled, only one wins lock acquisition;
+  verify the second receives `Optional.empty()` from the LockProvider
+  AND verify the first's `shedlock` row's `lock_until` is approximately
+  PG's `now() + 14m`, NOT JVM's `Instant.now() + 14m`.
+
+  **FIX SHAPE**: NOT a bug — this invariant captures a POSITIVE platform
+  decision. Mitigation path is to LOCK the contract:
+    (a) Add a regression integration test asserting the
+        JdbcTemplateLockProvider bean uses `.usingDbTime()` (Spring-context
+        introspection or a Testcontainers test querying the actual
+        `lock_until` value against PG's `now()`).
+    (b) Add a Javadoc comment at line 22 explaining the choice ('do
+        NOT remove `.usingDbTime()` — neutralises JVM clock-skew
+        across replicas; see implicit_adrs').
+    (c) Document the clock-skew-tolerance posture on the live docs page
+        — operators choosing 'do I need chrony?' deserve to learn that
+        the platform tolerates clock skew because PG arbitrates lock
+        time.
+
+  Severity: NOT-A-BUG / INVARIANT-LOCK — the platform's current behaviour
+  is correct; the invariant captures the choice that makes it correct
+  so a future regression can be detected.
+nodes:
+  - odd-platform java org.opendatadiscovery.oddplatform.config config-class:SchedulingConfiguration
+contributors:
+  - |-
+    SchedulingConfiguration.md (batch ZK NEW — PRIMARY-SOURCE pin):
+    implicit_adrs.[0] HIGH (DB-time for lock arbitration via
+    .usingDbTime() — the explicit choice over the library default of
+    JVM-side timestamps);
+    concepts.invariants.[`.usingDbTime()` at SchedulingConfiguration.java:22 —
+    the lock_until / locked_at timestamps in the `shedlock` PG table
+    come from PG's `current_timestamp`, NOT each JVM's
+    `System.currentTimeMillis()`. This neutralises clock-skew between
+    replicas];
+    stress_findings.tunables.[.usingDbTime()] categorical analysis
+    (boolean toggle — WITH = clock-skew-tolerant; WITHOUT =
+    clock-skew-vulnerable);
+    stress_findings.resource_boundaries.[LockProvider] concurrency
+    contract (PG's INSERT-OR-UPDATE on `shedlock(name)` PK guarantees
+    atomicity under usingDbTime);
+    docs_link_semantic.doc_drift_findings.[2] (`.usingDbTime()` not
+    documented — operators cannot learn from the docs that multi-replica
+    deployments are safe under clock-skew because DB-time is used);
+    stress_findings.probes_emitted.[P-182] (multi-instance lock race
+    verification under .usingDbTime() — empirical)
+evidence:
+  - 'SchedulingConfiguration.md:implicit_adrs.[0] HIGH (DB-time for lock arbitration via .usingDbTime() — the explicit call vs the library default)'
+  - 'SchedulingConfiguration.md:concepts.invariants — the `.usingDbTime()` mechanism + the shedlock PG table schema (V0_0_52__introduce_housekeeping.sql:10-18)'
+  - 'SchedulingConfiguration.md:stress_findings.tunables.[.usingDbTime()] — categorical-toggle analysis with WITH/WITHOUT operator-visible-consequences'
+  - 'SchedulingConfiguration.md:docs_link_semantic.doc_drift_findings.[2] (.usingDbTime() not documented; operators cannot learn the clock-skew-tolerance posture)'
+  - 'SchedulingConfiguration.md:stress_findings.probes_emitted.[P-182] (multi-instance lock race verification under .usingDbTime() — empirical pin to lock the contract)'
+axes_present:
+  - config_classes
+triangulation_count: 1
+cross_batch: false
+severity: LOCK_INVARIANT
+severity_dim: clock-skew-safety
+mitigations_unimplemented:
+  - |-
+    Add a regression integration test that asserts the JdbcTemplateLockProvider
+    bean uses .usingDbTime() — either via Spring-context introspection
+    of the configured Configuration or via a Testcontainers test that
+    queries the actual lock_until value against PG's now() (and asserts
+    NOT close to the JVM's Instant.now()). P-182 emitted as the test
+    template.
+  - |-
+    Add a Javadoc comment at SchedulingConfiguration.java:22 explaining
+    the choice — "do NOT remove .usingDbTime() — neutralises JVM
+    clock-skew across replicas; see implicit_adrs" — so future
+    maintainers don't accidentally drop the call.
+  - |-
+    Docs-side: document the clock-skew-tolerance posture on
+    /configuration-and-deployment/odd-platform — operators choosing
+    "do I need chrony / time-sync infrastructure?" deserve to know that
+    the platform's lock arbitration is PG-time-authoritative.
+related_features: []
+related_pillar_features:
+  - P-08
+notes: |-
+  NEW invariant batch ZK (2026-05-26). The first PRIMARY-SOURCE pin to
+  the POSITIVE implicit ADR at SchedulingConfiguration.java:22. Unlike
+  most invariants in the catalog (which capture bugs / limitations /
+  drift), this one captures a CORRECT decision that the catalog should
+  defend against regression.
+
+  Pairs with the new
+  `scheduling-configuration-single-thread-taskscheduler-default`
+  invariant — that one is the NEGATIVE silent operational risk (no
+  thread-pool sizing); THIS one is the POSITIVE implicit ADR
+  (clock-skew mitigation). Both surface from the same SchedulingConfiguration
+  sidecar in batch ZK.
+
+  One DOC-NNN candidate:
+    Document the clock-skew-tolerance posture under
+    /configuration-and-deployment/odd-platform — naming `.usingDbTime()`
+    as the mechanism + the implicit ADR + operator-visible consequence
+    ('you do not need replica clock synchronisation; PG arbitrates').
+
+  Cross-cutting connection: pairs with the
+  `housekeeping-job-no-scheduler-lock-multi-instance-amplification`
+  invariant — both invariants describe the multi-replica behaviour of
+  the platform's scheduled-task subsystem, but from different angles
+  (THIS one: clock-skew tolerance for @SchedulerLock-protected jobs;
+  THAT one: lack of coordination for the unlocked session-housekeeping
+  job).

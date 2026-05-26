@@ -1,30 +1,89 @@
 name: Partial-home @ConfigurationProperties pattern
 canonical_in_docs: false
 canonical_candidate: true
-description: 'Cross-cutting refactoring-hazard invariant: ODD''s `@ConfigurationProperties`
-  POJOs intermittently bind only a SUBSET of their declared prefix''s keys; the remaining
-  keys are scattered as `@Value`-injected reads across multiple consumer files. A
-  maintainer reading the Properties class to learn the config-prefix sees a partial
-  picture. 2-sidecar triangulated in batch 2026-05-12D: (a) DataCollaborationProperties
-  binds 3 of 7 `datacollaboration.*` keys; the other 4 (`enabled`, `slack-oauth-token`,
-  `message-partition-period`) are `@Value`-scattered across DataCollaborationConfiguration.java:21
-  + FeatureResolverImpl.java:17 + DataCollaborationFeatureCondition.java:18-22 + MessageTablePartitionManager.java:19.
-  (b) EmailSenderProperties binds the SMTP transport surface (sender / password /
-  host / port / protocol / smtp.auth / smtp.starttls) but NOT the recipient list `notifications.receivers.email.notification.emails`
-  (consumed via raw `@Value` in `NotificationConfiguration.java:104`). Refactoring
-  hazard: (i) a future maintainer searching the codebase via ''find usages of `datacollaboration.message-partition-period`''
-  would NOT find DataCollaborationProperties; (ii) tooling that walks `@ConfigurationProperties`
-  to generate Spring Boot metadata captures only the bound subset, leaving the @Value-read
-  keys without IDE auto-completion; (iii) the Properties class''s `@PostConstruct`
-  validator cannot enforce invariants over keys it does not bind. Recommended cross-cutting
-  remediation: complete the binding — every `@Value` reading a key in a prefix that
-  has a `@ConfigurationProperties` POJO should be replaced by adding the field to
-  that POJO. Bonus: this also enables central validation.'
+description: |-
+  Cross-cutting refactoring-hazard invariant: ODD's `@ConfigurationProperties`
+  POJOs intermittently bind only a SUBSET of their declared prefix's keys;
+  the remaining keys are scattered as `@Value`-injected reads across multiple
+  consumer files. A maintainer reading the Properties class to learn the
+  config-prefix sees a partial picture.
+
+  2-sidecar triangulated in batch 2026-05-12D:
+    (a) DataCollaborationProperties binds 3 of 7 `datacollaboration.*` keys;
+        the other 4 (`enabled`, `slack-oauth-token`, `message-partition-period`)
+        are `@Value`-scattered across DataCollaborationConfiguration.java:21
+        + FeatureResolverImpl.java:17 + DataCollaborationFeatureCondition.java:18-22
+        + MessageTablePartitionManager.java:19.
+    (b) EmailSenderProperties binds the SMTP transport surface (sender /
+        password / host / port / protocol / smtp.auth / smtp.starttls) but
+        NOT the recipient list `notifications.receivers.email.notification.emails`
+        (consumed via raw `@Value` in `NotificationConfiguration.java:104`).
+
+  Refactoring hazard:
+    (i) a future maintainer searching the codebase via 'find usages of
+        `datacollaboration.message-partition-period`' would NOT find
+        DataCollaborationProperties;
+    (ii) tooling that walks `@ConfigurationProperties` to generate Spring
+         Boot metadata captures only the bound subset, leaving the
+         @Value-read keys without IDE auto-completion;
+    (iii) the Properties class's `@PostConstruct` validator cannot enforce
+          invariants over keys it does not bind.
+
+  Recommended cross-cutting remediation: complete the binding — every
+  `@Value` reading a key in a prefix that has a `@ConfigurationProperties`
+  POJO should be replaced by adding the field to that POJO. Bonus: this
+  also enables central validation.
+
+  ## STRENGTHENED — batch ZK (2026-05-26) — third instance: AdditionalLinkProperties / `odd.*` namespace
+
+  Batch ZK adds AdditionalLinkProperties as the THIRD instance of the
+  partial-home pattern. `AdditionalLinkProperties` declares
+  `@ConfigurationProperties("odd")` — claiming the entire `odd.*` prefix
+  — but binds only the `links` sub-field via its record-of-records shape.
+  The other `odd.*` keys (FOUR known) are `@Value`-scattered across
+  multiple consumer files:
+
+    - `odd.tenant-id` — consumed via @Value in
+      ExternalMetricReader.java:53 (the Prometheus tenant label) and
+      CounterTimeSeriesExtractor.java:20 (sibling)
+    - `odd.platform-base-url` — consumed via @Value in
+      SlackMessageGeneratorConfiguration.java:15 (the absolute URL builder
+      for Slack alert message links)
+    - `odd.data-entity-stale-period` — consumed via @Value in
+      DataEntityStaleDetector.java:10 (the freshness-detection threshold)
+    - `odd.activity.partition-period` — consumed via @Value in
+      ActivityTablePartitionManager.java:11 (the activity-feed partition
+      width knob)
+
+  ELEVATED REFACTORING-HAZARD CLASS — LATENT FOOT-GUN:
+
+  AdditionalLinkProperties is the FIRST instance of partial-home where
+  the FRAGILITY is concrete: the `@ConfigurationProperties("odd")` annotation
+  does NOT carry `(ignoreUnknownFields = false)` — currently. If a future
+  hardening PR added strict-mode binding (a common Spring Boot hardening
+  posture — REJECT operator typos at boot), the application would FAIL
+  TO BOOT. The binder would see `tenant-id`, `platform-base-url`,
+  `data-entity-stale-period`, and `activity.partition-period` as UNKNOWN
+  sibling keys under the `odd` prefix bound by AdditionalLinkProperties.
+
+  Mitigations on the table:
+    (a) Complete the binding — fold the four scattered @Value reads into
+        AdditionalLinkProperties.
+    (b) Move `links` to its own `odd.links.*` sub-prefix —
+        `@ConfigurationProperties("odd.links")` — so AdditionalLinkProperties
+        no longer claims the parent namespace.
+    (c) Add `(ignoreUnknownFields = true)` explicitly to document the
+        intent and lock the current behaviour (rather than relying on
+        Spring's default).
+
+  Triangulation count rises from 2 to 3.
 axes_present:
 - config_prefixes
+- config_properties
 nodes:
 - odd-platform java org.opendatadiscovery.oddplatform.datacollaboration.config config-properties-class:DataCollaborationProperties
 - odd-platform java org.opendatadiscovery.oddplatform.notification.config config-properties-class:EmailSenderProperties
+- odd-platform java org.opendatadiscovery.oddplatform.config.properties config-properties-class:AdditionalLinkProperties
 contributors:
 - 'DataCollaborationProperties (batch D): binds 3 of 7 keys (sender-message-advisory-lock-id,
   receive-event-advisory-lock-id, sending-messages-retry-count); the other 4 (`enabled`,
@@ -33,16 +92,48 @@ contributors:
 - 'EmailSenderProperties (batch D): binds 6 SMTP-transport keys + nested SmtpProperties
   (auth + starttls); recipient list `notifications.receivers.email.notification.emails`
   consumed via raw @Value in NotificationConfiguration.java:104'
+- |-
+  AdditionalLinkProperties (batch ZK config-properties-class
+  binding-owner primary source — STRENGTHENS): claims `@ConfigurationProperties("odd")`
+  — the entire `odd.*` namespace — but binds ONLY the `links` field;
+  4 sibling keys (`odd.tenant-id`, `odd.platform-base-url`,
+  `odd.data-entity-stale-period`, `odd.activity.partition-period`)
+  bypass via @Value in 4 different files. THE FIRST INSTANCE WHERE THE
+  LATENT FOOT-GUN IS CONCRETE: a future `(ignoreUnknownFields = false)`
+  hardening PR would FAIL TO BOOT the application because of these
+  unbound sibling keys.
 evidence:
 - DataCollaborationProperties.md:bugs_limitations_corner_cases.[3,4]
 - EmailSenderProperties.md:bugs_limitations_corner_cases.[8]
-notes: "Promoted to a NEW cross-cutting invariant in batch 2026-05-12D.\nThe pattern\
-  \ is structurally similar to the \"Dead code in load-bearing\npositions\" invariant\
-  \ — both expose maintainers to \"I thought this was\nthe source of truth\" failure\
-  \ modes. Recommended cleanup:\n  - DataCollaborationProperties: add `Boolean enabled`,\
-  \ `String slackOauthToken`,\n    `int messagePartitionPeriod` fields; replace 4\
-  \ @Value reads with\n    DataCollaborationProperties getters. (NB: enabled field\
-  \ requires\n    coordination with FeatureResolverImpl's SpEL-based conditional\n\
-  \    evaluation.)\n  - EmailSenderProperties: add `String recipients` (CSV) or\n\
-  \    `List<String> recipients` field bound to `notification.emails`;\n    replace\
-  \ the @Value read in NotificationConfiguration.java:104.\n"
+- '**batch ZK NEW** AdditionalLinkProperties.md:bugs_limitations_corner_cases.[1] (@ConfigurationProperties("odd") namespace overclaim + ignoreUnknownFields=false latent foot-gun)'
+- 'AdditionalLinkProperties.md:concepts.invariants.[binding-owner-of-odd-namespace-but-only-links-bound]'
+notes: |-
+  Promoted to a NEW cross-cutting invariant in batch 2026-05-12D.
+  The pattern is structurally similar to the "Dead code in load-bearing
+  positions" invariant — both expose maintainers to "I thought this was
+  the source of truth" failure modes.
+
+  Recommended cleanup:
+    - DataCollaborationProperties: add `Boolean enabled`, `String slackOauthToken`,
+      `int messagePartitionPeriod` fields; replace 4 @Value reads with
+      DataCollaborationProperties getters. (NB: enabled field requires
+      coordination with FeatureResolverImpl's SpEL-based conditional
+      evaluation.)
+    - EmailSenderProperties: add `String recipients` (CSV) or
+      `List<String> recipients` field bound to `notification.emails`;
+      replace the @Value read in NotificationConfiguration.java:104.
+    - **batch ZK NEW** AdditionalLinkProperties: either complete the
+      binding (add tenant-id / platform-base-url / data-entity-stale-period /
+      activity.partition-period fields), OR move `links` to its own
+      `odd.links.*` sub-prefix (`@ConfigurationProperties("odd.links")`),
+      OR add `(ignoreUnknownFields = true)` explicitly to lock the current
+      tolerant-binding behaviour. Without one of these three, the next
+      hardening PR will break the boot path.
+
+  **batch ZK new triangulation finding**: AdditionalLinkProperties is
+  the FIRST instance where the partial-home pattern's foot-gun has
+  CONCRETE shape — the `odd.*` namespace has 5 known sibling keys, the
+  Properties class binds 1 of 5, and the latent-strict-mode failure is
+  4 lines of bean-creation errors at boot. Prior instances
+  (DataCollaborationProperties, EmailSenderProperties) hide the
+  foot-gun behind less-visible namespaces.

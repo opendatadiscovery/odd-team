@@ -1,0 +1,171 @@
+---
+probe_id: P-177
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__config_properties__config-properties-class__AdditionalLinkProperties.md
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: security
+verified_against_commit: null
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category F, DRIFT_INPUT_NAME_VS_IMPLEMENTATION for the `url`
+  field of AdditionalLinkProperties.Link): the field name 'url' promises a
+  schema-conformant URL. The Java record has NO @URL, @Pattern, or scheme
+  allowlist. Hypothesis: the Spring @ConfigurationProperties binder accepts
+  ANY String for `odd.links[*].url` — including `javascript:alert(1)`,
+  `data:text/html,<script>...</script>`, `file:///etc/passwd`, `vbscript:`,
+  empty string, malformed strings, and relative paths — without rejection
+  at boot time, and these strings flow unmodified through LinksController
+  to the `/api/links` response body.
+
+  This probe pins the BACKEND-LAYER acceptance (does the binder/validator
+  let it through?). A SEPARATE Playwright probe (deferred until the UI
+  harness is available) verifies the BROWSER-LAYER consequence (does the
+  rendered `<a href>` retain the malicious scheme? Does React strip it?
+  Does target='_blank' open it?).
+
+  The expected outcome: ALL the malicious / malformed URL strings round-trip
+  unchanged to the API response. No 400, no 500, no binding failure, no
+  rejection. This confirms the DRIFT and motivates either:
+    (a) adding `@URL @NotBlank @Pattern(regexp="^(https?|mailto):.*")` plus
+        `@Validated` on the outer class — fail-fast at boot,
+    (b) adding a startup-time validation hook (a @PostConstruct that walks
+        the list and logs warnings for non-http(s) entries),
+    (c) documenting the operator-trust assumption explicitly in the
+        configuration-and-deployment docs page.
+
+  If any assertion FAILS (i.e. the binder rejects an unexpected input),
+  the file-analyser's reading of AdditionalLinkProperties.java is wrong
+  and the sidecar's CategoryF.url drift annotation must be re-read.
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: env
+    set:
+      AUTH_TYPE: "DISABLED"
+      ODD_LINKS_0_TITLE: "Wiki"
+      ODD_LINKS_0_URL: "https://wiki.internal/odd"
+      ODD_LINKS_1_TITLE: "JavaScript Probe"
+      ODD_LINKS_1_URL: "javascript:alert('xss')"
+      ODD_LINKS_2_TITLE: "Data URI Probe"
+      ODD_LINKS_2_URL: "data:text/html,<script>alert(document.cookie)</script>"
+      ODD_LINKS_3_TITLE: "File URI Probe"
+      ODD_LINKS_3_URL: "file:///etc/passwd"
+      ODD_LINKS_4_TITLE: "VBScript Probe"
+      ODD_LINKS_4_URL: "vbscript:msgbox(1)"
+      ODD_LINKS_5_TITLE: "Empty URL Probe"
+      ODD_LINKS_5_URL: ""
+      ODD_LINKS_6_TITLE: "Relative Path Probe"
+      ODD_LINKS_6_URL: "wiki.internal/odd"
+      ODD_LINKS_7_TITLE: "Whitespace URL Probe"
+      ODD_LINKS_7_URL: "   "
+      ODD_LINKS_8_TITLE: "Newline Injection Probe"
+      ODD_LINKS_8_URL: "https://wiki.internal/odd\nX-Injected: header"
+      ODD_LINKS_9_TITLE: ""
+      ODD_LINKS_9_URL: "https://no-title.example/"
+  - kind: app-restart
+  - kind: wait-for-health
+    timeout_seconds: 60
+act:
+  - kind: rest
+    method: GET
+    path: /api/links
+    auth: none
+    capture_as: links_response
+observe:
+  - kind: rest-status
+    of: links_response
+    capture_as: status_code
+  - kind: rest-body
+    of: links_response
+    capture_as: body
+  - kind: app-log
+    grep: "AdditionalLinkProperties|odd.links|BindException|InvalidConfigurationProperty"
+    capture_as: boot_warnings
+assert:
+  # The application boots successfully with all the malicious / malformed inputs
+  - "status_code == 200"
+  - "body.items.length == 10"
+
+  # Indexed-property declaration order is preserved
+  - "body.items[0].title == 'Wiki'"
+  - "body.items[0].url == 'https://wiki.internal/odd'"
+
+  # javascript: URL flows through unmodified
+  - "body.items[1].url == \"javascript:alert('xss')\""
+
+  # data: URL flows through unmodified
+  - "body.items[2].url.startsWith('data:text/html,')"
+
+  # file: URL flows through unmodified
+  - "body.items[3].url == 'file:///etc/passwd'"
+
+  # vbscript: URL flows through unmodified
+  - "body.items[4].url == 'vbscript:msgbox(1)'"
+
+  # empty string accepted as `url`
+  - "body.items[5].url == ''"
+
+  # relative path accepted (no scheme prefix forced)
+  - "body.items[6].url == 'wiki.internal/odd'"
+
+  # whitespace-only string accepted
+  - "body.items[7].url == '   '"
+
+  # newline injection — verify the binder doesn't reject; verify whether the
+  # newline survives the env-var round-trip (env vars typically strip newlines;
+  # this assertion documents the actual behaviour and may need adjustment)
+  - "body.items[8].url.startsWith('https://wiki.internal/odd')"
+
+  # empty title accepted — invisible-but-clickable menu entry
+  - "body.items[9].title == ''"
+  - "body.items[9].url == 'https://no-title.example/'"
+
+  # No boot warnings or binding exceptions in the application log for these inputs
+  - "boot_warnings == ''  # or no BindException; verify by absence of expected error markers"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__config_properties__config-properties-class__AdditionalLinkProperties
+    - odd-platform__java__LinksController__controller-class__LinksController
+    - odd-platform__ts__components_shared_elements_AppToolbar_AppInfoMenu__ui-shell-widget__AppInfoMenu
+  retrospectives:
+    - LSN-020
+  related_probes:
+    - P-128
+realism_caveats: |
+  (1) This probe verifies BACKEND acceptance only. It does NOT verify the BROWSER
+  behaviour. A `javascript:alert(1)` URL accepted by the backend is NOT
+  necessarily exploitable in a user's browser — React's react-router-dom <Link>
+  component (AppInfoMenu.tsx:61) and modern browsers' link-following heuristics
+  may neutralise the dangerous schemes at render time or at click time. To
+  characterise the full chain, a Playwright probe (deferred — see P-128's
+  realism_caveats) must:
+    - configure odd.links[i].url with each of these strings,
+    - render the AppInfoMenu in a real browser context,
+    - inspect the resulting <a href> attribute via DOM query,
+    - simulate a click and assert the navigation target (or refusal).
+
+  (2) Env-var round-tripping: some env-var injection mechanisms (docker run -e,
+  kubernetes ConfigMap) strip or escape newlines and special characters. The
+  newline-injection assertion may behave differently under different env-var
+  delivery mechanisms; if the YAML-binding path is the operator's actual usage,
+  add a parallel arrange step that mounts a YAML file with the same payload.
+
+  (3) The `boot_warnings == ''` assertion is loose — it documents the EXPECTED
+  silence; tighten it to grep for specific failure markers once you observe a
+  baseline boot log on the probe stack.
+
+  (4) The probe runs with AUTH_TYPE=DISABLED to avoid auth-handshake complications
+  during the smoke. The endpoint behaviour under LOGIN_FORM is covered by P-128;
+  the URL-acceptance behaviour is independent of auth mode (the binding happens
+  at boot, before any request).
+
+  (5) If the test fails because Spring's relaxed binder coerces one of the
+  pathological inputs (e.g. trims whitespace), the failure is INFORMATIONAL —
+  it means the binder is doing more than the file-analyser's static reading
+  inferred, and the sidecar must be corrected.

@@ -64,6 +64,78 @@ description: |-
   three TTL keys and the master gate, but enumerates only 'three cleanup
   tasks' — the two EmptyPartitions jobs are not listed). main-concepts.md
   does not name 'Housekeeping' or 'Retention' as canonical vocabulary.
+
+  **STRENGTHENED batch ZK (2026-05-26)** — TWO config-properties-class
+  layer sidecars from this batch land on the housekeeping subsystem:
+
+  (1) HousekeepingTTLProperties — REV-2 RE-ENRICHED at file-analyser/0.4.0
+      with Stress Protocol categories, Category F request-input alignment,
+      upstream_callers, downstream_side_effects, and an emitted probe
+      P-181 for the negative-value / overflow boundaries. The PRIOR
+      batch-D HousekeepingTTLProperties sidecar is now superseded by the
+      rev-2 schema. All prior findings preserved: Java-vs-YAML default
+      mismatch (LSN-001 shape — overriding application.yml without
+      re-supplying housekeeping.ttl.* silently rebinds to 0); no
+      @Min(0)/@PositiveOrZero validation (negative values bind silently
+      and produce now() + (-N) days = future cutoff = delete-everything);
+      no audit log of housekeeping deletions; no dry-run / preview /
+      backup-before-delete; missing activity/message TTL fields; the
+      AlertHousekeepingJob jOOQ-precedence bug from the config-key
+      angle. P-181 NEW probe pins the negative-value / Integer.MAX_VALUE
+      boundary behaviours.
+
+  (2) SchedulingConfiguration — NET-NEW sidecar (file-analyser/0.4.0).
+      The 26-line @Configuration class that turns on the entire
+      scheduled-task subsystem via @EnableScheduling + @EnableSchedulerLock
+      + the lockProvider Bean. The CRITICAL findings:
+
+      (a) Spring's default ThreadPoolTaskScheduler is SINGLE-THREAD (no
+          spring.task.scheduling.pool.size set anywhere; no custom
+          TaskScheduler @Bean). All four @Scheduled jobs in the codebase
+          (housekeeping 15min, status-switch 10min, partition-creation
+          daily 00:01, session-housekeeping 1h) share ONE thread. A
+          14m housekeeping cycle BLOCKS the 10m status-switch from
+          running on schedule. **Undocumented in live docs**. P-183
+          probe emitted for the cron-misfire behaviour empirical
+          confirmation.
+
+      (b) `.usingDbTime()` on the JdbcTemplateLockProvider — the
+          POSITIVE implicit ADR. PG's current_timestamp is the
+          authoritative time for shedlock arbitration, neutralising
+          JVM clock-skew across replicas. Without this call (the
+          ShedLock library default), two replicas with drifted clocks
+          would disagree on lock validity. **Undocumented** in live
+          docs even though it is the operational safety mechanism for
+          multi-replica deployments under clock drift.
+
+      (c) `defaultLockAtMostFor = "1h"` is currently DEAD CODE — all
+          three @SchedulerLock methods in the codebase set their own
+          lockAtMostFor explicitly (housekeeping 14m, status-switch 9m,
+          partition-creation 10m). The 1h default exists as a safety
+          floor for future @SchedulerLock annotations. Latent.
+
+      (d) PostgreSQLSessionHousekeepingJobHandler has @Scheduled but
+          NO @SchedulerLock — runs on EVERY replica per hour
+          (5-replica deployment = 5x housekeeping invocations per hour).
+          This is the existing housekeeping-job-no-scheduler-lock-multi-instance-amplification
+          invariant; the SchedulingConfiguration sidecar CONFIRMS the
+          finding from the platform-level scheduling-foundation angle
+          and locks in the convention violation.
+
+      (e) Shared primary DataSource (HikariCP pool) for both jOOQ
+          traffic AND ShedLock UPSERTs — sub-1-QPS shedlock writes
+          but a HikariCP-pool-exhaustion event would silently skip a
+          @SchedulerLock acquisition cycle. Resource-economy decision;
+          documented in implicit_adrs.
+
+      Triangulation count rises from 3 to 4 (HousekeepingTTLProperties
+      batch ZK rev-2 + SchedulingConfiguration batch ZK NEW +
+      HousekeepingJobManager batch K + ActivityEmptyPartitionsHousekeepingJob
+      batch VAL-LSN-019-B).
+
+      Two NEW probes from SchedulingConfiguration: P-183 (cron-misfire
+      under thread starvation) + P-182 (multi-instance lock race
+      under usingDbTime).
 vocabulary_status: codebase-anchored, doc-side-partially-covered
 axes_present:
 - config_prefixes
@@ -73,6 +145,7 @@ nodes:
 - odd-platform java org.opendatadiscovery.oddplatform.housekeeping.config config-properties-class:HousekeepingTTLProperties
 - odd-platform java service service:HousekeepingJobManager
 - odd-platform java housekeeping job:ActivityEmptyPartitionsHousekeepingJob
+- odd-platform java org.opendatadiscovery.oddplatform.config config-class:SchedulingConfiguration
 contributors:
 - |-
   HousekeepingTTLProperties: entities[HousekeepingTTLProperties,
@@ -135,6 +208,62 @@ contributors:
   per 15-min cycle (MEDIUM on populated deployments — P-013 probe);
   ACCESS EXCLUSIVE lock on DROP TABLE blocks concurrent INSERTs to
   OTHER partitions of the same parent for the lock duration]
+- |-
+  HousekeepingTTLProperties REV-2 (batch ZK file-analyser/0.4.0 —
+  STRENGTHENS — supersedes batch-D sidecar at rev-1):
+  Re-enriched with Stress Protocol categories, Category F
+  request-input alignment, upstream_callers, downstream_side_effects.
+  All prior findings preserved + extended. NEW (vs batch D):
+  stress_findings.tunables.{resolvedAlertsDays, searchFacetsDays,
+  dataEntityDeleteDays} enumerate the N=0 / N=1 / N=30 / N=negative /
+  N=Integer.MAX_VALUE behaviours per field; NEW
+  stress_findings.name_behavior_pairs.[resolvedAlertsDays]
+  DRIFT_NAME_VS_BEHAVIOR with explicit operator-visible-consequence;
+  NEW stress_findings.request_inputs Category F analysis per field
+  (TRANSLATES_SILENTLY for resolved_alerts_days due to jOOQ predicate
+  bug; TRANSLATES_LEGITIMATELY for search_facets_days last-accessed
+  semantics; MATCHES for data_entity_delete_days);
+  NEW stress_findings.probes_emitted.[P-181] (negative-value /
+  Integer.MAX_VALUE boundary probe); NEW downstream_side_effects
+  cardinality_per_call shape per job (0..N rows / 0..M S3 DELETE
+  per cycle); NEW upstream_callers chain enumerated through
+  HousekeepingJobManager + 3 consuming jobs.
+- |-
+  SchedulingConfiguration (batch ZK NEW — NET-NEW PRIMARY-SOURCE pin
+  of the platform-level scheduling foundation):
+  entities[SchedulingConfiguration class, LockProvider interface,
+  JdbcTemplateLockProvider, Spring @Scheduled infrastructure, ShedLock
+  @SchedulerLock AOP, shedlock PG table, the four @Scheduled consumers];
+  operations[boot-time @EnableScheduling + @EnableSchedulerLock; build
+  JdbcTemplateLockProvider Bean with .usingDbTime(); runtime
+  per-@SchedulerLock-method PG-arbitrated lock acquisition];
+  invariants[Single-thread ThreadPoolTaskScheduler default (no
+  spring.task.scheduling.pool.size; no custom TaskScheduler Bean) —
+  all 4 @Scheduled jobs share ONE thread sequentially;
+  defaultLockAtMostFor=1h applies ONLY to @SchedulerLock methods
+  omitting their own lockAtMostFor — does NOT auto-lock bare
+  @Scheduled; .usingDbTime() removes JVM clock-skew as a multi-replica
+  concern (PG's current_timestamp is authoritative);
+  defaultLockAtMostFor=1h is currently DEAD CODE (all 3 @SchedulerLock
+  methods set their own values explicitly); shared primary DataSource
+  with main jOOQ traffic — ShedLock UPSERTs consume one HikariCP
+  connection per lock acquisition];
+  implicit_adrs[.usingDbTime() as DB-time arbitration choice (HIGH);
+  defaultLockAtMostFor=1h as latent safety floor (HIGH); colocating
+  scheduling enablement with the LockProvider bean (MEDIUM);
+  sharing the primary DataSource with main jOOQ traffic (HIGH)];
+  bugs[Single-thread executor default — undocumented, operationally
+  fragile (HIGH severity — 14m housekeeping cycle blocks 10m
+  status-switch); PostgreSQLSessionHousekeepingJobHandler asymmetry
+  (LOW today, latent if session-purge ever became non-idempotent);
+  defaultLockAtMostFor=1h DEAD CODE (LOW); no graceful shutdown
+  semantics — kubectl delete pod during housekeeping risks 14m lock
+  hold (MEDIUM); LockProvider bean name shadowing risk (LOW);
+  no observability on lock acquisition/contention (LOW)];
+  performance[per-lock-acquisition PG round-trip (sub-1-QPS,
+  negligible); single-thread = serial throughput across all 4 jobs];
+  probes_emitted[P-183 (cron-misfire under thread starvation),
+  P-182 (multi-instance lock race under usingDbTime)]
 evidence:
 - HousekeepingTTLProperties.md:concepts.entities + concepts.operations + concepts.invariants
 - HousekeepingTTLProperties.md:implicit_adrs.[0-2] (housekeeping-vs-partition split
@@ -152,25 +281,64 @@ evidence:
   (3-vs-5 framing; ShedLock window not documented; per-job failure
   isolation not documented; strict opt-in vs "on by default" framing)
 - |-
-  **NEW batch VAL-LSN-019-B — ActivityEmptyPartitionsHousekeepingJob.md
-  (FRESH — 4th of 5 housekeeping beans pinned at primary source)**:
-    - concepts.entities + concepts.operations + concepts.invariants[0-5]
-    - bugs_limitations_corner_cases.[0] HIGH (functionally near-no-op
-      on steadily-used platforms — silent-data-growth)
-    - bugs_limitations_corner_cases.[1] HIGH (race window between
-      empty-check and DROP TABLE — silent data loss; new dedicated
-      invariant)
-    - bugs_limitations_corner_cases.[2-4] MEDIUM/LOW (DROP TABLE no
-      IF EXISTS; LIKE pattern overmatch; no observability)
-    - performance.hot_paths[0] + performance.known_performance_gaps[0]
-      (count(*)=0 sequential scan per 15-min cycle on every past
-      partition — multi-GB I/O on populated deployments; P-013 probe)
-    - security.known_security_gaps[0,1] (DDL privilege requirement
-      undocumented; no audit log of partition DROP)
-    - docs_link_semantic.doc_drift_findings.[0-2] (3-vs-5 framing
-      confirmed from activity-side; retention-via-emptiness model
-      not documented anywhere; no housekeeping.ttl.activity_days
-      knob)
+  **NEW batch ZK — HousekeepingTTLProperties REV-2 (file-analyser/0.4.0)**:
+    - concepts.entities + concepts.operations + concepts.invariants
+      (re-enriched at rev-2 schema; supersedes batch-D rev-1 reading)
+    - stress_findings.tunables.{resolvedAlertsDays, searchFacetsDays,
+      dataEntityDeleteDays} (N=0 / N=1 / N=30 / N=negative /
+      N=Integer.MAX_VALUE boundaries per field)
+    - stress_findings.name_behavior_pairs (DRIFT_NAME_VS_BEHAVIOR for
+      resolvedAlertsDays via jOOQ precedence bug; MINOR for
+      searchFacetsDays last-accessed semantics; NONE for
+      dataEntityDeleteDays)
+    - stress_findings.request_inputs (Category F analysis per field)
+    - stress_findings.probes_emitted.[P-181] (negative-value /
+      Integer.MAX_VALUE boundary probe — NEW this batch)
+    - bugs_limitations_corner_cases.[0-6] preserved + extended with
+      Java-vs-YAML default mismatch (LSN-001 shape) and no @Min/@Validated
+      observation
+    - upstream_callers + downstream_side_effects fully traced
+- |-
+  **NEW batch ZK — SchedulingConfiguration (NET-NEW PRIMARY-SOURCE pin
+  of the platform-level scheduling foundation)**:
+    - concepts.entities + concepts.operations + concepts.invariants
+      (the 26-line @Configuration class that turns on
+      @EnableScheduling + @EnableSchedulerLock + the JdbcTemplateLockProvider
+      Bean with .usingDbTime())
+    - bugs_limitations_corner_cases.[0] HIGH (single-thread
+      ThreadPoolTaskScheduler default — undocumented, operationally
+      fragile — 4 @Scheduled jobs serialise on one thread; a 14m
+      housekeeping cycle blocks the 10m status-switch)
+    - bugs_limitations_corner_cases.[1] LOW (PostgreSQLSessionHousekeepingJob
+      asymmetry — confirms the existing
+      housekeeping-job-no-scheduler-lock-multi-instance-amplification
+      invariant from the platform-scheduling-foundation angle)
+    - bugs_limitations_corner_cases.[2] LOW (defaultLockAtMostFor=1h
+      DEAD CODE — all 3 @SchedulerLock methods set explicit values)
+    - bugs_limitations_corner_cases.[3] MEDIUM (no graceful shutdown
+      — kubectl delete pod during housekeeping risks 14m lock hold)
+    - bugs_limitations_corner_cases.[4-5] LOW (LockProvider bean name
+      shadowing risk; no Micrometer instrumentation on lock acquisition)
+    - implicit_adrs.[0-3] (`.usingDbTime()` as DB-time arbitration HIGH;
+      defaultLockAtMostFor=1h as latent safety floor HIGH; colocating
+      scheduling enablement with LockProvider bean MEDIUM; sharing
+      primary DataSource with main jOOQ traffic HIGH)
+    - performance.known_performance_gaps.[0] HIGH (single-thread
+      default — silent operational risk under load), [1] MEDIUM
+      (no Micrometer integration — no backlog/missed-fire metric),
+      [2] LOW (shared DataSource between scheduling-locks and
+      main jOOQ traffic)
+    - security.known_security_gaps.[0] LOW (session-housekeeping
+      unlock asymmetry — operationally harmless today, latent),
+      [1] LOW (no audit log of LockProvider activity — DB-write
+      attacker can stall housekeeping silently)
+    - stress_findings.probes_emitted.[P-183] (cron-misfire under
+      thread starvation — empirical), [P-182] (multi-instance lock
+      race under .usingDbTime() — empirical)
+    - docs_link_semantic.doc_drift_findings.[0-3] (single-thread
+      default undocumented; defaultLockAtMostFor=1h undocumented;
+      .usingDbTime() not surfaced; asymmetric session-housekeeping
+      unlock not surfaced)
 security_aggregate:
   overall: MEDIUM
   auth_modes_relevant:
@@ -358,6 +526,8 @@ security_aggregate:
   - HousekeepingTTLProperties.md
   - HousekeepingJobManager.md
   - ActivityEmptyPartitionsHousekeepingJob.md
+  - HousekeepingTTLProperties.md (batch ZK REV-2)
+  - SchedulingConfiguration.md (batch ZK NEW)
   evidence:
   - HousekeepingTTLProperties.md:security.known_security_gaps.[0,1]
   - HousekeepingTTLProperties.md:security.owner_scoping
@@ -370,6 +540,13 @@ security_aggregate:
     security.known_security_gaps.[0,1] (DDL privilege undocumented; no
     audit log of DROP) + bugs_limitations_corner_cases.[0,1] (functional
     near-no-op + race window)
+  - |-
+    **NEW batch ZK — SchedulingConfiguration.md**:
+    security.known_security_gaps.[0] (session-housekeeping unlock
+    asymmetry — defence-in-depth gap) + security.known_security_gaps.[1]
+    (no audit log of LockProvider activity — malicious operator with
+    PG write access can stall housekeeping by manipulating shedlock
+    table directly)
 performance_aggregate:
   overall: MEDIUM
   hot_paths:
@@ -460,6 +637,8 @@ performance_aggregate:
   - HousekeepingTTLProperties.md
   - HousekeepingJobManager.md
   - ActivityEmptyPartitionsHousekeepingJob.md
+  - HousekeepingTTLProperties.md (batch ZK REV-2)
+  - SchedulingConfiguration.md (batch ZK NEW)
   evidence:
   - HousekeepingTTLProperties.md:performance.hot_paths + throughput_characteristics
     + scaling_characteristics
@@ -472,6 +651,17 @@ performance_aggregate:
     performance.hot_paths[0] (count(*)=0 sequential scan per 15-min
     cycle) + performance.known_performance_gaps.[0] (MEDIUM on populated
     deployments)
+  - |-
+    **NEW batch ZK — SchedulingConfiguration.md**:
+    performance.known_performance_gaps.[0] HIGH (single-thread
+    default — operator's expectation of parallel @Scheduled execution
+    is wrong by default; a 14m housekeeping cycle delays the 10m
+    status-switch by up to 14m; sustained backlog drifts the 10min
+    cadence to 24min+) + performance.known_performance_gaps.[1]
+    MEDIUM (no backlog/missed-fire metric) +
+    performance.known_performance_gaps.[2] LOW (shared DataSource
+    between ShedLock UPSERTs and main jOOQ traffic — HikariCP
+    exhaustion silently skips @SchedulerLock cycles)
 notes: |-
   Housekeeping TTL retention is the operational counterpart to the
   Activity Table Partitioning concept and the Activity Feed concept's
@@ -534,3 +724,52 @@ notes: |-
         with CREATE TABLE on public from ActivityTablePartitionManager,
         operators running against managed Postgres need explicit
         privilege grants
+
+  **STRENGTHENED batch ZK (2026-05-26)** — TWO config-properties-class
+  layer sidecars (HousekeepingTTLProperties REV-2 + SchedulingConfiguration
+  NEW) extend the picture in two important ways:
+
+  (a) HousekeepingTTLProperties REV-2 upgrades the prior batch-D rev-1
+      sidecar to file-analyser/0.4.0. The schema upgrade surfaces three
+      NEW probe-worthy boundaries: N=0 (Java primitive default — silent
+      delete-all on cycle), N=negative (cutoff = now() + N days = match
+      everything), N=Integer.MAX_VALUE (DateTimeException thrown +
+      no-op + recurring ERROR logs). Probe P-181 NEW for empirical
+      boundary confirmation.
+
+  (b) SchedulingConfiguration NET-NEW. The platform-level scheduling
+      FOUNDATION the entire housekeeping subsystem rests on — the 26-line
+      @Configuration class that turns on @EnableScheduling +
+      @EnableSchedulerLock + the JdbcTemplateLockProvider Bean. Two
+      HIGH-severity findings: (i) single-thread ThreadPoolTaskScheduler
+      default — all 4 @Scheduled jobs serialise on ONE thread, undocumented
+      in live docs; (ii) `.usingDbTime()` is the POSITIVE implicit ADR
+      that neutralises JVM clock-skew across replicas, also undocumented.
+      Two NEW probes (P-183 cron-misfire under thread starvation; P-182
+      multi-instance lock race under .usingDbTime()).
+
+  Companion NEW concepts surfaced this batch:
+    - Single-thread Spring TaskScheduler default (canonical name TBD —
+      see canonicalisation candidates)
+    - ShedLock usingDbTime — DB-arbitrated lock time across replicas
+      (canonical name TBD)
+    - SchedulingConfiguration as the platform-scheduling foundation
+      (canonical name TBD)
+
+  Three NEW DOC-NNN candidates from batch ZK:
+    (h) Document the single-thread ThreadPoolTaskScheduler default
+        on /configuration-and-deployment/odd-platform — operators
+        running multi-job workloads need to know the 4 @Scheduled jobs
+        serialise + how to set spring.task.scheduling.pool.size as
+        the mitigation
+    (i) Document `.usingDbTime()` as the clock-skew mitigation for
+        multi-replica deployments — operators choosing 'do I need
+        chrony on my K8s nodes?' deserve to learn the platform
+        tolerates clock skew because PG arbitrates lock time
+    (j) Document the asymmetric session-housekeeping (no @SchedulerLock)
+        explicitly — the docs page says session-purge is 'not
+        configurable' but does not surface that EVERY replica runs it
+        per hour (already partially captured by the existing
+        housekeeping-job-no-scheduler-lock-multi-instance-amplification
+        invariant; batch ZK confirms from the scheduling-foundation
+        angle)

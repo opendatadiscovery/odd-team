@@ -1,0 +1,219 @@
+name: 'ODDLDAPProperties.@PostConstruct validate() under-checks — AD.domain + url-scheme + empty-adminGroups silently accepted'
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-09
+  - P-08
+description: |-
+  **NEW INVARIANT, batch ZK (2026-05-26) — focused DRIFT_NAME_VS_BEHAVIOR
+  at ODDLDAPProperties.@PostConstruct validate().**
+
+  `ODDLDAPProperties.java:40-49` declares a `@PostConstruct validate()`
+  method that enforces TWO and ONLY TWO invariants at boot:
+
+    (1) `auth.ldap.url` non-empty (throws `IllegalStateException("LDAP
+        server url is not defined")` at line 42-44)
+    (2) at least one of `{auth.ldap.dn-pattern, auth.ldap.user-filter.filter}`
+        non-empty (throws at line 45-48)
+
+  The METHOD NAME promises post-binding cross-field invariant
+  enforcement; an operator reads `validate()` and reasonably expects
+  ALL load-bearing field combinations to be checked. The IMPLEMENTATION
+  enforces a STRICT SUBSET of what the docs name as "Required":
+
+  **WHAT validate() DOES NOT CHECK** (per `ODDLDAPProperties.java:40-49`):
+
+  - `active-directory.enabled=true` → `active-directory.domain` non-empty
+    (the docs at WebFetch
+    `/configuration-and-deployment/enable-security/authentication/ldap`
+    2026-05-26 (HTTP 200) say `domain` is "Required when AD is enabled"
+    — enforced by ZERO code). An operator setting `enabled: true` and
+    forgetting `domain` boots successfully; the downstream consumer at
+    `LDAPSecurityConfiguration.java:78` constructs
+    `new ActiveDirectoryLdapAuthenticationProvider(null, url)`. Spring
+    Security's provider accepts the null domain, falling back to
+    non-domain UPN bind semantics — the deployment boots but the
+    AD-bind shape is silently degraded. P-185 probe NEW (batch ZK)
+    pins the empirical behaviour.
+
+  - URL scheme — `auth.ldap.url` is checked for non-emptiness only;
+    `ldap://` (cleartext) and `ldaps://` (TLS) are accepted
+    interchangeably. The live docs self-flag this as a "Notable Gap"
+    in their own page. An operator typing `corp-ad.example.com:389`
+    (no scheme) passes validate() and fails at runtime LDAP connect.
+    A scheme regex (`@Pattern("^ldaps?://")`) or `@URL` constraint
+    would close the gap but is not applied. Severity HIGH because
+    `ldap://` means bind credentials AND end-user login credentials
+    travel in CLEARTEXT.
+
+  - `adminGroups` empty/null → ZERO LDAP path to ADMIN. The bundled
+    `application.yml:50-65` ships the entire `ldap:` block commented
+    out — meaning the OUT-OF-BOX deployment that an operator copies
+    and uncomments will, IF they forget `groups.admin-groups`, have
+    NO path to ADMIN via LDAP. `validate()` does NOT enforce
+    non-empty admin-groups when LDAP is the sole auth path. Live docs
+    self-flag "No documentation on behavior when admin-groups are
+    absent". (Note: the admin-group MATCH SEMANTICS — substring vs
+    full-string-equality via `OperationUtils.containsIgnoreCase` —
+    is held in `state/coherence-conflicts-batch-ZK.md` pending a
+    primary-source pin to the `OperationUtils.containsIgnoreCase`
+    implementation; the ODDLDAPProperties REV-2 sidecar's substring
+    claim contradicts the existing `auth-mode-quartet-meta-invariant`
+    full-equality claim.)
+
+  - Username/password pairing — one without the other is silently
+    accepted; the bind shape silently switches to anonymous
+    (`LdapContextSource.setUserDn(null)`).
+
+  - `groups.search-base` presence when `groups.filter` is set — both
+    are nested-optional; the consumer combines them at
+    `LDAPSecurityConfiguration.java:104-111`.
+
+  **THE WHOLE-METHOD DRIFT**: `validate()` by name promises 'I checked
+  your config'; the implementation checks 'I checked exactly 2 of
+  your config knobs'. The set of load-bearing invariants enforced is
+  a STRICT SUBSET of the load-bearing invariants the docs name as
+  'Required'. Operators expect imperative `validate()` methods to be
+  more thorough than declarative `jakarta.validation` annotations
+  (because the latter typically capture only field-shape constraints
+  while the former can express cross-field rules) — but ODD's
+  `validate()` carries the imperative-cross-field name without the
+  imperative-cross-field coverage.
+
+  **FIX SHAPES**:
+
+  Option A (extend validate() — same shape, more checks):
+    Add the missing cross-field rules to the existing `validate()`
+    method:
+      - `if (activeDirectory.isEnabled() && StringUtils.isEmpty(activeDirectory.getDomain())) throw new IllegalStateException(...)`
+      - `if (!url.matches("^ldaps?://.*")) throw new IllegalStateException(...)`
+      - optional: warn (not fail) if `adminGroups` is null/empty under
+        LDAP-as-sole-auth-path
+
+  Option B (switch to declarative validation + @Validated):
+    Promote `ODDLDAPProperties` to `@Validated` at the class level +
+    add `jakarta.validation.constraints` annotations
+    (`@NotBlank`, `@URL`, `@Pattern`, cross-field via custom validator).
+    Spring Boot fires all errors at once; the operator sees the full
+    set instead of one-at-a-time iteration.
+
+  Option C (operator-facing — docs-side):
+    Document on the LDAP config-page the explicit list of what
+    `validate()` checks AND the implicit list of what it does NOT
+    check (the four items enumerated above). At least the operator
+    learns the contract.
+
+  **CROSS-CUTTING CONNECTIONS**:
+    - Pairs with the `lombok-data-tostring-sensitive-field-leak`
+      invariant — ODDLDAPProperties also exhibits the credential-leak
+      pattern via `@Data` on `password`.
+    - Pairs with the existing `auth-mode-quartet-meta-invariant-all-four-sidecars-pinned`
+      invariant — that one captures the QUARTET-COMPLETION across all
+      four `auth.type` SecurityConfiguration siblings; THIS one
+      captures the LDAP-specific under-check pattern at the
+      ConfigurationProperties layer.
+    - See `state/coherence-conflicts-batch-ZK.md` for the unresolved
+      adminGroups substring-vs-full-equality contradiction between
+      the batch-ZK ODDLDAPProperties sidecar and the
+      auth-mode-quartet's batch-O correction.
+
+  Severity: HIGH on the URL-scheme item (cleartext credential transmission
+  if operator types `ldap://`); MEDIUM on AD.domain unvalidated (silent
+  AD-bind degradation); LOW on empty-adminGroups (operator-visible at
+  first login failure rather than silent).
+nodes:
+  - odd-platform java org.opendatadiscovery.oddplatform.auth config-properties-class:ODDLDAPProperties
+  - odd-platform java LDAPSecurityConfiguration config-key-consumer:auth.type@L51
+contributors:
+  - |-
+    ODDLDAPProperties REV-2.md (batch ZK NEW — PRIMARY-SOURCE pin from
+    the config-properties-class angle):
+    bugs_limitations_corner_cases.[no LDAPS enforcement] HIGH —
+    auth.ldap.url accepts ldap:// and ldaps:// interchangeably;
+    bugs_limitations_corner_cases.[AD.domain unvalidated] MEDIUM —
+    validate() omits the {enabled, domain} cross-field check;
+    bugs_limitations_corner_cases.[empty adminGroups → no admins]
+    MEDIUM — empty admin-groups under LDAP-as-sole-auth-path silently
+    produces NO admin path;
+    stress_findings.name_behavior_pairs.[validate()] DRIFT_NAME_VS_BEHAVIOR
+    formal classification — checks 2 of N load-bearing invariants;
+    stress_findings.request_inputs.[url] DRIFT_INPUT_NAME_VS_IMPLEMENTATION
+    TRANSLATES_SILENTLY (non-emptiness only, no scheme guard);
+    stress_findings.request_inputs.[AD enabled+domain] DRIFT_INPUT_NAME_VS_IMPLEMENTATION
+    TRANSLATES_SILENTLY (paired-control promise without paired-validation
+    enforcement);
+    stress_findings.probes_emitted.[P-185] (AD null-domain silent
+    degradation — empirical confirmation);
+    docs_link_semantic.doc_drift_findings.[validate exception messages
+    not in docs + active-directory.domain unvalidated + no scheme
+    validation on url]
+  - |-
+    LDAPSecurityConfiguration@L51.md (existing — STRENGTHENS from the
+    consumer angle): the four unchecked fields' downstream consumption
+    sites — line 78 (AD bind without null-check on domain), line 91-93
+    (USER-only authority when adminGroups empty), line 117-124 (URL
+    scheme not enforced at consumer either)
+evidence:
+  - 'ODDLDAPProperties.md:bugs_limitations_corner_cases.[no LDAPS enforcement] — HIGH severity; auth.ldap.url scheme not validated'
+  - 'ODDLDAPProperties.md:bugs_limitations_corner_cases.[AD.domain unvalidated] — MEDIUM; validate() omits paired {enabled, domain} check'
+  - 'ODDLDAPProperties.md:bugs_limitations_corner_cases.[empty adminGroups → no admins] — MEDIUM; out-of-box config produces no LDAP-admin path'
+  - 'ODDLDAPProperties.md:stress_findings.name_behavior_pairs.[validate()] — DRIFT_NAME_VS_BEHAVIOR; validate checks 2 of N invariants'
+  - 'ODDLDAPProperties.md:stress_findings.request_inputs.[url] — TRANSLATES_SILENTLY with 4 enumerated operator-visible failures'
+  - 'ODDLDAPProperties.md:stress_findings.request_inputs.[AD.enabled+domain paired] — TRANSLATES_SILENTLY paired-control promise without paired-validation enforcement'
+  - 'ODDLDAPProperties.md:docs_link_semantic.doc_drift_findings.[validate exception messages + AD.domain unvalidated + no scheme validation]'
+  - 'ODDLDAPProperties.md:stress_findings.probes_emitted.[P-185] — AD null-domain silent degradation'
+  - 'LDAPSecurityConfiguration@L51.md (existing): the four unchecked-fields'' downstream consumption sites'
+axes_present:
+  - config_properties
+  - config_classes
+triangulation_count: 2
+cross_batch: false
+severity: HIGH
+severity_dim: silent-misconfiguration-at-auth-boundary
+mitigations_unimplemented:
+  - |-
+    Extend the @PostConstruct validate() at ODDLDAPProperties.java:40-49
+    with the missing cross-field rules:
+      - if (activeDirectory.isEnabled() && StringUtils.isEmpty(activeDirectory.getDomain())) throw new IllegalStateException("active-directory.domain is required when active-directory.enabled=true")
+      - if (!url.matches("^ldaps?://.*")) throw new IllegalStateException("auth.ldap.url must use ldap:// or ldaps:// scheme")
+      - optional: log.warn (not fail) when adminGroups is empty under LDAP-as-sole-auth-path
+  - |-
+    Promote ODDLDAPProperties to @Validated + add
+    jakarta.validation.constraints annotations (@NotBlank on url + dnPattern;
+    @URL on url; @Pattern("^ldaps?://") on url; custom cross-field validator
+    for AD pairing). Spring fires all errors at once.
+  - |-
+    Docs-side: document on the LDAP config-page the EXACT list of what
+    validate() checks AND the list of what it does NOT check (a 4-item
+    enumeration). Operators learn the contract.
+  - |-
+    Add a regression test asserting that boot fails with the expected
+    IllegalStateException for each of: url=null, url=empty, dnPattern+filter both
+    null, AD.enabled=true+domain=null, adminGroups=null under LDAP-as-sole.
+related_features: []
+related_pillar_features:
+  - P-09
+notes: |-
+  NEW invariant batch ZK (2026-05-26). The first focused DRIFT_NAME_VS_BEHAVIOR
+  pin at ODDLDAPProperties.@PostConstruct validate(). The method name
+  promises cross-field invariant enforcement; the implementation enforces
+  a STRICT SUBSET (2 of N load-bearing invariants).
+
+  Cross-cutting connections:
+    - The adminGroups substring-vs-full-equality semantic dispute is
+      held in `state/coherence-conflicts-batch-ZK.md` pending a
+      primary-source pin to OperationUtils.containsIgnoreCase. THIS
+      invariant captures the EMPTY-adminGroups finding (a separate
+      issue from the matching-semantic dispute).
+    - The Lombok @Data exposure of password (Lombok-data-tostring-sensitive-field-leak)
+      is a sibling failure at ODDLDAPProperties — different field
+      (password vs the validate() under-check items), same POJO,
+      same security-class concern.
+    - The auth-mode-quartet-meta-invariant carries the cross-mode
+      structural-consistency framing; THIS invariant carries the
+      LDAP-mode-specific under-check pattern.
+
+  Three DOC-NNN candidates:
+    (a) Extend validate() with the four missing checks
+    (b) Promote to @Validated + JSR-303 annotations
+    (c) Document the exact validate() contract on the LDAP config-page

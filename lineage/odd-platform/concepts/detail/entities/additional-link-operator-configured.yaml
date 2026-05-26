@@ -34,25 +34,144 @@ description: |-
   NOT validate URL scheme — operator-configured `javascript:` or
   `data:text/html` URLs are passed unsanitised. The reverse-tabnabbing
   + URL-scheme gap is the load-bearing operator-trust finding.
+
+  ## STRENGTHENED — batch ZK (2026-05-26) — AdditionalLinkProperties config-properties-class primary source
+
+  Batch ZK adds the AdditionalLinkProperties config-properties-class
+  primary-source sidecar (rev file-analyser/0.5.0). The prior anchor was
+  the LinksController CONSUMER angle (batch ZE); batch ZK adds the
+  BINDING-OWNER angle from `AdditionalLinkProperties.java:1-10` itself
+  (the 10-line record-of-records: outer `record AdditionalLinkProperties(List<Link>
+  links)` + inner `record Link(String title, String url)`). Three NEW
+  findings surface from the binding-owner angle that the consumer angle
+  could not see:
+
+  (a) **Class-name-vs-prefix drift** — the Java class is
+      `AdditionalLinkProperties` (advertising 'additional links') but
+      the `@ConfigurationProperties` prefix is `odd` (NOT
+      `odd.additional-links` and NOT `odd.additional.links`). The bound
+      property is the unqualified `odd.links`. The 'Additional' qualifier
+      is JAVA-INTERNAL ONLY. An operator skimming `application.yml` and
+      seeing `odd.links:` may not realise it corresponds to the 'additional
+      links toolbar' feature.
+
+  (b) **Namespace overclaim — `@ConfigurationProperties("odd")` claims
+      the entire `odd.*` prefix but binds only `links`**. The other
+      `odd.*` keys (`odd.tenant-id`, `odd.platform-base-url`,
+      `odd.data-entity-stale-period`, `odd.activity.partition-period`)
+      are consumed independently via `@Value` reads scattered across
+      services (SlackMessageGeneratorConfiguration.java:15,
+      ExternalMetricReader.java:53, DataEntityStaleDetector.java:10).
+      LATENT FOOT-GUN: if a future hardening change toggled
+      `(ignoreUnknownFields = false)` — a common posture — the
+      application would FAIL TO BOOT because the binder would see
+      `tenant-id`, `platform-base-url`, etc. as 'unknown' sibling keys
+      under the `odd` prefix. This is a canonical instance of the
+      Partial-home @ConfigurationProperties pattern invariant.
+
+  (c) **NULL-vs-empty-list distinction at binding** — at the RECORD layer
+      the default is actually `null` when `odd.links` is absent (not
+      `List.of()`); the empty-list response shape is constructed by
+      LinksController's `CollectionUtils.isEmpty` check. The doc page
+      says 'Defaults to empty list' which is true at the API response
+      layer but NOT at the binding layer. A future refactor that inlined
+      or removed the controller's null-guard would break the documented
+      default.
+
+  Three OBSERVATIONS strengthen the existing ZE finding:
+
+  (i)  **URL-scheme passthrough — backend-side primary source confirmed**:
+       the record's inner `Link(String title, String url)` has NO
+       `@URL`, NO `@Pattern`, NO `@NotBlank`, NO scheme allowlist, NO
+       `@Validated` activator. The defence-in-depth pushed to the UI
+       layer (React's javascript:-neutralisation) is the ONLY barrier;
+       backend-side has zero validation. Confirmed at the binding-owner
+       (the source of operator-input) angle.
+
+  (ii) **No `@ConstructorBinding` despite being a record** — works under
+       Spring Boot 3.x because constructor binding is now the default for
+       records, but a future migration to a non-record type (e.g. Lombok
+       `@Data` class) would silently flip to setter-based binding with
+       different default behaviour around immutability and partial
+       population. Latent refactor hazard.
+
+  (iii) **`odd.links` is NOT in the default `application.yml`** — not even
+       as a commented-out template. Operators discovering the feature have
+       NO anchor in the shipped config file. The `odd:` block
+       (application.yml:208-214) lists `platform-base-url` (commented),
+       `tenant-id`, `data-entity-stale-period`, and `activity.partition-period`
+       — but `links` is silently omitted.
+
+  No probes emitted batch ZK (Probe P-177 from batch ZE remains the
+  authoritative empirical pin; the new binding-owner-angle findings are
+  all STATIC-INFERRED with HIGH confidence).
 axes_present:
   - controllers
   - config_consumers
   - ui_components
+  - config_properties
 nodes:
   - odd-platform java LinksController controller-class:LinksController
+  - odd-platform java org.opendatadiscovery.oddplatform.config.properties config-properties-class:AdditionalLinkProperties
 contributors:
   - 'LinksController.md:concepts.entities — AdditionalLink + Link DTO'
   - 'LinksController.md:implicit_adrs.[0,1] — STATIC catalogue (no persistence, no admin UI) + GLOBAL (no per-role gating)'
+  - |-
+    AdditionalLinkProperties.md (batch ZK config-properties-class primary
+    source — STRENGTHENS): concepts.entities[AdditionalLinkProperties,
+    Link inner record, the `odd.links` config namespace];
+    concepts.operations[bind-at-boot via Spring relaxed binder,
+    expose-as-bean to LinksController]; concepts.invariants[boot-time-immutable
+    record + final fields; no JSR-303 validation; no defaults; no max
+    size]; implicit_adrs.[0,1] (STATIC config-surface vs runtime-mutable
+    + record-of-records immutability);
+    bugs_limitations_corner_cases.[0] MEDIUM (no validation on title/url),
+    [1] MEDIUM (@ConfigurationProperties("odd") namespace overclaim — the
+    Partial-home pattern), [2] LOW (class-name-vs-prefix drift), [3] LOW
+    (odd.links missing from default application.yml), [4] LOW (no
+    @ConstructorBinding), [5] LOW (null-vs-empty-list at record layer
+    forces downstream null-handling), [6] LOW (no @Validated activator);
+    docs_link_semantic.doc_drift_findings.[0-5] (title/url 'required' not
+    enforced; 'defaults to empty list' is controller-level not record-level;
+    no restart caveat in docs; no ordering guarantee asserted; no URL
+    scheme restrictions documented; DISABLED-mode-public caveat absent)
 evidence:
   - LinksController.md:concepts.entities
   - LinksController.md:dependencies_semantic.requires-config (odd.links[].title + odd.links[].url)
   - LinksController.md:bugs_limitations_corner_cases.[0,2,4] (rel=noopener missing + URL scheme unvalidated + boot-time bind)
+  - |-
+    **batch ZK NEW** AdditionalLinkProperties.md:concepts.invariants
+    (record + final fields + no validation + no defaults)
+  - 'AdditionalLinkProperties.md:bugs_limitations_corner_cases.[0] (no JSR-303 on title/url — binding-owner-angle primary source)'
+  - 'AdditionalLinkProperties.md:bugs_limitations_corner_cases.[1] (@ConfigurationProperties("odd") namespace overclaim → Partial-home pattern instance)'
+  - 'AdditionalLinkProperties.md:bugs_limitations_corner_cases.[2] (class-name-vs-prefix drift — AdditionalLinkProperties binds odd.links)'
+  - 'AdditionalLinkProperties.md:bugs_limitations_corner_cases.[3] (odd.links missing from default application.yml)'
+  - 'AdditionalLinkProperties.md:docs_link_semantic.doc_drift_findings.[0-5]'
+  - 'AdditionalLinkProperties.md:stress_findings.request_inputs.[url] (TRANSLATES_SILENTLY — javascript:/data:/file:/vbscript: schemes pass through unmodified to UI <a href>)'
+  - 'AdditionalLinkProperties.md:security.known_security_gaps.[0,1,2,3]'
 notes: |-
   Operator-configured external links are a STATIC catalogue, not a
   runtime-mutable feature; the absence of any persistence layer or
   admin UI is the explicit decision (implicit_adrs[0]). For
   per-data-entity links (the DATA_ENTITY_ATTACHMENT_MANAGE surface),
   see `attachment` and related concepts.
+
+  **STRENGTHENED batch ZK** — AdditionalLinkProperties config-properties-class
+  sidecar (rev file-analyser/0.5.0) adds the BINDING-OWNER angle alongside
+  the prior LinksController CONSUMER angle. Three NEW findings (class-name-vs-prefix
+  drift; @ConfigurationProperties("odd") namespace overclaim → Partial-home
+  pattern; null-vs-empty-list distinction at record layer) join the existing
+  rel-noopener + URL-scheme findings.
+
+  Cross-cutting connections (batch ZK):
+    - The namespace-overclaim observation feeds the existing
+      `partial-home-configurationproperties-pattern` invariant (3rd
+      sidecar instance — joins DataCollaborationProperties +
+      EmailSenderProperties).
+    - The no-JSR-303-validation observation feeds the existing
+      `additional-links-no-rel-noopener-and-no-url-validation` invariant
+      from the BACKEND angle (the prior anchors were LinksController +
+      AppInfoMenu UI rendering).
 related_features: []
 related_pillar_features:
   - P-08

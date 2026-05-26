@@ -70,11 +70,11 @@ Verify all expected sidecar paths exist on disk before proceeding (Glob + ls). F
 
 In ONE assistant message, fire 5 Agent tool calls IN PARALLEL with `run_in_background: false`. Each reducer dedups via **semantic `graph-search`** per `playbooks/registry-search-spawn.md` (rev 7.1 — superseding the registry-search grep). Subagent types:
 
-- `concept-merger` — refresh `concepts/` from the new sidecars; dedup `graph-search --label Concept`.
-- `adr-archaeologist` — refresh `implicit-adrs/` + `refactoring-scopes/`; dedup `graph-search --label ImplicitADR` / `--label RefactoringScope`. Write append-files (`*/index-batch-{theme_id}-append.md`) for index updates.
-- `doc-gap-finder` — refresh `doc-gaps/`; dedup `graph-search --label DocGap`. WebFetch if available; otherwise inherit from neighbour sidecars per stale-probe cadence.
-- `test-coverage-mapper` — refresh `test-map/`; dedup `graph-search --label TestGap`. Output a `test-map/index.delta.yaml` for the orchestrator to merge.
-- `feature-flow-builder` — refresh `feature-flows/`; dedup `graph-search --label Feature`. Detail-file writes must use YAML-safe scalars: never emit a bare scalar containing `: ` or starting with `@` — use `|-` block scalar.
+- `concept-merger` — write/refresh `concepts/detail/` files; dedup `graph-search --label Concept`.
+- `adr-archaeologist` — write/refresh `implicit-adrs/detail/` + `refactoring-scopes/detail/` files; dedup `graph-search --label ImplicitADR` / `--label RefactoringScope`. **Do NOT emit `index-batch-{theme_id}-append.md` directives** — index files are decommissioned; detail/ is canonical.
+- `doc-gap-finder` — write/refresh `doc-gaps/detail/` files; dedup `graph-search --label DocGap`. WebFetch if available; otherwise inherit from neighbour sidecars per stale-probe cadence. **Do NOT emit index-batch-append.md.**
+- `test-coverage-mapper` — write/refresh `test-map/detail/` files; dedup `graph-search --label TestGap`. **Do NOT emit `test-map/index.delta.yaml`.**
+- `feature-flow-builder` — write/refresh `feature-flows/detail/` files; dedup `graph-search --label Feature`. Detail-file writes must use YAML-safe scalars: never emit a bare scalar containing `: ` or starting with `@` — use `|-` block scalar. test_matrix MUST be objects with state/covered/uncovered shape (not plain strings); terminal_side_effect MUST be object with side_effect_class/description.
 
 Per-agent prompts follow the same shape as batch H's reducer prompts (see `lineage/odd-platform/investigator-log.md` batch H entry for the canonical structure). The 5 new sidecar paths are the only sidecars to read in full; PROCESSED_NODE_IDS for the prior batches inherits from the existing index frontmatters.
 
@@ -82,33 +82,21 @@ The assistant turn BLOCKS until all 5 reducers complete. Expect 15-45 min for th
 
 **Failure handling.** If 1-2 reducers fail → still commit + push the partial state with those reducers' artefacts marked `stale_after_batch_{theme_id}` in the manifest. If 3+ reducers fail → mark theme `blocked` and exit.
 
-## Phase 3 — YAML autofix + rebuild indexes + coverage + investigator-log + commit + push
+## Phase 3 — YAML autofix + coverage + investigator-log + commit + push
+
+**Note — index maintenance dropped (2026-05-26).** Post rev-7.1 the graph retriever reads embeddings + `detail/` files directly; the index files (`concepts/index.yaml`, `test-map/index.yaml`, `feature-flows/index.yaml`, the markdown `index.md` aggregates) are denormalized aggregates that no longer serve any retrieval-time consumer. They had become drift-generating decoration. The previous Phase 3 steps that rebuilt indexes + merged `index-batch-{theme_id}-append.md` directives are removed. Reducer agents should no longer be asked to emit append directives. Detail files remain the source of truth.
 
 Run these Bash commands in sequence:
 
-1. **YAML safety pass first** — catches broken scalars before they pollute the indexes:
+1. **YAML safety pass** — catches broken scalars before they pollute the detail/ corpus:
    ```bash
    python3 lineage/_extractor/registry-shard/yaml_safe_fix.py 2>&1 | tail -20
    ```
    Reports `fixed: N`, `unfixable: M`. The unfixable files are quarantined to `.broken-yaml-pending-fix` (data preserved in `.broken-yaml-backup`). If M > 0 — surface in investigator-log under "Follow-ups" but do NOT block the batch; the data is recoverable next batch when the reducer prompt's YAML-safe rule fires.
 
-2. **Markdown-index appends** (if `index-batch-{theme_id}-append.md` files exist):
-   ```bash
-   for art in implicit-adrs refactoring-scopes; do
-     append="lineage/odd-platform/${art}/index-batch-${THEME_ID}-append.md"
-     if [ -f "$append" ]; then
-       awk '/^-->/{flag=1;next} flag' "$append" >> "lineage/odd-platform/${art}/index.md"
-       rm "$append"
-     fi
-   done
-   ```
-   Then update the frontmatter of each merged index.md per the append-file's HTML-comment instructions (counts + new batch summary key). Use Edit calls. **If the append file produces a known prose-only narrative without `## ID — headline` lines for the new entries**, the index integrity audit in step 3 surfaces a "detail without index" gap — that's acceptable for one batch (reducers grep detail/ directly), but flag for follow-up.
+2. (removed — markdown-index appends are no longer maintained)
 
-3. **Rebuild YAML indexes from detail/** (idempotent; replaces the brittle `merge_deltas.py` workflow):
-   ```bash
-   python3 lineage/_extractor/registry-shard/rebuild_indexes.py all 2>&1 | tail -25
-   ```
-   Detail files are the source of truth; this regenerates `concepts/index.yaml`, `test-map/index.yaml`, `feature-flows/index.yaml` from the parseable subset under `detail/`. Also runs `verify-md` for the three markdown artefacts and surfaces any detail-vs-index discrepancies (non-blocking).
+3. (removed — rebuild_indexes.py is no longer run; detail/ is canonical, graph-search reads it directly via embeddings)
 
 3.5. **Coherence sweep (LSN-018 — pre-commit anomaly detector):**
    ```bash
@@ -116,10 +104,13 @@ Run these Bash commands in sequence:
    ```
    Sweeps the new artefacts emitted this batch (and pre-existing ones) for cross-registry anchor overlaps where one side asserts a NEGATION about an entity another side positively names. Output: `state/coherence-sweep-batch-{THEME_ID}.md`. Empty → batch commits as usual. Non-empty top-tier (no-existing-back-link) candidates → READ the report, decide for each top candidate whether to: (a) supersede the older claim per Rule 6 of the reducer prompts, (b) accept the older claim and rewrite the new artefact, or (c) accept both as legitimately-different facts and add back-links. The sweep does not block the batch by itself — but each unresolved anomaly becomes a follow-up captured in the investigator-log "Follow-ups" section.
 
-4. **Cleanup leftover delta files** (no longer needed after rebuild):
+4. **Cleanup leftover delta + append files** (no longer needed; nothing consumes them):
    ```bash
    find lineage/odd-platform -name 'index.delta.yaml' -delete
+   find lineage/odd-platform -name 'index.delta.*.yaml' -delete
    find lineage/odd-platform -name 'concepts.delta.batch-*.yaml' -delete
+   find lineage/odd-platform -name 'index-batch-*-append.md' -delete
+   find lineage/odd-platform -name 'batch-*-delta.yaml' -delete
    ```
 
 5. **Refresh coverage:**

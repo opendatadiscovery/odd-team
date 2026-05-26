@@ -1,0 +1,184 @@
+name: |-
+  Lookup Tables H1 counter leaks platform-wide population size to every authenticated user (no owner / namespace / permission filter)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-03
+  - P-09
+description: |-
+  NEW MEDIUM-severity INFORMATION-DISCLOSURE INVARIANT, batch ZL
+  (2026-05-26) — the LookupTables page H1 row at
+  `components/MasterData/LookupTables.tsx:60-62` renders:
+
+      <NumberFormatted value={facets?.total} /> {t('lookup tables overall')}
+
+  → 'X lookup tables overall' as an H1 sub-text on the
+  /master-data/lookup-tables page.
+
+  The `facets.total` value comes from `LookupDataSearchServiceImpl.countByState`
+  (per the cross-referenced batch V ReferenceDataController
+  sidecar) which counts ALL tables matching the (empty by default)
+  query. There is NO owner-filter, NO namespace-scope, NO per-
+  permission filter applied at any layer.
+
+  **Every authenticated user** — and **every anonymous caller**
+  under `auth.type=DISABLED` — sees the global lookup-table
+  population size, even if backend RBAC would limit which
+  individual rows they can act on (CREATE / UPDATE / DELETE all
+  require the corresponding LOOKUP_TABLE_* permission per the
+  ReferenceDataController sidecar; but READ is ungated end-to-
+  end per its known_security_gaps).
+
+  **Trace**:
+    - UI: LookupTables.tsx:60-62 renders facets.total.
+    - facets state populated from useGetReferenceDataSearch
+      (referenceDataSearch.ts:11-26) → GET /api/referencedata/search/{searchId}
+      → SearchServiceImpl.fetchFacetState reads the search_facets
+      row, then computes the aggregate count via
+      LookupDataSearchServiceImpl.countByState.
+    - countByState (LookupDataSearchServiceImpl.java:62-68) runs
+      a COUNT(*) query against lookup_tables with the filters
+      from the persisted session.
+    - Default session has empty query + empty filters → COUNT
+      returns ALL rows.
+
+  **Operator-visible consequences** (three patterns):
+
+  (a) **A new operator landing on /master-data/lookup-tables**
+      sees 'X lookup tables overall' immediately. X is the
+      platform-wide count. They have no permissions check
+      gating this view; they may not be intended to know how
+      many lookup tables the platform manages, but the page
+      tells them.
+
+  (b) **Operator with ZERO LOOKUP_TABLE_* permissions** still
+      sees the counter (and the table list, per the
+      read-collaborative posture). The +Add new button is
+      HIDDEN for them; the counter is NOT. This asymmetry
+      makes the permission model partial-by-design — gating
+      the WRITE actions but exposing the READ surface.
+
+  (c) **Under `auth.type=DISABLED`** the counter is reachable
+      by any anonymous network caller. For internet-facing
+      accidental DISABLED deployments (per LSN-018 case-law),
+      the lookup-table population size is anonymously
+      enumerable. Combined with the row LIST (also ungated),
+      an outside observer can enumerate all reference data —
+      e.g., 'how many product code lists does this company
+      manage' — without authenticating.
+
+  **CLASS MEMBERSHIP — read-collaborative posture (REFACTOR-024
+  family + system-mission.md line 267)**: the global counter
+  is one instance of the broader 'every authenticated user sees
+  every row' pattern. The Catalog page (Search.tsx) does the
+  same with data entities; the Activity page (Activity.tsx)
+  does the same with audit events; the Alerts page (Alerts.tsx)
+  does the same with alerts.
+
+  **Not a bug per se** — the read-collaborative posture is an
+  architectural stance documented in system-mission.md line 267.
+  But the COUNTER is a specific instance worth pinning because
+  it MAKES THE STANCE VISIBLE in a way the table list does not.
+  A user seeing a table list assumes 'these are the tables I
+  have access to read'; a user seeing 'X lookup tables overall'
+  knows there are exactly X.
+
+  **Fix surfaces** (maintainer-triage):
+
+  1. **Scope the counter to the user's owner / namespace** —
+     extend countByState to accept an owner_id filter; the UI
+     binds the counter to a per-user count. Requires backend
+     change + UI change. Aligns the counter with strict-isolation
+     deployments.
+
+  2. **Add a UI affordance to scope the counter** — e.g., a
+     "Filter to my tables" toggle that switches the counter
+     between global + per-user. Operator-visible; defaults
+     could match the deployment's posture.
+
+  3. **Document the read-collaborative posture on the live
+     doc page** — extend the master-data-management doc with
+     a 'Visibility model' section: "Lookup tables are visible
+     to every authenticated user by default. Write actions
+     (create / update / delete) are RBAC-gated; read actions
+     are not." LOW-cost compliance fix.
+
+  4. **Remove the counter** — if strict isolation is the
+     deployment goal, the counter is the easiest leak to plug.
+     Cosmetic change.
+
+  vocabulary_status: codebase-anchored. The
+  read-collaborative posture is documented in
+  system-mission.md line 267 but NOT in the live doc page
+  for the Master Data Management feature. Surface to
+  doc-gap-finder.
+nodes:
+  - odd-platform ts react-component component:LookupTables
+contributors:
+  - odd-platform ts react-component component:LookupTables
+evidence:
+  - |-
+    LookupTables.md:bugs_limitations_corner_cases.[4] —
+    'Counter leaks population size: the H1 row renders
+    <NumberFormatted value={facets?.total} /> {t("lookup tables
+    overall")} (line 60-62). facets.total comes from
+    LookupDataSearchServiceImpl.countByState which counts ALL
+    tables matching the (empty) query — there is no owner-filter,
+    no namespace-scope, no per-permission filter applied. Any
+    authenticated user sees the global lookup-table population
+    size.' Severity MEDIUM.
+  - |-
+    LookupTables.md:security.owner_scoping — 'BYPASSES — the
+    counter and list show all tables regardless of caller. The
+    total rendered at line 60-62 is the global count of lookup
+    tables matching the search query — not owner-scoped. Per
+    ReferenceDataController sidecar known_security_gaps[0], read
+    endpoints have no RBAC at all in
+    SecurityConstants.SECURITY_RULES.'
+  - |-
+    LookupTables.md:security.known_security_gaps.[1] —
+    'Global count leak via the X lookup tables overall counter —
+    every authenticated user sees the platform-wide population
+    size. No owner-filter applied at
+    LookupDataSearchServiceImpl.countByState.' Severity MEDIUM.
+related_concepts:
+  - operation:mount-lookup-tables-list-with-search-session-bootstrap
+  - entitie:master-data-management-lookup-table-pillar-p-03-anchored
+related_features:
+  - F-026
+axes_present:
+  - ui_components
+triangulation_count: 1
+cross_batch: false
+severity: MEDIUM
+severity_dim: information-disclosure
+mitigations_unimplemented:
+  - |-
+    Fix surface 1 (preferred) — scope countByState to owner_id
+    filter; UI binds the counter to the user's count. Backend
+    change + UI change. Aligns with strict-isolation deployments.
+  - |-
+    Fix surface 2 (UI toggle) — affordance to scope the counter
+    between global / per-user. Operator-visible choice.
+  - |-
+    Fix surface 3 (doc-only) — document the read-collaborative
+    posture on the live master-data-management doc page. LOW-cost
+    compliance fix.
+  - |-
+    Fix surface 4 (cosmetic) — remove the counter entirely.
+    Plugs the leak; loses the operator's overview signal.
+notes: |-
+  NEW invariant captured in batch ZL (2026-05-26) FINAL refresh.
+  This is one instance of the broader read-collaborative posture
+  (system-mission.md line 267); recorded as a dedicated
+  invariant because the counter MAKES THE STANCE VISIBLE in a
+  way the table list does not. The list shows N rows; the
+  counter says 'overall N+M' so the user learns exactly how
+  many rows they cannot see (or can see — depending on the
+  deployment's read-isolation model).
+
+  Cross-batch follow-up: enumerate every 'X items overall'
+  H1 counter across the SPA. Each is a candidate for the same
+  shape-of-leak. Grep for `lookup tables overall` /
+  `data entities overall` / `users overall` etc. in
+  odd-platform-ui/src locale files.

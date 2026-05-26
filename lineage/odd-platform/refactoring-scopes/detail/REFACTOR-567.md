@@ -118,3 +118,45 @@ Even WITHOUT the corner case: a user WHO HAS an owner-mapping but is NOT an owne
 **Suggested backlog grouping**: `UX-NNN activity-feed clarity sprint`. Pair with REFACTOR-565 (`ownerIds` silently dropped — the related asymmetric-parameter defect), REFACTOR-061 (`lasEventId` typo).
 
 ---
+
+
+## STRENGTHENS — Batch ZL (2026-05-26 — Activity page-root component adds the SIXTH surface layer; the LSN-020 drift now spans SQL + service + controller + UI Filters component + en.json + live doc + Activity PAGE-ROOT composition)
+
+The Activity page-root sidecar surfaces the same `userIds` axis-mismatch defect at the PAGE-ROOT COMPOSITION layer — where the operator FIRST encounters the misleading label, with the `<Filters/>` child mounted as one of the two siblings (`<Filters/>` + `<ActivityResults/>`). The drift now spans SIX layers; the operator-visible surface is end-to-end.
+
+**New surfaced_by entries**:
+
+- `odd-platform__ts__react-component__component__Activity.md:bugs_limitations_corner_cases[0]` (HIGH) — "The 'User' filter (Filters.tsx:93-98 — `<MultipleFilter filterName='userIds' name={t('User')} />`) is operator-misleading at the UI layer (Category F TRANSLATES_SILENTLY — LSN-020). MultipleFilter at `components/shared/elements/Activity/ActivityFilterItems/MultipleFilter/MultipleFilter.tsx:32-34` dispatches `fetchOwnersList` for any `filterName !== 'tagIds'`; MultipleFilterAutocomplete (lines 44-47) does the same. The dropdown therefore lists OWNERS, not users. Selecting an OWNER puts its ID into `queryParams.userIds`; the backend binds `USER_OWNER_MAPPING.OWNER_ID.in(userIds)`. Three operator-observable consequences: (a) users without a user-owner mapping cannot be selected at all (silent absence from dropdown); (b) reassigning a user-owner mapping retroactively rewrites which historical rows match the filter; (c) multiple users sharing an owner collapse into a single filter result. The label says 'User'; the live doc says 'performed by'; the implementation says owner-of-the-actor-via-mapping."
+
+- `odd-platform__ts__react-component__component__Activity.md:stress_findings.name_behavior_pairs[0]` (HIGH) — "DRIFT_NAME_VS_BEHAVIOR. Users without an owner mapping cannot be selected (silent dropdown absence); reassigning a user-owner mapping retroactively rewrites which historical rows match the filter; multiple users mapped to the same owner collapse into one filter result." — explicit DRIFT_NAME_VS_BEHAVIOR flag at the PAGE-ROOT stress_findings.
+
+- `odd-platform__ts__react-component__component__Activity.md:stress_findings.request_inputs[0]` (HIGH) — "available-but-unused column smell: YES. `ACTIVITY.CREATED_BY` (text column carrying the actual actor's OIDC username) is read in the LEFT JOIN at `ReactiveActivityRepositoryImpl.java:221` (`USER_OWNER_MAPPING.OIDC_USERNAME.eq(ACTIVITY.CREATED_BY)`), SELECTED in the result mapping via `buildBaseQuery` at line 212, but ABSENT from any WHERE predicate. This is the column an actor-filter that honored the parameter name would filter on." — Activity page-root SURFACES the available-but-unused column smell explicitly at the page-composition layer.
+
+- `odd-platform__ts__react-component__component__Activity.md:security.known_security_gaps[1]` (HIGH) — "The 'User' filter label is operator-misleading at this surface. An auditor using the page to investigate 'what did user X do?' is given a UI control labelled 'User', whose underlying filter is on owner-of-actor-via-mapping. The audit conclusion drawn from the filtered list is wrong in shape — the user X's actions are absent unless X has a user-owner mapping, and the actions of every other user mapped to X's owner are present. This is the operator-facing surface of LSN-020."
+
+**What this strengthening adds**: the prior strengthening (batch ZJ via en.json) anchored the drift at the i18n resource bundle layer (5 layers total: SQL + service + controller + UI Filters component + en.json + live doc). Batch ZL adds the SIXTH surface — the PAGE-ROOT COMPOSITION:
+
+1. **The page-root Activity.tsx EXPLICITLY COMPOSES `<Filters/>` + `<ActivityResults/>` as two sibling children** — Activity.tsx:6-17 is the composition where the operator FIRST encounters the misleading label. The page-root is the LANDING POINT for the entire feature.
+
+2. **The page-root carries the SECURITY consequence** — Activity's security.known_security_gaps[1] explicitly frames the LSN-020 drift as an AUDIT-MISLEADING concern: a security/compliance reviewer following the live docs to find a suspect user's activity gets entity-ownership-axis results (wrong shape). The page-root is where the auditor lands; the misleading label is at this level.
+
+3. **The page-root surfaces the available-but-unused column smell EXPLICITLY** — Activity.tsx:stress_findings.request_inputs[0] enumerates the `ACTIVITY.CREATED_BY` column as the available-but-unused candidate the actor-filter SHOULD have used. The page-root composition is where the architectural mismatch becomes visible.
+
+4. **Full operator-facing surface area now**: Page-root + Filters component + i18n key + live doc + service + SQL — six layers of reinforcement of the WRONG promise. The fix span widens correspondingly:
+   - Rename SQL column or add parallel actor-filter (the architectural fix)
+   - Relabel the UI Filters component (Filters.tsx:93-98 changes `filterName='userIds'` to `'ownerIds'` or similar)
+   - Rename i18n key (en.json:347 + 5 non-English locales — per natural-keys ADR-CANDIDATE-011)
+   - Update live doc page copy ("performed by" → "owned by")
+   - Update the Activity page-root's audience copy (security/compliance reviewer guidance)
+   - Optionally add the missing "Actor" filter (a new MultipleFilter dispatching to fetchActiveUsersList or similar) — the most ambitious fix
+
+**Triangulation count after ZL**: 6 sidecars (was 5 — SQL + service + controller + UI Filters + en.json; ZL adds Activity page-root composition).
+
+**Severity unchanged**: MEDIUM. The cross-layer corroboration is comprehensive; the fix span is well-understood; the priority is bounded by the compliance-audit-misleading framing.
+
+**Coherence check** (LSN-018):
+- STRENGTHENS: REFACTOR-565 (ownerIds silently dropped for MY_OBJECTS/UPSTREAM/DOWNSTREAM); REFACTOR-060 (userIds/ownerIds filter parameter enumeration); ADR-CANDIDATE-011 (natural-keys i18n contract); ADR-CANDIDATE-091 (URL-as-source-of-truth — the Activity page-root surfaces this pattern too, strengthened in this batch).
+- SUPERSEDES: none.
+- CONFLICTS: none.
+
+---

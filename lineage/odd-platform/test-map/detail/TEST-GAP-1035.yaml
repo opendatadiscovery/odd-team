@@ -1,0 +1,145 @@
+---
+gap_id: TEST-GAP-1035
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform ts react-component:LookupTables"
+pillars_affected: ["P-03"]
+surfaced_by:
+  - "LookupTables.md:bugs_limitations_corner_cases.[1] verbatim: 'InfiniteScroll mis-targeting: LookupTablesList.tsx:51-53 mounts <ScrollableContainer id=lookup-tables-list> around <InfiniteScroll scrollableTarget=directory-entities-list>. The scrollableTarget is a copy-paste from the Directory feature — it references a DOM id that does NOT exist on this page. Per react-infinite-scroll-component docs, an unresolvable scrollableTarget falls back to window scroll; but ScrollableContainer declares $offsetY={165} and likely sets overflow:auto, so window scroll never fires for content inside the container. Likely effect: fetchNextPage never gets triggered by scrolling within the table; any tenant with >30 lookup tables sees only 30 rows in the UI. PROBE-NEEDED — see P-192.' severity: HIGH"
+  - "LookupTables.md:tests_coverage_semantic.uncovered_behaviours.[3] verbatim: 'InfiniteScroll fires fetchNextPage correctly when scrolling within the ScrollableContainer (the scrollableTarget=directory-entities-list references the wrong DOM id)' test_class: integration; criticality: HIGH"
+  - "LookupTables.md:stress_findings.tunables.[size=30] verbatim: 'What at N > 30? Pagination requests via InfiniteScroll fetchNextPage — BUT the scrollableTarget references a wrong DOM id. The pagination request may never fire from within the container; falls back to window-scroll only if the container is not actually scrollable.'"
+related_pillar_features:
+  - "P-03:F-Lookup-Tables"
+related_features: []
+feature_id: null
+test_class: integration
+strengthens: []
+behaviour: |-
+  **HIGH — Copy-paste integration bug. Operator-observable cap at
+  page 1 (30 rows) for any tenant with >30 lookup tables.**
+
+  `LookupTablesList.tsx:51-53` declares:
+  ```jsx
+  <ScrollableContainer id="lookup-tables-list" $offsetY={165}>
+    <InfiniteScroll
+      scrollableTarget="directory-entities-list"
+      dataLength={...} next={fetchNextPage} hasMore={hasNextPage}
+    >
+      ...
+  ```
+
+  The `scrollableTarget="directory-entities-list"` is a copy-paste
+  from `components/Directory/.../DirectoryEntitiesList.tsx` where
+  the surrounding ScrollableContainer DOES have id
+  `directory-entities-list`. On the Lookup Tables page, the
+  surrounding container's id is `lookup-tables-list` — so
+  `scrollableTarget` references a DOM node that does NOT exist on
+  this page.
+
+  Per react-infinite-scroll-component documentation, an
+  unresolvable `scrollableTarget` falls back to listening on the
+  WINDOW scroll. BUT — the wrapping `ScrollableContainer` declares
+  `$offsetY={165}` and (per the shared styled-components convention)
+  applies `overflow: auto` to itself. The user scrolls INSIDE the
+  container, not the window. The window scroll event never fires
+  for content inside an overflow-auto container.
+
+  **Effective behaviour**: the page renders the first 30 rows
+  (`size: 30` hard-coded at LookupTablesList.tsx:23 — the page size
+  for `useGetReferenceDataSearchResults`); the user scrolls within
+  the container; `fetchNextPage` is never triggered;
+  `hasNextPage === true` indefinitely but no further rows fetched.
+
+  **Operator-observable consequence**: any tenant with more than
+  30 lookup tables sees only the first 30 in the UI. The page
+  COUNTER `<NumberFormatted value={facets?.total} /> lookup tables
+  overall` correctly reports the total (e.g. "47 lookup tables
+  overall"), but the LIST below it shows only 30 — a visible
+  COUNT/LIST divergence that doubles as the operator's only
+  signal that something is wrong. There is no error message, no
+  "load more" button, no warning.
+
+  **Why HIGH**:
+  - **Functional**: the operator cannot reach lookup tables
+    beyond row 30. They can search (the SearchInput dispatches
+    `updateFacets({...facets, query})` and fetches results) but
+    cannot browse.
+  - **Discoverability**: any onboarding tenant building lookup
+    tables hits this at table 31. The 30→31 boundary is silent.
+  - **Coverage**: zero direct tests exist (LookupTables.md
+    test_files: [] verified — Glob across
+    `**/LookupTables/**/*.test.*` returns zero matches at
+    commit 4ec2b20). A single integration test rendering with
+    >30 mocked rows would catch the entire failure mode.
+  - **Trivial fix**: change `scrollableTarget="directory-entities-list"`
+    to `scrollableTarget="lookup-tables-list"`. Single-character
+    typo class; the test pins it.
+
+  **Probe P-192** (emitted in batch ZL): boot the platform, create
+  35 lookup tables, navigate to `/master-data/lookup-tables`,
+  scroll within the container, observe network — assert
+  `GET /api/referencedata/search/{id}/results?page=2` IS issued.
+  Probe RED today (no second-page request); GREEN after the
+  copy-paste fix.
+
+  **Cross-pillar implication**: this is the canonical case-law
+  for a category of bugs — "shared infrastructure component
+  consumed across multiple pillar pages where the consumer's
+  configuration is page-specific and a copy-paste error silently
+  breaks one page". The architectural recommendation is to derive
+  `scrollableTarget` from the wrapping container's id rather
+  than passing it explicitly — but that's a refactor of the
+  shared ScrollableContainer + InfiniteScroll convention.
+test_files_existing: []
+test_files_proposed:
+  - path: "odd-platform-ui/src/components/LookupTables/LookupTablesList/__tests__/LookupTablesList.InfiniteScroll.test.tsx"
+    name: "loadingMoreThan30Tables_currentlyDoesNotFetchPage2_pinsScrollableTargetMismatch_BatchZL"
+    description: |-
+      Render <LookupTablesList/> with a mock useGetReferenceDataSearchResults
+      returning hasNextPage=true. Simulate scroll within the
+      ScrollableContainer (use react-testing-library's `fireEvent.scroll`
+      on the container with id `lookup-tables-list`). Assert that
+      fetchNextPage is NOT called. PINS the copy-paste mismatch.
+      After fix, flip assertion direction to ASSERT fetchNextPage IS
+      called.
+  - path: "odd-platform-ui/src/components/LookupTables/LookupTablesList/__tests__/LookupTablesList.InfiniteScroll.test.tsx"
+    name: "loadingMoreThan30Tables_afterFixFetchesPage2OnScroll_pinsFixContract_BatchZL"
+    description: |-
+      Sister test — render with scrollableTarget="lookup-tables-list"
+      (the fix). Simulate scroll; assert fetchNextPage IS called.
+      PINS the post-fix behaviour as the regression contract.
+  - path: "odd-platform-ui/tests/regression-pins/lookup-tables-page-2.spec.ts"
+    name: "createMoreThan30LookupTablesAndScroll_observesPage2Fetch_pinsRegressionContractPlaywright"
+    description: |-
+      Playwright spec that creates 35 lookup tables via the API,
+      navigates to /master-data/lookup-tables, scrolls within the
+      list container, network-intercepts the second-page request.
+      Assert page=2 is fetched. This is the CI-permanent regression
+      pin; pairs with the Vitest unit tests above.
+evidence:
+  - "LookupTables.md (batch ZL) bugs_limitations_corner_cases.[1]: cited above; severity HIGH"
+  - "LookupTables.md (batch ZL) tests_coverage_semantic.uncovered_behaviours.[3]: HIGH integration test class"
+  - "LookupTables.md (batch ZL) stress_findings.tunables: 'any tenant with >30 lookup tables sees an incomplete list and has no signal that more exist'"
+  - "Primary source verified: LookupTablesList.tsx:51-53 (the InfiniteScroll declaration with the mismatched scrollableTarget)"
+  - "Cross-reference verified: components/Directory/.../DirectoryEntitiesList.tsx (the copy-paste source with the matching id)"
+  - "Glob verified: zero LookupTables*.test.* under odd-platform-ui/src (run 2026-05-26)"
+  - "Probe P-192 emitted in batch ZL: real-platform reproduction of the >30-rows cap"
+cross_references:
+  - "P-192 probe (verifies the cap on a real platform run)"
+  - "F-Lookup-Tables (the pillar-level feature flow this gap is anchored to; P-03 Master Data Management)"
+  - "DOC-NNN candidate (batch ZL LookupTables): the doc page's '+Add new' description implicitly assumes the list is browseable; should disclose the page-1 cap until fixed (or just fix and skip the doc admonition)"
+proposed_action: |-
+  Two-step fix. (1) Change LookupTablesList.tsx:52
+  `scrollableTarget="directory-entities-list"` to
+  `scrollableTarget="lookup-tables-list"`. (2) Land the three
+  regression-pin tests (two Vitest unit + one Playwright spec).
+
+  Architectural follow-up (separate refactor): consider deriving
+  `scrollableTarget` from the wrapping ScrollableContainer's id
+  automatically (via React Context) rather than passing it
+  explicitly. This eliminates the copy-paste-mismatch class
+  systematically. Surface as REFACTOR-NNN candidate if the
+  pattern recurs elsewhere in the codebase.
+maintainer_curated: false
+batch: 2026-05-26-ZL

@@ -1,0 +1,168 @@
+---
+probe_id: P-190
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__Activity.md
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: integration
+verified_against_commit: ede5d277
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category F — UI surface of LSN-020): the Activity page's
+  "User" filter (Filters.tsx:93-98 — `filterName='userIds'`, label
+  `t('User')`) is rendered by `MultipleFilter` which dispatches
+  `fetchOwnersList` (MultipleFilter.tsx:32-34) for any filterName that is
+  not `tagIds`. MultipleFilterAutocomplete (lines 44-47) also routes the
+  search query to `fetchOwnersList`. The dropdown therefore lists OWNERS
+  (not users). Selecting an OWNER from the "User" dropdown stores that
+  owner's ID in `queryParams.userIds`. The thunk sends
+  `userIds=[<ownerId>]` to `GET /api/activity`. ActivityController.getActivity
+  passes through to `getCommonConditions`
+  (ReactiveActivityRepositoryImpl.java:272-273) which binds
+  `USER_OWNER_MAPPING.OWNER_ID.in(userIds)`. End-to-end, the round-trip is
+  internally consistent on the OWNER axis: pick an owner, get rows where
+  the actor's user-owner mapping points to that owner.
+
+  But the operator's mental model — driven by the label `User`, the live
+  doc excerpt "show events **performed by** one or more selected users",
+  and the standalone parameter name `userIds` — is that they are filtering
+  by the user who PERFORMED the action. Three concrete operator-observable
+  failure modes follow:
+
+    (a) Users without an owner mapping cannot be filtered at all — the
+        autocomplete only surfaces owners, so user-without-owner is
+        silently absent from the dropdown rather than returning empty.
+    (b) Reassigning the user-owner association RETROACTIVELY rewrites
+        which historical activity rows match the filter. A user who was
+        owner A on 2025-01 and owner B on 2025-06 has all 2025-01
+        activity look like it was performed by owner B once the mapping
+        flips. The audit trail's "who did this" answer changes silently.
+    (c) Multiple users mapped to the same owner all collapse into the
+        same filter result — picking "User: Alice" actually returns rows
+        for every user mapped to the same owner as Alice.
+
+  Available-but-unused column: `activity.created_by` is the actual actor
+  username (read in the LEFT JOIN at line 221, SELECTED in
+  `buildBaseQuery` line 212, never used in WHERE).
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: sql
+    query: |
+      -- Two owners
+      INSERT INTO owner (id, name, deleted_at)
+      VALUES (8001, 'probe_owner_alpha', NULL),
+             (8002, 'probe_owner_beta',  NULL);
+  - kind: sql
+    query: |
+      -- 'alice_username' mapped to owner alpha; 'bob_username' has
+      -- NO user-owner mapping.
+      INSERT INTO user_owner_mapping (id, oidc_username, owner_id, deleted_at)
+      VALUES (8101, 'alice_username', 8001, NULL);
+  - kind: sql
+    query: |
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id)
+      VALUES (8200, '//probe-src/p190/entity', 'p190_entity', 1, 1);
+  - kind: sql
+    query: |
+      -- 5 activity rows by alice_username + 5 by bob_username, in window.
+      INSERT INTO activity (id, data_entity_id, event_type, created_by, created_at,
+                            old_state, new_state)
+      SELECT 8300 + i, 8200, 'TAG_ASSIGNMENT_UPDATED', 'alice_username',
+             NOW() - (i || ' hour')::interval, '{}', '{}'
+      FROM generate_series(1, 5) AS i;
+      INSERT INTO activity (id, data_entity_id, event_type, created_by, created_at,
+                            old_state, new_state)
+      SELECT 8400 + i, 8200, 'TAG_ASSIGNMENT_UPDATED', 'bob_username',
+             NOW() - (i || ' hour')::interval, '{}', '{}'
+      FROM generate_series(1, 5) AS i;
+act:
+  - kind: rest
+    method: GET
+    path: /api/activity?beginDate={now-1d}&endDate={now+1d}&size=30&userIds=8001
+    capture_as: response_filter_by_owner_alpha
+  - kind: rest
+    method: GET
+    path: /api/activity?beginDate={now-1d}&endDate={now+1d}&size=30&userIds=8002
+    capture_as: response_filter_by_owner_beta
+  - kind: dom-probe
+    description: |
+      Open the Activity page in a headless browser; click the "User"
+      filter autocomplete and type "alice"; observe what the dropdown
+      displays. Expected per code-trace: the dropdown queries
+      fetchOwnersList and lists OWNERS whose names match "alice" (none —
+      alice is a user, not an owner name). Then type "alpha"; dropdown
+      should list owner `probe_owner_alpha` (id=8001).
+    capture_as: dropdown_options_for_alice
+  - kind: sql
+    description: |
+      Simulate retroactive rewrite: change alice's mapping from owner
+      alpha to owner beta, then re-fetch.
+    query: |
+      UPDATE user_owner_mapping
+      SET owner_id = 8002
+      WHERE id = 8101;
+  - kind: rest
+    method: GET
+    path: /api/activity?beginDate={now-1d}&endDate={now+1d}&size=30&userIds=8001
+    capture_as: response_after_remap_owner_alpha
+  - kind: rest
+    method: GET
+    path: /api/activity?beginDate={now-1d}&endDate={now+1d}&size=30&userIds=8002
+    capture_as: response_after_remap_owner_beta
+observe:
+  - kind: sql
+    description: |
+      Reference row sets — actor truth never changes; only the mapping
+      moves between the two REST calls.
+    query: |
+      SELECT id, created_by FROM activity
+      WHERE created_by IN ('alice_username','bob_username')
+        AND data_entity_id = 8200
+      ORDER BY id;
+    capture_as: actor_truth
+assert:
+  - "len(response_filter_by_owner_alpha.body) == 5  # 5 alice rows (alice maps to owner alpha)"
+  - "all(row.created_by == 'alice_username' for row in response_filter_by_owner_alpha.body)"
+  - "len(response_filter_by_owner_beta.body) == 0  # owner beta has no mapped user; bob is unmapped"
+  - "len(dropdown_options_for_alice) == 0  # User autocomplete shows zero matches for 'alice' — fetchOwnersList does not return users"
+  - "len(response_after_remap_owner_alpha.body) == 0  # alice no longer maps to alpha; alpha-filter empties retroactively"
+  - "len(response_after_remap_owner_beta.body) == 5  # alice now maps to beta; 5 historical rows reappear under owner beta filter"
+  - "len(actor_truth) == 10  # underlying activity.created_by values never changed; only the mapping moved"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM activity WHERE data_entity_id = 8200;
+      DELETE FROM user_owner_mapping WHERE id = 8101;
+      DELETE FROM data_entity WHERE id = 8200;
+      DELETE FROM owner WHERE id IN (8001, 8002);
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__Activity
+    - odd-platform__ts__routes__route__activity
+    - odd-platform__java__ActivityController__controller-method__getActivity
+    - odd-platform__java__service__ActivityServiceImpl
+    - odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl
+  retrospectives:
+    - LSN-020
+realism_caveats: |
+  Pins three operator-observable consequences of the LSN-020 UI drift. If
+  all REST-level assertions PASS, the page-root Activity component composes
+  a "User" filter UI whose round-trip is semantically consistent on the
+  OWNER axis but whose label, doc copy, and parameter name promise the USER
+  axis — a Category-F TRANSLATES_SILENTLY at the UI layer with HIGH-severity
+  operator misalignment. If any assertion FAILS, re-read the MultipleFilter
+  dispatch (the only fetch branches are fetchTagsList for tagIds and
+  fetchOwnersList for everything else — MultipleFilter.tsx:32-34 and
+  MultipleFilterAutocomplete.tsx:44-47; a third branch added since the
+  substrate commit would invalidate the trace).
+
+  The dom-probe step (act #3) cannot be executed in this batch — Playwright /
+  Puppeteer probes are local-only per Rule 8 and the substrate currently
+  has no DOM-probe runner registered. The REST-level assertions alone are
+  sufficient to confirm the drift; the dom-probe step is here to make the
+  follow-up explicit.

@@ -1,0 +1,189 @@
+name: |-
+  Lookup Tables InfiniteScroll scrollableTarget mismatch — references 'directory-entities-list' but container id is 'lookup-tables-list' (pagination broken; UI capped at 30 rows)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-03
+description: |-
+  NEW HIGH-severity STRUCTURAL BUG INVARIANT, batch ZL (2026-05-26) —
+  `components/MasterData/LookupTablesList.tsx:51-53` mounts a
+  `<ScrollableContainer id='lookup-tables-list'>` around an
+  `<InfiniteScroll scrollableTarget='directory-entities-list'>`:
+
+      // LookupTablesList.tsx:51-53 (verbatim)
+      <ScrollableContainer id="lookup-tables-list" $offsetY={165}>
+        <InfiniteScroll
+          dataLength={lookupTables.length}
+          next={fetchNextPage}
+          hasMore={hasNextPage ?? false}
+          loader={null}
+          scrollableTarget="directory-entities-list"  // ← WRONG
+        >
+          { ... rows ... }
+        </InfiniteScroll>
+      </ScrollableContainer>
+
+  The `scrollableTarget` value `'directory-entities-list'` is a
+  COPY-PASTE artefact from the Directory feature's identical
+  pattern (verified via Grep across odd-platform-ui/src — the
+  Directory feature uses the same container id and InfiniteScroll
+  wrapper). The container at LookupTablesList.tsx:51 is named
+  `'lookup-tables-list'`. There is NO DOM element with id
+  `'directory-entities-list'` on the /master-data/lookup-tables
+  page.
+
+  **What react-infinite-scroll-component does with an unresolvable
+  scrollableTarget** (per the library's source + docs):
+    - The library attempts `document.getElementById(scrollableTarget)`
+      to find the scroll container.
+    - When the lookup returns null, it FALLS BACK to listening
+      on the WINDOW scroll event.
+    - But the actual lookup-tables container has
+      `$offsetY={165}` styling that likely sets `overflow:auto`
+      on the container (verified ScrollableContainer is the
+      shared styled-component that imposes overflow boundaries
+      based on offsetY), making WINDOW scroll never fire for
+      content INSIDE the container.
+
+  **Net effect**: `fetchNextPage` NEVER fires from container
+  scroll. The user can scroll the table list visually (the
+  container has its own scroll), but the InfiniteScroll
+  threshold trigger does not activate. **Any tenant with more
+  than 30 lookup tables sees only the first 30 in the UI**.
+  There is no skeleton-at-bottom indicator that more pages
+  exist; no 'Showing X of Y' counter; no manual 'Load more'
+  button.
+
+  **Operator-visible failure mode**: a fresh-deployment tenant
+  with 5 lookup tables sees everything correctly (no pagination
+  triggered). A growing tenant with 50 lookup tables sees the
+  first 30 'as if that's all'. The COUNTER at LookupTables.tsx:60-62
+  ('X lookup tables overall') still shows the TRUE total (50)
+  because the count comes from search_facets.total (server-side),
+  but the LIST stops at 30 rows. The operator may:
+    (a) **Conclude there's a discrepancy** between the count
+        and the visible list, then file a support ticket.
+    (b) **Hand-construct a search query** to find a 'missing'
+        lookup table — the search via /api/referencedata/search
+        DOES respect the query (server-side filter), so the
+        operator can find any specific table by name. But they
+        cannot LIST all tables.
+    (c) **Believe rows 31..50 don't exist** — most likely if
+        the operator is doing a casual browse rather than a
+        targeted search.
+
+  **Fix**: change `scrollableTarget="directory-entities-list"`
+  → `scrollableTarget="lookup-tables-list"` at
+  LookupTablesList.tsx:53. One-character edit; closes the bug
+  immediately. The Directory feature's identical pattern
+  (which presumably works because its container DOES have id
+  `'directory-entities-list'`) is the source of the copy-paste.
+
+  **The structural cause is the COPY-PASTE pattern** — a
+  developer writing LookupTablesList.tsx copied from
+  DirectoryEntitiesList.tsx (or sibling) WITHOUT renaming the
+  scrollableTarget. The container id WAS renamed
+  (`'lookup-tables-list'` at line 51) but the
+  scrollableTarget reference at line 53 was missed.
+
+  **Probe P-192** (per the LookupTables sidecar) emits the
+  question: does the InfiniteScroll scrollableTarget mismatch
+  actually prevent pagination? The static analysis is
+  STATIC-INFERRED HIGH — confirming via Playwright requires
+  a tenant deployment with >30 lookup tables, which is
+  out-of-scope for the substrate but on-scope for QA.
+
+  **Fix surfaces** (maintainer-triage):
+
+  1. **Trivial code edit** — change `'directory-entities-list'`
+     → `'lookup-tables-list'` at LookupTablesList.tsx:53. One
+     character (string change); ~30 second commit; closes the
+     entire bug class.
+
+  2. **Add an integration test** — Playwright test that loads
+     /master-data/lookup-tables in a tenant with 50 lookup
+     tables and asserts rows 31..50 are reachable via scroll.
+     ~50 lines of test code; catches future regressions.
+
+  3. **Refactor to a shared InfiniteScroll wrapper** — the
+     ScrollableContainer + InfiniteScroll + scrollableTarget
+     pattern is duplicated across Directory + LookupTables +
+     Alerts + maybe other surfaces. A shared component would
+     accept the id as a single prop and bind both the
+     container's id and the InfiniteScroll's scrollableTarget,
+     eliminating the divergence-by-copy-paste class. ~150 lines
+     of refactor; higher-leverage but higher-churn.
+
+  4. **Lint rule** — a custom ESLint rule asserting that any
+     InfiniteScroll's scrollableTarget MUST match a sibling
+     ScrollableContainer's id. Custom ESLint plugins are
+     non-trivial; consider only if more such bugs surface.
+
+  vocabulary_status: codebase-anchored. The bug is not in any
+  doc page (it's a functional bug, not a doc-vs-code drift).
+nodes:
+  - odd-platform ts react-component component:LookupTables
+contributors:
+  - odd-platform ts react-component component:LookupTables
+evidence:
+  - |-
+    LookupTables.md:bugs_limitations_corner_cases.[1] —
+    'InfiniteScroll mis-targeting: LookupTablesList.tsx:51-53
+    mounts <ScrollableContainer id="lookup-tables-list"> around
+    <InfiniteScroll scrollableTarget="directory-entities-list">.
+    The scrollableTarget is a copy-paste from the Directory
+    feature — it references a DOM id that does NOT exist on this
+    page.' Severity HIGH.
+  - |-
+    LookupTables.md:tests_coverage_semantic.uncovered_behaviours —
+    'InfiniteScroll fires fetchNextPage correctly when scrolling
+    within the ScrollableContainer (the scrollableTarget=
+    "directory-entities-list" references the wrong DOM id).'
+    test_class: integration; criticality: HIGH. Probe P-192.
+  - |-
+    LookupTables.md:stress_findings.name_behavior_pairs.InfiniteScroll —
+    'DRIFT_NAME_VS_BEHAVIOR: Uses scrollableTarget=
+    "directory-entities-list" — a DOM id that does NOT exist on
+    this page. The actual container id is lookup-tables-list.
+    Mismatch → fetchNextPage may never fire from container scroll.'
+related_concepts:
+  - operation:mount-lookup-tables-list-with-search-session-bootstrap
+  - entitie:master-data-management-lookup-table-pillar-p-03-anchored
+related_features:
+  - F-026
+related_refactorings:
+  - REFACTOR-711
+axes_present:
+  - ui_components
+triangulation_count: 1
+cross_batch: false
+severity: HIGH
+severity_dim: correctness
+mitigations_unimplemented:
+  - |-
+    Fix surface 1 (trivial) — change scrollableTarget value
+    at LookupTablesList.tsx:53 from 'directory-entities-list'
+    to 'lookup-tables-list'. One-character edit; ~30 second commit.
+  - |-
+    Fix surface 2 (regression-test) — Playwright integration
+    test asserting rows 31..50 reachable via scroll.
+  - |-
+    Fix surface 3 (refactor) — shared InfiniteScrollContainer
+    component binding container-id and scrollableTarget from
+    one prop. Eliminates the divergence-by-copy-paste class.
+  - |-
+    Fix surface 4 (lint) — custom ESLint rule enforcing the
+    invariant. Heavy; only if more bugs of this class surface.
+notes: |-
+  NEW invariant captured in batch ZL (2026-05-26) FINAL refresh.
+  This is the LookupTables.tsx primary-source bug. The bug
+  class is 'copy-paste with one rename missed' — a recurring
+  pattern that lint rules + shared components can prevent. The
+  immediate fix is trivial (one string change); the deeper fix
+  is the shared component pattern.
+
+  Cross-batch follow-up: the Directory + LookupTables + Alerts +
+  Activity InfiniteScroll wrappers should each be audited for
+  the same shape. Probe P-192 captures the LookupTables
+  instance; other instances may have similar bugs (or may be
+  correct).

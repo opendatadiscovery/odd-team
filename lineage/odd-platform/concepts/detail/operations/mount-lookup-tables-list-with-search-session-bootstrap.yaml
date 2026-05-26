@@ -1,0 +1,207 @@
+name: |-
+  Mount Lookup Tables list with search-session bootstrap (Master Data pillar surface)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-03
+description: |-
+  NEW OPERATION, batch ZL (2026-05-26) — the Master Data Management
+  pillar's SINGLE user-visible surface. LookupTables.tsx
+  (`components/MasterData/LookupTables.tsx`, 93 lines) is the
+  page-root for /master-data/lookup-tables. Unlike DataModelling.tsx
+  (pure presentational) or Alerts.tsx (thin shell with one bootstrap
+  thunk), LookupTables.tsx carries the ENTIRE search-session
+  bootstrap + per-keystroke search dispatch + counter rendering +
+  permission-gated Add CTA INSIDE the page-root.
+
+  THE OPERATION ANATOMY:
+
+    Step 1 — URL-bound session resolution (LookupTables.tsx:20-21):
+      const [searchParams, setSearchParams] = useSearchParams();
+      const searchId = searchParams.get('searchId') ?? '';
+      Effect: searchId comes from `?searchId=<uuid>` URL parameter;
+      empty string when the user lands on /master-data/lookup-tables
+      WITHOUT the query parameter (e.g., fresh visit from toolbar
+      tab click).
+
+    Step 2 — Session create on mount when URL has no searchId
+             (LookupTables.tsx:30-37):
+      useEffect(() => {
+        if (searchId) return;
+        createFacets('').then(({searchId: sid}) =>
+          setSearchParams({searchId: sid}));
+      }, [searchId]);
+      Hook: useCreateReferenceDataSearch wraps useMutation that
+      calls POST /api/referencedata/search with empty query +
+      empty filters.
+      Effect: server mints a search_facets row keyed by UUID;
+      .then() writes the new UUID into the URL via
+      setSearchParams. The URL becomes
+      /master-data/lookup-tables?searchId=<uuid>. Same persistent-
+      session model as Search.tsx and TermSearch.tsx, BUT here
+      the UUID is a query parameter (?searchId=<uuid>) NOT a path
+      segment (/search/{uuid}).
+
+    Step 3 — Session restore on mount when URL has searchId
+             (LookupTables.tsx:25-28):
+      const { data, isFetching } = useGetReferenceDataSearch({
+        searchId,
+        enabled: !!searchId
+      });
+      Hook: useGetReferenceDataSearch wraps useQuery that calls
+      GET /api/referencedata/search/{searchId}.
+      Effect: When `enabled: false` (empty searchId on first mount),
+      the query is INERT; after setSearchParams writes the new
+      UUID, the dep changes, enabled flips true, the query fires.
+
+    Step 4 — One-shot facet hydration (LookupTables.tsx:39-43):
+      useEffect(() => {
+        if (!data || facets) return;
+        setFacets(data);
+      }, [data, facets]);
+      Effect: copies `data` into local component state `facets`
+      ONLY when `facets` is still undefined. Subsequent `data`
+      refreshes (e.g., on window-focus refetch) do NOT clobber
+      the local state — the guard `if (!data || facets) return;`
+      is one-shot.
+
+    Step 5 — Per-keystroke search dispatch (LookupTables.tsx:50-52,
+             70):
+      const handleSearch = (query: string) => {
+        if (!facets) return;
+        updateFacets({...facets, query});
+      };
+      <SearchInput onSearch={handleSearch} ... />
+      Effect: every keystroke fires updateFacets which dispatches
+      PUT /api/referencedata/search/{searchId} via
+      useUpdateReferenceDataSearch (assuming SearchInput does not
+      debounce internally — verification PROBE-NEEDED per the
+      LookupTables sidecar performance.hot_paths). At scale this
+      is a per-keystroke server-side recompute.
+
+    Step 6 — Counter rendering (LookupTables.tsx:60-62):
+      <NumberFormatted value={facets?.total} /> {t('lookup tables overall')}
+      Effect: renders 'X lookup tables overall' as an H1 sub-text.
+      Critical: the value is the GLOBAL count (no owner filter, no
+      namespace filter, no permission filter) — every authenticated
+      user sees the platform-wide population size. See
+      `invariant:lookup-tables-global-counter-leaks-population-size`.
+
+    Step 7 — Permission-gated Add CTA (LookupTables.tsx:72-82):
+      <WithPermissions permissionTo={Permission.LOOKUP_TABLE_CREATE}>
+        <LookupTableForm
+          btnEl={<Button text={t('Add new')} sx={{ml: 'auto'}} />}
+        />
+      </WithPermissions>
+      Effect: button is HIDDEN when the user lacks
+      LOOKUP_TABLE_CREATE. The form mounts as a DIALOG (not a
+      separate route) — no shareable URL for an in-progress create.
+      Same dialog-based mutation pattern is used per-row for edit/
+      delete inside LookupTablesListItem.tsx.
+
+    Step 8 — Sibling list rendering (LookupTables.tsx:88):
+      <LookupTablesList searchId={searchId} />
+      Effect: child component owns the InfiniteScroll + per-row
+      rendering. Critically: the child carries the
+      `scrollableTarget='directory-entities-list'` mis-target bug
+      per `invariant:lookup-tables-infinite-scroll-target-mismatch-pagination-broken`.
+
+  AUTHORISATION POSTURE:
+    Route mount at App.tsx:75-87 wraps `<LookupTables />` in
+    `<WithPermissionsProvider allowedPermissions={[LOOKUP_TABLE_CREATE,
+    LOOKUP_TABLE_UPDATE, LOOKUP_TABLE_DELETE]}>` — but the wrapper
+    is CONTEXT-ONLY per
+    `invariant:withpermissionsprovider-context-seed-not-route-gate`,
+    NOT a render gate. Every authenticated user lands on the page,
+    sees the counter (global), sees the search box, sees the table
+    list (read-collaborative — per ReferenceDataController sidecar
+    known_security_gaps), and the +Add new button HIDES for users
+    without LOOKUP_TABLE_CREATE. Per-row Edit and Delete buttons
+    inside LookupTablesListItem.tsx are similarly hidden per their
+    respective permissions.
+
+  CROSS-OPERATION RELATIONSHIPS:
+    - Pairs with `entitie:master-data-management-lookup-table-pillar-p-03-anchored`
+      (the canonical Lookup Table entity); this operation is the
+      UI orchestrator that materialises it.
+    - Pairs with `invariant:lookup-tables-infinite-scroll-target-mismatch-pagination-broken`
+      (the InfiniteScroll bug surfaced at this surface).
+    - Pairs with `invariant:lookup-table-update-form-sends-create-shape-namespace-silently-discarded`
+      (the edit-form DTO drift — Category F).
+    - Pairs with `invariant:lookup-tables-global-counter-leaks-population-size`
+      (the counter cross-owner exposure).
+    - Pairs with `invariant:withpermissionsprovider-context-seed-not-route-gate`
+      (the App.tsx:75-87 mount wrapper is context-only).
+
+  CROSS-BATCH COHERENCE:
+    LookupTables.tsx is the OUTLIER among the pillar roots enriched
+    so far. Comparison:
+      - Search.tsx (P-01): owns session bootstrap; delegates layout
+        to PageWithLeftSidebar; ~92 lines.
+      - TermSearch.tsx (P-06): identical pattern to Search.tsx,
+        clone.
+      - Alerts.tsx (P-07): thin shell, one bootstrap thunk; ~33 lines.
+      - DataModelling.tsx (P-02): pure presentational; ~17 lines.
+      - LookupTables.tsx (P-03): owns search bootstrap + counter +
+        Add CTA + dialog form mount; ~93 lines.
+    LookupTables.tsx's single-page-root architecture is
+    intentionally simpler than the multi-route Search.tsx pattern
+    BECAUSE the Master Data pillar has exactly ONE sub-feature.
+    The OpenAPI/Spec note: a future addition of MDM sub-features
+    (e.g., "reference codes", "master entity definitions") would
+    force a refactor analogous to DataModelling's two-tab shell
+    or Management's nine-tab shell. The route module
+    masterDataRoutes.ts already reserves BASE_PATH = '/master-data'
+    in anticipation.
+related_features:
+  - F-026
+  - F-025
+nodes:
+  - odd-platform ts react-component component:LookupTables
+contributors:
+  - odd-platform ts react-component component:LookupTables
+evidence:
+  - |-
+    LookupTables.md:understanding — 'Top-level React functional
+    component (93 lines) that renders the Lookup Tables list page
+    at /master-data/lookup-tables — the SINGLE user-observable
+    surface of the Master Data Management pillar (P-03). It
+    orchestrates a five-piece UI assembly.'
+  - |-
+    LookupTables.md:concepts.operations — five operations:
+    bootstrap-search-session, persist-search-id-to-url,
+    debounced-search-update, render-list-page,
+    mount-add-new-dialog-conditionally.
+  - |-
+    LookupTables.md:implicit_adrs — three load-bearing decisions:
+    (1) Lookup-table search uses a server-side persisted session
+    (?searchId=<uuid> URL param); (2) Add-new button gated by
+    LOOKUP_TABLE_CREATE alone (no per-parent ownership gate);
+    (3) Form-mount pattern is dialog-based (modal), not URL-route-
+    based.
+  - |-
+    LookupTables.md:downstream_side_effects — seven side-effect
+    classes (3 search-session external-calls + 1 results-fetch +
+    1 page-render + form-mount external-calls + per-row delete).
+axes_present:
+  - ui_components
+  - ui_routes
+triangulation_count: 1
+cross_batch: false
+severity: null
+severity_dim: null
+mitigations_unimplemented: []
+notes: |-
+  NEW operation captured in batch ZL (2026-05-26). The 'single-
+  page-root with all session-orchestration inline' shape is
+  unique to LookupTables.tsx among the pillar roots enriched so
+  far. The cost is page-root verbosity (~93 lines); the benefit
+  is no sibling-coordination overhead.
+
+  Cross-batch follow-up: the URL parameter form differs from
+  Search.tsx and TermSearch.tsx — here the UUID is in a query
+  parameter (?searchId=<uuid>) NOT a path segment
+  (/master-data/lookup-tables/{uuid}). This is observably
+  inconsistent across the three search-session orchestrators
+  and worth pinning as a separate UX-consistency invariant if
+  the divergence proves intentional vs accidental.

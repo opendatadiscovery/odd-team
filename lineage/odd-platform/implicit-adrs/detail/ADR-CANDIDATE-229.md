@@ -75,3 +75,33 @@ The naming convention encodes the contract: a maintainer reading `<WithPermissio
 **STRENGTHENS — batch ZH (2026-05-26 — UI Routes 1: 4 of 5 sidecars surface the Provider-context-seed-only finding as a DRIFT_NAME_VS_BEHAVIOR signal; 1 sidecar — terms — confirms the consistent convention of no Provider at the route mount when read-collaborative is the intent)**
 
 Prior to batch ZH the Provider-vs-Consumer distinction was IMPLICIT in ADR-088. Batch ZH's 5 route sidecars provide a stress-test of the primitive at the ROUTE-MOUNT LAYER specifically — where the Provider wrapper visually resembles a gate but isn't. The drift is consistent (3 pillars × Provider-at-route-mount pattern → no block; 1 pillar × no-Provider-at-route-mount → consistent with read-collaborative intent without misleading shape; 1 pillar × `RestrictedRoute`-at-route-mount → the SINGLE example of route-layer gating done correctly via the Consumer tier). The data lets us promote ADR-229 from "implicit pattern" to "documented two-tier primitive" with the load-bearing claim about role-segregation.
+
+
+## STRENGTHENS — Batch ZL (2026-05-26 — DataModelling page-root + LookupTables page-root confirm the WithPermissionsProvider context-seed pattern at the COMPOSITION layer)
+
+Batch ZL adds two component-tree confirmations of the Provider-vs-Consumer split that ADR-CANDIDATE-229 codifies. Both surfaces apply the SAME pattern: route-mount wraps in `<WithPermissionsProvider>` (context-seed); button inside the route uses `<WithPermissions>` (render-block).
+
+**New surfaced_by entries**:
+
+- `odd-platform__ts__react-component__component__DataModelling.md:bugs_limitations_corner_cases[1]` (MEDIUM) — "**`<WithPermissionsProvider>` at the inner-route layer does NOT block rendering — it only seeds a React Context** (see stress_findings Category B and the dataModelling route sidecar `bugs_limitations_corner_cases.[WithPermissionsProvider does not block]`). The naming-vs-behaviour drift is the LSN-020 class — the wrapper's name promises 'permission gate' but the implementation is 'context seed only'. A maintainer reading this DataModelling component composition cannot see the drift without reading three additional files (`WithPermissionsProvider.tsx` + `PermissionProvider.tsx` + `WithPermissions.tsx`). The drift surface is the entire Data Modelling pillar: routes are open to read; only action buttons are gated."
+
+- `odd-platform__ts__react-component__component__LookupTables.md:security.known_security_gaps[0]` (MEDIUM) — "Page renders for any authenticated user regardless of LOOKUP_TABLE permissions — the route-level WithPermissionsProvider lists CREATE/UPDATE/DELETE but PermissionProvider.tsx:12-44 does not short-circuit rendering. Only the in-page +Add new button is gated."
+
+**What this strengthening adds**: the prior support established the WithPermissionsProvider-vs-WithPermissions Provider-vs-Consumer split at the primitive level. Batch ZL adds the OPERATOR-FACING CONSEQUENCE at two more feature surfaces:
+
+1. **The maintainer-misleading name persists** — both DataModelling.tsx and LookupTables.tsx surface that maintainers reading the page-root composition cannot tell from the `<WithPermissionsProvider allowedPermissions={...}>` JSX whether the inner subtree is gated. The name promises a gate; the implementation is a context-seed. The misreading is structural — three additional files must be read to understand the actual gating model.
+
+2. **The CONSEQUENCE is operator-visible** — users without `LOOKUP_TABLE_CREATE` (or any LOOKUP_TABLE permission) still see the LookupTables list page including the global-count counter; users without `QUERY_EXAMPLE_CREATE` still see the DataModelling QueryExamples list. Only the Add buttons hide. This is the OPERATOR-FACING manifestation of the ADR-229 split.
+
+3. **The wrapper's `allowedPermissions={[A, B]}` semantic is AND-of-all (every())**, not OR-of-any — DataModelling's UPDATE+DELETE wrapper at DataModellingRoutes.tsx:32-34 means a user needs BOTH permissions for `isAllowedTo=true`; the wrapper renders regardless, but the inner `<WithPermissions>` callsites compute the resulting flag with every()-semantics. This is the DECISION POINT that needs documenting on the ADR side — the maintainer reading `allowedPermissions=[A, B]` cannot tell from the prop name alone whether the semantics is AND or OR.
+
+**Triangulation count after ZL**: 6 sidecars (was 4; ZL adds DataModelling + LookupTables page-roots).
+
+**Severity unchanged**: HIGH — the naming-vs-behaviour drift this ADR codifies is observable across 6+ surfaces now; the LSN-020 class assignment is reinforced.
+
+**Coherence check** (LSN-018):
+- STRENGTHENS: ADR-CANDIDATE-088 (Permission framework); ADR-CANDIDATE-089 (Partial UI permission gating — mutation buttons only); REFACTOR-668 (the route-mount-misleading documentation-shape finding — operator-facing manifestation of this drift); ADR-CANDIDATE-247 NEW this batch (owner-association tab visibility — same UI-hide-vs-backend-enforce split).
+- SUPERSEDES: none.
+- CONFLICTS: none.
+
+---

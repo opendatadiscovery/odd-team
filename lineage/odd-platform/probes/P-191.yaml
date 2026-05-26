@@ -1,0 +1,105 @@
+---
+probe_id: P-191
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__LookupTables
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: integration
+verified_against_commit: 9ac6436e9bd36ba132d765076c6bbd5916fde729
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category F — DTO-shape vs implementation drift, LSN-020 class):
+  the LookupTableForm edit path submits a payload typed `LookupTableFormData`
+  (useForm<LookupTableFormData> at LookupTableForm.tsx:49) to the updateLookupTable
+  mutation, which is wired to ReferenceDataApiUpdateLookupTableRequest (lookupTables.ts:69-76).
+  The Swagger schema for `LookupTableUpdateFormData` (components.yaml:3853-3862) defines
+  ONLY `name` and `description` — `namespace_name` is NOT a field. The form's TS type
+  still carries `namespaceName` for edit submissions (set from `lookupTable.namespace.name`
+  at line 44), with the field UI-disabled via `disabled={!!lookupTable}` (line 120).
+  Hypothesis: on edit, the request body contains `{name, description, namespace_name}`
+  but the server silently discards `namespace_name` — the namespace cannot be changed,
+  no error is raised about the extraneous field. If the hypothesis is correct,
+  the form's "disabled namespaceName" is a UX-only hint, not a data-integrity
+  guarantee; an operator inspecting the network tab would see namespace_name on
+  the wire on every edit even though the API contract rejects it.
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: rest
+    method: POST
+    path: /api/namespaces
+    headers:
+      X-S2S-Token: ${S2S_ADMIN_TOKEN}
+      Content-Type: application/json
+    body: |
+      {"name": "p191_ns_a"}
+  - kind: rest
+    method: POST
+    path: /api/namespaces
+    headers:
+      X-S2S-Token: ${S2S_ADMIN_TOKEN}
+      Content-Type: application/json
+    body: |
+      {"name": "p191_ns_b_other"}
+  - kind: rest
+    method: POST
+    path: /api/referencedata/table
+    headers:
+      X-S2S-Token: ${S2S_ADMIN_TOKEN}
+      Content-Type: application/json
+    body: |
+      {"name": "p191_original_table", "namespace_name": "p191_ns_a", "description": "initial"}
+    capture_as: created_table  # captures tableId
+act:
+  - kind: rest
+    method: PUT
+    path: /api/referencedata/table/${created_table.tableId}
+    headers:
+      X-S2S-Token: ${S2S_ADMIN_TOKEN}
+      Content-Type: application/json
+    # form sends ALL three fields even on edit (mirrors LookupTableForm.tsx + lookupTables.ts wiring)
+    body: |
+      {"name": "p191_renamed_table", "description": "edited", "namespace_name": "p191_ns_b_other"}
+    capture_as: edit_response
+observe:
+  - kind: sql
+    query: |
+      SELECT lt.name, lt.description, ns.name AS namespace_name, lt.table_name
+      FROM lookup_tables lt
+      LEFT JOIN namespace ns ON ns.id = lt.namespace_id
+      WHERE lt.id = ${created_table.tableId};
+    capture_as: db_state
+assert:
+  - "edit_response.status_code == 200                       -- request not rejected for unknown field"
+  - "db_state.name == 'p191_renamed_table'                  -- name updated"
+  - "db_state.description == 'edited'                       -- description updated"
+  - "db_state.namespace_name == 'p191_ns_a'                 -- namespace UNCHANGED (silent-discard confirmed)"
+  - "db_state.table_name CONTAINS 'p191_original_table' OR db_state.table_name CONTAINS 'p191_renamed_table'  -- physical table name policy"
+cleanup:
+  - kind: rest
+    method: DELETE
+    path: /api/referencedata/table/${created_table.tableId}
+    headers:
+      X-S2S-Token: ${S2S_ADMIN_TOKEN}
+  - kind: sql
+    query: |
+      DELETE FROM namespace WHERE name LIKE 'p191_ns%';
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__LookupTables
+    - odd-platform__java__ReferenceDataController__controller-class__ReferenceDataController
+  retrospectives:
+    - LSN-020
+realism_caveats: |
+  Probe verifies the silent-discard hypothesis at the HTTP layer. If the server returns 400
+  for the unknown `namespace_name` field (Spring strict JSON-binding configuration), the
+  drift class is different — the form would ship a request that ALWAYS fails on edit, and
+  the UX would surface a generic "Request failed" message. Either outcome is operator-visible
+  pathology: either silent-discard (data-integrity surprise) or always-400 (broken edit flow).
+  The probe does not verify what the React form-submit `.then(_ => ... navigate(...))` chain
+  does when the request fails — useUpdateLookupTable hook does not declare an onError handler,
+  so failure surfaces as an unhandled toast / promise rejection.

@@ -7,19 +7,19 @@ source_monolith_frontmatter:
   sidecar_count: 65
   test_files_indexed: 70
   prompt_version: test-coverage-mapper/0.1.0
-  total_test_gaps: 1022
+  total_test_gaps: 1036
   gaps_by_criticality:
     CRITICAL: 168
-    HIGH: 343
-    MEDIUM: 382
-    LOW: 129
+    HIGH: 349
+    MEDIUM: 388
+    LOW: 131
   gaps_by_category:
     missing-integration: 206
     missing-security: 281
     missing-edge-case: 322
     missing-unit: 93
-    integration: 44
-    security: 17
+    integration: 55
+    security: 20
     unit: 7
     sidecar-stale: 3
     missing-performance: 36
@@ -214,7 +214,7 @@ source_monolith_frontmatter:
   - odd-platform java notification.sender class:SlackNotificationSender
   - odd-platform java notification.sender class:WebhookNotificationSender
   - odd-platform java notification.processor class:PostgresWALMessageProcessor
-total_entries: 1022
+total_entries: 1036
 notice: Rebuilt from detail/ by lineage/_extractor/registry-shard/rebuild_indexes.py.
   The detail files are the source of truth; this index is derived headlines for the
   registry-search subagent.
@@ -3214,7 +3214,15 @@ test_gaps_index:
     no-ops (HousekeepingJobManager.java:26 `@SchedulerLock(name="housekeepingJob",
     lockAtLeastFor="14m", lockAtMostFor="14m")`). The 14-minute upper bound is dangerously
     close to the 15-minute schedule; a job running 14m 1s releases the lock prematurely.
-    No multi-process test verifies the single-leader invariant.'
+    No multi-process test verifies the single-leader invariant.
+
+
+    STRENGTHENED batch ZK — the SchedulingConfiguration sidecar adds the foundation-tier
+    confirmation: the `.usingDbTime()` call at SchedulingConfiguration.java:22 is
+    the load-bearing precondition. Without it, JVM-side timestamps would cause two
+    replicas with skewed clocks to write different lock_until values and the lock
+    semantics would be vulnerable to clock drift. The multi-instance race test should
+    ALSO verify the clock-arbitration is PG-anchored (cross-reference TEST-GAP-1028).'
   test_class: missing-integration
   criticality: MEDIUM
   node_id: ''
@@ -17676,32 +17684,41 @@ test_gaps_index:
     \ cycle (SearchFacetsHousekeepingJob et al — per F-010).\n- **Session housekeeping\
     \ is the SOLE outlier** — verified via grep `@SchedulerLock` over odd-platform-api/src/main/java;\
     \ the annotation is present on 4 jobs; absent on PostgreSQLSessionHousekeepingJobHandler.\n\
-    \n**Operator-impact scenario**:\n- Single-instance deployment: housekeeping runs\
-    \ once per hour, DELETE WHERE `expiry_time < now()` executes once. Idempotent\
-    \ SQL — first run deletes the matching rows, no harm.\n- 5-instance deployment:\
-    \ housekeeping runs 5 times per hour across the 5 replicas. The DELETE SQL is\
-    \ idempotent (the second run sees no rows matching that the first hasn't already\
-    \ deleted), so CORRECTNESS is preserved. But the DB load is 5× the intended rate.\
-    \ For a busy `SPRING_SESSION` table, the DELETE + index maintenance + WAL writes\
-    \ amplify.\n- 10-instance deployment: 10× load. Combined with `spring.session.timeout=-1`\
-    \ (TEST-GAP-779 — predicate never matches, so the DELETE has no rows to scan but\
-    \ still incurs the planning + lock-acquisition cost), the DB receives 240 useless\
-    \ DELETE statements per day per 10 replicas.\n\n**Correctness is OK, performance\
-    \ is NOT.** Idempotency is a CONSEQUENCE, not an INVARIANT — a future change adding\
-    \ side-effects to the housekeeping job (e.g., emitting an activity event for each\
-    \ deletion, incrementing a metric counter, persisting an audit row) immediately\
-    \ becomes load-bearing. Without leader-election, N replicas duplicate the side-effects\
-    \ N times.\n\n**Architectural-consistency gap**: the platform's other `@Scheduled`\
-    \ jobs ALL use either `@SchedulerLock` (ShedLock library) or Postgres advisory\
-    \ locks. The session-housekeeping outlier is an UNDOCUMENTED architectural inconsistency\
-    \ that future maintainers will notice and either fix (good) or replicate (bad\
-    \ — establishing a precedent for unguarded `@Scheduled` jobs).\n\n**Test gap shape**:\
-    \ parametrised test running a `@SpringBootTest` under N=2 instances (or equivalent\
-    \ — two separate ApplicationContexts in the same JVM sharing a Testcontainers\
-    \ PG) and asserting that ONLY ONE instance's housekeeping job acquires the advisory\
-    \ lock per scheduled tick. The test is CURRENTLY FAILING (no lock exists) — it\
-    \ pins the gap. The fix is one annotation: `@SchedulerLock(name = \"sessionHousekeepingJob\"\
-    , lockAtLeastFor = \"PT55M\", lockAtMostFor = \"PT55M\")` on the handler."
+    \n**STRENGTHENED batch ZK** — the SchedulingConfiguration sidecar at commit 4ec2b20\
+    \ provides the foundation-tier primary-source confirmation of the inconsistency:\
+    \ the `@EnableSchedulerLock(defaultLockAtMostFor = \"1h\")` at SchedulingConfiguration.java:14\
+    \ sets up scheduler-lock AOP but ONLY for `@SchedulerLock`-annotated methods —\
+    \ it is NOT an implicit lock for bare `@Scheduled`. The session-housekeeping omission\
+    \ is therefore architecturally documented from BOTH the foundation-tier (SchedulingConfiguration\
+    \ says \"opt-in per method\") AND the consumer-tier (SessionConfiguration says\
+    \ \"this is the outlier that did not opt in\"). The double-anchor confirms the\
+    \ gap is real, not a sidecar artefact.\n\n**Operator-impact scenario**:\n- Single-instance\
+    \ deployment: housekeeping runs once per hour, DELETE WHERE `expiry_time < now()`\
+    \ executes once. Idempotent SQL — first run deletes the matching rows, no harm.\n\
+    - 5-instance deployment: housekeeping runs 5 times per hour across the 5 replicas.\
+    \ The DELETE SQL is idempotent (the second run sees no rows matching that the\
+    \ first hasn't already deleted), so CORRECTNESS is preserved. But the DB load\
+    \ is 5× the intended rate. For a busy `SPRING_SESSION` table, the DELETE + index\
+    \ maintenance + WAL writes amplify.\n- 10-instance deployment: 10× load. Combined\
+    \ with `spring.session.timeout=-1` (TEST-GAP-779 — predicate never matches, so\
+    \ the DELETE has no rows to scan but still incurs the planning + lock-acquisition\
+    \ cost), the DB receives 240 useless DELETE statements per day per 10 replicas.\n\
+    \n**Correctness is OK, performance is NOT.** Idempotency is a CONSEQUENCE, not\
+    \ an INVARIANT — a future change adding side-effects to the housekeeping job (e.g.,\
+    \ emitting an activity event for each deletion, incrementing a metric counter,\
+    \ persisting an audit row) immediately becomes load-bearing. Without leader-election,\
+    \ N replicas duplicate the side-effects N times.\n\n**Architectural-consistency\
+    \ gap**: the platform's other `@Scheduled` jobs ALL use either `@SchedulerLock`\
+    \ (ShedLock library) or Postgres advisory locks. The session-housekeeping outlier\
+    \ is an UNDOCUMENTED architectural inconsistency that future maintainers will\
+    \ notice and either fix (good) or replicate (bad — establishing a precedent for\
+    \ unguarded `@Scheduled` jobs).\n\n**Test gap shape**: parametrised test running\
+    \ a `@SpringBootTest` under N=2 instances (or equivalent — two separate ApplicationContexts\
+    \ in the same JVM sharing a Testcontainers PG) and asserting that ONLY ONE instance's\
+    \ housekeeping job acquires the advisory lock per scheduled tick. The test is\
+    \ CURRENTLY FAILING (no lock exists) — it pins the gap. The fix is one annotation:\
+    \ `@SchedulerLock(name = \"sessionHousekeepingJob\", lockAtLeastFor = \"PT55M\"\
+    , lockAtMostFor = \"PT55M\")` on the handler."
   test_class: missing-integration
   criticality: HIGH
   node_id: ''
@@ -31551,7 +31568,16 @@ test_gaps_index:
     \ /\n`UPSTREAM` bypass owner scoping entirely.\n\nThe doc page `https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed`\n\
     (WebFetched 2026-05-26, status 200) makes NO statement about visibility\nscoping;\
     \ an operator deploying ODD with RBAC expectations from the\n`enable-security/authorization`\
-    \ doc has no signal that the global Activity\npage is exempt."
+    \ doc has no signal that the global Activity\npage is exempt.\n\n**Batch ZL (2026-05-26)\
+    \ strengthen** — the Activity.tsx component sidecar\nre-confirms the gap from\
+    \ the component-tier perspective: the operator\nlands HERE first (the component\
+    \ is what they actually see). The\ncomponent-tier sidecar adds three doc-drift\
+    \ findings, all surfaced as\nDOC-NNN candidates: (i) doc page makes no access-control\
+    \ statement, (ii)\ndoc page omits the four UI tabs (All/My Objects/Downstream/Upstream),\n\
+    (iii) doc page does not specify the default 6-day window. These doc gaps\nCOMPOSE\
+    \ with this security gap — the operator reading the doc has no\nsignal that the\
+    \ surface is platform-wide visible, and no signal that the\ndefault tab `type=ALL`\
+    \ bypasses owner scoping."
   test_class: missing-security
   criticality: CRITICAL
   node_id: ''
@@ -32268,60 +32294,49 @@ test_gaps_index:
   related_doc_gap_ids: []
   detail_path: detail/TEST-GAP-1015.yaml
 - gap_id: TEST-GAP-1016
-  behaviour: '**The Activity Feed filter labelled `t(''User'')` is OPERATOR-MISLEADING
-
-    and uniform across all six locales — no locale corrects the label.**
-
-    The label appears at `Filters.tsx:58` and reads "User" in en.json
-
-    line 347. An operator clicking the filter expects "filter activity
-
-    by who PERFORMED the action". The implementation at
-
-    `ReactiveActivityRepositoryImpl.java:272-273` binds
-
-    `USER_OWNER_MAPPING.OWNER_ID.in(userIds)` — i.e. it filters by the
-
-    OWNER of the entity that the activity was on, NOT by the actor who
-
-    performed it.
-
-
-    Per LSN-020 (`retrospectives/LSN-020-activity-feed-user-filter-semantic-drift.md`)
-
-    this is a documented structural drift; the en.md sidecar''s
-
-    bugs_limitations_corner_cases couples line 347 of this file to the
-
-    SQL behaviour. No test exists pinning either (a) the current
-
-    rendered text → SQL-behaviour mismatch (the regression-pin for
-
-    documentation accuracy) OR (b) the desired state where the label
-
-    reads "Entity Owner" and the SQL behaviour matches OR a separate
-
-    "Actor" filter is added with the actor-side SQL.
-
-
-    The drift is HIGH because (i) every activity-feed visit hits this
-
-    surface, (ii) the misleading label could lead an operator to
-
-    conclude that no activity occurred when in fact activity occurred
-
-    but performed by someone OUTSIDE the owner set, (iii) the cross-
-
-    locale uniform misleading-ness means a French operator gets the
-
-    same wrong mental model as the English operator. This is
-
-    documentation-driven harm, not data loss.
-
-
-    Probe P-171 (per en.md docs_link_semantic refs) verifies the
-
-    runtime drift but no unit test pins the relationship.'
+  behaviour: "**The Activity Feed filter labelled `t('User')` is OPERATOR-MISLEADING\n\
+    and uniform across all six locales — no locale corrects the label.**\nThe label\
+    \ appears at `Filters.tsx:58` and reads \"User\" in en.json\nline 347. An operator\
+    \ clicking the filter expects \"filter activity\nby who PERFORMED the action\"\
+    . The implementation at\n`ReactiveActivityRepositoryImpl.java:272-273` binds\n\
+    `USER_OWNER_MAPPING.OWNER_ID.in(userIds)` — i.e. it filters by the\nOWNER of the\
+    \ entity that the activity was on, NOT by the actor who\nperformed it.\n\nPer\
+    \ LSN-020 (`retrospectives/LSN-020-activity-feed-user-filter-semantic-drift.md`)\n\
+    this is a documented structural drift; the en.md sidecar's\nbugs_limitations_corner_cases\
+    \ couples line 347 of this file to the\nSQL behaviour. No test exists pinning\
+    \ either (a) the current\nrendered text → SQL-behaviour mismatch (the regression-pin\
+    \ for\ndocumentation accuracy) OR (b) the desired state where the label\nreads\
+    \ \"Entity Owner\" and the SQL behaviour matches OR a separate\n\"Actor\" filter\
+    \ is added with the actor-side SQL.\n\nThe drift is HIGH because (i) every activity-feed\
+    \ visit hits this\nsurface, (ii) the misleading label could lead an operator to\n\
+    conclude that no activity occurred when in fact activity occurred\nbut performed\
+    \ by someone OUTSIDE the owner set, (iii) the cross-\nlocale uniform misleading-ness\
+    \ means a French operator gets the\nsame wrong mental model as the English operator.\
+    \ This is\ndocumentation-driven harm, not data loss.\n\nProbe P-171 (per en.md\
+    \ docs_link_semantic refs) verifies the\nruntime drift but no unit test pins the\
+    \ relationship.\n\nBatch ZL (2026-05-26) strengthens this with the Activity.tsx\n\
+    component sidecar evidence: the misleading-label channel is\ntriangulated across\
+    \ en.json, the Filters child, the Activity\ncomponent itself, and the backend\
+    \ repository. The component\nsidecar makes the four operator-observable consequences\n\
+    explicit:\n(a) Users WITHOUT an active user-owner mapping cannot be selected\n\
+    \    at all — autocomplete sources via `fetchOwnersList` only\n    (`MultipleFilterAutocomplete.tsx:44-47`);\
+    \ a user-without-owner\n    is silently absent from the picker. The doc copy \"\
+    performed\n    by selected users\" cannot be satisfied for these users.\n(b) Reassigning\
+    \ a user-owner mapping (the user changes which\n    owner they represent) RETROACTIVELY\
+    \ rewrites which historical\n    activity rows match the filter — the audit trail's\
+    \ \"who did\n    this\" answer for past events changes silently without any\n\
+    \    event-log entry. Forensic integrity drift.\n(c) Multiple users mapped to\
+    \ the same owner all collapse into\n    the same filter result — picking \"owner-Alice-team\"\
+    \ returns\n    rows for every user mapped to that owner. The label promises\n\
+    \    single-user, the implementation delivers user-set-by-owner.\n(d) Deleted-user-mapping\
+    \ silent empty: when\n    `USER_OWNER_MAPPING.DELETED_AT.isNull()` is enforced\
+    \ (line\n    274), filtering by a soft-deleted mapping's owner_id\n    returns\
+    \ empty even if the underlying actor still exists.\n\nThe available-but-unused\
+    \ column is `ACTIVITY.CREATED_BY` — read\nin the LEFT JOIN at line 221, SELECTED\
+    \ at line 212, but NEVER\nfiltered. An actor-honest implementation would bind\n\
+    `ACTIVITY.CREATED_BY.in(userIds)` on the username axis.\n\nProbe P-190 (batch\
+    \ ZL) emitted to validate the four observable\nconsequences end-to-end on a real\
+    \ platform run."
   test_class: integration
   criticality: HIGH
   node_id: ''
@@ -32915,3 +32930,652 @@ test_gaps_index:
   related_refactor_ids: []
   related_doc_gap_ids: []
   detail_path: detail/TEST-GAP-1025.yaml
+- gap_id: TEST-GAP-1026
+  behaviour: '**The four `@Scheduled` jobs in the platform share ONE thread by Spring
+    Boot''s default `ThreadPoolTaskScheduler.poolSize=1`** — verified by absence of
+    `TaskScheduler` `@Bean` anywhere in `<odd-platform-repo>/odd-platform-api/src/main/java`
+    AND absence of `spring.task.scheduling.pool.size` in `application.yml`. The operator''s
+    mental model ("my four scheduled jobs run in parallel") is wrong by default. Concrete
+    operational consequences:
+
+
+    - HousekeepingJobManager.java:25 — `fixedRate = 15min` + `@SchedulerLock(housekeepingJob,
+    14m, 14m)`
+
+    - DataEntityStatusSwitchJob.java:21 — `fixedRate = 10min` + `@SchedulerLock(statusSwitchJob,
+    9m, 9m)`
+
+    - PostgreSQLPartitionCreationJob.java:40 — `cron = "0 1 0 * * *"` (00:01 daily)
+    + `@SchedulerLock(partitionCreationJob, 10m, 10m)`
+
+    - PostgreSQLSessionHousekeepingJobHandler.java:13 — `fixedRate = 1h` (NO `@SchedulerLock`)
+
+
+    A 14-minute housekeeping cycle blocks the 10-minute status-switch from firing
+    on schedule. A housekeeping cycle that runs past midnight delays the daily partition-creation
+    cron at 00:01 — Spring''s default cron-misfire behaviour is queue-and-delay, NOT
+    skip. If the cron is deferred past 23:59:59 of the partition''s first-use day,
+    INSERTs against `ACTIVITY` / `MESSAGE` may fail with "no partition exists for
+    the given key". One-line operator mitigation (`spring.task.scheduling.pool.size:
+    4`) is not documented anywhere on the live config page. No test asserts the current
+    single-thread contract OR the cron-misfire-queueing behaviour.'
+  test_class: integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-1026.yaml
+- gap_id: TEST-GAP-1027
+  behaviour: '**`@EnableSchedulerLock(defaultLockAtMostFor = "1h")` at SchedulingConfiguration.java:14
+    is currently DEAD CODE in the platform.** All three `@SchedulerLock`-annotated
+    methods in `<odd-platform-repo>/odd-platform-api/src/main/java` set their own
+    `lockAtMostFor` explicitly:
+
+
+    - HousekeepingJobManager.java:26 — `lockAtMostFor = "14m"`
+
+    - DataEntityStatusSwitchJob.java:22 — `lockAtMostFor = "9m"`
+
+    - PostgreSQLPartitionCreationJob.java:41 — `lockAtMostFor = "10m"`
+
+
+    The `1h` default is a latent safety floor for FUTURE `@SchedulerLock(name="X")`
+    annotations that omit the timing attribute. No test currently exercises this inheritance
+    contract. A reader of SchedulingConfiguration.java cannot tell from the file alone
+    whether the default is meaningful; the `1h` value is only validated by reading
+    the three downstream consumers and confirming each sets its own.
+
+
+    Test gap shape: a custom `@Component` in the test source set declaring `@Scheduled(fixedRate
+    = ...)` + `@SchedulerLock(name = "testLock")` WITHOUT any timing attributes, then
+    asserting that the `shedlock` row''s `lock_until` is approximately `now() + 1h`
+    (from PG via `.usingDbTime()`).
+
+
+    Currently LOW because (a) no current code path exercises the default; (b) the
+    alternative (the ShedLock library default, typically `Long.MAX_VALUE`) is strictly
+    worse — the explicit `1h` IS the safety mechanism. Pin to ensure a future SchedulingConfiguration
+    refactor does not accidentally drop the default value (e.g. someone removing the
+    argument and falling back to ShedLock''s library default).'
+  test_class: integration
+  criticality: LOW
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-1027.yaml
+- gap_id: TEST-GAP-1028
+  behaviour: '**`SchedulingConfiguration.java:22` explicitly calls `.usingDbTime()`
+    on the `JdbcTemplateLockProvider` builder** — without this call the provider uses
+    JVM-side `Instant.now()` for `lock_until` / `locked_at` timestamps, which means
+    two replicas with skewed clocks would write different lock_until values and the
+    lock semantics would be vulnerable to clock drift. The explicit call IS the multi-replica
+    safety mechanism for clock-skew tolerance.
+
+
+    The contract is invisible to operators reading the docs page; the live config-and-deployment
+    page does not mention `.usingDbTime()` or its clock-skew implications. A refactor
+    that swapped the LockProvider implementation (e.g. JDBC → Redis) or that re-wrote
+    the JdbcTemplateLockProvider construction would silently lose `.usingDbTime()`
+    without any test catching the regression. Subsequent multi-replica deployments
+    would become vulnerable to split-brain lock decisions under clock skew between
+    JVMs.
+
+
+    Test gap shape: integration test querying the `shedlock` table mid-cycle and asserting
+    `lock_until` is close to PG''s `current_timestamp + lockAtMostFor`, NOT close
+    to the JVM''s `Instant.now() + lockAtMostFor`. The difference is only observable
+    if the JVM clock is artificially skewed — but the pin can be done indirectly by:
+
+
+    1. Verifying the LockProvider bean is exactly `JdbcTemplateLockProvider` and not
+    a custom subclass.
+
+    2. Running a `@SchedulerLock(name = "test", lockAtMostFor = "10s")` test, sleeping
+    1 second after acquisition, then asserting `SELECT EXTRACT(EPOCH FROM (lock_until
+    - NOW())) FROM shedlock WHERE name = ''test''` returns ~9 seconds (lock_until
+    is anchored to PG-time at acquisition, not relative to JVM''s slightly-later current
+    time).'
+  test_class: integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-1028.yaml
+- gap_id: TEST-GAP-1029
+  behaviour: '**`HousekeepingTTLProperties.java:8-12` declares three `private int`
+    fields (`resolvedAlertsDays`, `searchFacetsDays`, `dataEntitiesDays`) with NO
+    `@Min(0)`, NO `@PositiveOrZero`, NO `@Validated` on the class.** Spring Boot `@ConfigurationProperties`
+    binds negative integers without complaint. An operator setting `housekeeping.ttl.resolved_alerts_days:
+    -1` binds `-1` successfully; the downstream jOOQ chain computes the cutoff as
+    `now() - (-1) days` = `now() + 1 day`, which matches ALL alert rows with `STATUS_UPDATED_AT
+    <= tomorrow` — i.e. every resolved alert.
+
+
+    Concretely the AlertHousekeepingJob.java code path is:
+
+    ```
+
+    final OffsetDateTime cutoff = DSL.currentOffsetDateTime().minus(housekeepingTTLProperties.getResolvedAlertsDays());
+
+    ```
+
+    With `getResolvedAlertsDays()` returning `-1`, the cutoff becomes `current_timestamp
+    + interval ''1 day''` (jOOQ days-flipped via negative). Combined with the pre-existing
+    jOOQ operator-precedence bug (TEST-GAP-211) which makes manual RESOLVED rows ignore
+    the cutoff entirely, this is silent data loss across both manual and automatic
+    resolved alerts in a single misconfigured deploy.
+
+
+    The mitigation (`@Min(0)` on each field + `@Validated` at the class level) would
+    fail-fast at boot with a clear `ConstraintViolationException` instead of silently
+    producing wrong-cutoff deletions. The constraint annotations are available in
+    the classpath (jakarta.validation is used elsewhere in the codebase per LDAPSecurityConfiguration
+    patterns).
+
+
+    Test gap shape: pin the current binding behaviour with negative integers AND assert
+    the cutoff-flip propagates to the SQL emitted; pair with a positive-control test
+    asserting `@Min(0)` (when added) rejects negative values at startup with a clear
+    error.'
+  test_class: integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-1029.yaml
+- gap_id: TEST-GAP-1030
+  behaviour: '**`GenAIProperties` carries ONLY three fields (`enabled`, `url`, `requestTimeout`)
+    — NO `apiKey`, NO `authToken`, NO `model`, NO `maxTokens`, NO `provider`, NO `rateLimit`,
+    NO `temperature`.** Operators integrating ODD Platform''s Gen AI Assistant with
+    a paid LLM (OpenAI, Anthropic, Azure OpenAI, AWS Bedrock) MUST front the platform
+    with their own auth-injecting proxy — there is no extension point in this POJO
+    and `WebClientConfiguration.java:26-29` provides no `defaultHeader(HttpHeaders.AUTHORIZATION,
+    ...)` and no `ExchangeFilterFunction` insertion hook.
+
+
+    Additionally, `GenAIServiceImpl.java:22-23` hardcodes `QUERY_DATA = "/query_data"`
+    and `QUESTION_FIELD = "question"`. The implicit contract is "an unauthenticated
+    HTTP service reachable on the platform''s egress, accepting JSON `{"question":
+    "..."}` at `{genai.url}/query_data` and returning a string body." Off-the-shelf
+    LLM provider APIs (OpenAI Chat Completions, Anthropic Messages, Azure OpenAI)
+    do NOT match this shape — they require auth headers, model parameters, and structured
+    request schemas (`messages: [...]` for OpenAI, `messages: [...]` + `system: ...`
+    for Anthropic).
+
+
+    The live docs page (verified via WebFetch in GenAIProperties sidecar) does NOT
+    warn operators of:
+
+    1. The complete absence of credential-injection surface in `GenAIProperties`.
+
+    2. The hardcoded request path + field name making the feature un-pluggable to
+    standard LLM SDKs.
+
+    3. The implication that any production deployment requires deploying a separate
+    proxy service (a doc-gap class — operators discover this AFTER they''ve configured
+    `genai.url` and the feature 401s on first request).
+
+
+    Test gap shape: security-class test asserting (a) `GenAIProperties` exposes no
+    setter for `apiKey` / `authorization` / `model` (current absent-surface contract);
+    (b) an integration test driving a real `POST /api/genai/ask` against a mock LLM
+    endpoint that requires `Authorization: Bearer ...` — the request fails because
+    no header is sent. Documents the proxy-required architecture.'
+  test_class: security
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-1030.yaml
+- gap_id: TEST-GAP-1031
+  behaviour: '**`@ConfigurationProperties("odd")` at `AdditionalLinkProperties.java:6`
+    claims the entire `odd.*` Spring prefix, but the record only binds the `links`
+    sub-field.** The other `odd.*` keys are consumed elsewhere via `@Value` reads:
+
+    - `odd.tenant-id` — `ExternalMetricReader.java:53` (verified)
+
+    - `odd.platform-base-url` — `SlackMessageGeneratorConfiguration.java:15` (verified)
+
+    - `odd.data-entity-stale-period` — `DataEntityStaleDetector.java:10` (verified)
+
+    - `odd.activity.partition-period` — additional `@Value` consumer
+
+
+    This is a legitimate Spring pattern (relaxed-binder + `@ConfigurationProperties`
+    only binds the declared fields, ignoring siblings by default) but a FRAGILE one:
+    if anyone ever adds `(ignoreUnknownFields = false)` to this annotation — a common
+    hardening change in security audits or in upgrading to stricter binding — the
+    application will FAIL TO BOOT because the binder sees `tenant-id`, `platform-base-url`,
+    `data-entity-stale-period`, etc. as "unknown" sibling keys under the `odd` prefix.
+
+
+    Test gap shape: integration test forcing `ignoreUnknownFields=false` (via test-only
+    override of the annotation, or via a custom `Binder` config) and asserting the
+    platform fails to boot — pinning the latent foot-gun.
+
+
+    LOW because (a) the failure mode requires someone to deliberately add `ignoreUnknownFields=false`,
+    (b) the failure is fail-fast (no silent corruption), (c) the mitigation is to
+    refactor each `@Value` consumer onto its own `@ConfigurationProperties` POJO or
+    to narrow this annotation''s prefix to `odd.links`.'
+  test_class: integration
+  criticality: LOW
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-1031.yaml
+- gap_id: TEST-GAP-1032
+  behaviour: '**`AdditionalLinkProperties.java:8` declares `record Link(String title,
+    String url)` with NO `@NotBlank`, NO `@NotNull`, NO `@URL`, NO `@Pattern`, NO
+    `@Size` on either field.** Spring Boot''s relaxed-binder accepts entries with
+    one or both fields missing/null/empty; the operator''s misconfiguration produces
+    a silently-broken UI menu item rather than a fail-fast at boot.
+
+
+    Concrete failure modes:
+
+    1. `odd.links[0].title: "Documentation"` + `odd.links[0].url:` (unset) → binds
+    `Link("Documentation", null)`. UI renders `<a href={null}>Documentation</a>` which
+    most browsers interpret as a relative-empty href (same-page reload on click) or
+    a literal `href="null"` (404).
+
+    2. `odd.links[0].title:` (empty) + `odd.links[0].url: "https://example.com"` →
+    binds `Link("", "https://example.com")`. UI renders a clickable but visually-empty
+    `<a>` element (zero text width — operationally invisible, but still reachable
+    via Tab key).
+
+    3. `odd.links[0].title: null` + `odd.links[0].url: null` → binds `Link(null, null)`.
+    The entry is in the list but renders nothing.
+
+
+    The `LinksController.java:27` returns `Flux.empty()` when the whole list is null
+    (via `CollectionUtils.isEmpty` guard), but it does NOT filter partially-populated
+    entries; the broken `<a>` reaches the UI.
+
+
+    Test gap shape: integration test driving `@ConfigurationProperties` binding with
+    each partial-shape combination and asserting the bound state; pair with a UI-tier
+    render test (under the AppInfoMenu sidecar surface) asserting the broken-link
+    UX. The HIGHEST-LEVERAGE test would force a `@NotBlank` + `@Validated` refactor
+    at the AdditionalLinkProperties layer, eliminating the broken-UI class of misconfiguration
+    at boot.'
+  test_class: integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-1032.yaml
+- gap_id: TEST-GAP-1033
+  behaviour: "**HIGH — Category B (DRIFT_NAME_VS_BEHAVIOR) on the global Alerts page's\n\
+    \"All\" tab.** The live docs page at\n`https://docs.opendatadiscovery.org/features/active-platform-features/alerting`\n\
+    (WebFetched 2026-05-26, status 200) describes the All tab as: \"Every open\nand\
+    \ resolved alert across the whole platform.\" The implementation\n(`AlertController.getAllAlerts`\
+    \ -> `AlertServiceImpl.listAll` ->\n`ReactiveAlertRepositoryImpl.listAllWithStatusOpen`)\
+    \ hard-filters\n`ALERT.STATUS.eq(OPEN.getCode())` at three call sites:\n`ReactiveAlertRepositoryImpl.java:145,\
+    \ 166, 230` (the three global-tab\nlist methods: `listAllWithStatusOpen`, `listByOwner`,\n\
+    `listDependentObjectsAlerts`).\n\n**Operator-observable consequence**: an operator\
+    \ opens `/alerts/all`\nexpecting to see ALL alerts (per the docs), searches for\
+    \ a known\nRESOLVED alert from yesterday, and cannot find it. The natural\nconclusion\
+    \ is \"the alert was purged\" — even though the alert is still\nin the database,\
+    \ still attached to the entity's per-entity Alerts tab\n(which IS unfiltered:\
+    \ `getAlertsByDataEntityId` has no status filter,\nlines 182-199), and would re-surface\
+    \ if reopened.\n\n**Why HIGH**:\n- **Operator harm**: a security-relevant alert\
+    \ (e.g. data-quality test\n  failure) that was resolved-then-recreated or resolved-prematurely\
+    \ is\n  invisible to the on-call. Forensic incident-response is misled.\n- **Cross-locale\
+    \ uniformity**: the \"All\" label is the i18n key\n  `t('All')` — no locale corrects\
+    \ it (verified via batch ZJ en.json\n  sidecar; all six locales translate to the\
+    \ same misleading label).\n- **Sibling-tab consistency**: \"My Objects\" and \"\
+    Dependents\" tabs\n  have the same OPEN-only filter (lines 166, 230); the drift\
+    \ is\n  uniform across the global page surface.\n- **Same Category B failure class\
+    \ as LSN-019** (TagController\n  `listMostPopular` — the name \"most popular\"\
+    \ vs the SQL \"most used\n  in popular entities\"). Category B classification\
+    \ confirmed in the\n  sidecar.\n\n**The OPEN-only filter is INTENTIONAL** (the\
+    \ implicit ADR per\nAlerts.md:implicit_adrs[3] — alerts are reset on resolve,\
+    \ so the\nglobal tabs are inbox-style rather than archive-style). The fix is\n\
+    EITHER (a) update the docs to say \"every OPEN alert\" OR (b) add a\nstatus filter\
+    \ to the page so operators can opt into resolved-view\nOR (c) the per-entity Alerts\
+    \ tab already shows full history; cross-\nlink to it from the global page's empty\
+    \ state when the user\nsearches for a resolved alert.\n\n**Test gap shape**:\n\
+    1. **Backend regression-pin**: `AlertControllerStatusFilterTest` —\n   POST an\
+    \ alert, mark it RESOLVED, GET /api/alerts (all), assert\n   the alert is ABSENT.\
+    \ PINS the OPEN-only filter at the controller\n   surface; flips assertion direction\
+    \ if the fix path (b) is taken.\n2. **UI regression-pin**: `Alerts.AllTab.OpenOnlyFilter.test.tsx`\
+    \ —\n   mock the alerts thunk to return mixed-status payloads, render\n   the\
+    \ All tab, assert only OPEN-status items render in the list.\n   PINS the UI-side\
+    \ accommodation of the backend filter.\n3. **Doc-drift regression**: `Alerts.AllTab.DocVsImpl.test.tsx`\
+    \ —\n   parse the live docs page (or its archived snapshot at commit\n   time)\
+    \ and assert the page text either (a) says \"every OPEN\n   alert\" (after doc\
+    \ fix) OR (b) the docs and the impl agree on\n   scope. PINS the cross-artefact\
+    \ coherence."
+  test_class: integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-1033.yaml
+- gap_id: TEST-GAP-1034
+  behaviour: "**HIGH — Late-binding permission check on the Resolve/Reopen\nbutton.\
+    \ Operator-visible UX leak + structural deviation from the\ndocumented RBAC posture.**\n\
+    \n`AlertItem.tsx:159-166` renders a Resolve / Reopen button\nUNCONDITIONALLY for\
+    \ every Alert row in the list. The button text\nvaries based on alert status,\
+    \ but the BUTTON ITSELF is rendered\nfor every authenticated caller (per Alerts.md:auth_gates\
+    \ \"No\nrole concept at this layer; the DATA_ENTITY_ALERT_RESOLVE\npermission\
+    \ gate is per-action, post-click\").\n\nAt click time, `AlertItem.tsx:48-70` calls\n\
+    `fetchResourcePermissions({dataEntityId})` and inspects the\nreturned globalPermissions\
+    \ array for `DATA_ENTITY_ALERT_RESOLVE`.\nIf absent, the UI displays a `No access!`\
+    \ caveat\n(`AlertItem.tsx:55-67`). The action is denied; the click is\nconsumed.\n\
+    \n**Why this is HIGH (and not LOW)**:\n- **UX leak — affordance visibility**:\
+    \ users who cannot perform\n  the action see the affordance. The \"click to learn\
+    \ you cannot\"\n  pattern is the canonical anti-pattern for affordance design\n\
+    \  (Nielsen heuristic #6 — recognition rather than recall;\n  affordances should\
+    \ be VISIBLE for what the user CAN do, not\n  what they cannot).\n- **Information\
+    \ leak — alert existence**: a viewer with\n  DATA_ENTITY_READ-only sees the OPEN\
+    \ alert population for any\n  data entity they can read. The OPEN-alert population\
+    \ is\n  operationally sensitive (it discloses health-state — \"this\n  entity\
+    \ has unresolved issues\"). The doc page at\n  `https://docs.opendatadiscovery.org/features/active-platform-features/alerting`\n\
+    \  does not enumerate this visibility scope (sidecar\n  docs_link_semantic.doc_drift_findings.[1]:\
+    \ 'live doc page\n  does NOT document the permission needed to Resolve / Reopen').\n\
+    - **Deviation from sibling patterns**: the dataModelling pillar\n  wraps its DELETE\
+    \ / UPDATE affordances in `<WithPermissions>`\n  (per QueryExamples.tsx:36-46)\
+    \ which HIDES the affordance\n  rather than rendering+denying. The alerts pillar\
+    \ diverges\n  without a documented reason.\n- **Doc-side compounding** (docs_link_semantic.doc_drift_findings.[1]):\n\
+    \  the doc page does NOT document the permission needed for\n  Resolve/Reopen.\
+    \ An operator deploying ODD with RBAC\n  expectations has no signal that READ-only\
+    \ viewers see the\n  Resolve buttons.\n\n**The CORRECT pattern is `<WithPermissions\n\
+    permissionTo={Permission.DATA_ENTITY_ALERT_RESOLVE}>` wrapping\nthe Button** —\
+    \ this is the affordance-hide pattern used across\nthe codebase (verified across\
+    \ QueryExamples.tsx, LookupTables.tsx\nAdd-new button, OwnersList.tsx, etc.).\
+    \ The wrapper consults the\nPermissionContext seeded at mount and returns null\
+    \ if the\npermission is absent — the Button never renders.\n\n**Test gap shape**:\n\
+    1. **UI affordance-hide regression-pin**: render `<AlertItem/>`\n   with a user\
+    \ fixture missing `DATA_ENTITY_ALERT_RESOLVE` and\n   assert the Resolve button\
+    \ is NOT in the DOM. RED today\n   (button renders); GREEN after the fix (button\
+    \ is wrapped in\n   `<WithPermissions>`).\n2. **Per-action permission contract\
+    \ test**: render with the\n   permission present and assert the Resolve button\
+    \ is in the\n   DOM. PINS the positive case.\n3. **Backend regression-pin**: `AlertControllerResolveAccessTest`\n\
+    \   — POST a Resolve as a user without DATA_ENTITY_ALERT_RESOLVE,\n   assert 403.\
+    \ PINS the backend gate (the UI affordance hide is\n   defense-in-depth; the backend\
+    \ remains the source of truth)."
+  test_class: security
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-1034.yaml
+- gap_id: TEST-GAP-1035
+  behaviour: "**HIGH — Copy-paste integration bug. Operator-observable cap at\npage\
+    \ 1 (30 rows) for any tenant with >30 lookup tables.**\n\n`LookupTablesList.tsx:51-53`\
+    \ declares:\n```jsx\n<ScrollableContainer id=\"lookup-tables-list\" $offsetY={165}>\n\
+    \  <InfiniteScroll\n    scrollableTarget=\"directory-entities-list\"\n    dataLength={...}\
+    \ next={fetchNextPage} hasMore={hasNextPage}\n  >\n    ...\n```\n\nThe `scrollableTarget=\"\
+    directory-entities-list\"` is a copy-paste\nfrom `components/Directory/.../DirectoryEntitiesList.tsx`\
+    \ where\nthe surrounding ScrollableContainer DOES have id\n`directory-entities-list`.\
+    \ On the Lookup Tables page, the\nsurrounding container's id is `lookup-tables-list`\
+    \ — so\n`scrollableTarget` references a DOM node that does NOT exist on\nthis\
+    \ page.\n\nPer react-infinite-scroll-component documentation, an\nunresolvable\
+    \ `scrollableTarget` falls back to listening on the\nWINDOW scroll. BUT — the\
+    \ wrapping `ScrollableContainer` declares\n`$offsetY={165}` and (per the shared\
+    \ styled-components convention)\napplies `overflow: auto` to itself. The user\
+    \ scrolls INSIDE the\ncontainer, not the window. The window scroll event never\
+    \ fires\nfor content inside an overflow-auto container.\n\n**Effective behaviour**:\
+    \ the page renders the first 30 rows\n(`size: 30` hard-coded at LookupTablesList.tsx:23\
+    \ — the page size\nfor `useGetReferenceDataSearchResults`); the user scrolls within\n\
+    the container; `fetchNextPage` is never triggered;\n`hasNextPage === true` indefinitely\
+    \ but no further rows fetched.\n\n**Operator-observable consequence**: any tenant\
+    \ with more than\n30 lookup tables sees only the first 30 in the UI. The page\n\
+    COUNTER `<NumberFormatted value={facets?.total} /> lookup tables\noverall` correctly\
+    \ reports the total (e.g. \"47 lookup tables\noverall\"), but the LIST below it\
+    \ shows only 30 — a visible\nCOUNT/LIST divergence that doubles as the operator's\
+    \ only\nsignal that something is wrong. There is no error message, no\n\"load\
+    \ more\" button, no warning.\n\n**Why HIGH**:\n- **Functional**: the operator\
+    \ cannot reach lookup tables\n  beyond row 30. They can search (the SearchInput\
+    \ dispatches\n  `updateFacets({...facets, query})` and fetches results) but\n\
+    \  cannot browse.\n- **Discoverability**: any onboarding tenant building lookup\n\
+    \  tables hits this at table 31. The 30→31 boundary is silent.\n- **Coverage**:\
+    \ zero direct tests exist (LookupTables.md\n  test_files: [] verified — Glob across\n\
+    \  `**/LookupTables/**/*.test.*` returns zero matches at\n  commit 4ec2b20). A\
+    \ single integration test rendering with\n  >30 mocked rows would catch the entire\
+    \ failure mode.\n- **Trivial fix**: change `scrollableTarget=\"directory-entities-list\"\
+    `\n  to `scrollableTarget=\"lookup-tables-list\"`. Single-character\n  typo class;\
+    \ the test pins it.\n\n**Probe P-192** (emitted in batch ZL): boot the platform,\
+    \ create\n35 lookup tables, navigate to `/master-data/lookup-tables`,\nscroll\
+    \ within the container, observe network — assert\n`GET /api/referencedata/search/{id}/results?page=2`\
+    \ IS issued.\nProbe RED today (no second-page request); GREEN after the\ncopy-paste\
+    \ fix.\n\n**Cross-pillar implication**: this is the canonical case-law\nfor a\
+    \ category of bugs — \"shared infrastructure component\nconsumed across multiple\
+    \ pillar pages where the consumer's\nconfiguration is page-specific and a copy-paste\
+    \ error silently\nbreaks one page\". The architectural recommendation is to derive\n\
+    `scrollableTarget` from the wrapping container's id rather\nthan passing it explicitly\
+    \ — but that's a refactor of the\nshared ScrollableContainer + InfiniteScroll\
+    \ convention."
+  test_class: integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-1035.yaml
+- gap_id: TEST-GAP-1036
+  behaviour: "**HIGH — CREATE-DTO submitted to UPDATE endpoint. The form\nconflates\
+    \ CREATE and UPDATE shapes; the discarded field is\ninvisible to the user but\
+    \ visible on the wire.**\n\n`LookupTableForm.tsx:49` types form data as\n`LookupTableFormData`\
+    \ — the CREATE shape with REQUIRED\n`namespaceName: string`. On edit (lines 60-66),\
+    \ the form submits\nthe SAME shape to `editLookupTable({lookupTableUpdateFormData:\n\
+    data, ...})`. The OpenAPI contract for UPDATE\n(`LookupTableUpdateFormData`, components.yaml:3853-3862)\
+    \ defines\nONLY `name` + `description` — `namespace_name` is NOT in the\nschema.\n\
+    \n**What actually happens on the wire**: the request body on every\nedit includes\
+    \ `{name, description, namespace_name}` — the\nnamespace_name is sent. Spring's\
+    \ WebFlux Jackson binding (per\nthe project default — no strict-binding configuration\
+    \ found in\nthe platform) is lenient by default: unknown JSON fields are\nsilently\
+    \ ignored on deserialisation. So `namespace_name` is sent\nbut silently discarded\
+    \ by the server.\n\n**The form-visual `disabled={!!lookupTable}` (line 120) hides\n\
+    this from the user**. The Namespace field IS rendered (so the\nuser sees what\
+    \ the table's namespace is) but is greyed out and\nunfocusable. The UX signal:\
+    \ \"this field is not editable in\nthis mode\". The wire signal: \"this field\
+    \ is on the wire on\nevery submission\".\n\n**Why HIGH**:\n- **Schema drift**:\
+    \ the UI does not respect the OpenAPI schema\n  boundary. A future contract tightening\
+    \ (Jackson FAIL_ON_UNKNOWN_PROPERTIES\n  flipped to true; or the schema getting\
+    \ `additionalProperties:\n  false`) breaks every UPDATE silently. The form would\
+    \ 400 and\n  no test would catch the regression at PR time.\n- **Doc-side drift**:\
+    \ the live doc page at\n  `https://docs.opendatadiscovery.org/features/master-data-management/lookup-tables`\n\
+    \  (WebFetched 2026-05-26 status 200) describes LOOKUP_TABLE_UPDATE\n  as \"Renaming\
+    \ a lookup table or editing its description\" —\n  implying namespace is NOT updateable.\
+    \ An operator inspecting\n  the network tab during an edit sees namespace_name\
+    \ on the\n  wire and concludes the docs are wrong (or worse, that they\n  CAN\
+    \ edit namespace via curl).\n- **Forensic-integrity**: any future audit log of\
+    \ the UPDATE\n  payload (e.g. via a Spring `@RequestBody` log filter) records\n\
+    \  a misleading `namespace_name` field that was never honoured.\n  Investigators\
+    \ reading the log assume an UPDATE-with-namespace\n  was attempted; the wire-level\
+    \ data tells a different story\n  than the actual behaviour.\n- **Trivial fix**:\
+    \ change the form's submit handler to construct\n  a `LookupTableUpdateFormData`\
+    \ (just `{name, description}`) on\n  the edit branch. One line of code.\n\n**Probe\
+    \ P-191** (emitted in batch ZL): boot the platform, edit\nan existing lookup table,\
+    \ inspect the PUT request body,\nobserve `namespace_name` on the wire. Probe RED\
+    \ today\n(namespace_name present); GREEN after the fix (only name +\ndescription\
+    \ on the wire).\n\n**Cross-pillar pattern**: this is the second instance of\n\"\
+    frontend submits a CREATE-shape DTO to an UPDATE endpoint\nthat the server silently\
+    \ truncates\" found in this batch\nseries. The architectural recommendation is\
+    \ to enforce strict\nJackson binding (FAIL_ON_UNKNOWN_PROPERTIES=true) globally;\n\
+    this surfaces every silent-discard at request time. Surface\nas REFACTOR-NNN candidate.\n\
+    \n**Compounds with TEST-GAP-697** (\nDataSourceIngestionServiceImpl SILENTLY DROPS\
+    \ PAYLOAD\nnamespace_name) — that's a backend silent-discard of the SAME\nnamespace_name\
+    \ field on a DIFFERENT endpoint\n(/ingestion/datasources). The systemic pattern:\
+    \ the platform\nhas a recurring \"namespace_name is silently dropped\" failure\n\
+    mode across multiple surfaces."
+  test_class: integration
+  criticality: HIGH
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-1036.yaml
+- gap_id: TEST-GAP-1037
+  behaviour: "**MEDIUM — Three composing race / staleness shapes on the global\nAlerts\
+    \ page. Together they form a \"what the operator sees vs.\nwhat is true\" gap\
+    \ of moderate operator-visibility but high\ncross-cutting test value.**\n\n**(a)\
+    \ Tab-switch race**: AlertsTabs.tsx:44-46 dispatches\n`changeAlertsFilterAction`\
+    \ on tab change which clears\n`state.alerts.items = []`. Then the new-tab route\
+    \ mount fires\nthe new-tab fetch. If the PREVIOUS tab had an in-flight page=N\n\
+    fetch, its response can land AFTER the clear AND AFTER the\nnew-tab's page=1 fetch\
+    \ initiated. The slice's\n`updateAlerts` reducer (alerts.slice.ts:30) appends\
+    \ if\npageInfo.page > 1, replaces if == 1. So the stale page=N\nresponse APPENDS\
+    \ to the new-tab's already-rendered page=1 —\nthe user sees a mix of (current-tab\
+    \ alerts 1-30) + (previous-\ntab alerts 31-60). No request cancellation on tab-switch.\n\
+    \n**(b) Page-burst race**: InfiniteScroll auto-fetches on\nscrollThreshold='200px'\
+    \ (AlertsList.tsx:91). Fast-scroll on a\nlarge list issues page=N+1 requests faster\
+    \ than the backend\nreturns. If page-1 and page-2 race AND page-2 returns first,\n\
+    the page-2 branch APPENDS items 31-60. Then page-1 returns,\nREPLACES items with\
+    \ rows 1-30, dropping page-2's already-\nreceived rows. State is now coherent\
+    \ (rows 1-30) but the\nuser briefly saw a longer list.\n\n**(c) Stale tab badge\
+    \ totals**: Alerts.tsx:15-17 fires\n`fetchAlertsTotals` ONCE on mount with empty\
+    \ dep array. After\na Resolve action (which removes the alert from the OPEN-only\n\
+    filtered view but does NOT re-fetch totals), the badge still\nshows the pre-Resolve\
+    \ count. The operator resolves 5 alerts,\nthe badge stays at e.g. \"127\" until\
+    \ full page reload.\nConversely, if `fetchAlertsTotals` fails on mount\n(AlertsTabs.tsx:23,28,34\
+    \ fallback to `?? 0`), all three tab\nbadges show \"0\" with no visible failure\
+    \ indicator. The\noperator interprets as \"no alerts\" rather than \"backend\n\
+    unreachable\".\n\n**Why MEDIUM** (compound):\n- Race (a) and (b) are limited corruption\
+    \ — the SPA recovers\n  on next render, and the visual disturbance is transient.\n\
+    \  But \"the user briefly saw a longer / mixed-tab list\" is\n  operator-visible\
+    \ — they may take action on a stale row.\n- Staleness (c) compounds with TEST-GAP-1034\
+    \ (Resolve button\n  rendered to unauthorised users) — the operator clicks\n \
+    \ Resolve on a row they cannot resolve, the action fails\n  silently per AlertItem.tsx,\
+    \ the badge stays at the pre-\n  Resolve count, and the operator concludes the\
+    \ resolve\n  \"worked but UI is slow\".\n- The MEDIUM rating is the sum of three\
+    \ small operator-\n  visibility issues that together undermine confidence in\n\
+    \  the page's correctness during normal use.\n\n**Test gap shape**: three independent\
+    \ regression-pin tests,\none per failure mode."
+  test_class: integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-1037.yaml
+- gap_id: TEST-GAP-1038
+  behaviour: "**MEDIUM — Catalog-cardinality info-leak on the global Lookup\nTables\
+    \ H1 counter.**\n\n`LookupTables.tsx:60-62` renders the page H1:\n```jsx\n<NumberFormatted\
+    \ value={facets?.total} />\n{' '}{t('lookup tables overall')}\n```\n\n`facets.total`\
+    \ is populated by\n`LookupDataSearchServiceImpl.countByState` (line 62-68) which\n\
+    counts ALL reference-data rows matching the current facet\nstate (initially empty\
+    \ / open query). There is NO owner-filter,\nNO namespace-scope, NO per-permission\
+    \ filter applied on the\nCOUNT query — it returns the catalog-wide population\
+    \ size.\n\n**Operator-visible consequence**: every authenticated user (in\nthe\
+    \ read-collaborative posture per the ReferenceDataController\nsidecar batch H\
+    \ known_security_gaps[0]) sees the global lookup-\ntable count. A tenant with\
+    \ 1,247 lookup tables has that number\nvisible to every authenticated user — even\
+    \ users who:\n- Cannot CREATE lookup tables (no LOOKUP_TABLE_CREATE)\n- Cannot\
+    \ UPDATE existing tables (no LOOKUP_TABLE_UPDATE)\n- Cannot DELETE tables (no\
+    \ LOOKUP_TABLE_DELETE)\n- Cannot edit DEFINITION or DATA tiers (6 missing inner\
+    \ gates\n  per TEST-GAP-1001)\n\n**The TRUE info-leak shape** is this: an external\
+    \ operator\nconducting reconnaissance (e.g. one of multiple consultancies\ngiven\
+    \ temporary platform access) cannot enumerate the rows\nthemselves (the list is\
+    \ paginated and the row contents may\nrequire additional permissions), but they\
+    \ CAN observe the\nCOUNTER. Two such operators visiting the same tenant a week\n\
+    apart can compare counters and infer \"lookup tables were added/\ndeleted between\
+    \ visits — what changed?\" — a catalog-cardinality\noracle.\n\n**Why MEDIUM**\
+    \ (not HIGH):\n- The information leak is bounded — a SINGLE NUMBER. The\n  table\
+    \ contents are NOT exposed via this surface.\n- The read-collaborative posture\
+    \ is the documented intent\n  per ReferenceDataController sidecar; this is consistent\n\
+    \  with the broader pillar's open-to-read design.\n- The doc page at\n  `https://docs.opendatadiscovery.org/features/master-data-management/lookup-tables`\n\
+    \  (WebFetched 2026-05-26 status 200) does not explicitly\n  document the count\
+    \ visibility, but the page's general\n  \"every lookup table the user can read\"\
+    \ phrasing implies\n  enumeration is possible.\n- The structural fix is per-permission\
+    \ filtering on\n  countByState (gate on LOOKUP_TABLE_DATA_READ at minimum) —\n\
+    \  a non-trivial backend refactor that touches the facet\n  aggregator.\n- The\
+    \ MEDIUM rating reflects \"info-leak is real and operator-\n  observable, but\
+    \ the leak surface is narrow and the\n  documented posture explains the openness\"\
+    .\n\n**The COMPOUND with TEST-GAP-1001 + TEST-GAP-994** (route's\nWithPermissionsProvider\
+    \ non-blocking + partial permission\nenumeration): a user with ZERO of the 9 LOOKUP_TABLE_*\n\
+    permissions visits /master-data/lookup-tables, sees the\ncounter, sees the search\
+    \ input, sees the list (paginated),\nbut cannot Add (button hidden), cannot Edit\
+    \ (action gated),\ncannot Delete (action gated). The page is \"look-but-don't-\n\
+    touch\" — but the LOOKING is the leak. The doc page does\nnot enumerate this posture.\n\
+    \n**Test gap shape**:\n1. **UI regression-pin (existence of counter)**: render\n\
+    \   <LookupTables/> with a user fixture having ZERO\n   LOOKUP_TABLE_* permissions,\
+    \ assert the H1 counter STILL\n   renders with the catalog-wide count. PINS the\
+    \ current\n   posture; flips if the fix-path makes the counter\n   permission-gated.\n\
+    2. **Backend regression-pin (countByState)**: GET\n   /api/referencedata/search/{id}\
+    \ with an empty query as a\n   user with zero LOOKUP_TABLE_* permissions; assert\
+    \ the\n   response includes `total` matching the catalog-wide\n   count. PINS\
+    \ the backend posture."
+  test_class: security
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-1038.yaml
+- gap_id: TEST-GAP-1039
+  behaviour: "**MEDIUM — Silent relative-time semantic drift on shared\n/activity\
+    \ URLs.**\n\n`components/shared/elements/Activity/common.ts:33-34` computes\n\
+    the default Calendar window at MODULE EVAL TIME:\n```ts\nbeginDate: startOfDay(addDays(new\
+    \ Date(), -5)),\nendDate:   endOfDay(addDays(new Date(),  1)),\n```\n\nThe dates\
+    \ use the BROWSER'S Date constructor (the user's local\nclock). They are NOT serialised\
+    \ into the URL on first navigation\n— the URL `/activity` carries no `beginDate`\
+    \ / `endDate` query\nparam until the user EXPLICITLY changes the window via the\n\
+    Calendar UI.\n\n**Operator-observable consequences**:\n- **Share-drift**: Alice\
+    \ navigates to `/activity` at 23:30 local\n  time on May 25. She sees activity\
+    \ from May 20 to May 26 (her\n  \"now + 1\"). She shares the URL with Bob in another\
+    \ time zone\n  or simply 5 hours later. Bob clicks the link at 04:30 local\n \
+    \ on May 26. The default window is re-computed at Bob's eval\n  time, yielding\
+    \ May 21 to May 27. The page they \"share\" is\n  NOT the same view. The default-window\
+    \ invisibility means\n  operators have NO signal that the URL is non-deterministic.\n\
+    - **Midnight-boundary**: An operator who keeps the tab open\n  over a midnight\
+    \ boundary sees the window unchanged until\n  they navigate or refresh. The \"\
+    now\" on their counter no\n  longer aligns with their \"today\". Workflow surprise.\n\
+    - **Timezone-mismatch**: Bob in UTC-8 navigates while Alice\n  is in UTC+1. The\
+    \ dates returned by `new Date()` reflect\n  UTC instants but `startOfDay` / `endOfDay`\
+    \ interpret them\n  in LOCAL timezone. The window crosses different dates\n  depending\
+    \ on operator location.\n\n**Why MEDIUM**:\n- **Workflow surprise** but not data\
+    \ loss: operators expect\n  `URL I shared = view I saw`. The drift breaks the\n\
+    \  expectation, but the data itself is unchanged — the\n  rendering is just different.\n\
+    - **Doc-side compounding**: the live doc page at\n  `https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed`\n\
+    \  (WebFetched 2026-05-26 status 200) does NOT specify the\n  default 6-day window.\
+    \ An operator reading the doc cannot\n  anticipate the relative-time semantics.\
+    \ Surface as DOC-NNN\n  candidate.\n- **Trivial mitigation**: serialise the default\
+    \ window into\n  the URL on first mount (Activity.tsx useEffect calling\n  setQueryParams({beginDate,\
+    \ endDate}) if absent). This\n  URL-stamps the view and makes shared URLs deterministic.\n\
+    \n**The CONTRAST with Alerts / Search**: alerts and search are\ninbox-style (OPEN-only\
+    \ / current state) — relative-time is\nnot relevant. Activity is an audit feed\
+    \ — share-deterministic\nURLs are operator-expected. This is the discriminating\
+    \ shape.\n\n**Test gap shape**:\n1. **URL-determinism regression-pin**: render\
+    \ <Activity/> at\n   /activity, mock Date.now() to T1, capture the URL. Mock\n\
+    \   Date.now() to T2 (= T1 + 6 hours), reload, capture the\n   URL. Today: URLs\
+    \ are identical (`/activity` no params);\n   viewed windows differ. After fix:\
+    \ URLs differ (each carries\n   its own `beginDate`/`endDate`); navigating to\
+    \ either URL\n   shows that specific window.\n2. **Date-handling edge case**:\
+    \ hand-craft URL with\n   `beginDate=2026-05-30&endDate=2026-05-25` (inverted),\n\
+    \   observe behaviour. Today: untested (PROBE-NEEDED per\n   stress_findings).\
+    \ Per fix: pass-through to backend (which\n   returns empty Flux), or UI validation\
+    \ refuses."
+  test_class: integration
+  criticality: MEDIUM
+  node_id: ''
+  feature_id: null
+  proposed_test_files_count: 0
+  related_refactor_ids: []
+  related_doc_gap_ids: []
+  detail_path: detail/TEST-GAP-1039.yaml

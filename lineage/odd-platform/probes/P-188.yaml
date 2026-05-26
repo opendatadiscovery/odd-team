@@ -1,0 +1,101 @@
+---
+probe_id: P-188
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__Search.md
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-001
+test_class: integration
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category F — input-name vs implementation drift on the
+  `query` field): the user types a search string into <MainSearchInput>; that
+  text is dispatched verbatim as `searchFormData.query` (MainSearchInput.tsx:
+  37-48) into POST /api/search → SearchServiceImpl.search → eventually
+  `JooqFTSHelper.tsQuery(query)` at JooqFTSHelper.java:164-168 which
+  splits-on-space, appends `:*` to each token, joins on `&`, and passes the
+  result to `to_tsquery(?)` UNESCAPED. The user-facing input is labelled
+  "Search" (`<MainSearch placeholder={t('Search')} ...>` Search.tsx:80) —
+  promising a friendly text-search interface. The implementation is
+  Postgres tsquery (an expression language with metacharacters !, |, &, (,
+  ), :, *, <->). Hypothesis: typing a query containing a tsquery
+  metacharacter (e.g. `foo )(`, `bar | (`, `:` alone) raises Postgres
+  42601 (syntax error in tsquery), poisoning the session UUID such that
+  every subsequent read on that UUID 500s. Operator-visible: the user
+  sees a generic error toast (if any); refreshing the page repeats the
+  error because the URL still carries the poisoned UUID; the session is
+  permanently broken until the user manually navigates away to `/search`
+  (sans UUID). The drift is `DRIFT_INPUT_NAME_VS_IMPLEMENTATION`: input
+  name says "Search" (free-text); implementation is tsquery (expression
+  language).
+---
+arrange:
+  - kind: docker-compose-up
+    profile: odd-minimal
+  - kind: sql
+    query: |
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, hollow)
+      VALUES (90002, '//probe-source/p-188/dummy', 'dummy_entity_for_search', 1, 1, false)
+  - kind: sql
+    query: |
+      INSERT INTO search_entrypoint (data_entity_id, search_vector)
+      VALUES (90002, to_tsvector('english', 'dummy entity for search probe'))
+act:
+  - kind: rest
+    method: POST
+    path: /api/search
+    body: '{"query":"dummy ) | (","pageSize":30,"filters":{}}'
+    auth: bearer
+    capture_as: poisoned_session
+  - kind: rest
+    method: GET
+    path: /api/search/${poisoned_session.searchId}
+    auth: bearer
+    capture_as: read_poisoned_session
+  - kind: rest
+    method: GET
+    path: /api/search/${poisoned_session.searchId}/results?page=1&size=30
+    auth: bearer
+    capture_as: read_poisoned_results
+observe:
+  - kind: capture
+    target: poisoned_session.status
+    capture_as: create_status
+  - kind: capture
+    target: read_poisoned_session.status
+    capture_as: subsequent_get_status
+  - kind: capture
+    target: read_poisoned_results.status
+    capture_as: subsequent_results_status
+  - kind: log-capture
+    target: odd-platform-api
+    regex: "42601|syntax error in tsquery"
+    capture_as: tsquery_syntax_error_logged
+assert:
+  - "create_status == 500 OR subsequent_get_status == 500 OR subsequent_results_status == 500  # session poisoning confirmed at one of the three reach points"
+  - "len(tsquery_syntax_error_logged) >= 1  # Postgres tsquery 42601 surfaced in the API log"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM search_entrypoint WHERE data_entity_id = 90002;
+      DELETE FROM data_entity WHERE id = 90002;
+      DELETE FROM search_facets WHERE query_string LIKE '%dummy ) | (%';
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__Search
+    - odd-platform__java__SearchController__controller-class__SearchController
+  retrospectives:
+    - LSN-020
+realism_caveats: |
+  Probe pins the FTS-injection / session-poisoning hypothesis end-to-end:
+  user-typed string → API contract → Postgres tsquery → 42601. If the create
+  itself 500s, the operator's UUID is not minted (recoverable — retry with
+  a different query). If the create succeeds but subsequent GETs 500, the
+  UUID is poisoned per REFACTOR-229 (the canonical impact pattern). The
+  probe does NOT verify the UI-side UX (whether the toast surfaces the
+  failure or the user sees a frozen empty page) — a Playwright follow-up
+  probe should pin that.

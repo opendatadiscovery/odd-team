@@ -69,3 +69,33 @@ The two violations have the same shape (deep-linkers hit blank pages) but DIFFER
 **STRENGTHENS — batch ZH (2026-05-26 — UI Routes 1: dataModelling/dataQuality/management/masterData/terms sidecars confirm the convention across 5 pillars + identify 2 violations)**
 
 The 5 new route sidecars in batch ZH triangulate the convention with 3 confirming surfaces + 2 explicit anti-patterns. The terms anti-pattern is particularly load-bearing because it's the pillar whose deep-link surface IS the primary navigation flow (post-create redirect at TermsForm.tsx:110 → `termDetailsPath(response.id)`; the parent `/terms` is the structural mount for term details, but the bare `/terms` has no safety net) — a stale `/terms` link from any source (email, bookmark, external reference) lands the operator on a blank page beneath the toolbar with no signal to recover. The convention exists; this batch makes the violations enumerable.
+
+
+## STRENGTHENS — Batch ZL (2026-05-26 — Alerts page-root surfaces `/alerts → /alerts/all` redirect at the COMPONENT layer; DataModelling page-root surfaces `/data-modelling → /data-modelling/query-examples` redirect)
+
+Batch ZL adds component-tree-side confirmation of two redirect cases the prior ADR-227 already anchored at the route-module + sibling-references layer.
+
+**New surfaced_by entries**:
+
+- `odd-platform__ts__react-component__component__Alerts.md:concepts.invariants[2]` (HIGH) — "Default route `/alerts` redirects to `/alerts/all` (`AlertsRoutes.tsx:18`)."
+
+- `odd-platform__ts__react-component__component__DataModelling.md:concepts.operations[1]` (HIGH) — "**delegate URL routing to `<DataModellingRoutes/>`** — the component does NOT declare any `<Route>` itself; the inner `<Routes>` lives in the child file, and the outer mount at `App.tsx:74` uses a trailing `/*` to let the child catch all sub-paths." — combined with DataModellingRoutes.tsx:16's `<Navigate to='query-examples' replace />` redirect.
+
+**What this strengthening adds**: the prior support was 3 confirming pillars + 2 violations (terms, master-data — both LOW-coverage anti-patterns). Batch ZL adds the FULL ROUND-TRIP for Alerts and DataModelling at the page-root-component layer:
+
+1. **Alerts**: page-root mounts `<AlertsRoutes/>` (the inner Routes); AlertsRoutes.tsx:18 declares `<Route path='' element={<Navigate to='all' replace />}>` — operator visiting bare `/alerts` redirects to `/alerts/all` immediately. The pattern is byte-identical to DataModelling's `/data-modelling/query-examples` redirect.
+
+2. **DataModelling**: page-root mounts `<DataModellingRoutes/>` (the inner Routes); DataModellingRoutes.tsx:16 declares `<Navigate to='query-examples' replace />` as the bare-path child. Operator visiting bare `/data-modelling` redirects to `/data-modelling/query-examples`.
+
+3. **The pattern is CONSISTENT across the component-tree shape** — page-root composes a sibling Routes file (AlertsRoutes/DataModellingRoutes/etc.); the bare-`<Route path=''>` child holds the `<Navigate>`. The convention requires both the routes-module declaring the redirect AND the page-root composing the routes-module-as-element.
+
+**Triangulation count after ZL**: 7 sidecars (was 5 — batch ZH route-modules; ZL adds 2 component-tree surfaces: Alerts.tsx + DataModelling.tsx).
+
+**Severity unchanged**: HIGH — convention is operator-visible (deep-link reliability) and structural; component-tree confirmation tightens the reach across the codebase.
+
+**Coherence check** (LSN-018):
+- STRENGTHENS: ADR-CANDIDATE-228 (routes-as-functions); ADR-CANDIDATE-230 (URL-mode dispatch — confirms Convention B); ADR-CANDIDATE-245 NEW this batch (multi-tab Redux single-slot — depends on the redirect to ensure canonical first-tab landing).
+- SUPERSEDES: none.
+- CONFLICTS: none.
+
+---

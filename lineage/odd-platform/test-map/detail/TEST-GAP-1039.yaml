@@ -1,0 +1,140 @@
+---
+gap_id: TEST-GAP-1039
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform ts react-component:Activity"
+pillars_affected: ["P-06", "P-01"]
+surfaced_by:
+  - "Activity.md:bugs_limitations_corner_cases.[2] verbatim: 'The default 6-day window (beginDate = startOfDay(now - 5 days), endDate = endOfDay(now + 1 day) per components/shared/elements/Activity/common.ts:33-34) is recomputed at module-eval time, not URL-stamped. Visiting /activity directly shows the default window relative to YOUR now; sharing the URL with a colleague shows the default window relative to THEIR now. Operators expecting the URL I shared = the view I saw will be surprised — silent semantic drift across share-time.' severity: MEDIUM"
+  - "Activity.md:stress_findings.tunables.[default Calendar window] verbatim: 'startOfDay(now-5d) / endOfDay(now+1d) are recomputed at module-eval time (which is once per page load), not URL-stamped. The window exact instants depend on the user clock at navigation time. Two operators navigating the same shared URL one minute apart see different windows; an operator who keeps the tab open over a midnight boundary sees the window unchanged until they navigate or refresh, then the window shifts to the new day.'"
+  - "Activity.md:docs_link_semantic.doc_drift_findings.[3] verbatim: 'The live doc page does not specify the default 6-day backward window or the page size (size=30 per activity.thunks.ts:20). An operator reading the doc cannot anticipate either default.'"
+related_pillar_features:
+  - "P-06:F-Activity-Feed"
+related_features: []
+feature_id: null
+test_class: integration
+strengthens: []
+behaviour: |-
+  **MEDIUM — Silent relative-time semantic drift on shared
+  /activity URLs.**
+
+  `components/shared/elements/Activity/common.ts:33-34` computes
+  the default Calendar window at MODULE EVAL TIME:
+  ```ts
+  beginDate: startOfDay(addDays(new Date(), -5)),
+  endDate:   endOfDay(addDays(new Date(),  1)),
+  ```
+
+  The dates use the BROWSER'S Date constructor (the user's local
+  clock). They are NOT serialised into the URL on first navigation
+  — the URL `/activity` carries no `beginDate` / `endDate` query
+  param until the user EXPLICITLY changes the window via the
+  Calendar UI.
+
+  **Operator-observable consequences**:
+  - **Share-drift**: Alice navigates to `/activity` at 23:30 local
+    time on May 25. She sees activity from May 20 to May 26 (her
+    "now + 1"). She shares the URL with Bob in another time zone
+    or simply 5 hours later. Bob clicks the link at 04:30 local
+    on May 26. The default window is re-computed at Bob's eval
+    time, yielding May 21 to May 27. The page they "share" is
+    NOT the same view. The default-window invisibility means
+    operators have NO signal that the URL is non-deterministic.
+  - **Midnight-boundary**: An operator who keeps the tab open
+    over a midnight boundary sees the window unchanged until
+    they navigate or refresh. The "now" on their counter no
+    longer aligns with their "today". Workflow surprise.
+  - **Timezone-mismatch**: Bob in UTC-8 navigates while Alice
+    is in UTC+1. The dates returned by `new Date()` reflect
+    UTC instants but `startOfDay` / `endOfDay` interpret them
+    in LOCAL timezone. The window crosses different dates
+    depending on operator location.
+
+  **Why MEDIUM**:
+  - **Workflow surprise** but not data loss: operators expect
+    `URL I shared = view I saw`. The drift breaks the
+    expectation, but the data itself is unchanged — the
+    rendering is just different.
+  - **Doc-side compounding**: the live doc page at
+    `https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed`
+    (WebFetched 2026-05-26 status 200) does NOT specify the
+    default 6-day window. An operator reading the doc cannot
+    anticipate the relative-time semantics. Surface as DOC-NNN
+    candidate.
+  - **Trivial mitigation**: serialise the default window into
+    the URL on first mount (Activity.tsx useEffect calling
+    setQueryParams({beginDate, endDate}) if absent). This
+    URL-stamps the view and makes shared URLs deterministic.
+
+  **The CONTRAST with Alerts / Search**: alerts and search are
+  inbox-style (OPEN-only / current state) — relative-time is
+  not relevant. Activity is an audit feed — share-deterministic
+  URLs are operator-expected. This is the discriminating shape.
+
+  **Test gap shape**:
+  1. **URL-determinism regression-pin**: render <Activity/> at
+     /activity, mock Date.now() to T1, capture the URL. Mock
+     Date.now() to T2 (= T1 + 6 hours), reload, capture the
+     URL. Today: URLs are identical (`/activity` no params);
+     viewed windows differ. After fix: URLs differ (each carries
+     its own `beginDate`/`endDate`); navigating to either URL
+     shows that specific window.
+  2. **Date-handling edge case**: hand-craft URL with
+     `beginDate=2026-05-30&endDate=2026-05-25` (inverted),
+     observe behaviour. Today: untested (PROBE-NEEDED per
+     stress_findings). Per fix: pass-through to backend (which
+     returns empty Flux), or UI validation refuses.
+test_files_existing: []
+test_files_proposed:
+  - path: "odd-platform-ui/src/components/Activity/__tests__/Activity.URLDeterminism.test.tsx"
+    name: "navigatingToActivityWithoutQueryParams_capturesURLAfterMount_observesNoBeginEndDateStamped_pinsCurrentSemantic_BatchZL"
+    description: |-
+      Render <Activity/> at /activity (no query params). Mock
+      Date.now() to T1. Assert the URL after the page settles
+      contains NEITHER beginDate NOR endDate query param. Mock
+      Date.now() to T2 = T1 + 12h, reload. Assert the URL is
+      STILL bare. PINS the current non-deterministic semantic.
+  - path: "odd-platform-ui/src/components/Activity/__tests__/Activity.URLDeterminism.test.tsx"
+    name: "navigatingToActivityWithoutQueryParams_afterFixURLStampsDefaultWindow_pinsFixContract_BatchZL"
+    description: |-
+      Same setup with the fix applied: mount-time useEffect
+      writes the computed default window into the URL via
+      setQueryParams. Assert the URL after the page settles
+      DOES contain beginDate + endDate matching the computed
+      values. PINS the post-fix behaviour.
+  - path: "odd-platform-ui/src/components/Activity/__tests__/Activity.InvertedDateRange.test.tsx"
+    name: "handCraftedInvertedDateRange_uiBehaviour_PROBE_NEEDED_pinsCurrentUnknown_BatchZL"
+    description: |-
+      Render <Activity/> at /activity?beginDate=2026-05-30&endDate=2026-05-25.
+      Observe behaviour. Document the result (probably backend
+      returns empty Flux). PINS the date-inversion edge case so
+      a future Calendar UI validation has a target to assert
+      against.
+evidence:
+  - "Activity.md (batch ZL) bugs_limitations_corner_cases.[2]: cited above; severity MEDIUM"
+  - "Activity.md (batch ZL) stress_findings.tunables.[default Calendar window]: relative-time semantic enumerated"
+  - "Activity.md (batch ZL) docs_link_semantic.doc_drift_findings.[3]: doc page does not specify default window"
+  - "Primary source verified: components/shared/elements/Activity/common.ts:33-41 (the new Date() + addDays(-5/+1) computation)"
+  - "Primary source verified: Activity.tsx:6-17 (no URL-stamping useEffect; the page is mount-only with no URL writeback for defaults)"
+  - "WebFetch verified 2026-05-26 status 200: live doc page omits default-window spec"
+  - "Glob verified: zero Activity*.test.* under odd-platform-ui/src (run 2026-05-26)"
+cross_references:
+  - "TEST-GAP-1006 (sibling — Activity route no permission gate; both compound to make the Activity page a unique-shape gap surface)"
+  - "TEST-GAP-1016 (sibling — Activity User filter label drift; both are LSN-020-class Category F issues on the same page)"
+  - "DOC-NNN candidate (batch ZL Activity): document the default 6-day window, the URL-share semantic, and the default page size"
+  - "F-Activity-Feed (P-06 pillar-level feature flow)"
+proposed_action: |-
+  Two-step fix. (1) Add a mount-time useEffect to Activity.tsx
+  that writes the computed default window into the URL via
+  setQueryParams if beginDate/endDate are absent — making the
+  URL deterministic. (2) Add a "Default window" admonition to
+  the live doc page explaining the 6-day backward window + the
+  share-determinism guarantee.
+
+  Land the three regression-pin tests (URL-bare current
+  semantic + URL-stamped fix contract + inverted-range probe).
+  After the fix, the URL-stamped test PASSES; if a regression
+  removes the URL-writeback, the test catches it.
+maintainer_curated: false
+batch: 2026-05-26-ZL

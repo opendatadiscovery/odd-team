@@ -1,0 +1,139 @@
+---
+gap_id: TEST-GAP-1037
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform ts react-component:Alerts"
+pillars_affected: ["P-09"]
+surfaced_by:
+  - "Alerts.md:bugs_limitations_corner_cases.[2] verbatim: 'Tab badge totals (totals, myTotal, dependentTotal) are fetched ONCE on mount (Alerts.tsx:15-17, useEffect([]) no deps) — they do not refresh after a Resolve action, after navigating tabs, or after the backend creates new alerts. An operator who resolves alerts watches the badge stay stale until full reload.' severity: MEDIUM"
+  - "Alerts.md:bugs_limitations_corner_cases.[4] verbatim: 'InfiniteScroll auto-fetches based on scrollThreshold=200px — fast-scroll on a large list will issue page=N+1 requests faster than the backend can return, but the slice pageInfo.page mirrors the response page, so a stale-response could overwrite a fresher-response slot. No request cancellation on tab-switch — switching tabs while a fetch is in-flight may cause the late response to land into the (just-cleared) new-tab state.' severity: MEDIUM"
+  - "Alerts.md:bugs_limitations_corner_cases.[6] verbatim: 'Tab list rendering when API totals are absent: AlertsTabs.tsx:23,28,34 fall back to ?? 0 — when fetchAlertsTotals fails (network error / 403) all three tabs show 0 with no visible failure indicator. Operator may interpret as no alerts rather than backend unreachable.' severity: MEDIUM"
+  - "Alerts.md:tests_coverage_semantic.uncovered_behaviours.[1] verbatim: 'Tab-switch clears state.alerts.items before fetching the next tab first page' test_class: integration; criticality: HIGH (without this clear, the previous tab's items would render briefly during the new tab's fetch)"
+  - "Alerts.md:stress_findings.resource_boundaries.kind=concurrency verbatim: 'Two queryParams changes in rapid succession can race — limited corruption is reachable. If page-1 and page-2 fetches race AND page-2 returns first, the page-2 branch (pageInfo.page > 1) APPENDS items 31-60. Then page-1 returns, sees pageInfo.page == 1, REPLACES items with rows 1-30, dropping page-2 already-received rows.'"
+related_pillar_features:
+  - "P-09:F-Alerting"
+related_features: []
+feature_id: null
+test_class: integration
+strengthens: []
+behaviour: |-
+  **MEDIUM — Three composing race / staleness shapes on the global
+  Alerts page. Together they form a "what the operator sees vs.
+  what is true" gap of moderate operator-visibility but high
+  cross-cutting test value.**
+
+  **(a) Tab-switch race**: AlertsTabs.tsx:44-46 dispatches
+  `changeAlertsFilterAction` on tab change which clears
+  `state.alerts.items = []`. Then the new-tab route mount fires
+  the new-tab fetch. If the PREVIOUS tab had an in-flight page=N
+  fetch, its response can land AFTER the clear AND AFTER the
+  new-tab's page=1 fetch initiated. The slice's
+  `updateAlerts` reducer (alerts.slice.ts:30) appends if
+  pageInfo.page > 1, replaces if == 1. So the stale page=N
+  response APPENDS to the new-tab's already-rendered page=1 —
+  the user sees a mix of (current-tab alerts 1-30) + (previous-
+  tab alerts 31-60). No request cancellation on tab-switch.
+
+  **(b) Page-burst race**: InfiniteScroll auto-fetches on
+  scrollThreshold='200px' (AlertsList.tsx:91). Fast-scroll on a
+  large list issues page=N+1 requests faster than the backend
+  returns. If page-1 and page-2 race AND page-2 returns first,
+  the page-2 branch APPENDS items 31-60. Then page-1 returns,
+  REPLACES items with rows 1-30, dropping page-2's already-
+  received rows. State is now coherent (rows 1-30) but the
+  user briefly saw a longer list.
+
+  **(c) Stale tab badge totals**: Alerts.tsx:15-17 fires
+  `fetchAlertsTotals` ONCE on mount with empty dep array. After
+  a Resolve action (which removes the alert from the OPEN-only
+  filtered view but does NOT re-fetch totals), the badge still
+  shows the pre-Resolve count. The operator resolves 5 alerts,
+  the badge stays at e.g. "127" until full page reload.
+  Conversely, if `fetchAlertsTotals` fails on mount
+  (AlertsTabs.tsx:23,28,34 fallback to `?? 0`), all three tab
+  badges show "0" with no visible failure indicator. The
+  operator interprets as "no alerts" rather than "backend
+  unreachable".
+
+  **Why MEDIUM** (compound):
+  - Race (a) and (b) are limited corruption — the SPA recovers
+    on next render, and the visual disturbance is transient.
+    But "the user briefly saw a longer / mixed-tab list" is
+    operator-visible — they may take action on a stale row.
+  - Staleness (c) compounds with TEST-GAP-1034 (Resolve button
+    rendered to unauthorised users) — the operator clicks
+    Resolve on a row they cannot resolve, the action fails
+    silently per AlertItem.tsx, the badge stays at the pre-
+    Resolve count, and the operator concludes the resolve
+    "worked but UI is slow".
+  - The MEDIUM rating is the sum of three small operator-
+    visibility issues that together undermine confidence in
+    the page's correctness during normal use.
+
+  **Test gap shape**: three independent regression-pin tests,
+  one per failure mode.
+test_files_existing: []
+test_files_proposed:
+  - path: "odd-platform-ui/src/components/Alerts/__tests__/Alerts.TabSwitchRace.test.tsx"
+    name: "tabSwitchDuringInFlightPageNFetch_observesLateResponseAppendsToNewTabState_pinsRaceA_BatchZL"
+    description: |-
+      Mock the alerts thunk to delay the response. Render <Alerts/>
+      at /alerts/all. Trigger fetchNextPage (page=2). Before page-2
+      lands, navigate to /alerts/my. Then let page-2 land. Assert
+      state.alerts.items contains MIXED-tab content (the bug).
+      RED today; flip assertion direction after the fix (add
+      request cancellation on tab-switch via AbortController).
+  - path: "odd-platform-ui/src/components/Alerts/__tests__/Alerts.PageBurstRace.test.tsx"
+    name: "rapidPageBurstWithOutOfOrderResponses_observesPage1ReplacesAfterPage2_pinsRaceB_BatchZL"
+    description: |-
+      Mock the alerts thunk to delay page=1 longer than page=2.
+      Render <Alerts/>. Trigger fetchNextPage twice in quick
+      succession (page=2 then implicitly page=1 is still in flight
+      from mount). When page=2 lands first, assert items contains
+      31-60 (the bug-window). When page=1 lands second, assert
+      items REPLACES to 1-30 (dropping 31-60). PINS the race.
+  - path: "odd-platform-ui/src/components/Alerts/__tests__/Alerts.StaleTotals.test.tsx"
+    name: "resolveAlert_doesNotRefreshTotals_pinsStaleBadgeBehaviour_BatchZL"
+    description: |-
+      Render <Alerts/>; fetchAlertsTotals returns {totals: 127}.
+      Dispatch updateAlertStatus (Resolve). Assert badge still
+      reads "127" (no totals re-fetch). PINS the stale-badge.
+      After fix, flip to assert the badge updates.
+  - path: "odd-platform-ui/src/components/Alerts/__tests__/Alerts.TotalsFailure.test.tsx"
+    name: "fetchAlertsTotalsFails_badgeReads0_pinsErrorIndicatorAbsence_BatchZL"
+    description: |-
+      Render <Alerts/> with fetchAlertsTotals rejecting. Assert
+      all three tab badges read "0" AND assert there is NO error
+      banner / icon / aria-label communicating failure. PINS the
+      operator-mistake-prone state. After fix, add an error
+      indicator and flip assertion direction.
+evidence:
+  - "Alerts.md (batch ZL) bugs_limitations_corner_cases.[2]: stale tab badge totals after Resolve — MEDIUM"
+  - "Alerts.md (batch ZL) bugs_limitations_corner_cases.[4]: page-burst race — MEDIUM"
+  - "Alerts.md (batch ZL) bugs_limitations_corner_cases.[6]: tab counts ?? 0 fallback — MEDIUM"
+  - "Alerts.md (batch ZL) tests_coverage_semantic.uncovered_behaviours.[1]: tab-switch clear — HIGH integration"
+  - "Alerts.md (batch ZL) stress_findings.resource_boundaries.kind=concurrency: limited-corruption race described"
+  - "Primary source verified: Alerts.tsx:15-17 (totals fetch with empty deps), AlertsTabs.tsx:23,28,34 (?? 0 fallback), AlertsTabs.tsx:44-46 (changeAlertsFilterAction), alerts.slice.ts:30 (append-vs-replace branch), AlertsList.tsx:74-91 (InfiniteScroll scrollThreshold)"
+  - "Glob verified: zero Alerts*.test.* under odd-platform-ui/src (run 2026-05-26)"
+cross_references:
+  - "TEST-GAP-1034 (sibling — Resolve button gate; the stale-totals compounds with that gap)"
+  - "TEST-GAP-1033 (sibling — All-tab open-vs-resolved drift; the stale-totals exacerbates discoverability)"
+  - "F-Alerting (P-09 pillar-level feature flow)"
+proposed_action: |-
+  Land the four regression-pin tests above. Each pins one
+  specific failure mode; together they cover the full race +
+  staleness surface of the page.
+
+  Fix recommendations:
+  - Race (a): wrap the alert thunks in AbortController; cancel
+    in-flight on tab-switch via changeAlertsFilterAction.
+  - Race (b): same AbortController pattern; cancel page=N
+    on dispatch of page=N+1, or version-stamp the responses
+    and ignore stale ones in the reducer.
+  - Staleness (c1): refetch totals after dispatch of
+    updateAlertStatus.fulfilled in the slice.
+  - Staleness (c2): track fetchAlertsTotals rejection state in
+    the slice; render an error indicator in AlertsTabs.tsx.
+maintainer_curated: false
+batch: 2026-05-26-ZL

@@ -68,3 +68,38 @@ Recommended: Path A — implements operator-friendly session continuity; uses th
 - STRENGTHENS: REFACTOR-676 (searchId drift), REFACTOR-680 (no UUID validation), ADR-CANDIDATE-052 (server-side session).
 - SUPERSEDES: none.
 - CONFLICTS: none.
+
+
+## STRENGTHENS — Batch ZL (2026-05-26 — Search.tsx page-root sidecar confirms the Catalog-tab-drops-session UX at the COMPOSITION layer)
+
+The Search.tsx page-root sidecar surfaces the same "Catalog tab drops current session" defect at the COMPOSITION layer — the page-root mounted at App.tsx:61 IS what unconditionally fires `createSearch` whenever `routerSearchId` is undefined, which IS the case when the user clicks the AppToolbar Catalog tab (which links to bare `searchPath()` without UUID).
+
+**New surfaced_by entries**:
+
+- `odd-platform__ts__react-component__component__Search.md:stress_findings.name_behavior_pairs[3]` (MINOR drift) — "Catalog tab / top-nav 'Catalog' link: Tab labelled 'Catalog' takes the user to the catalog of all data entities. Per batch-ZH ToolbarTabs sidecar, the top-nav 'Catalog' tab links to searchPath() (no UUID) → /search. Clicking it from any context (including from within an in-progress session at /search/{uuid}) DROPS the current session and creates a new one (Search.tsx:37-42 fires because routerSearchId is undefined). The prior session UUID is orphaned server-side until housekeeping reaps it. ... Operator inside a filtered Catalog view who clicks the 'Catalog' tab loses their filter selections — the new session has empty filters. Pattern: the navigation back to the top is non-idempotent (the tab click does not preserve session state). Operators expecting 'tab clicks are no-ops if I'm already there' are surprised."
+
+- `odd-platform__ts__react-component__component__Search.md:upstream_callers[1]` (HIGH) — "ui_button:top-nav-Catalog-tab — ToolbarTabs.tsx:38 + 93 (per batch-ZH sidecar) — top-nav 'Catalog' tab Link points to `searchPath()` (no UUID), so clicking it from any page lands on `/search` with NO `:searchId` param; Search.tsx:37-42 then fires createSearch (because `routerSearchId` is undefined). Net behaviour: clicking the 'Catalog' top-nav tab DROPS the user's prior session and creates a fresh one — the prior session UUID is orphaned server-side until housekeeping reaps it."
+
+**What this strengthening adds**: prior coverage anchored the defect at the ToolbarTabs Link layer. Batch ZL adds the page-root SIDE — Search.tsx is the consumer that EXECUTES the session-drop logic on the receiving end:
+
+1. **Search.tsx:37-42 is the EXECUTOR of the session-drop** — the `useEffect` checks `if (!routerSearchId && !isSearchCreating && !searchId) createSearch(...)`. When the ToolbarTabs Catalog link lands the user at `/search` (no UUID), `routerSearchId` is undefined; the guard short-circuits to TRUE; createSearch fires; a new UUID is minted.
+
+2. **The architecture is the CAUSE; the implementation is the CONSEQUENCE** — ADR-CANDIDATE-236 (Catalog/Dictionary tabs mint fresh search-id on click) codifies the deliberate choice. The Search.tsx page-root is the consumer that materializes that choice. The defect is in the LINK CHOICE (ToolbarTabs.tsx:38 uses `searchPath()` not `searchPath(currentSearchId)`), NOT in Search.tsx.
+
+3. **Compounds with REFACTOR-694 (unhandled rejection on createSearch)** — the tab-click drops the session AND if the new createSearch rejects, the user lands on a frozen empty page (per REFACTOR-694 strengthening this batch).
+
+4. **The fix scope is at the LINK layer, not the page-root layer** — Search.tsx is doing the right thing given the URL it receives; the fix is to either:
+   - Update ToolbarTabs.tsx:38 to link to `searchPath(currentSearchId)` if a session exists (preserve the session)
+   - OR document the deliberate "tab click = new session" choice (acknowledge the trade-off)
+   - The ADR-CANDIDATE-236 dispatcher (Catalog tab mints fresh search-id on click) anchors the architectural choice; this scope is the OPERATOR-FACING consequence.
+
+**Triangulation count after ZL**: 3 sidecars (was 2 — ToolbarTabs sidecar + ADR-CANDIDATE-236; ZL adds the Search.tsx page-root EXECUTION side).
+
+**Severity unchanged**: MEDIUM. The composition-level confirmation tightens the architectural understanding without changing the canonical fix (fix at the LINK CHOICE).
+
+**Coherence check** (LSN-018):
+- STRENGTHENS: ADR-CANDIDATE-236 (Catalog/Dictionary mint fresh search-id on click — the architecture this defect is the failure-mode of); REFACTOR-694 (unhandled rejection — compounds with this on the failure path); ADR-CANDIDATE-052 (server-side search session — strengthened this batch).
+- SUPERSEDES: none.
+- CONFLICTS: none.
+
+---

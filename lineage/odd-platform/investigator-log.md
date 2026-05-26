@@ -2665,3 +2665,59 @@ First batch under the slimmed Phase 3 (commit b8c5dd1): no `rebuild_indexes.py a
 - **doc-gap-finder failure (socket error)** — batch ZK doc-gap deltas NOT captured. Re-run as a separate task or fold into next batch ZL Phase 2 prompt. Headlines to recover: LDAP doc gaps (password masking + LDAPS + adminGroups substring), GenAI request_timeout vs responseTimeout drift, AdditionalLink URL validation absence, HousekeepingTTL partition-vs-non-partition disambiguation, Scheduling single-thread default.
 - **1 CONTRADICTS surfaced** by concept-merger (Rule 6) — logged in state/coherence-conflicts-batch-ZK.md; ODDLDAPProperties substring-collision claim vs full-string-equality (need maintainer triage).
 - 16 unfixable YAML quarantines unchanged.
+
+---
+
+## Batch ZL — 2026-05-26 (Feature-tier UI components — FINAL batch of sprint)
+
+**Sidecars added** (5/5): Activity + Search + DataModelling + LookupTables (LSN-018 substitution for phantom MasterData.tsx) + Alerts page-roots. **Coverage 52.9% direct / 97.7% effective.** 43 features.
+
+### Headline architectural findings
+1. **Alerts dual-drift quartet** — live docs assert All tab shows "open + resolved" but code filters `STATUS=OPEN` (Category B drift, LSN-019 class); tab segment `all` translates silently to "all OPEN" (Category F); Resolve/Reopen buttons rendered to unauthorised viewers with post-click permission check (UX leak).
+2. **LookupTables 3 HIGH defects** — InfiniteScroll `scrollableTarget='directory-entities-list'` MISMATCH caps visible list at 30 rows; LookupTableForm edit-submit sends `namespace_name` to UPDATE endpoint that rejects/discards silently; H1 `X lookup tables overall` counter leaks global-population to any authenticated user.
+3. **Activity LSN-020 UI surface** — User filter label "performed by" + binds USER_OWNER_MAPPING.OWNER_ID. DOC-GAP-303 confirmed at UI tier; 4-layer triangulation now complete (live docs + en.json + UI + SQL).
+4. **Search debouncer drift + query session-poisoning** — debouncer DRIFT_NAME_VS_BEHAVIOR; query→tsquery chain leads to TRUE SQL injection at highlight path (REFACTOR-229 3rd invocation site).
+5. **DataModelling LSN-018 phantom catch** — `MasterData.tsx` doesn't exist (pairs with ZH bare-/master-data blank-page finding); LookupTables.tsx is the actual mounted root. ERD-as-sub-tab inside Relationships, not peer.
+
+### Phase 2 deltas (5/5 reducers succeeded including ZK doc-gap recovery)
+- concept-merger: **+18 new + 11 extended**; 0 supersedes. `withpermissionsprovider-context-seed-not-route-gate` now **14-sidecar triangulation** (10→14).
+- adr-archaeologist: **+4 new ADRs (-244..-247)** + 7 strengthened. **+16 new REFACTORs (REFACTOR-705..720)** + 4 strengthened. REFACTOR-705/711/712/715 = HIGH.
+- doc-gap-finder: **+7 new DOC-GAPs (312-318)** + 12 strengthens (recovered ZK appends + ZL). 2 HIGH (DOC-GAP-312 Alerts open-vs-resolved; DOC-GAP-313 LookupTables scrollableTarget; DOC-GAP-316 SchedulingConfiguration single-thread).
+- test-coverage-mapper: **+7 new TEST-GAPs (1033-1039)** + 8 strengthens. 4 HIGH (1033 Alerts open-vs-resolved; 1034 Resolve button UX leak; 1035 LookupTables scrollableTarget; 1036 namespace_name silent discard). 0 NEW CRITICAL.
+- feature-flow-builder: 6 features EXTENDED (F-007 Alerts + F-017 Search refresh + F-021 Activity + F-025 + F-037 DataModelling shared + F-026 LookupTables) with 15+ new drift facets. No new features (UI page-roots are entry-points to existing features).
+
+### Cumulative state after ZL (FINAL)
+- Direct: 205 → **209/395 (52.9%)**
+- Effective: 382 → **386/395 (97.7%)** ← broke 97% again
+- Features: 43 (unchanged — UI page-roots extend existing features)
+- CRITICAL test-gaps: 168 (unchanged — no NEW critical this batch)
+- Total test-gaps: 1029 → **1036**
+
+### Sprint-wide totals (ZD through ZL = 9 batches, 45 sidecars)
+- Sidecars enriched: 169 → **209** (+40 net; +45 minus the LSN-018 phantom adjustments)
+- Effective coverage: 82.0% → **97.7%** (+15.7 percentage points)
+- Direct coverage: 42.8% → **52.9%** (+10.1 percentage points)
+- Features: 32 → **43** (+11 new pillar-anchored features)
+- CRITICAL test-gaps: 144 → **168** (+24)
+- Total test-gaps: 854 → **1036** (+182)
+- ADRs: 208 → **247** (+39)
+- REFACTORs: 591 → **720** (+129)
+- DOC-GAPs: 272 → **318** (+46)
+- Probes emitted: P-090 baseline → **P-194** end-state (104 new probe-skeletons)
+
+### Architectural meta-findings discovered this sprint
+1. **REFACTOR-185 → 24-sidecar (strongest single triangulation in catalog)** — DISABLED-mode bypass spans 8+ layers and 9+ pillars
+2. **WithPermissionsProvider non-blocking META** (ZH) — 14-sidecar triangulation; operator mental-model wrong everywhere
+3. **No React error boundary anywhere in SPA** (ZJ) — entire UI single-blank-page-failure away from any uncaught render exception
+4. **F-006 audit-silence pattern → 11-sidecar at controller-class tier** (ZF) — schema-rooted (V0_0_48 NOT NULL FK)
+5. **LSN-019 dashboard fire** (ZG DataQualityRunsController) — name says "runs" but counts tests-by-latest-status; LSN-019 root cause class extends into dashboard flagship indicator
+6. **LSN-020 i18n channel** (ZJ en.json) — same drift ships uniformly to 6 locales via natural-keys fallback
+7. **EventApi Slack webhook unauth + unsigned + undeduplicated** (ZF) — internet-reachable forgeable replayable webhook
+8. **SQL injection at SearchController.highlightDataEntity** (ZE) — TRUE injection via `String.formatted` direct interpolation; CRITICAL TEST-GAP-946
+
+### Follow-ups carried forward
+- 16 unfixable YAML quarantines persistent (5 concepts + 2 test-map + 8-9 from churn)
+- 1 Rule-6 CONTRADICTS from ZK (ODDLDAPProperties substring vs full-string equality) — needs maintainer triage in state/coherence-conflicts-batch-ZK.md
+- Graph dry-run (mid-sprint) — 20/20 random sample verified; skipped_files=10 all explained
+- Coherence-sweep candidate counts grow monotonically with corpus size (regex-noise baseline)
+

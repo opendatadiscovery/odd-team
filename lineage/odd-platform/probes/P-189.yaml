@@ -1,0 +1,97 @@
+---
+probe_id: P-189
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__Search.md
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-001
+test_class: performance
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category E — debouncer resource boundary): the facet
+  debouncer at Search.tsx:50-65 is constructed as `useCallback(
+  useDebouncedCallback(..., 1500, {leading: true}), [searchId,
+  searchFacetParams])`. The `useCallback` deps include `searchFacetParams` —
+  which mutates on every facet click. Each click thus constructs a NEW
+  debouncer; the prior debouncer's pending timer is unreachable; with
+  `{leading: true}` the new debouncer fires on its FIRST call immediately.
+  Hypothesis: a user clicking 5 facets in 2 seconds dispatches 5 PUT
+  /api/search/{searchId} calls instead of the intended 1-coalesced PUT.
+  This is the same bug shape as TermSearch batch-U bugs[2]. The probe
+  measures dispatch cardinality per N facet-click batch and asserts the
+  count == N (broken debouncer) or count <= 2 (working debouncer with
+  leading+trailing).
+---
+arrange:
+  - kind: docker-compose-up
+    profile: odd-minimal
+  - kind: sql
+    query: |
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, hollow)
+      SELECT 90100 + i, '//probe-source/p-189/e' || i, 'probe_entity_' || i, 1, 1, false
+      FROM generate_series(0, 9) AS i
+  - kind: sql
+    query: |
+      INSERT INTO search_entrypoint (data_entity_id, search_vector)
+      SELECT 90100 + i, to_tsvector('english', 'probe entity ' || i)
+      FROM generate_series(0, 9) AS i
+  - kind: sql
+    query: |
+      INSERT INTO tag (id, name) VALUES
+        (9000, 'p189-tag-a'), (9001, 'p189-tag-b'), (9002, 'p189-tag-c'),
+        (9003, 'p189-tag-d'), (9004, 'p189-tag-e')
+  - kind: dom-probe
+    browser: chromium
+    nav: /search
+    capture_as: catalog_page_loaded
+act:
+  - kind: dom-probe-network-tap
+    intercept: PUT /api/search/*
+    capture_as: put_calls
+  - kind: dom-probe
+    action: |
+      // Click 5 distinct Tag facet options in rapid succession (within 500ms)
+      const tagOptions = await page.$$('[data-testid="facet-option-tag"]');
+      for (let i = 0; i < 5; i++) {
+        await tagOptions[i].click();
+        await page.waitForTimeout(100);
+      }
+      // Wait beyond the 1500ms debounce window
+      await page.waitForTimeout(2000);
+    capture_as: rapid_click_completed
+observe:
+  - kind: capture
+    target: put_calls.length
+    capture_as: actual_put_count
+  - kind: capture
+    target: put_calls
+    capture_as: put_call_details
+assert:
+  - "actual_put_count >= 5  # broken-debouncer hypothesis: every click dispatched its own PUT"
+  - "actual_put_count != 1  # working-debouncer counter-assertion"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM tag WHERE id BETWEEN 9000 AND 9004;
+      DELETE FROM search_entrypoint WHERE data_entity_id BETWEEN 90100 AND 90109;
+      DELETE FROM data_entity WHERE id BETWEEN 90100 AND 90109;
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__Search
+    - odd-platform__ts__react-component__component__TermSearch
+  retrospectives:
+    - LSN-017
+realism_caveats: |
+  Probe pins the debouncer-recreation hypothesis through a real browser
+  (Playwright/Chromium) running against the local odd-minimal stack. If the
+  PUT count is 5 (matching click count), the debouncer is broken — the
+  1500ms rate-limit is not in effect. The probe relies on the Filters
+  sidebar exposing testable facet-option DOM elements at the
+  `[data-testid="facet-option-tag"]` selector — verify against the actual
+  Filters.tsx render before assuming. Sister probe should pin the SAME
+  shape on TermSearch.tsx (the clone) to confirm the bug propagated through
+  copy.

@@ -1,0 +1,133 @@
+---
+gap_id: TEST-GAP-1034
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform ts react-component:Alerts"
+  - "odd-platform java AlertController controller-method:changeAlertStatus"
+pillars_affected: ["P-09", "P-04"]
+surfaced_by:
+  - "Alerts.md:bugs_limitations_corner_cases.[1] verbatim: 'Resolve / Reopen button is rendered for every alert without first checking permission — the permission probe (fetchResourcePermissions) only fires AFTER click (AlertItem.tsx:48-70). UX leak: the action is visible to users who cannot perform it; users only learn they have no access by trying.' severity: MEDIUM"
+  - "Alerts.md:tests_coverage_semantic.uncovered_behaviours.[4] verbatim: 'Resolve button on an Alert dispatches updateAlertStatus only after DATA_ENTITY_ALERT_RESOLVE permission resolves; shows No access! caveat when it does not.' test_class: security; criticality: HIGH; note: Authorization is enforced AFTER click — caller observes the button, clicks it, and only then sees access denied. Operator-visible UX leak: existence of the resolve action is visible to a viewer who cannot perform it."
+  - "Alerts.md:stress_findings.auth_gates verbatim: 'A viewer with READ-only access sees the list, sees Resolve buttons, clicks one, then receives the No access! caption.'"
+related_pillar_features:
+  - "P-09:F-Alerting"
+related_features: []
+feature_id: null
+test_class: security
+strengthens: []
+behaviour: |-
+  **HIGH — Late-binding permission check on the Resolve/Reopen
+  button. Operator-visible UX leak + structural deviation from the
+  documented RBAC posture.**
+
+  `AlertItem.tsx:159-166` renders a Resolve / Reopen button
+  UNCONDITIONALLY for every Alert row in the list. The button text
+  varies based on alert status, but the BUTTON ITSELF is rendered
+  for every authenticated caller (per Alerts.md:auth_gates "No
+  role concept at this layer; the DATA_ENTITY_ALERT_RESOLVE
+  permission gate is per-action, post-click").
+
+  At click time, `AlertItem.tsx:48-70` calls
+  `fetchResourcePermissions({dataEntityId})` and inspects the
+  returned globalPermissions array for `DATA_ENTITY_ALERT_RESOLVE`.
+  If absent, the UI displays a `No access!` caveat
+  (`AlertItem.tsx:55-67`). The action is denied; the click is
+  consumed.
+
+  **Why this is HIGH (and not LOW)**:
+  - **UX leak — affordance visibility**: users who cannot perform
+    the action see the affordance. The "click to learn you cannot"
+    pattern is the canonical anti-pattern for affordance design
+    (Nielsen heuristic #6 — recognition rather than recall;
+    affordances should be VISIBLE for what the user CAN do, not
+    what they cannot).
+  - **Information leak — alert existence**: a viewer with
+    DATA_ENTITY_READ-only sees the OPEN alert population for any
+    data entity they can read. The OPEN-alert population is
+    operationally sensitive (it discloses health-state — "this
+    entity has unresolved issues"). The doc page at
+    `https://docs.opendatadiscovery.org/features/active-platform-features/alerting`
+    does not enumerate this visibility scope (sidecar
+    docs_link_semantic.doc_drift_findings.[1]: 'live doc page
+    does NOT document the permission needed to Resolve / Reopen').
+  - **Deviation from sibling patterns**: the dataModelling pillar
+    wraps its DELETE / UPDATE affordances in `<WithPermissions>`
+    (per QueryExamples.tsx:36-46) which HIDES the affordance
+    rather than rendering+denying. The alerts pillar diverges
+    without a documented reason.
+  - **Doc-side compounding** (docs_link_semantic.doc_drift_findings.[1]):
+    the doc page does NOT document the permission needed for
+    Resolve/Reopen. An operator deploying ODD with RBAC
+    expectations has no signal that READ-only viewers see the
+    Resolve buttons.
+
+  **The CORRECT pattern is `<WithPermissions
+  permissionTo={Permission.DATA_ENTITY_ALERT_RESOLVE}>` wrapping
+  the Button** — this is the affordance-hide pattern used across
+  the codebase (verified across QueryExamples.tsx, LookupTables.tsx
+  Add-new button, OwnersList.tsx, etc.). The wrapper consults the
+  PermissionContext seeded at mount and returns null if the
+  permission is absent — the Button never renders.
+
+  **Test gap shape**:
+  1. **UI affordance-hide regression-pin**: render `<AlertItem/>`
+     with a user fixture missing `DATA_ENTITY_ALERT_RESOLVE` and
+     assert the Resolve button is NOT in the DOM. RED today
+     (button renders); GREEN after the fix (button is wrapped in
+     `<WithPermissions>`).
+  2. **Per-action permission contract test**: render with the
+     permission present and assert the Resolve button is in the
+     DOM. PINS the positive case.
+  3. **Backend regression-pin**: `AlertControllerResolveAccessTest`
+     — POST a Resolve as a user without DATA_ENTITY_ALERT_RESOLVE,
+     assert 403. PINS the backend gate (the UI affordance hide is
+     defense-in-depth; the backend remains the source of truth).
+test_files_existing: []
+test_files_proposed:
+  - path: "odd-platform-ui/src/components/Alerts/AlertsList/AlertItem/__tests__/AlertItem.ResolveButtonGate.test.tsx"
+    name: "resolveButton_hiddenForUserWithoutDataEntityAlertResolvePermission_pinsAffordanceHide_BatchZL"
+    description: |-
+      Render <AlertItem/> with a Redux store mocked such that
+      globalPermissions does NOT include DATA_ENTITY_ALERT_RESOLVE.
+      Assert `screen.queryByText('Resolve')` returns null. PINS the
+      current MISSING affordance-hide (RED today; GREEN after fix
+      wraps the button in <WithPermissions>).
+  - path: "odd-platform-ui/src/components/Alerts/AlertsList/AlertItem/__tests__/AlertItem.ResolveButtonGate.test.tsx"
+    name: "resolveButton_renderedForUserWithDataEntityAlertResolvePermission_pinsPositiveCase_BatchZL"
+    description: |-
+      Sister test — render with the permission present, assert the
+      Resolve button IS in the DOM. PINS the positive case.
+  - path: "odd-platform-api/src/test/java/.../AlertControllerResolveAccessTest.java"
+    name: "changeAlertStatus_userWithoutPermission_returns403_pinsBackendGate_BatchZL"
+    description: |-
+      POST /api/alerts/{alertId}/status with body {status: RESOLVED}
+      as a user fixture without DATA_ENTITY_ALERT_RESOLVE. Assert
+      response status === 403. PINS the backend gate.
+evidence:
+  - "Alerts.md (batch ZL) bugs_limitations_corner_cases.[1]: cited above"
+  - "Alerts.md (batch ZL) tests_coverage_semantic.uncovered_behaviours.[4]: HIGH security test class"
+  - "Alerts.md (batch ZL) stress_findings.auth_gates: 'A viewer with READ-only access sees the list, sees Resolve buttons, clicks one, then receives the No access! caption.'"
+  - "Primary source verified: AlertItem.tsx:48-70 (post-click permission check) + AlertItem.tsx:159-166 (unconditional Button render)"
+  - "Sibling pattern verified: QueryExamples.tsx:36-46 + LookupTables.tsx:72-82 (the affordance-hide pattern via <WithPermissions>)"
+  - "Doc-drift verified: WebFetch 2026-05-26 status 200 of /features/active-platform-features/alerting does NOT enumerate Resolve/Reopen permission requirement"
+  - "Glob verified: zero AlertItem*.test.* under odd-platform-ui/src (run 2026-05-26)"
+cross_references:
+  - "TEST-GAP-650 (sibling — OwnersList CREATE/UPDATE/DELETE affordance-hide unit gap, same pattern; AlertItem should follow the same)"
+  - "TEST-GAP-994 (cross-cutting WithPermissionsProvider non-blocking — separate from this affordance-hide gap; both must be considered together for end-to-end RBAC posture)"
+  - "DOC-NNN candidate (batch ZL Alerts): doc page must enumerate the per-action DATA_ENTITY_ALERT_RESOLVE permission gate"
+  - "F-Alerting (the pillar-level feature flow this gap is anchored to)"
+proposed_action: |-
+  Two-step fix. (1) Wrap the Resolve / Reopen Button at
+  AlertItem.tsx:159-166 in <WithPermissions
+  permissionTo={Permission.DATA_ENTITY_ALERT_RESOLVE}> — this hides
+  the affordance for unprivileged users. (2) Land the three
+  regression-pin tests above (UI hide + UI show + backend 403).
+  After the fix, also surface a DOC-NNN to add a "Permissions"
+  section to the alerting doc page enumerating
+  DATA_ENTITY_ALERT_RESOLVE as the gate for the Resolve/Reopen
+  action. Net effect: affordance is invisible to unprivileged
+  users (operator-honest), permission is documented (operator-
+  discoverable), backend gate remains (defense-in-depth).
+maintainer_curated: false
+batch: 2026-05-26-ZL

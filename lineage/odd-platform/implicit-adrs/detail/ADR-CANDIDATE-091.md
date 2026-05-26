@@ -84,3 +84,32 @@ The consequences encoded:
 **Severity unchanged**: MEDIUM. Support now spans **two pillars** (P-05 Data Lineage canvas + P-04 Quality Dashboard) — the cross-pillar reach increases ADR-091's promotion priority. The ADR's "Proposed action" should now consolidate the codified-validation-primitive recommendation as a hard requirement, not a "nice-to-have," because the same JSON-parse crash class has now surfaced on TWO independent instances of the pattern.
 
 ---
+
+
+## STRENGTHENS — Batch ZL (2026-05-26 — Activity page-root adds the THIRD primary-source surface; ADR-091 now spans three pillars + one canonical FACET-SHAPED URL-state instance)
+
+Batch ZL's Activity page-root sidecar surfaces the same URL-as-source-of-truth pattern at the Activity Feed feature (P-04). Like the Quality Dashboard variation, Activity's URL holds the FILTER STATE (7 facets: calendar window, datasource, namespace, event-type, tag, owner, user); like the LineageGraph variation, Activity's URL holds the VIEW MODE (the `type` query param — ALL / MY_OBJECTS / DOWNSTREAM / UPSTREAM). Activity is the FIRST sidecar surfacing BOTH styles of state-in-URL (filter + view-mode) in a single page-root.
+
+**New surfaced_by entry**:
+
+- `odd-platform__ts__react-component__component__Activity.md:implicit_adrs[0]` (HIGH) — "**All filter state and result state lives in URL query params** (`useQueryParams<ActivityQuery>(defaultActivityQuery)`) rather than in component state or in a parent context. The two children (`Filters` + `ActivityResults`) synchronise via the URL — the page-root `Activity` component itself holds no state at all. This is the deliberate pattern that makes Activity URLs shareable and deep-linkable (the AppToolbar tab at `ToolbarTabs.tsx:77` deep-links via `activityPath(activityQueryString)`)." — evidence: Activity.tsx:6-17 (no state, no effect, no context) + Filters.tsx:24 (`useQueryParams<ActivityQuery>(defaultActivityQuery)`) + ActivityResults.tsx:26 (same hook) — intent_anchor: "two sibling children using the same `useQueryParams` hook with the same default — the URL is the contract between them" — confidence: HIGH
+
+- `odd-platform__ts__react-component__component__Activity.md:implicit_adrs[1]` (HIGH) — "Sub-views (`ALL` / `MY_OBJECTS` / `DOWNSTREAM` / `UPSTREAM`) are encoded as a `type` query parameter rather than as URL path segments... Tab clicks call `setQueryParams(prev => ({...prev, type: newActivityType}))` (`ActivityTabs.tsx:58-61`) rather than triggering React Router navigation. ... the operator-visible consequence — the URL `/activity?type=MY_OBJECTS` carries the tab selection."
+
+**What this strengthening adds**: the prior support spanned LineageGraph (view-config state) + Quality Dashboard (filter state). Activity adds the THIRD surface AND the FIRST instance combining BOTH styles in one URL:
+- VIEW MODE: the `type` query param dispatches between the 4 sub-views (consistent with ADR-CANDIDATE-230's query-string-vs-path-segment dispatch convention).
+- FILTER STATE: 7 facets live in the same query string (`datasourceId`, `namespaceId`, `eventType`, `tagIds`, `ownerIds`, `userIds`, `beginDate`/`endDate` calendar window).
+- The two children (`Filters` + `ActivityResults`) BOTH read the same `useQueryParams<ActivityQuery>(defaultActivityQuery)` hook independently — the URL is the literal contract between them; no prop-drilling, no shared React context, no Redux mediation.
+
+**The architectural shape now codifies as 3-fold**: (a) view-config state (LineageGraph), (b) filter state (Quality Dashboard, Activity), (c) view-mode dispatch (Activity, also cross-linked to ADR-CANDIDATE-230). All three are URL-as-source-of-truth; the maintainer reading this ADR sees the same commitment realised across distinct shapes of state.
+
+**Triangulation count after ZL**: 3 sidecars / 3 pillars (was 2 / 2 — LineageGraph + Quality Dashboard; ZL adds Activity).
+
+**Severity unchanged**: MEDIUM. Three independent confirmations of the pattern at three pillars makes the convention well-anchored; the codified-validation-primitive obligation (from the ZC strengthening) remains the load-bearing prescription.
+
+**Coherence check** (LSN-018):
+- STRENGTHENS: ADR-CANDIDATE-230 (URL-mode-dispatch convention — Activity's `type` param is the canonical query-string view-mode); ADR-CANDIDATE-087 (page-component owns data-fetch lifecycle — Activity's children consume the URL-state to fire fetches).
+- SUPERSEDES: none.
+- CONFLICTS: none.
+
+---

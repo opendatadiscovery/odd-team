@@ -67,3 +67,40 @@ Effort: 30 minutes for both handlers + verifying the toast pattern (cross-ref `s
 - CONFLICTS: none.
 
 ---
+
+
+## STRENGTHENS — Batch ZL (2026-05-26 — Search.tsx page-root sidecar confirms the unhandled-rejection chain end-to-end at the COMPOSITION layer)
+
+The Search.tsx page-root sidecar explicitly traces the unhandled-rejection failure mode at the SPA's main entry-point — the Catalog page. The sidecar confirms the same `.unwrap().then(...)` pattern without `.catch(...)` already documented at useCreateSearch.ts:14-19, and adds the missing app-level error-boundary observation (App.tsx:60-65 wraps NO ErrorBoundary around the Route element).
+
+**New surfaced_by entries**:
+
+- `odd-platform__ts__react-component__component__Search.md:bugs_limitations_corner_cases[4]` (MEDIUM) — "**No `.catch` on the create-session promise chain — unhandled rejection on session-create failure. IDENTICAL pattern to TermSearch batch-U bugs[3].** useCreateSearch.ts:14-19: `dispatch(createDataEntitiesSearch({searchFormData})).unwrap().then(({searchId}) => { ... navigate(searchLink); })`. No `.catch(...)` follows the `.then`. `.unwrap()` re-throws on rejection. If `createDataEntitiesSearch` rejects (server-side 500, network failure, auth expiry mid-flight), the rejection lands in the React error boundary (if any wraps the Route — verified by reading App.tsx around line 61: no `<ErrorBoundary>` wraps the Route element) or the browser console. **Net: the user sees a frozen empty page with no error message; the URL stays at `/search`; refreshing repeats the same path.** The slice's missing `.rejected` reducer (slice.ts:214-260 verified — only `.fulfilled` cases) compounds this — neither the slice nor the UI surfaces the failure. Pattern parity with TermSearch batch-U."
+
+- `odd-platform__ts__react-component__component__Search.md:security.known_security_gaps[4]` (MEDIUM) — "**Unhandled-rejection silent-failure on session-create / restore.** useCreateSearch.ts:14-19 (createDataEntitiesSearch promise chain — no .catch); slice missing .rejected reducers. Auth-token-expired mid-session reproduces: the GET `/api/search/{searchId}` returns 401 → thunk rejects → slice silent → URL retains `:searchId` → user sees frozen empty page → refresh repeats. Pattern parity with batch-U TermSearch known_security_gaps[4]."
+
+**What this strengthening adds**: prior coverage (batch ZJ) anchored the unhandled-rejection at ToolbarTabs.tsx:112-117 (Dictionary handler) + useCreateSearch.ts:14-19 (Catalog handler). Batch ZL adds the FULL COMPOSITION-LEVEL CONTEXT:
+
+1. **Two compounding silences** — the missing `.catch` on the promise chain AT useCreateSearch.ts:14-19 AND the missing `.rejected` cases in the slice AT slice.ts:214-260. The rejection has TWO opportunities to be surfaced; both are absent.
+
+2. **App.tsx has NO ErrorBoundary wrap on the Route** — Search.tsx's sidecar explicitly verified this (App.tsx:60-65 reading). The rejection lands in the browser console; the user sees a frozen empty page with no UI feedback.
+
+3. **The auth-token-expired mid-session reproduction is operator-actionable** — a user who leaves a tab open beyond the OAuth/OIDC session lifetime returns to find:
+   - GET /api/search/{cached_uuid} returns 401
+   - Thunk rejects; slice silent
+   - URL retains the UUID; user sees empty Catalog page
+   - Refresh re-fires the same GET → same 401 → same empty page
+   - Recovery: manual logout + login (the OAuth flow re-establishes the session); OR strip the UUID from the URL (per REFACTOR-719 — recovery for stale UUIDs)
+
+4. **Compounds with REFACTOR-719 (stale UUID broken page)** — the two scopes share the same failure mode (silent rejection + no recovery UX). Fix scope is unified: add `.catch` to useCreateSearch.ts AND useEffect-side error handlers in Search.tsx (lines 37-48) AND `.rejected` cases in slice.ts.
+
+**Triangulation count after ZL**: 4 sidecars (was 1 — ToolbarTabs batch ZJ; ZL adds Search.tsx page-root + the App.tsx no-ErrorBoundary observation + the slice.ts no-.rejected observation + cross-reference to TermSearch batch-U).
+
+**Severity unchanged**: MEDIUM. The composition-level confirmation tightens the failure-mode understanding but doesn't change the canonical fix (add `.catch` to both useCreateSearch + ToolbarTabs).
+
+**Coherence check** (LSN-018):
+- STRENGTHENS: REFACTOR-719 NEW this batch (stale UUID broken page — sibling silent-failure); REFACTOR-685 (no React error boundary anywhere — the canonical absence this defect exposes); ADR-CANDIDATE-236 (Catalog/Dictionary mint fresh search-id on click — the architecture that creates this failure-mode by design); ADR-CANDIDATE-052 (server-side search session — strengthened this batch).
+- SUPERSEDES: none.
+- CONFLICTS: none.
+
+---

@@ -1,0 +1,166 @@
+name: |-
+  Render Activity page two-child shell (URL-as-source-of-truth for filter state)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-07
+description: |-
+  NEW OPERATION, batch ZL (2026-05-26) — the UI-layer counterpart
+  of `operation:read-activity-feed-windowed-filtered-type-dispatched`
+  (the backend windowed/filtered/type-dispatched fetch). Activity.tsx
+  (`components/Activity/Activity.tsx`, 19 lines) is the page-root
+  for the global Activity Feed surface mounted at `/activity`
+  (App.tsx:65). It is a pure layout shell — NO state, NO effect,
+  NO thunk dispatch, NO permission gate.
+
+  THE OPERATION ANATOMY:
+
+    Step 1 — Layout composition (Activity.tsx:6-17):
+      A 3/9 split via Material-UI Grid (xs=3 left + xs=9 right);
+      Left column hosts `<Filters/>`; right column hosts
+      `<ActivityResults/>`. The hardcoded grid split is non-
+      responsive — no breakpoint, no collapsible sidebar. The
+      composition uses the platform's PageWithLeftSidebar styled
+      primitives (different from layout.ts's
+      LayoutContainer/Sidebar/Content used by Alerts/DataModelling
+      /etc — Activity uses its OWN shell from
+      components/shared/elements/StyledComponents/PageWithLeftSidebar.ts:5-26).
+
+    Step 2 — Filter state via URL query parameters (no React state
+             at this layer):
+      Both children consume `useQueryParams<ActivityQuery>(defaultActivityQuery)`
+      INDEPENDENTLY. Activity.tsx itself holds no state and provides
+      no context bridge — the two children synchronise through the
+      URL alone.
+      The URL is the contract: changing a filter in `<Filters/>`
+      calls `setQueryParams` which updates the URL; React Router
+      re-renders; `<ActivityResults/>`'s `useEffect([queryParams])`
+      detects the change and fires a fresh fetch.
+
+    Step 3 — Filter dispatch (delegated to Filters child;
+             Filters.tsx:26-30 + 93-98):
+      On mount, Filters dispatches `fetchDataSourcesList` +
+      `fetchNamespaceList` (size=100 each) to populate the
+      SingleFilter dropdowns. The User filter at Filters.tsx:93-98
+      is the load-bearing LSN-020 channel: the label says 'User',
+      the autocomplete dispatches `fetchOwnersList` (lists owners),
+      selecting an owner stores its ID into `queryParams.userIds`,
+      and the backend translates to `USER_OWNER_MAPPING.OWNER_ID.in(userIds)`
+      — see `invariant:activity-user-filter-doc-promises-performed-by-sql-binds-owner-mapping`.
+
+    Step 4 — Result fetch + counts (delegated to ActivityResults
+             child; ActivityResults.tsx:47-50):
+      On mount AND on every queryParams change:
+        useEffect(() => {
+          dispatch(fetchActivityCounts(queryParams));
+          dispatch(fetchActivityList({...queryParams, isQueryUpdated: true}));
+        }, [queryParams]);
+      Effect: FIVE backend queries per dispatch — 1 list + 4
+      parallel counts via Mono.zip (per ActivityController.getActivity
+      sidecar). No debounce, no request cancellation. Rapid filter
+      twiddles produce 5N queries for N changes.
+
+    Step 5 — Tab encoding via `type` query parameter (not URL path):
+      The four sub-views (ALL / MY_OBJECTS / DOWNSTREAM / UPSTREAM)
+      are encoded as `?type=ALL` etc — not as URL path segments.
+      Tab clicks call `setQueryParams(prev => ({...prev, type: newActivityType}))`
+      (ActivityTabs.tsx:58-61) rather than triggering React Router
+      navigation. Deliberate divergence from the Alerts pattern
+      (`/alerts/all`, `/alerts/my`, `/alerts/dependents` as path
+      segments).
+
+    Step 6 — Pagination via cursor (delegated to ActivityResults +
+             ActivityResultsList):
+      Cursor-based on `(lastEventId, lastEventDateTime)`. No offset.
+      InfiniteScroll appends pages as the user scrolls
+      (ActivityResultsList.tsx:52-60). The reducer uses
+      `isQueryUpdated: true` to REPLACE and `: false` to APPEND
+      (activity.thunks.ts:48).
+
+  AUTHORISATION POSTURE:
+    Activity.tsx route at App.tsx:65 has NO permission wrap. The
+    component has NO permission check. Backend ActivityController
+    has no @PreAuthorize on `/api/activity` (per the
+    odd-platform__java__ActivityController__controller-class
+    sidecar). Net: end-to-end UNGATED for the default `type=ALL`
+    tab. Every authenticated user (and every anonymous caller
+    under DISABLED) reads the platform-wide audit trail including
+    the actor identity (`statusUpdatedBy?.identity?.username`)
+    and full old/new state diffs of descriptions, business names,
+    ownership transitions, custom metadata. The `type=MY_OBJECTS`
+    tab IS owner-scoped but only when the user explicitly selects
+    it; the default landing tab is ALL.
+
+  CROSS-OPERATION RELATIONSHIPS:
+    - UI-layer counterpart of `operation:read-activity-feed-windowed-filtered-type-dispatched`
+      (the backend operation).
+    - Pairs with `entitie:activity-feed` (the canonical activity-feed
+      entity).
+    - Pairs with `invariant:activity-user-filter-doc-promises-performed-by-sql-binds-owner-mapping`
+      (the LSN-020 Category F drift — Activity is the operator-
+      visible entry point).
+    - Pairs with `invariant:cross-component-fetch-duplication-shell-plus-tab-double-fire-hot-path`
+      (similar 5-query-per-change pattern observed elsewhere).
+    - Pairs with `invariant:url-as-source-of-truth-for-lineage-view-state`
+      (same architectural posture — URL is the contract; Activity
+      is one instance, Lineage is another).
+
+  CROSS-BATCH COHERENCE:
+    The 'URL is the source of truth for filter state' pattern
+    is shared with Lineage canvas
+    (`invariant:url-as-source-of-truth-for-lineage-view-state`)
+    and the data-quality dashboard
+    (`operation:sync-dashboard-filters-with-url`). Activity.tsx
+    is the third instance; all three components hold no React
+    state for filters, all three use a flavour of
+    setQueryParams. The pattern is observably consistent — worth
+    promoting to an explicit cross-batch architectural-pattern
+    concept if a fourth instance surfaces.
+related_features:
+  - F-013
+nodes:
+  - odd-platform ts react-component component:Activity
+contributors:
+  - odd-platform ts react-component component:Activity
+evidence:
+  - |-
+    Activity.md:understanding — 'Activity is the top-level page
+    component for the global Activity Feed surface at /activity.
+    It is a pure layout shell: a MainContainer wrapping a 3/9
+    split ContentContainer Grid whose left column hosts <Filters/>
+    and whose right column hosts <ActivityResults/>.'
+  - |-
+    Activity.md:concepts.invariants — 'All filter state and
+    result state lives in URL query params, not in component
+    state.'
+  - |-
+    Activity.md:implicit_adrs — two load-bearing decisions:
+    (1) All filter and result state lives in URL query params,
+    not in component state or context; (2) Sub-views are encoded
+    as `type` query parameter rather than URL path segments
+    (diverging from the Alerts pattern).
+  - |-
+    Activity.md:downstream_side_effects — three side-effect
+    classes (page-render + REFERENCE external-call to children).
+axes_present:
+  - ui_components
+  - ui_routes
+triangulation_count: 1
+cross_batch: false
+severity: null
+severity_dim: null
+mitigations_unimplemented: []
+notes: |-
+  NEW operation captured in batch ZL (2026-05-26). Activity is
+  the UI surface where LSN-020's User-filter drift is FIRST
+  encountered by an operator — the existing
+  activity-user-filter-doc-promises-performed-by-sql-binds-owner-mapping
+  invariant captures the SQL-layer drift; this operation
+  captures the UI orchestration that surfaces it.
+
+  Cross-batch follow-up: the 5-query-per-filter-change pattern
+  (fetchActivityCounts via Mono.zip + fetchActivityList) is a
+  hot path worth probing. Same shape as the LSN-017 view_count
+  doubling family — multiple dispatches per single user action.
+  A debouncer at the queryParams effect would reduce DB load by
+  approximately N (for N rapid filter changes) at zero UX cost.

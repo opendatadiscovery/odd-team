@@ -67,3 +67,37 @@
 **Severity rationale**: MEDIUM — pattern-shaping convention across 4 pillars; the alerts/activity contrast is the canonical evidence; the convention informs every future multi-view-surface decision.
 
 **Suggested backlog grouping**: `UI architecture codification`.
+
+
+## STRENGTHENS — Batch ZL (2026-05-26 — Alerts page-root + Activity page-root + Search page-root sidecars triangulate the three conventions on the COMPONENT side)
+
+Batch ZL's three page-root sidecars (Alerts + Activity + Search) ALL surface the three conventions explicitly at the React-component layer, completing the URL-mode-dispatch story end-to-end (route module → page-root → child siblings).
+
+**New surfaced_by entries**:
+
+- `odd-platform__ts__react-component__component__Alerts.md:concepts.invariants[2]` (HIGH) — "Default route `/alerts` redirects to `/alerts/all` (`AlertsRoutes.tsx:18`)." — confirms Convention B (URL path-segment) at the component-tree layer.
+
+- `odd-platform__ts__react-component__component__Activity.md:implicit_adrs[1]` (HIGH) — "Sub-views (`ALL` / `MY_OBJECTS` / `DOWNSTREAM` / `UPSTREAM`) are encoded as a `type` query parameter rather than as URL path segments, deliberately diverging from the alerts pattern (`/alerts/all`, `/alerts/my`, `/alerts/dependents`). Tab clicks call `setQueryParams(prev => ({...prev, type: newActivityType}))` (`ActivityTabs.tsx:58-61`) rather than triggering React Router navigation." — confirms Convention A (query-string) at the component-tree layer; the EXPLICIT CONTRAST with Alerts is re-asserted.
+
+- `odd-platform__ts__react-component__component__Search.md:implicit_adrs[0]` (HIGH) — "**Server-side search session model with URL-backed UUID — the canonical/older pattern (TermSearch.tsx batch U clones it).**" — confirms Convention C (server-side session UUID) at the component-tree layer.
+
+**What this strengthening adds**: prior support was at the ROUTE-MODULE layer (batch ZI surfaced the 3 conventions in `routes/`). Batch ZL adds the COMPONENT-TREE layer — how the page-root React components actually dispatch view modes:
+
+1. **Alerts (Convention B — path-segment)** — page-root composes `<AlertsTabs/>` + `<AlertsRoutes/>`; AlertsTabs handles tab-click → React Router navigation; AlertsRoutes declares 3 `<Route>` for `/all`, `/my`, `/dependents`; the bare-`/alerts` redirects via `<Navigate to='all'>`. Component-tree shape: NESTED Routes, each tab is a sibling Route.
+
+2. **Activity (Convention A — query-string)** — page-root composes `<Filters/>` + `<ActivityResults/>`; `<ActivityResults>` composes `<ActivityTabs/>` + `<ActivityResultsList/>`; ActivityTabs dispatches `setQueryParams({type: newType})` instead of navigation; the URL becomes `/activity?type=MY_OBJECTS` not `/activity/my`. Component-tree shape: FLAT children, view-mode is a queryParams field, no Routes nesting.
+
+3. **Search (Convention C — server-side session)** — page-root composes `<Filters/>` + `<MainSearch/>` + `<Results/>`; first-mount dispatches `createDataEntitiesSearch` → `navigate(searchPath(searchId))`. The URL becomes `/search/{uuid}`; the UUID is just a state-handle to the server-side session row. Component-tree shape: FLAT children, view-state is in Redux + server-persisted; URL is a session pointer not a view-mode dispatcher.
+
+**The three component-tree shapes are now triangulated**: nested-Routes-per-tab (B) vs flat-children-with-queryParam (A) vs flat-children-with-session-UUID (C). A future maintainer can read THIS ADR and immediately know which component-tree shape to produce for a given view-mode dispatch choice.
+
+**Triangulation count after ZL**: 6 sidecars (was 3 — batch ZI route-modules: activity + relationships + search; ZL adds 3 page-root components: Alerts + Activity + Search).
+
+**Severity unchanged**: MEDIUM — pattern-shaping convention; component-tree confirmation tightens the ADR's reach across the codebase.
+
+**Coherence check** (LSN-018):
+- STRENGTHENS: ADR-CANDIDATE-227 (bare-base redirect — Alerts pattern confirmed); ADR-CANDIDATE-228 (routes-as-functions — all 3 page-roots consume path builders from `routes/`); ADR-CANDIDATE-245 NEW this batch (multi-tab Redux single-slot — applies to Alerts Convention B); ADR-CANDIDATE-052 (server-side search session — Convention C is its component-tree manifestation); ADR-CANDIDATE-091 (URL-as-source-of-truth — Convention A's queryParam IS the URL state).
+- SUPERSEDES: none.
+- CONFLICTS: none.
+
+---

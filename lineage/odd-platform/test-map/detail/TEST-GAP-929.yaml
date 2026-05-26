@@ -1,0 +1,54 @@
+gap_id: TEST-GAP-929
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - 'odd-platform java IdentityController controller-class:IdentityController'
+surfaced_by:
+  - 'odd-platform__java__IdentityController__controller-class__IdentityController.md:tests_coverage_semantic.uncovered_behaviours.[1]'
+  - 'odd-platform__java__IdentityController__controller-class__IdentityController.md:security.known_security_gaps.[3]'
+behaviour: |-
+  **Defence-in-depth assertion: the dummyOwner fallback is UNREACHABLE under
+  LOGIN_FORM / OAUTH2 / LDAP — every authenticated user must receive their REAL
+  principal name, never the literal "admin".** The invariant "switchIfEmpty
+  fallback never fires under authenticated modes" is the load-bearing security
+  boundary; if a future SecurityConfiguration change broke SecurityContext
+  propagation under any of the three authenticated modes, every user would
+  silently downgrade to receiving the dummyOwner admin-with-all-permissions
+  response, with NO 401/403 surfacing the failure. The LOGIN_FORM mode is
+  particularly insidious because GrantedAuthorityExtractor.getAuthorities(true)
+  already hard-codes every LOGIN_FORM user to ADMIN authority (TEST-GAP-244) —
+  a SecurityContext-loss bug under LOGIN_FORM would be VERY hard to detect from
+  response shape alone. Currently NO test asserts the unreachability invariant.
+test_class: security
+test_files_existing: []
+test_files_proposed:
+  - path: 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/IdentityControllerAuthMatrixTest.java'
+    name: 'underLoginForm_authenticatedUserAliceReceivesAliceUsername_neverAdminLiteral'
+  - path: 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/IdentityControllerAuthMatrixTest.java'
+    name: 'underOauth2_authenticatedUserReceivesPrincipalSubject_neverAdminLiteral'
+  - path: 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/IdentityControllerAuthMatrixTest.java'
+    name: 'underLdap_authenticatedUserReceivesLdapUid_neverAdminLiteral'
+  - path: 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/IdentityControllerAuthMatrixTest.java'
+    name: 'anyAuthenticatedMode_anonymousCallerIsRejectedBy302Or401_beforeReachingController'
+evidence:
+  - 'IdentityController.md says: "Under LOGIN_FORM / OAUTH2 / LDAP, an authenticated user alice hitting GET /api/identity/whoami receives 200 OK with identity.username=alice, NEVER admin"'
+  - 'IdentityController.java:27 (switchIfEmpty branch) + AuthIdentityProviderImpl.java:24-35 (the principal-resolution primitive) + LoginFormSecurityConfiguration.java:81 (every user is ADMIN — the dummy is also admin; a SecurityContext-loss bug here would be invisible by response shape alone)'
+  - 'Grep against test files for IdentityController: 0 matches'
+cross_references:
+  - 'TEST-GAP-928 (the positive-case sister — DISABLED returns admin; this is the defence-in-depth assertion that authenticated modes do NOT)'
+  - 'TEST-GAP-244 (LOGIN_FORM hard-codes every user to ADMIN — the masking problem this test addresses)'
+  - 'TEST-GAP-218 (REFACTOR-185 DISABLED meta — this finding is the regression-pin for the boundary)'
+  - 'REFACTOR-185'
+related_pillar_features:
+  - 'P-09:F-001 (Role-Based Access Control)'
+  - 'P-09:F-002 (Principal-to-Owner Resolution)'
+proposed_action: |-
+  In IdentityControllerAuthMatrixTest, add a four-fold defence-in-depth block:
+  (a) authenticated LOGIN_FORM user via formLogin → 200 with non-literal-admin
+  username; (b) authenticated OAUTH2 mock-token → 200 with provider-sub-as-username;
+  (c) authenticated LDAP basic-auth → 200 with LDAP uid; (d) anonymous call under
+  each of LOGIN_FORM/OAUTH2/LDAP → 302/401, never 200. The assertion shape:
+  `assertThat(response.identity.username).isNotEqualTo("admin")` plus a positive
+  match against the expected principal. A SecurityContext-loss regression
+  flips (a)/(b)/(c) to the literal admin string and the test fails.
+maintainer_curated: false

@@ -1,0 +1,177 @@
+name: List + Get Integration Wizard Manifests
+canonical_in_docs: true
+canonical_candidate: false
+pillar_affinity:
+- P-10
+description: |-
+  **NEW OPERATION, batch 2026-05-25-ZD** — the Integration Wizard
+  read surface. Two read-only endpoints on `IntegrationController`
+  serve the platform's classpath-loaded wizard manifest registry:
+
+    - `GET /api/integrations` (`getIntegrationPreviews`,
+      IntegrationController.java:25-27) — returns
+      `IntegrationPreviewList { items: IntegrationPreview[] }` with
+      `{id, name, description, installed}` per item. NO pagination,
+      NO query parameter. Returns the FULL registry contents in one
+      response.
+
+    - `GET /api/integrations/{integration_id}`
+      (`getIntegration`, IntegrationController.java:19-22) — returns
+      the full `Integration { preview + content_blocks[] }`. The id
+      is a free-form String path-parameter; lookups are
+      case-insensitive via the `TreeMap` comparator
+      `Comparator.comparing(String::toLowerCase)`.
+
+  ## Authorization
+
+  Both endpoints have NO `SECURITY_RULES` entry — there is no
+  `INTEGRATION_*` Permission anywhere in `PolicyPermissionDto` or
+  `SecurityConstants.java`. The endpoints fall through to
+  `AuthorizationCustomizer.customize`'s catch-all
+  `pathMatchers("/**").authenticated()` under LOGIN_FORM / OAUTH2 /
+  LDAP (any authenticated user reads the full registry), and to
+  `.anyExchange().permitAll()` under DISABLED (any network caller
+  reads anonymously).
+
+  The open-read posture is INTENTIONAL per implicit_adrs.[1]:
+  wizard manifests are not operator-sensitive — they are shipped
+  artefacts authored by integration authors for copy-paste collector
+  configuration. The architectural decision is consistent with the
+  parallel pattern of explicit SecurityRule entries for every
+  WRITE-shaped controller (Tag, Namespace, Term, Role, Policy,
+  Owner, DataSource, Collector all have SECURITY_RULES; pure-READ
+  Integration / AppInfo controllers do not).
+
+  ## Implementation chain
+
+  Controller is a thin two-line delegate per method:
+    - `getIntegration`:
+      `integrationService.get(id).map(ResponseEntity::ok)`
+    - `getIntegrationPreviews`:
+      `integrationService.listPreviews().map(ResponseEntity::ok)`
+
+  `IntegrationServiceImpl` delegates to `IntegrationRegistry` (the
+  read-only Map wrapper); the registry is `ResourceFilesIntegrationRegistry`
+  — a `TreeMap<String, IntegrationOverviewDto>` built once at boot
+  by `IntegrationRegistryFactory.createResourceFilesIntegrationRegistry`
+  scanning `classpath*:META-INF/wizard/*.yaml`. The mapper
+  (`IntegrationMapper`) interpolates a single static parameter
+  (`platform_url`) from `StaticArgumentMappingContext` into every
+  code-snippet `static_value` field with `parameter="platform_url"`.
+
+  ## Behavioural surprises
+
+  1. **Missing id returns 204, not 404** —
+     `Mono.justOrEmpty(registry.get(id))` returns `Mono.empty` on a
+     missing id; the `.map(integrationMapper::map)` short-circuits;
+     Spring WebFlux translates the empty Mono to 204 No Content.
+     The OpenAPI spec (openapi.yaml:75-81) declares only 200 — no
+     404 is contracted. Operators cannot distinguish 'wizard exists
+     but has empty body' from 'wizard does not exist'.
+
+  2. **Empty-registry default** — a default-checkout build of
+     `<odd-platform-repo>` has ZERO `META-INF/wizard/*.yaml` files;
+     the registry is empty; the response is `{items: []}`. Wizards
+     come from external classpath overlays (vendor jars, docker-image
+     overlays). The live wizard doc page does not warn that the
+     default-build state is empty.
+
+  3. **No pagination** — the list endpoint returns the full
+     registry contents in one response. With N wizards, response
+     body grows O(N). For typical N < 50 this is fine; for an
+     enterprise deployment with 100+ wizards the response payload
+     is unbounded.
+
+  4. **Case-insensitive id collision (last-wins)** — the TreeMap
+     comparator + merge function `(o1, o2) -> o2` collapses two
+     wizards with same-lowercased ids into ONE entry; the
+     later-loaded survives. Load order depends on jar order; the
+     resolution is non-deterministic across deployments.
+
+  5. **Boot-time fail-fast on malformed YAML** — a single corrupt
+     wizard YAML in any overlay jar takes the entire application
+     context construction down at boot with
+     `IllegalStateException("Couldn't read wizard manifest: %s")`.
+     No skip-broken-and-continue.
+
+  6. **`installed: false` hardcoded constant** — every response
+     element has `installed: false`; the UI's "Integrated" badge
+     conditional render at `IntegrationPreviewItem.tsx:44-51`
+     never fires.
+
+  7. **`platform_url` placeholder by default** — the default value
+     `http://your.odd.platform` (StaticArgumentMappingContext.java:16)
+     is rendered into every wizard code snippet when
+     `odd.platform-base-url` is unset (application.yml:209 is
+     commented out). Operators copy-pasting wizard snippets without
+     setting the override would point their collector at a
+     non-existent host.
+
+  ## Audiences
+
+  - Platform operators visiting Management → Integrations
+    (`/management/integrations` UI route per `managementRoutes.ts:7`)
+  - Integration authors / custom-collector developers (who supply
+    the wizard YAMLs)
+  - Direct REST API consumers reading the OpenAPI spec
+  - Under DISABLED — any anonymous network caller
+axes_present:
+- controllers
+nodes:
+- odd-platform java IntegrationController controller-class:IntegrationController
+contributors:
+- 'IntegrationController.md (batch ZD class-level sidecar): understanding +
+  concepts.operations + invariants + bugs_limitations_corner_cases +
+  stress_findings + dependencies_semantic'
+evidence:
+- 'IntegrationController.java:19-27 (the two endpoints)'
+- 'IntegrationServiceImpl.java:12-29 (the service-tier delegation)'
+- 'IntegrationRegistryFactory.java:24-61 (the classpath-scan + TreeMap
+  construction)'
+- 'ResourceFilesIntegrationRegistry.java:15-22 (the read-only Map wrapper)'
+- 'IntegrationMapper.java:23-50 (the static-parameter substitution mapper)'
+- 'StaticArgumentMappingContext.java:10-25 (the platform_url substitution
+  context)'
+- 'openapi.yaml:51-84 (the spec — declares only 200 responses; no 404)'
+- WebFetch 2026-05-25 status 200 against
+  `/integrations/integrations/integration-wizard` +
+  `/integrations/integrations` + `/developer-guides/api-reference/integrations`
+related_features:
+- F-001
+related_pillar_features:
+- P-10
+related_concepts:
+- 'entitie:integration-wizard-manifest-classpath-meta-inf-yaml (the wizard
+  YAML manifest entity this operation reads)'
+- 'entitie:static-argument-mapping-context-platform-url-substitution (the
+  platform_url substitution context the mapper consumes)'
+- 'invariant:integration-wizard-no-rbac-permission-open-read-posture (the
+  open-read posture this operation embodies)'
+- 'invariant:integration-installed-field-hardcoded-false-dead-ui-badge
+  (the structurally-dead installed boolean)'
+- 'invariant:integration-wizard-204-on-missing-id-not-404-silent-empty
+  (the missing-id 204 vs 404 contract gap)'
+- 'invariant:integration-wizard-boot-fail-fast-on-malformed-yaml (the
+  single-corrupt-yaml-aborts-boot invariant)'
+- 'invariant:integration-wizard-case-insensitive-id-collision-last-wins
+  (the TreeMap merge-function silent collision)'
+notes: |-
+  NEW operation captured in batch 2026-05-25-ZD. The Integration
+  Wizard surface is the operator-facing copy-paste tool for
+  collector configuration. Three live doc pages cover it:
+    - /integrations/integrations/integration-wizard (mechanism)
+    - /integrations/integrations (overview)
+    - /developer-guides/api-reference/integrations (API ref)
+
+  All three are silent on:
+    - The auth posture (open-read across all modes including
+      anonymous DISABLED)
+    - The 204-on-missing-id behaviour
+    - The empty-registry default-build state
+    - The `installed: false` hardcoded constant
+    - The case-insensitive id collision
+    - The boot-time fail-fast on malformed YAML
+
+  DOC-NNN candidates for each. The wizard doc page is the
+  canonical home for the mechanism caveats; the api-reference
+  page is the canonical home for the HTTP status/auth caveats.

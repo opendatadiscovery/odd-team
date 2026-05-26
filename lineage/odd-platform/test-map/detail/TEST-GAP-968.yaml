@@ -1,0 +1,65 @@
+gap_id: TEST-GAP-968
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DataCollaborationController controller-class:DataCollaborationController"
+pillars_affected: [P-07]
+surfaced_by:
+  - "DataCollaborationController__controller-class.md:tests_coverage_semantic.uncovered_behaviours.[3]"
+  - "DataCollaborationController__controller-class.md:concepts.invariants.[6]"
+  - "DataCollaborationController__controller-class.md:docs_link_semantic.doc_drift_findings.[4]"
+behaviour: |-
+  **MEDIUM — `GET /api/datacollaboration/providers/slack/channels` is fronted by a 1-minute TTL Caffeine cache with `maximumSize(1)` and `expireAfterWrite(1, MINUTES)` keyed on a fixed sentinel string. A freshly-invited bot-channel is invisible to the autocomplete for up to 60 seconds; the staleness contract is undocumented.**
+
+  Verified at primary source: `SlackMessageProviderClient.java:36-44`:
+  ```java
+  this.cache = Caffeine.newBuilder()
+      .maximumSize(1)
+      .expireAfterWrite(Duration.ofMinutes(1))
+      .buildAsync((key, executor) -> slackAPIClient.getSlackChannels());
+  ```
+
+  **Operator workflow consequence**:
+  1. Operator invites the ODD platform bot to `#new-channel` via Slack.
+  2. Operator immediately switches to ODD platform UI and tries to post a message in `#new-channel` via the Discussions tab.
+  3. The Slack channels autocomplete does NOT show `#new-channel` — the platform still serves the cached pre-invite channel set.
+  4. Operator waits 60 seconds → invites the bot to additional channels in the meantime → continues to see stale list.
+  5. Eventually the cache expires; the autocomplete refreshes.
+  6. Operator perceives the autocomplete as "broken" (because there's no documentation explaining the 60-second propagation delay).
+
+  Combined with TEST-GAP-967 (startsWith filter drift), the autocomplete UX is doubly opaque: even when the cache refreshes, the user must guess the prefix to find the channel.
+
+  **The cache is shared across ALL callers** (single-entry, sentinel-keyed): every request for any `channel_name` hits the same cached channel set. There's no per-caller cache, no cache-bypass query param.
+
+  **Why MEDIUM (not LOW)**:
+  - The staleness window (60s) is short enough that most operators eventually succeed.
+  - But the staleness is UNDOCUMENTED at the live api-reference page (per sidecar's doc_drift_findings.[4]).
+  - Cache-poisoning class concern: if a transient Slack API failure populates the cache with a partial channel set, the 60s window magnifies the operator confusion.
+
+  **Distinguishes**: no prior TEST-GAP covers this cache behaviour.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/datacollaboration/DataCollaborationControllerSlackChannelsCacheTTLTest.java"
+  name: "get_slackChannels_freshlyInvitedBotChannel_invisibleFor60Seconds_pinsCacheTTLContract"
+evidence:
+  - 'DataCollaborationController.md says (tests_coverage_semantic.uncovered_behaviours.[3]): ''`getSlackChannels` cache staleness — invite the bot to a new channel; assert it does NOT appear in the response within 1 second; assert it DOES appear after 60+ seconds'' (criticality MEDIUM)'
+  - 'DataCollaborationController.md says (concepts.invariants.[6]): ''The 1-minute Caffeine cache fronts the Slack channel listing — SlackMessageProviderClient.java:38-44 (maximumSize(1), expireAfterWrite(1, MINUTES)); fresh invites are invisible for up to 60 seconds'''
+  - 'DataCollaborationController.md says (docs_link_semantic.doc_drift_findings.[4]): ''Live api-reference does not state the 1-minute Caffeine cache TTL for the channel list — a user who just invited the bot to a new channel expects to see it immediately'' (severity LOW)'
+  - "Verified at primary source: SlackMessageProviderClient.java:36-44"
+cross_references:
+  - "TEST-GAP-967 (sister this batch — same endpoint, startsWith filter drift)"
+  - "DOC-GAP-NNN-candidate (live api-reference must document the 60s staleness window)"
+  - "F-022 (Data Collaboration / Discussions sub-feature)"
+related_features: [F-022]
+related_pillar_features: ["P-07:F-NNN Data Collaboration (Discussions)"]
+proposed_action: |-
+  Add `DataCollaborationControllerSlackChannelsCacheTTLTest`:
+
+  1. `get_slackChannels_freshlyInvitedChannelAfterWarmCache_invisibleWithinOneSecond_pinsCacheStaleness` — warm the cache with mock SlackAPIClient returning channel set [A, B]; immediately add channel C to the mock's return set; query the controller; assert response contains only [A, B], NOT C.
+  2. `get_slackChannels_after60Seconds_cacheExpired_returnsFreshChannelSet` — same setup; advance Caffeine ticker by 61 seconds; query the controller; assert response contains [A, B, C].
+  3. `get_slackChannels_cacheKeyIsSentinel_anyChannelNameQueryReturnsSameCachedSet` — query the controller with different channel_name params; assert SlackAPIClient.getSlackChannels was invoked exactly ONCE (the cache key is sentinel-fixed, not per-query).
+  4. Pair with DOC-GAP-NNN-candidate (live api-reference must document the cache TTL).
+
+  Coherence note (LSN-018 Rule 6): NET-NEW.
+batch: 2026-05-25-ZF
+feature_id: F-022

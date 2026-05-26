@@ -1,0 +1,96 @@
+---
+probe_id: P-124
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__IdentityController__controller-class__IdentityController.md
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: security
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category C — cache-control posture across login state):
+  `IdentityController.whoami` returns `ResponseEntity.ok(...)` (line 26) or
+  `new ResponseEntity<>(dummyOwner(), HttpStatus.OK)` (line 27) without setting
+  any cache-control headers. The controller writes no `Cache-Control: no-store`,
+  no `Pragma: no-cache`, no `Expires: 0`. The response body contains a
+  user-identifying principal name + the user's permission set — i.e., it is the most
+  user-specific response body on the API surface. Hypothesis: the response is
+  cacheable by any HTTP intermediary by default (HTTP/1.1 caching rules treat
+  cookie-bearing 200 responses as cacheable unless explicitly forbidden). If a
+  shared cache (NGINX proxy, browser back/forward cache, mobile carrier CDN)
+  caches the response keyed on URL alone, the next caller hitting `/api/identity/whoami`
+  may receive the previous caller's identity body. The probe asserts: (a) no
+  Cache-Control header is present in the application's emitted response; (b) Spring
+  Boot's WebFlux autoconfiguration does NOT inject a default `Cache-Control: no-store`
+  for this path (some Spring Security configurations do — verify the behaviour
+  per auth mode); (c) compare against the cache-control posture of other identity-
+  bearing endpoints (`/api/owners/me` if one exists, the OwnerAssociation request
+  endpoint, etc.) to confirm whether the absence is system-wide or specific to
+  IdentityController.
+---
+arrange:
+  - kind: docker-compose-up
+    config: |
+      auth.type: LOGIN_FORM
+      auth.login-form-credentials: "alice:password,bob:password"
+      auth.ingestion.filter.enabled: false
+act:
+  - kind: rest
+    method: POST
+    path: /login
+    body: "username=alice&password=password"
+    content_type: application/x-www-form-urlencoded
+    capture_session_cookie_as: alice_cookie
+  - kind: rest
+    method: GET
+    path: /api/identity/whoami
+    headers:
+      Cookie: "${alice_cookie}"
+    capture_response_headers_as: alice_headers
+  - kind: rest
+    method: POST
+    path: /login
+    body: "username=bob&password=password"
+    content_type: application/x-www-form-urlencoded
+    capture_session_cookie_as: bob_cookie
+  - kind: rest
+    method: GET
+    path: /api/identity/whoami
+    headers:
+      Cookie: "${bob_cookie}"
+    capture_response_headers_as: bob_headers
+assert:
+  # primary — assert what the application emits (regardless of what NGINX would inject)
+  - "alice_headers['Cache-Control'] is null OR alice_headers['Cache-Control'] does NOT contain 'no-store'"
+  # comparative — Spring Security's stock no-cache filter for authenticated responses MAY have
+  # set a header; assert whether it did or not (informational, NOT a pass/fail)
+  - "INFO: alice_headers['Cache-Control'] value is recorded for the doc-drift finding"
+  - "INFO: alice_headers['Pragma'] value is recorded"
+  - "INFO: bob_headers['Cache-Control'] value is recorded — should match alice_headers"
+  # cross-check: response body content
+  - "alice_response.body.identity.username == 'alice'"
+  - "bob_response.body.identity.username == 'bob'"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__IdentityController__controller-class__IdentityController
+    - odd-platform__java__LoginFormSecurityConfiguration__config-class__LoginFormSecurityConfiguration
+  retrospectives: []
+  refactoring_scopes: []
+realism_caveats: |
+  The probe is observational, not pass/fail-only — the goal is to RECORD the
+  cache-control header value the application emits under each auth mode, so the
+  maintainer can decide whether to add an explicit `Cache-Control: no-store` to
+  this endpoint (the safe-default for identity-bearing responses). Spring Security's
+  default `WebFluxSecurityHeadersConfiguration` may already inject
+  `Cache-Control: no-cache, no-store, max-age=0, must-revalidate` when the security
+  chain is active — but under DISABLED mode (probe P-122), no security chain runs,
+  so this default is NOT applied. The probe does NOT cover: (a) the actual HTTP/1.1
+  cache-control behaviour of a real intermediate (browser cache, NGINX); (b) the
+  ETag / Last-Modified posture (none — the controller does not set these); (c)
+  whether a logout (session invalidation) is followed by a stale-cached identity
+  response on the next /whoami call from the same client.

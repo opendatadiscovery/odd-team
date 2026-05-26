@@ -1,0 +1,56 @@
+gap_id: TEST-GAP-973
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java OwnerController controller-class:OwnerController"
+pillars_affected: [P-08, P-11]
+surfaced_by:
+  - "OwnerController__controller-class.md:bugs_limitations_corner_cases.[3]"
+  - "OwnerController__controller-class.md:docs_link_semantic.doc_drift_findings.[3]"
+  - "OwnerController__controller-class.md:stress_findings.request_inputs.[1].q[2]"
+behaviour: |-
+  **MEDIUM — `GET /api/owners?allowedForSync=<true|false>` query parameter name TRANSLATES_SILENTLY: the param name implies 'eligible for synchronization' but the actual SQL predicate is 'has-or-has-not a row in owner_association_request' (the LEFT JOIN's presence/absence). Whether 'allowed for sync' equals 'has an APPROVED request' or 'has any request' or 'has no request' is not derivable from the parameter name. The OpenAPI spec has no description (only type: boolean); the live `/owners` doc page is silent.**
+
+  Verified at primary source: `OwnerController.java:34` (the parameter) + `openapi.yaml:140-144` (spec with no description) + the ReactiveOwnerRepositoryImpl sidecar's analysis of `enrichSelect`'s LEFT JOIN on `owner_association_request` + WebFetch live `/owners` doc 2026-05-25 status 200 (verified silent).
+
+  **What the parameter actually does**:
+  - The implementation forwards to `ownerService.list(page, size, query, ids, allowedForSync)` (line 36) → `ReactiveOwnerRepositoryImpl.list` applies the paginate-wrapper + name-LIKE + ID-IN + LEFT JOIN on `owner_association_request` filters.
+  - The semantic the UI's `OwnerSelect` autocomplete RELIES ON (per OwnersList batch-Q sidecar) — but this dependency is undocumented at the API contract level.
+  - An API consumer outside the UI cannot determine which interpretation is in effect.
+
+  **Operator-visible consequence**:
+  - Operator querying `allowedForSync=true` expecting 'owners eligible to be sync'd with a user account' may receive owners who have a PENDING/DECLINED owner_association_request (semantically 'has a request, not yet eligible') — OR the inverse (filtered out as 'has a request, not eligible because still pending').
+  - The mismatch is silent: the API returns SOME set of owners with NO indication of how they were filtered.
+  - Combined with TEST-GAP-962 (GET unauthenticated read), the parameter becomes a partial-info-leak: an attacker can probe which Owners have / don't have association requests by alternating `allowedForSync=true|false`.
+
+  **Why MEDIUM**: not a data-loss / security concern at this size; documentation concern. But the parameter is the load-bearing semantic input for the UI's user-owner association flow.
+
+  **Distinguishes**:
+  - TEST-GAP-962 (HIGH this batch) — same endpoint, different concern (auth posture).
+  - No prior TEST-GAP covers the parameter-name-vs-implementation drift specifically.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/owner/OwnerControllerGetListAllowedForSyncSemanticsTest.java"
+  name: "get_apiOwners_allowedForSyncTrue_returnsOwnersWithoutAssociationRequest_pinsActualPredicate"
+evidence:
+  - 'OwnerController.md says (bugs_limitations_corner_cases.[3]): ''`getOwnerList`''''s `allowedForSync` query parameter is operator-opaque — the parameter (OwnerController.java:34) shapes the query to filter for owners eligible for DIRECT_OWNER_SYNC ... The OpenAPI spec describes it as `type: boolean` (openapi.yaml:140-144) but provides no description; the live /owners doc page is silent on what allowedForSync=true returns vs allowedForSync=false vs absent. From the parameter name alone, an operator cannot determine whether `true` means ''''eligible to be sync''''d'''' or ''''currently sync''''d'''' or ''''has-an-association-request'''''' (severity LOW)'
+  - 'OwnerController.md says (stress_findings.request_inputs.[1].q[2]): ''page/size/query/ids: MATCHES. allowedForSync: TRANSLATES_SILENTLY — the name implies ''''eligible for sync'''' but the actual SQL predicate is ''''has-or-has-not an owner_association_request row'''' (the LEFT JOIN on owner_association_request); whether ''''eligible'''' equals ''''has an APPROVED request'''' or ''''has any request'''' or ''''has no request'''' is not derivable from the parameter name'' (drift: DRIFT_INPUT_NAME_VS_IMPLEMENTATION)'
+  - "Verified at primary source: OwnerController.java:34 (parameter) + openapi.yaml:140-144 (spec no description) + ReactiveOwnerRepositoryImpl repository-tier sidecar reference"
+cross_references:
+  - "TEST-GAP-962 (HIGH sister this batch — same endpoint, auth posture)"
+  - "DOC-GAP-NNN-candidate (live /owners doc page MUST describe allowedForSync semantics; openapi.yaml MUST add a description field)"
+  - "F-019 (Owner Lifecycle Management)"
+  - "F-011 (Principal-to-Owner Resolution — the user-owner association flow that consumes this parameter)"
+related_features: [F-019, F-011]
+related_pillar_features: ["P-08:F-003 Owner Lifecycle Management (F-019)", "P-09:F-002 Principal-to-Owner Resolution (F-011)", "P-11:Platform API & Developer Surface"]
+proposed_action: |-
+  Add `OwnerControllerGetListAllowedForSyncSemanticsTest`:
+
+  1. `get_apiOwners_allowedForSyncTrue_returnsOwnersWithoutAssociationRequest_pinsActualPredicate` — seed 3 owners: A (no request), B (PENDING request), C (APPROVED request); query `allowedForSync=true`; assert response contains [A] only (or whatever the actual predicate produces). Comment: '// REGRESSION-PIN — the parameter semantics are not documented; this test pins the current SQL predicate so a refactor changing the LEFT JOIN polarity surfaces deliberately.'
+  2. `get_apiOwners_allowedForSyncFalse_returnsOwnersWithAssociationRequest_pinsActualPredicate` — same seed; query `allowedForSync=false`; assert response contains [B, C].
+  3. `get_apiOwners_allowedForSyncAbsent_returnsAllOwners_pinsAbsentBehaviour` — same seed; query without the param; assert response contains [A, B, C].
+  4. Pair with DOC-GAP-NNN-candidate (live docs + openapi.yaml must describe the semantics).
+
+  Coherence note (LSN-018 Rule 6): NET-NEW.
+batch: 2026-05-25-ZF
+feature_id: F-019

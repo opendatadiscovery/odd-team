@@ -68,3 +68,35 @@ Also composes with:
 **Suggested backlog grouping**: `UI architecture codification` + `Authorization audit batch`.
 
 ---
+
+
+## STRENGTHENS — Batch ZL (2026-05-26 — DataModelling QueryExamples Add + LookupTables Add + Search DEG-Create CTA all confirm the partial UI permission gating pattern)
+
+Batch ZL surfaces three more instances of the partial UI permission gating pattern across distinct features: each surface uses `<WithPermissions>` around ONLY a mutation affordance (Add button), with the CONTENT (list, details, descriptions) rendered unconditionally.
+
+**New surfaced_by entries**:
+
+- `odd-platform__ts__react-component__component__LookupTables.md:implicit_adrs[1]` (HIGH) — "The Add-new button is gated by `LOOKUP_TABLE_CREATE` alone, not by `LOOKUP_TABLE_CREATE` AND a parent resource — implies lookup-table creation has no per-parent ownership gate (any user with global CREATE permission can create in any namespace)." — `<WithPermissions permissionTo={Permission.LOOKUP_TABLE_CREATE}>` wraps the +Add new button at LookupTables.tsx:72-82; the rest of the page (counter, search, list) renders unconditionally for any authenticated user.
+
+- `odd-platform__ts__react-component__component__Search.md:implicit_adrs[1]` (HIGH) — "**Permission-gated DEG-Create CTA via WithPermissions (UI hide, NOT auth enforcement) — pattern parity with TermSearch batch-U + PolicyList batch-Q.** Lines 81-85 + Results.tsx:125-138. The decision is: render-nothing rather than render-disabled when permission absent. ... `<Results/>` mounts unconditionally; only the conditionally-rendered 'Add group' button (Results.tsx:125-138) is permission-gated AND class-tab-gated (`showDEGBtn`). ... The read surface is wide open to authenticated users."
+
+- `odd-platform__ts__react-component__component__DataModelling.md:dependencies_semantic.requires-feature[2]` (HIGH) — Inner `<DataModellingRoutes/>` declares `<WithPermissionsProvider allowedPermissions={[QUERY_EXAMPLE_CREATE]}>` around the `query-examples` route, but this is CONTEXT-SEED only (not a render-block); the actual Add-button gate is at `QueryExamples.tsx:36-46` via `<WithPermissions permissionTo={Permission.QUERY_EXAMPLE_CREATE}>`. The pattern matches: route renders unconditionally; only the Add button is gated.
+
+**What this strengthening adds**: the prior support spanned the DataEntity description Edit + Popular Add + Lineage Add patterns. Batch ZL adds THREE more feature surfaces (LookupTables Add + Search DEG-Create + DataModelling QueryExamples Add), with three observable extensions:
+
+1. **The pattern is CROSS-PILLAR** — recurs across Master Data, Data Discovery (Catalog), Data Modelling. Six feature surfaces now confirm.
+
+2. **The pattern composes with route-level `WithPermissionsProvider`** — the route mount sometimes WRAPS the route's element in `<WithPermissionsProvider>` (LookupTables route at App.tsx:75-87; DataModellingRoutes for query-examples) which SEEDS permission context for the wrapped subtree but does NOT block rendering. The PER-BUTTON `<WithPermissions>` is what actually hides the button. The two are deliberately separated: Provider is context, Consumer is gate.
+
+3. **The empty-state surface is shared across permission profiles** — operators without `*_CREATE` permission see the list page, the counter, the search input — but no Add button. This is the deliberate UX: render-nothing-rather-than-render-disabled, consistent across all six confirmed surfaces.
+
+**Triangulation count after ZL**: 6 sidecars / 6 features (was 3; ZL adds 3 — LookupTables Add + Search DEG-Create + DataModelling QueryExamples Add).
+
+**Severity unchanged**: HIGH — pattern is operator-visible across 6 features now; the read-collaborative + permission-gated-mutation shape is the canonical UI authz contract.
+
+**Coherence check** (LSN-018):
+- STRENGTHENS: ADR-CANDIDATE-088 (Permission framework — React Context); ADR-CANDIDATE-229 (WithPermissionsProvider context-seed-only); ADR-CANDIDATE-003 (Read-collaborative posture — content renders unconditionally); ADR-CANDIDATE-246 NEW this batch (modal-dialog form mount — the gated Add button opens the modal-dialog form).
+- SUPERSEDES: none.
+- CONFLICTS: none.
+
+---

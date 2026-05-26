@@ -359,6 +359,194 @@ batch_extensions:
     Cross-batch coherence: STRENGTHENS REFACTOR-427 + the `getOrCreate`
     side-door + adds the audit-positive-half contrast that anchors the
     2-tier audit story at F-006. NO conflicts; NO supersedes.
+- batch: ZF
+  entry_point_added: |-
+    controller-class:OwnerController — the CONTROLLER-CLASS ENCLOSING
+    ROOF of F-019's 5-layer triangulation (UI OwnersList → controller-class
+    OwnerController → method-tier createOwner/updateOwner/deleteOwner →
+    service-tier OwnerServiceImpl → repository-tier
+    ReactiveOwnerRepositoryImpl + ReactiveOwnerToRoleRepositoryImpl).
+    Every drift facet surfaced at the method-tier (REFACTOR-425 through
+    REFACTOR-432 plus REFACTOR-185 instances) is reachable from this
+    class — it is the THIN PROXY through which all four operator verbs
+    flow. The class-level scope adds TWO findings that no single
+    method sidecar captures alone: (a) the GET-list endpoint has NO
+    SecurityRule entry — any authenticated user enumerates the full
+    Owner directory; (b) the OwnerService.getOrCreate SIDE-CHANNEL
+    is called from THREE separate service-tier callers and effectively
+    BYPASSES the OWNER_CREATE permission gate because the SecurityRule
+    is anchored on the controller PATH, not on the service method.
+  contributing_nodes_added:
+  - odd-platform java OwnerController controller-class:OwnerController
+  notes: |-
+    THREE new class-level findings + ONE strengthens-by-consolidation
+    on existing F-019 facets. Listed in descending architectural
+    leverage:
+
+    (1) OWNER_CREATE PERMISSION SIDE-DOOR VIA getOrCreate FROM THREE
+    SERVICE-TIER CALLSITES (HIGH severity, NEW FINDING) —
+    OwnerServiceImpl.java:38-42 (`getOrCreate` impl: getByName →
+    switchIfEmpty → create) is reached from THREE separate callers,
+    each gated by a DIFFERENT permission:
+    (a) OwnerAssociationRequestServiceImpl.java:57 via
+        `POST /api/owner_association_request` — verified via Grep that
+        this POST path is NOT in SecurityConstants.SECURITY_RULES;
+        reachable by ANY AUTHENTICATED USER (similar to getOwnerList);
+    (b) OwnershipServiceImpl.java:52 via
+        `POST /api/dataentities/{data_entity_id}/ownerships` — gated
+        by DATA_ENTITY_OWNERSHIP_CREATE per SecurityConstants;
+    (c) TermOwnershipServiceImpl.java:35 via
+        `POST /api/terms/{term_id}/ownerships` — analogous gating.
+    A caller holding only DATA_ENTITY_OWNERSHIP_CREATE (or just
+    authenticated for the association-request POST) can supply a
+    never-seen `ownerName`, the service `getOrCreate` silently inserts
+    a new row into OWNER, and the new Owner appears in
+    `GET /api/owners` immediately. **The Owner directory is writable
+    from THREE permission paths, only ONE of which is documented at
+    the live `/permissions` page** (WebFetched 2026-05-25 status 200 —
+    OWNER_CREATE: "Allows creating a new owner entity." Permissions
+    page is silent on the side-channel). Combined with the no-@ActivityLog
+    finding (REFACTOR-426), the side-channel writes are also
+    audit-silent. Operator-visible consequence: a caller without
+    OWNER_CREATE can spam the Owner directory with arbitrary names.
+    Cross-link to F-006 (RBAC) — the side-door is the negative
+    counterpoint to F-019's positive owner_to_role hard-delete cascade
+    closure. NEW drift facet:
+    `owner_create_permission_side_door_via_getorcreate_three_service_tier_callsites`.
+
+    (2) GET /api/owners IS UNAUTHENTICATED-READ AT THE RULE LAYER
+    (MEDIUM severity, CLASS-LEVEL CONSOLIDATION) —
+    SecurityConstants.SECURITY_RULES[143-147] registers POST + PUT +
+    DELETE against `/api/owners*`; the GET `/api/owners` path has NO
+    rule (verified by Grep `/api/owners` against SecurityConstants.java
+    2026-05-25 — exactly four mutation-path matches, zero GET matches).
+    `getOwnerList` (OwnerController.java:30-38) has no `@PreAuthorize`,
+    no programmatic auth check, no SecurityRule. Any authenticated
+    user under LOGIN_FORM/OAUTH2/LDAP can enumerate the entire Owner
+    directory, including names that may carry PII (e.g.
+    `alice@acme.com`, `[Pseudonymous Researcher]`, internal team-name
+    strings); under `auth.type=DISABLED` the endpoint is anonymously
+    reachable. Consistent with the read-collaborative posture
+    (ADR-CANDIDATE-003) but NOT documented in either the live
+    `/owners` or `/permissions` doc pages (WebFetched 2026-05-25 —
+    both silent). For a small platform team this is benign; for a
+    public-facing deployment hosting personally-named owners this is
+    an information-disclosure surface. STRENGTHENS the existing F-019
+    `per_owner_authorization_scoping_absent_global_owner_crud_permission`
+    facet — the GET path is the read counterpoint to the global
+    mutation permissions. NEW drift facet:
+    `get_owner_list_unauthenticated_read_no_owner_read_permission_in_catalog`.
+
+    (3) OPENAPI-vs-IMPL STATUS-CODE DRIFT IS CLASS-WIDE ON BOTH
+    MUTATING-CREATE/UPDATE METHODS (MEDIUM severity, CLASS-LEVEL
+    CONSOLIDATION) — createOwner declares 201 returns 200
+    (openapi.yaml:165-171 vs OwnerController.java:26); updateOwner
+    declares 201 returns 200 (openapi.yaml:195-201 vs
+    OwnerController.java:53); deleteOwner declares 204 returns 204
+    (align); getOwnerList declares 200 returns 200 (align). The class
+    exhibits the drift on BOTH of its 201-declaring methods
+    consistently — this is a class-wide inconsistency, not a per-method
+    oversight. Sibling controllers (`PolicyController`,
+    `RoleController`, `TagController`) show the same drift pattern
+    per the F-006 batch sidecars — platform-wide. STRENGTHENS the
+    existing F-019 `openapi_201_vs_impl_200_class_wide_create_and_update`
+    facet with primary-source class-level enumeration.
+
+    (4) FOUR-METHOD CONTROLLER WITH NO @Slf4j, NO LOGGING, NO
+    OBSERVABILITY (LOW severity, NEW FINDING) — OwnerController.java
+    has no `@Slf4j` annotation (verified read 2026-05-25); no
+    `info`/`debug`/`warn`/`error` calls in any of the four method
+    bodies (lines 21-54); no MDC enrichment. The only operator-visible
+    trace of an Owner CRUD operation is the default Spring access log
+    + the downstream service-tier logging (verified zero matches for
+    `private static final.*Logger` against OwnerServiceImpl.java). A
+    regression returning the wrong owner or failing silently surfaces
+    only as a 5xx in the access log; the caller's identity and request
+    payload are not in the application log. Combined with the
+    no-@ActivityLog finding (REFACTOR-426) and the no-OPERATOR-AUDIT
+    finding at the UI tier (batch Q OwnersList sidecar), the entire
+    Owner-lifecycle is forensically silent at EVERY observability
+    layer. NEW drift facet:
+    `owner_controller_no_slf4j_no_logging_no_observability_class_level`.
+
+    Coherence: STRENGTHENS batches E (createOwner method-tier) + P
+    (updateOwner + deleteOwner method-tier) + Q (OwnersList UI-tier) +
+    S (OwnerServiceImpl service-tier) + V (Owner-LSN-018-coherence
+    batch). NO contradictions surfaced. ONE NEW HIGH-SEVERITY FINDING
+    (the getOrCreate side-door is a class-level concern that no
+    method-tier sidecar surfaces alone). Pre-emit Rule-6 cross-registry
+    check: getOrCreate side-channel matches NO existing concept ID
+    (verified Grep) — surfaces as a new candidate for concept-merger
+    + adr-archaeologist (ADR-CANDIDATE-NNN: "service-tier auto-create
+    convention bypasses controller-level permission gates"). The
+    GET-list read-collaborative finding STRENGTHENS ADR-CANDIDATE-003.
+
+- batch: ZH
+  entry_point_added: |-
+    route-module:routes/managementRoutes.ts — the URL-shape contract for the
+    Management catch-all admin surface. Declares `BASE_PATH = '/management'`
+    + a frozen `ManagementRoutes` literal map of NINE sub-route names
+    (namespaces / datasources / integrations / collectors / owners / tags /
+    associations / roles / policies). Exposes `managementPath(path?)`,
+    `AssociationsRoutes` + `associationsPath(path)`, `integrationsPath(integrationId, path?)`,
+    and the `useIntegrationRouteParams()` hook. The "Owners" sub-route declared
+    in this module is the route-tier surface where the F-019 OwnersList UI
+    component mounts.
+  contributing_nodes_added:
+  - odd-platform ts routes route:management
+  notes: |-
+    hop-0 (UI route module) PRIMARY-SOURCE resolved this batch via the
+    batch-ZH management route sidecar. The route module is the CATCH-ALL
+    URL contract for nine admin-tier sub-areas including F-019's Owners
+    sub-route. The route-tier corroborates the HEADLINE finding cluster:
+
+    (a) **Management route surface mounted at App.tsx:62 has NO route-level
+    permission guard** (route sidecar security.known_security_gaps[0],
+    HIGH severity; emitted probe P-162). The outer `<WithPermissionsProvider
+    allowedPermissions={[OWNER_ASSOCIATION_MANAGE]}>` at Management.tsx:9-12
+    provides a permission CONTEXT to descendants but does NOT block rendering
+    (WithPermissionsProvider.tsx:30-39, 41-48 returns children unconditionally).
+    The per-sub-route `<WithPermissionsProvider>` wrappers in
+    ManagementRoutes.tsx behave identically — context publishers, not gates.
+    Any authenticated user — including a minimum-privilege user with zero
+    Management-tier permissions — can navigate to `/management/owners` and
+    see the rendered list; the lists are fetched (per F-019's batch-Q
+    OwnersList finding — `OwnersList` fires the listOwners thunk
+    unconditionally on mount). The ONLY hidden affordances are the
+    create/update/delete BUTTONS, gated by `<WithPermissions>` wrappers
+    inside the list. NEW route-tier corroboration facet:
+    `management_route_no_top_level_guard_owners_subroute_open_for_read_to_any_authenticated_user`.
+
+    (b) **Permission docs do not relate to UI route surface** (route sidecar
+    docs_link_semantic.inferred_docs LOW confidence + doc_drift_findings[0]).
+    The Authorization page
+    (`https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization`)
+    enumerates Policies, Permissions, Roles, Owners, User-owner association
+    but DOES NOT mention a `/management` URL, the Management UI, or per-tab
+    vs per-section permission gating. Operators forming the mental model
+    "Management is admin-only" from the docs find the code contradicts it
+    (any authenticated user reads the full Owner/Role/Policy/Namespace/Tag/Collector/
+    DataSource/Integration catalogs; only Associations is admin-only via
+    `<RestrictedRoute>` at ManagementRoutes.tsx:101-110). This is a
+    Cornerstone-3 (caveat capture) finding for both the Permissions doc
+    page and a missing Management UI doc.
+
+    Coherence sweep STRENGTHENS=3:
+    - F-019 `disabled_mode_anonymous_reach_destructive_verb` — route-tier
+      corroborates: under auth.type=DISABLED, the Management /owners route
+      is reachable anonymously (App.tsx:62 + Management.tsx + ManagementRoutes.tsx
+      have no auth predicates); the destructive verb is reachable via the
+      affordance hidden only by the per-button `WithPermissions` wrappers
+      (which still render the form to any caller).
+    - F-019 `owner_lifecycle_audit_silence_six_sidecar_ui_tier_corroboration` —
+      extended: the route-tier is the SEVENTH sidecar of the audit-silence
+      pattern (controllers + service + UI + repo + RBAC half + UI list ALL
+      forensically silent on Owner mutations).
+    - F-019 `empty_roles_destructive_update_reachable_from_ui_in_three_clicks` —
+      the route layer is the first hop in the click path; the route module
+      itself is functionally innocent but its lack of route-level gating
+      is the necessary precondition for the three-click reachability.
+
 discovered_from_entry_point: rest:POST /api/owners + PUT /api/owners/{owner_id} + DELETE /api/owners/{owner_id}
 description: |-
   The Owner Lifecycle Management feature is the operator-facing CRUD

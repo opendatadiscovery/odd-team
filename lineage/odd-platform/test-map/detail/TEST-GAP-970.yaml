@@ -1,0 +1,61 @@
+gap_id: TEST-GAP-970
+category: missing-edge-case
+criticality: HIGH
+node_ids:
+  - "odd-platform java IngestionController controller-class:IngestionController"
+pillars_affected: [P-09, P-10]
+surfaced_by:
+  - "IngestionController__controller-class.md:tests_coverage_semantic.uncovered_behaviours.[2]"
+  - "IngestionController__controller-class.md:downstream_side_effects.[3]"
+behaviour: |-
+  **HIGH — `createDataSource` (POST /ingestion/datasources) throws `IllegalStateException("Collector id is null")` (IngestionController.java:54) when the WebSession attribute is missing. The exception propagates as HTTP 500 (NOT 401) via the default reactive error handler. The operator-visible diagnostic is "looks like a server crash" — but the actual cause is "missing prior auth step" — and the failure mode is untested.**
+
+  Verified at primary source: `IngestionController.java:47-73` — `createDataSource` reads `SessionConstants.COLLECTOR_ID_SESSION_KEY` from the WebSession (lines 50-58); on absence, throws `IllegalStateException`. The default reactive error handler returns HTTP 500 with a generic error body — no auth-specific 401 framing.
+
+  **The probe-shape for the bug**:
+  ```
+  POST /ingestion/datasources HTTP/1.1
+  Host: odd.example.com
+  Content-Type: application/json
+  // INTENTIONALLY no Authorization: Bearer header
+
+  {"items": [{...}]}
+  ```
+  Expected response (per HTTP semantics): 401 Unauthorized with `WWW-Authenticate: Bearer` header.
+  Actual response: 500 Internal Server Error with body `{"error": "Internal Server Error"}` and stack-trace `IllegalStateException: Collector id is null` (in logs).
+
+  **Why HIGH (not MEDIUM)**:
+  - 500 vs 401 is a security finding class: a probing attacker probing the auth surface gets a different error than expected, which gates downstream tooling decisions (does the platform exist? is the bearer wrong? is the format wrong?). 500 hides the auth signal.
+  - Operator-confusing failure mode: an operator first deploying a collector that hasn't been issued a token sees 500 — the natural diagnostic step is to check application logs (not to check Authorization headers).
+  - The other 4 methods have NO equivalent fail-loud check — the failure shape is asymmetric.
+  - LSN-001-class (silent default insecure behaviour): the diagnostic muddle is itself a class.
+
+  **Distinguishes**:
+  - TEST-GAP-583 (existing) — `NotFoundException → 5xx (NOT 401)` info-leak in IngestionDataEntitiesFilter; same class but different surface (filter vs controller).
+  - TEST-GAP-958 / 969 (this batch) — broader concerns.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/BaseIngestionTest.java"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/IngestionControllerCreateDataSourceMissingSessionTest.java"
+  name: "post_ingestionDatasources_missingSessionAttribute_currentBehaviourReturns500_pinsErrorShapeMismatch"
+evidence:
+  - 'IngestionController.md says (tests_coverage_semantic.uncovered_behaviours.[2]): ''createDataSource without a prior IngestionDataSourceFilter session (session attribute missing) — NO test asserts the IllegalStateException pathway returns 500, NOT 401. The error-shape is operator-confusing (looks like a server crash) and untested'' (criticality HIGH)'
+  - 'IngestionController.md says (downstream_side_effects.[3]): ''Auth-failure shape side effects: createDataSource throws IllegalStateException("Collector id is null") (line 54) when session attribute is missing — propagates as HTTP 500 via the default reactive error handler (NOT 401). An operator probing /ingestion/datasources without going through the IngestionDataSourceFilter first cannot distinguish ''''session missing'''' from ''''server crashed'''''''
+  - "Verified at primary source: IngestionController.java:54 (the throw) + IngestionController.java:50-58 (the session-read block)"
+cross_references:
+  - "TEST-GAP-583 (existing — NotFoundException → 5xx info-leak; sister class)"
+  - "TEST-GAP-958 (CRITICAL this batch — class-level reachability matrix; orthogonal concern)"
+  - "TEST-GAP-969 (HIGH this batch — identity-resolution bifurcation)"
+  - "REFACTOR-NNN-candidate (catch IllegalStateException at the controller; emit 401 with WWW-Authenticate; OR move the session-read into the filter and return 401 on missing session at the filter layer)"
+related_features: [F-008]
+related_pillar_features: ["P-09:Security & Access Control", "P-10:F-001 Batch Ingestion (S2S API)"]
+proposed_action: |-
+  Add `IngestionControllerCreateDataSourceMissingSessionTest`:
+
+  1. `post_ingestionDatasources_missingSessionAttribute_returnsInternalServerError_pinsCurrentErrorShape` — WebTestClient POST without Authorization header; assert response is 500 (per the IllegalStateException at line 54). Comment: '// REGRESSION-PIN — current implementation surfaces 500 instead of 401. When this is fixed (per REFACTOR-NNN-candidate), this test MUST FLIP to expectStatus().isUnauthorized() and an additional assertion on WWW-Authenticate header MUST be added.'
+  2. `post_ingestionDatasources_emptySessionAttribute_returnsInternalServerError_pinsErrorShape` — POST with a session that exists but has no COLLECTOR_ID attribute; assert 500.
+  3. Pair with REFACTOR-NNN-candidate (move session-read to filter layer; return 401 on missing identity).
+
+  Coherence note (LSN-018 Rule 6): NET-NEW.
+batch: 2026-05-25-ZF
+feature_id: F-008

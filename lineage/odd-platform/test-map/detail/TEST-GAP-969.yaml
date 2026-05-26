@@ -1,0 +1,68 @@
+gap_id: TEST-GAP-969
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java IngestionController controller-class:IngestionController"
+pillars_affected: [P-09, P-10]
+surfaced_by:
+  - "IngestionController__controller-class.md:tests_coverage_semantic.uncovered_behaviours.[2]"
+  - "IngestionController__controller-class.md:concepts.invariants.[5]"
+  - "IngestionController__controller-class.md:downstream_side_effects.[2]"
+behaviour: |-
+  **HIGH — IngestionController's 5 handlers use TWO ENTIRELY DIFFERENT identity-resolution mechanisms; the asymmetry is silent, has no comment, and no test asserts the consequence: createDataSource reads collector identity from the WebSession (session-bridge from IngestionDataSourceFilter), while postDataEntityList / postDataSetStatsList / ingestMetrics identify the target via PAYLOAD ODDRNs (downstream identity validation).**
+
+  Verified at primary source:
+  - `createDataSource` (`IngestionController.java:47-73`) is the ONLY method that reads the WebSession (lines 50-58 — `exchange.getSession().flatMap(session -> session.getAttribute(SessionConstants.COLLECTOR_ID_SESSION_KEY))`).
+  - Session attribute is WRITTEN by `IngestionDataSourceFilter.java:37-38` BEFORE this controller method runs.
+  - The other 4 methods do NOT read the session.
+  - `postDataEntityList` identifies the target datasource via the PAYLOAD field `dataSourceOddrn` (consumed downstream in `IngestionServiceImpl.java:68`).
+  - `IngestionDataEntitiesFilter.java:43` (when toggle is enabled) reads `dataSourceOddrn` from the body for token validation.
+
+  **The asymmetry has no comment** (verified by reading IngestionServiceImpl.java end-to-end and IngestionController.java end-to-end 2026-05-25 — no inline comment, no Javadoc, no ADR explanation).
+
+  **Three concrete consequences the absence of testing preserves**:
+
+  1. **Cross-collector authentication** (the sidecar's uncovered_behaviours.[3]): Collector A's token attempting to register a datasource that Collector B already owns — NO test asserts the cross-tenant authentication boundary. The session-based mechanism for `createDataSource` enforces 'the token IS the collector identity'; the payload-based mechanism for `postDataEntityList` enforces 'the token signs payloads for THIS datasource'. The boundary is enforceable but unenforced/untested.
+
+  2. **Payload-vs-token cross-validation on POST /ingestion/entities**: when IngestionDataEntitiesFilter IS enabled, a valid collector-A token POSTing entities under data_source_oddrn belonging to collector B — no test asserts the rejection.
+
+  3. **Failure-shape divergence**: `createDataSource` throws `IllegalStateException("Collector id is null")` (line 54) when session attribute is missing — propagates as **HTTP 500** via the default reactive error handler (NOT 401). `postDataEntityList` and siblings have no equivalent fail-loud check — they accept anonymous requests when the filter is unregistered. The operator-visible diagnostic across the 5 endpoints is INCONSISTENT.
+
+  **Why HIGH**: this is the class-level posture asymmetry that the TEST-GAP-958 4-mode matrix doesn't fully cover. TEST-GAP-958 tests reachability; TEST-GAP-969 tests **identity correctness** — orthogonal concerns. A cross-tenant exploit (collector A POSTing entities for collector B's datasource) is reachable in the gap between 'reachable + unauthenticated' (TEST-GAP-958) and 'reachable but identity-correct' (this gap).
+
+  **Distinguishes**:
+  - TEST-GAP-958 (CRITICAL — class-level reachability matrix, this batch).
+  - TEST-GAP-097 / 119 / 583 — existing S2S filter coupling regressions.
+  - This entry is the **identity-resolution bifurcation** concern specifically; no prior TEST-GAP names the session-vs-payload asymmetry as a single class-level finding.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/BaseIngestionTest.java"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/IngestionControllerIdentityResolutionTest.java"
+  name: "ingestionController_collectorAToken_postingForCollectorBDatasource_currentBehaviour_pinsCrossCollectorBoundary"
+evidence:
+  - 'IngestionController.md says (tests_coverage_semantic.uncovered_behaviours.[2]): ''createDataSource without a prior IngestionDataSourceFilter session (session attribute missing) — NO test asserts the IllegalStateException pathway returns 500, NOT 401. The error-shape is operator-confusing (looks like a server crash) and untested'' (criticality HIGH)'
+  - 'IngestionController.md says (tests_coverage_semantic.uncovered_behaviours.[3]): ''Cross-collector authentication (collector A''''s token attempting to register a datasource that collector B already owns) — NO test asserts the cross-tenant authentication boundary'' (criticality HIGH)'
+  - 'IngestionController.md says (tests_coverage_semantic.uncovered_behaviours.[4]): ''Payload-vs-token cross-validation on POST /ingestion/entities — when IngestionDataEntitiesFilter IS enabled, NO test exercises a valid collector-A token POSTing entities under data_source_oddrn belonging to collector B'' (criticality HIGH)'
+  - 'IngestionController.md says (concepts.invariants.[5]): ''Identity-resolution bifurcation: createDataSource is the ONLY method that reads the WebSession (line 50-58). The other 4 methods identify the target via PAYLOAD fields ... The session-vs-payload split has no comment explaining the asymmetry'''
+  - "Verified at primary source: IngestionController.java:47-73 (createDataSource session-read) + IngestionDataSourceFilter.java:37-38 (session-write) + IngestionDataEntitiesFilter.java:43 (payload-read for token validation)"
+cross_references:
+  - "TEST-GAP-958 (CRITICAL — class-level reachability matrix; orthogonal concern)"
+  - "TEST-GAP-097 (existing — S2S filter coupling)"
+  - "TEST-GAP-119 (existing — IngestionDataEntitiesFilter collector-fallback)"
+  - "TEST-GAP-583 (existing — NotFoundException → 5xx info-leak)"
+  - "TEST-GAP-618 (existing — createDataSource-vs-postDataEntityList asymmetric posture)"
+  - "REFACTOR-NNN-candidate (consolidate identity-resolution; switch session-bridge to payload-explicit OR vice-versa; document the choice in an ADR)"
+  - "F-008 (Batch Ingestion)"
+related_features: [F-008]
+related_pillar_features: ["P-09:Security & Access Control", "P-10:F-001 Batch Ingestion (S2S API)"]
+proposed_action: |-
+  Add `IngestionControllerIdentityResolutionTest`:
+
+  1. `createDataSource_collectorAToken_postingForOwnNamespace_returns200_pinsHappyPath` — auth as Collector A's token; POST `/ingestion/datasources` with a fresh ODDRN; assert 200.
+  2. `createDataSource_missingSession_returns500NotIfHttp401_pinsErrorShapeMismatch` — POST `/ingestion/datasources` WITHOUT going through IngestionDataSourceFilter first (e.g. with no Authorization header); assert response is 500 (per the IllegalStateException at line 54), NOT 401. Comment: '// REGRESSION-PIN — current error-shape is operator-confusing.'
+  3. `postDataEntityList_collectorAToken_postingForCollectorBDatasource_currentBehaviour` — with `auth.ingestion.filter.enabled=true`, POST `/ingestion/entities` with Collector A's token + `dataSourceOddrn` belonging to Collector B; assert the CURRENT behaviour (likely 401 if IngestionDataEntitiesFilter correctly cross-checks; or 200 if the cross-check is weak). PIN the contract.
+  4. `postDataSetStatsList_collectorAToken_underFilterEnabledTrue_unauthenticated_pinsCoverageGap` — even with filter toggle enabled, postDataSetStatsList has NO filter coverage; assert anonymous POST succeeds, pinning the filter-coverage gap.
+
+  Coherence note (LSN-018 Rule 6): NET-NEW class-level concern. Compounds with TEST-GAP-958 (reachability matrix) — different orthogonal concern.
+batch: 2026-05-25-ZF
+feature_id: F-008

@@ -1,0 +1,391 @@
+name: |-
+  Activity Feed User filter — doc promises "events performed by" but SQL binds to USER_OWNER_MAPPING.OWNER_ID (LSN-020 UI-surface instance)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-09
+description: |-
+  **NEW HIGH-severity Category F INVARIANT, batch ZI (2026-05-26)** —
+  the live doc page at
+  `https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed`
+  (WebFetched 2026-05-26 status 200) describes the User filter
+  verbatim:
+
+      "User filter: show events performed by one or more selected
+      users (multi-select). Useful for auditing a specific person's
+      platform activity."
+
+  The UI label in `components/Activity/Filters/Filters.tsx:93-98`
+  matches: `t('User')` with the same "select user" semantic.
+
+  **The IMPLEMENTATION binds to a DIFFERENT column at the SQL layer**
+  — per the existing ActivityController.getActivity sidecar + the
+  LSN-020 family:
+
+      ReactiveActivityRepositoryImpl.java:272-273:
+        userIds.in(...)
+            -> translated to
+        USER_OWNER_MAPPING.OWNER_ID.in(userIds)
+
+  The `userIds` query parameter at the API layer is bound at the SQL
+  layer to `USER_OWNER_MAPPING.OWNER_ID.in(userIds)` — i.e. it filters
+  by OWNER-OF-ENTITY via the user-owner mapping, NOT by who
+  PERFORMED the activity (which would be `activity.created_by`).
+
+  **Operator-visible consequences** (three patterns):
+
+  (a) **A user without an owner-mapping returns empty results**. The
+      operator submitting `userIds=[insider-suspect-id]` to audit that
+      user's actions gets NO ROWS if the user has no associated owner
+      record (per the `MY_OBJECTS silent empty` invariant captured
+      separately for the type=MY_OBJECTS dispatch). The doc copy
+      ("Useful for auditing a specific person's platform activity")
+      promises a working audit; the SQL returns silent zero.
+
+  (b) **Reassigning a user-owner association retroactively rewrites
+      who looks responsible for past actions**. If a maintainer
+      changes which Owner Alice is mapped to (e.g. from `data-platform`
+      to `analytics`), Alice's PAST activity rows — which were
+      performed via her then-current owner association — now appear
+      under the NEW owner's filter, not Alice's actual identity at
+      the time. The audit trail mutates retroactively. Security
+      reviewer's intuition ("the audit log records who did what")
+      is wrong.
+
+  (c) **A security/compliance reviewer setting `userIds = [insider-
+      suspect-id]` to audit that user's actions gets rows of
+      activity on entities OWNED BY that user-via-mapping, NOT
+      actions PERFORMED BY that user**. Misses the actual actor
+      (`activity.created_by`) entirely. The doc promises one query
+      shape; the SQL provides another.
+
+  **The available-but-unused column** is `activity.created_by`. The
+  Activity repository reads it in the LEFT JOIN to construct user
+  attribution metadata BUT NEVER FILTERS by it. The user is there in
+  the row; the filter binds to a sibling column.
+
+  **CLASS MEMBERSHIP — LSN-020 (Category F drift class)**: this is
+  the SAME drift class as the existing
+  `invariant:dashboard-title-filter-binds-ownership-title-not-dataset-name`
+  finding (the Title filter binds to `OWNERSHIP.TITLE_ID`, not dataset
+  name) and the SearchController's name-vs-binding drifts. The
+  ActivityController.getActivity sidecar primary-source records this
+  drift at the BACKEND layer; this invariant promotes it to the UI
+  layer where the operator FIRST encounters the misleading label.
+
+  **The full path of the operator's misconception** — three layers
+  reinforce the wrong promise:
+    1. The doc page says "events performed by".
+    2. The UI label says `t('User')` (with the same intent).
+    3. The Filters.tsx component (`components/Activity/Filters/Filters.tsx:93-98`)
+       provides a user-id multi-select.
+    Then at the SQL layer the binding silently translates to
+    owner-of-entity. An operator inspecting the network call sees
+    `?userIds=[1,2,3]` going out and rows coming back; they assume the
+    filter works as labelled.
+
+  **Fix surfaces** (maintainer-triage):
+
+    1. **Rename the filter** to "Owner of entity (via user-mapping)"
+       — accurate, ugly, technical. Operators who understand the
+       semantic accept this; others find the label confusing.
+
+    2. **Add an `actor.created_by`-binding filter** as a NEW filter
+       facet ("Performed by"), alongside (or replacing) the current
+       User filter. Two-line backend change (add a `WHERE
+       activity.created_by IN (?)` predicate) + UI affordance to
+       toggle. Operator-friendliest fix.
+
+    3. **Document the semantic** on the live doc page with a
+       prominent warning: "The User filter narrows by owner-of-entity
+       via the user-owner mapping, NOT by who performed the action.
+       For who-performed-the-action filtering, see [TODO new feature]".
+
+  **Cross-batch reach**: the LSN-020 invariant family captures this
+  drift class at multiple sites; the Activity-feed instance is the
+  highest-visibility example because the User filter is documented
+  on the public doc page (operator-facing first-contact) and the
+  filter's semantic is critical for security/compliance audits.
+
+  vocabulary_status: codebase-anchored AND live-doc-confirmed. The
+  live doc explicitly promises "performed by" semantics; the code
+  implements "owner of entity via user-mapping". The doc is
+  operator-misleading; the code is the authoritative source. Refresh
+  candidate: extend the doc page with a "Filter semantics" warning.
+
+  ## STRENGTHENED — batch ZJ (2026-05-26)
+
+  Batch ZJ adds the en.json primary-source sidecar
+  (odd-platform__json__locales_translations__i18n-resource__en.md)
+  with the I18N-CHANNEL primary-source evidence:
+
+  **The `"User"` entry at en.json:347** is the canonical bound
+  between the SQL/repository drift and the operator-visible UI
+  text. It carries `"User": "User"` (natural-keys pattern). The
+  bind `<MultipleFilter filterName='userIds' name={t('User')}>` at
+  `Filters.tsx:58` resolves this key.
+
+  **The drift IS uniform across ALL SIX locales** — none of
+  en/es/ch/fr/ua/hy carries a non-English value for the 'User'
+  key that would correct the misleading label. The natural-keys
+  pattern means the rendered text is the English source on every
+  language. A French / Spanish / Chinese / Ukrainian / Armenian
+  compliance reviewer sees an identically-misleading label on
+  their localised UI; localising one of the six bundles does NOT
+  fix the drift — only renaming the key (or adding an explanatory
+  tooltip) does.
+
+  **The drift's REACH is therefore wider than batch ZI named**:
+  not just 'the English UI is misleading' but 'the i18n layer
+  ships the misleading label to every locale uniformly'. The fix
+  ('rename the filter to Owner of entity (via user-mapping)') is
+  ALSO a key-rename: `t('User')` -> `t('Affected Entity Owner')`
+  in 2 t() call sites (Filters.tsx:58 + ActivityResults.tsx if
+  referenced) + add `"Affected Entity Owner": ...` entries in
+  EACH of the six locale bundles. Approximate cost: 8 lines.
+
+  Probe P-171 emitted (batch ZJ) — verifies the runtime drift
+  across all six locales (i.e. no locale corrects the misleading
+  label).
+
+  **The full path of the operator's misconception, REVISED to 4
+  layers** (batch ZJ adds layer 1):
+    0. The i18n key `"User"` in en.json:347 (the natural-keys
+       source) — and its uniform non-translation across all 6 locales.
+    1. The doc page says "events performed by".
+    2. The UI label rendered from `t('User')` reinforces the doc.
+    3. The Filters.tsx component provides a user-id multi-select.
+    Then at the SQL layer the binding silently translates to
+    owner-of-entity.
+
+  ## STRENGTHENED — batch ZL (2026-05-26) — Activity.tsx PAGE-COMPONENT PRIMARY-SOURCE
+
+  Batch ZL adds the Activity.tsx page-component sidecar
+  (odd-platform__ts__react-component__component__Activity.md) —
+  the UI-LAYER primary source where the operator FIRST encounters
+  the User-filter misleading label. The Activity.tsx sidecar
+  explicitly cross-references the LSN-020 drift:
+
+    Activity.md:bugs_limitations_corner_cases.[0] — "The 'User'
+    filter (Filters.tsx:93-98 — <MultipleFilter filterName='userIds'
+    name={t('User')}/>) is operator-misleading at the UI layer
+    (Category F TRANSLATES_SILENTLY — LSN-020). MultipleFilter at
+    components/shared/elements/Activity/ActivityFilterItems/
+    MultipleFilter/MultipleFilter.tsx:32-34 dispatches
+    fetchOwnersList for any filterName != 'tagIds'... The dropdown
+    therefore lists OWNERS, not users."
+
+  Activity.md:stress_findings.request_inputs.userIds — full
+  Category F trace: "TRANSLATES_SILENTLY. The label says 'User'
+  and the live doc says 'performed by'; the implementation
+  filters by owner-of-the-actor via user-owner mapping. The
+  translation has no comment, no ADR, no documentation."
+
+  Activity.md:stress_findings.name_behavior_pairs.userIds — same
+  drift confirmed at name-vs-behaviour axis.
+
+  P-190 probe emitted by Activity.tsx for the integration verification.
+
+  POST-BATCH-ZL TRACE COMPLETENESS:
+    The misconception path is now confirmed at FIVE layers (not 4):
+      0. i18n key 'User' in en.json:347 (batch ZJ);
+      1. Live doc page promises 'events performed by' (WebFetch);
+      2. UI label renders 't('User')' from Filters.tsx:93-98 (batch ZL);
+      3. Filters component dispatches fetchOwnersList (per batch ZI route);
+      4. SQL layer binds USER_OWNER_MAPPING.OWNER_ID (per batch H
+         ActivityRepository sidecar).
+
+    All five layers reinforce the wrong promise; the available-but-
+    unused column activity.created_by remains unused. Fix surfaces
+    (rename or add Performed-By filter) unchanged.
+
+
+vocabulary_status: codebase-anchored AND live-doc-confirmed AND i18n-channel-uniform-across-six-locales
+axes_present:
+  - ui_routes
+  - react_components
+  - controllers
+  - repositories_reactive
+  - locales
+nodes:
+  - odd-platform ts react-component component:Activity
+  - odd-platform ts routes route:activity
+  - odd-platform java ActivityController controller-method:getActivity
+  - odd-platform json locales/translations i18n-resource:en
+contributors:
+  - |-
+    activity route batch ZI:
+      docs_link_semantic.doc_drift_findings[live doc page's User filter description ('show events performed by one or more selected users') promises filtering by who-performed-the-action, but the Filters component binds userIds to a query parameter that — per the existing ActivityController.getActivity sidecar and LSN-020 — translates at the SQL layer to USER_OWNER_MAPPING.OWNER_ID.in(userIds)];
+      bugs_limitations_corner_cases[Backend userIds filter does not honour the parameter name (LSN-020) — bound to USER_OWNER_MAPPING.OWNER_ID.in(userIds) not to activity.created_by; the UI Filters panel labels the filter t('User') and the live doc reinforces the wrong promise but the SQL filters by owner-of-entity; the label is operator-misleading];
+      security.known_security_gaps[Doc page's 'User' filter description misleads operators about what the filter actually does; a security/compliance reviewer setting userIds = [insider-suspect-id] to audit that user's actions would get rows of activity on entities OWNED BY that user-via-mapping, NOT actions PERFORMED BY that user];
+      stress_findings.request_inputs[the Category F load-bearing finding is one layer down at the Filters component — userIds filter labelled t('User') IS the LSN-020 instance]
+  - |-
+    en.json batch ZJ (i18n-resource primary source):
+      bugs_limitations_corner_cases.[2] HIGH (the "User" entry at line 347 IS the channel through which the LSN-020 misleading label reaches every user — no locale corrects it; natural-keys pattern applies uniformly);
+      stress_findings.request_inputs (i18n-key-reference Category F drift class; full 5-question walkthrough of the User-filter drift at the i18n layer);
+      stress_findings.probes_emitted P-171;
+      security.known_security_gaps.[0] HIGH (the security/compliance consequence at the i18n layer)
+evidence:
+  - |-
+    activity.md:docs_link_semantic.doc_drift_findings.[User-filter promise vs
+    SQL] (the live doc page's User filter description vs the SQL binding —
+    full quote verbatim from WebFetch 2026-05-26 status 200)
+  - |-
+    activity.md:bugs_limitations_corner_cases.[userIds filter LSN-020 surface]
+    HIGH (full chain — UI label -> query parameter -> SQL binding to
+    USER_OWNER_MAPPING.OWNER_ID)
+  - |-
+    activity.md:security.known_security_gaps.[User-filter LSN-020 misleads
+    compliance reviewers] HIGH
+  - |-
+    activity.md:stress_findings.request_inputs (Category F LSN-020 instance
+    REFERENCE to ActivityController sidecar)
+  - |-
+    Cross-reference: ActivityController.getActivity sidecar's
+    bugs_limitations_corner_cases — the BACKEND primary source for the
+    USER_OWNER_MAPPING.OWNER_ID.in(userIds) binding at
+    ReactiveActivityRepositoryImpl.java:272-273
+  - 'en.md:bugs_limitations_corner_cases.[2] HIGH (the "User" entry at en.json:347 IS the channel through which the LSN-020 misleading label reaches every user uniformly across all six locales)'
+  - 'en.md:stress_findings.request_inputs.[0] (i18n-key-reference Category F drift; the key "User" promises filter-by-actor; the SQL implements filter-by-owner-of-entity-via-user-mapping)'
+  - 'en.md:security.known_security_gaps.[0] HIGH (the security/compliance consequence at the i18n layer)'
+  - 'en.md:docs_link_semantic.doc_drift_findings.[0] (live doc reinforces wrong promise; i18n key uniformly misleading)'
+security_aggregate:
+  overall: MEDIUM
+  auth_modes_relevant:
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
+    - DISABLED
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: N/A
+    detail: |-
+      Not an authorization invariant — name-vs-binding drift at the
+      filter parameter layer.
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      The bug REINFORCES the cross-owner enumeration posture — the
+      User filter doesn't restrict by who-performed; it filters by
+      who-owns-entity via mapping. Combined with the un-gated
+      ActivityController (cross-owner read-collaborative), the audit
+      trail is operator-misleading from BOTH ends: who can see WHAT
+      (cross-owner) and WHO filters WHO (owner-of-entity via
+      mapping).
+  strengths:
+    - |-
+      The backend code IS internally consistent — `userIds` binds to
+      `USER_OWNER_MAPPING.OWNER_ID` deterministically; the SQL is
+      not buggy, it just implements a different semantic than the
+      label promises.
+    - |-
+      The cross-batch LSN-020 family captures this drift class at
+      multiple sites — the maintainer has visibility into the
+      pattern across the platform.
+  weaknesses:
+    - |-
+      A security/compliance reviewer auditing "who did X" gets the
+      wrong answer silently. The audit trail's first-line filter
+      misleads the most common security use case (insider-threat
+      review).
+    - |-
+      Doc, UI label, and backend code form THREE-LAYER reinforcement
+      of the wrong promise — operator has no signal anywhere that
+      the filter semantic differs from "events performed by".
+    - |-
+      The drift is uniform across all six locales — no locale
+      corrects the misleading label (natural-keys pattern + no
+      locale-specific override of en.json:347). A French / Spanish /
+      Chinese / Ukrainian / Armenian compliance reviewer sees the
+      same misleading label on their localised UI. (batch ZJ)
+    - |-
+      Reassigning user-owner associations retroactively rewrites who
+      appears responsible for past actions — the audit trail
+      mutates under maintainer admin actions.
+  cross_file_inconsistencies:
+    - |-
+      The Filters component label, the live doc, the i18n key in all
+      six locales, and the SQL binding DISAGREE. The doc and the key
+      label promise "performed by"; the SQL binds to "owner of entity
+      via user-mapping". Four independent sources of truth with no
+      consistency check.
+  contributing_files:
+    - odd-platform__ts__routes__route__activity.md
+    - ActivityController.getActivity.md
+    - 'odd-platform__json__locales_translations__i18n-resource__en.md'
+  evidence:
+    - |-
+      activity.md:docs_link_semantic.doc_drift_findings.[User filter]
+    - |-
+      activity.md:bugs_limitations_corner_cases.[userIds filter LSN-020]
+    - |-
+      activity.md:security.known_security_gaps.[User-filter LSN-020 misleads]
+    - 'en.md:bugs_limitations_corner_cases.[2] HIGH'
+    - 'en.md:security.known_security_gaps.[0] HIGH'
+performance_aggregate:
+  overall: HIGH
+  hot_paths: []
+  throughput_shape:
+    verdict: N/A
+    detail: |-
+      Not a performance concept.
+  scaling_shape:
+    verdict: N/A
+    detail: ''
+  strengths: []
+  weaknesses: []
+  cross_file_inconsistencies: []
+  contributing_files:
+    - odd-platform__ts__routes__route__activity.md
+    - 'odd-platform__json__locales_translations__i18n-resource__en.md'
+  evidence: []
+triangulation_count: 4
+cross_batch: true
+cross_batch_refs:
+  - batch-ZI (activity route sidecar — UI-layer primary source)
+  - batch-ZJ (en.json i18n-resource primary source — uniform-across-six-locales evidence)
+  - cross-reference ActivityController.getActivity sidecar (backend primary source for the USER_OWNER_MAPPING.OWNER_ID binding)
+  - cross-reference LSN-020 retrospective (drift class definition)
+severity: HIGH
+severity_dim: security
+related_features:
+  - F-008
+related_pillar_features:
+  - 'P-09'
+related_concepts:
+  - entitie:activity-feed
+  - invariant:dashboard-title-filter-binds-ownership-title-not-dataset-name
+  - invariant:owner-scoped-routes-controllers-take-no-principal-parameter-principal-flows-via-reactor-context
+  - invariant:ui-route-no-permission-guard-data-quality-vs-lookup-tables-contrast
+  - 'entitie:locale-bundle (the i18n channel that ships this misleading label uniformly across all six locales)'
+notes: |-
+  Coherence (Rule 6): grepped `concepts/detail/invariants/` for
+  "LSN-020" + "user filter" + "performed by" — found
+  `invariant:dashboard-title-filter-binds-ownership-title-not-dataset-name`
+  (a DIFFERENT LSN-020 instance for the dashboard Title filter). No
+  existing concept describes the Activity Feed User filter LSN-020
+  instance specifically.
+
+  STRENGTHENS `entitie:activity-feed` by adding the UI-layer +
+  doc-page evidence that the User filter is operator-misleading.
+  STRENGTHENS the broader LSN-020 invariant class with a fourth
+  confirmed instance (dashboard Title, Activity User, ... — pattern
+  is structural across the platform).
+
+  The CASE for promoting LSN-020 to a canonical-vocabulary entry in
+  `documentation/docs/main-concepts.md` ("Filter semantics in ODD —
+  filter parameter NAMES may bind to DIFFERENT columns at the SQL
+  layer than the operator expects; refer to the per-feature filter
+  reference table") gets stronger with each instance. This invariant
+  is the operator-facing-doc-page instance — the highest-priority
+  one to surface.
+
+  Batch ZJ adds the I18N CHANNEL evidence — the drift is uniform
+  across all six locales because of the natural-keys pattern. A
+  full-cycle fix requires (a) renaming the key in the codebase
+  (~2 t() call sites), (b) adding the new entry to all six locale
+  bundles (~6 file edits), AND (c) updating the doc page. The
+  i18n-channel-uniform-across-six-locales evidence elevates this
+  from 'English-locale operator misled' to 'every locale operator
+  misled' — the latter is closer to the real impact.
+maintainer_curated: false

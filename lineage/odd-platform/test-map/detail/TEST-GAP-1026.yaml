@@ -1,0 +1,46 @@
+gap_id: TEST-GAP-1026
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java org.opendatadiscovery.oddplatform.config config-class:SchedulingConfiguration"
+  - "odd-platform java service service:HousekeepingJobManager"
+  - "odd-platform java housekeeping_partition job:PostgreSQLPartitionCreationJob"
+  - "odd-platform java housekeeping job:DataEntityStatusSwitchJob"
+pillars_affected: [P-04, P-07, P-08]
+surfaced_by:
+  - "SchedulingConfiguration.md:tests_coverage_semantic.uncovered_behaviours.[1] (Single-thread executor default — HIGH integration)"
+  - "SchedulingConfiguration.md:bugs_limitations_corner_cases.[1] (Single-thread ThreadPoolTaskScheduler default — undocumented and operationally fragile — HIGH severity)"
+  - "SchedulingConfiguration.md:stress_findings.tunables.[ThreadPoolTaskScheduler.poolSize] (boundary N=1 today, P-183 probe-needed for cron-misfire)"
+  - "SchedulingConfiguration.md:performance.known_performance_gaps.[Single-thread default executor — silent operational risk under load — severity HIGH]"
+behaviour: |-
+  **The four `@Scheduled` jobs in the platform share ONE thread by Spring Boot's default `ThreadPoolTaskScheduler.poolSize=1`** — verified by absence of `TaskScheduler` `@Bean` anywhere in `<odd-platform-repo>/odd-platform-api/src/main/java` AND absence of `spring.task.scheduling.pool.size` in `application.yml`. The operator's mental model ("my four scheduled jobs run in parallel") is wrong by default. Concrete operational consequences:
+
+  - HousekeepingJobManager.java:25 — `fixedRate = 15min` + `@SchedulerLock(housekeepingJob, 14m, 14m)`
+  - DataEntityStatusSwitchJob.java:21 — `fixedRate = 10min` + `@SchedulerLock(statusSwitchJob, 9m, 9m)`
+  - PostgreSQLPartitionCreationJob.java:40 — `cron = "0 1 0 * * *"` (00:01 daily) + `@SchedulerLock(partitionCreationJob, 10m, 10m)`
+  - PostgreSQLSessionHousekeepingJobHandler.java:13 — `fixedRate = 1h` (NO `@SchedulerLock`)
+
+  A 14-minute housekeeping cycle blocks the 10-minute status-switch from firing on schedule. A housekeeping cycle that runs past midnight delays the daily partition-creation cron at 00:01 — Spring's default cron-misfire behaviour is queue-and-delay, NOT skip. If the cron is deferred past 23:59:59 of the partition's first-use day, INSERTs against `ACTIVITY` / `MESSAGE` may fail with "no partition exists for the given key". One-line operator mitigation (`spring.task.scheduling.pool.size: 4`) is not documented anywhere on the live config page. No test asserts the current single-thread contract OR the cron-misfire-queueing behaviour.
+test_class: integration
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/config/SchedulingThreadPoolTest.java"
+  name: "twoScheduledJobsDueSimultaneously_secondWaitsForFirst_pinsSingleThreadDefaultContract"
+evidence:
+  - 'SchedulingConfiguration.md says (bugs_limitations_corner_cases.[1]): ''No `spring.task.scheduling.pool.size` is declared in `application.yml` (grep returns zero matches), no `TaskScheduler` `@Bean` is declared anywhere in the codebase ... Spring Boot''s default `TaskSchedulerBuilder` builds a `ThreadPoolTaskScheduler` with `poolSize = 1`. All four `@Scheduled` methods share this single thread.'''
+  - 'SchedulingConfiguration.md says (performance.known_performance_gaps.[1]): ''The operator''s mental model "I have four scheduled jobs, they run in parallel" is wrong by default. A 14-minute housekeeping cycle delays the 10-minute status-switch job — over a sustained heavy backlog, the status-switch cadence drifts from 10min to 24min or worse. The mitigation (spring.task.scheduling.pool.size: 4) is a one-line config change that is not documented anywhere.'''
+  - 'Verified: grep `TaskScheduler` under odd-platform-api/src/main returns 0 matches; grep `spring.task.scheduling` returns 0 matches in application.yml'
+  - 'Probe P-183 emitted: Spring''s default cron-misfire behaviour under thread starvation is theoretically queue-and-execute-ASAP but not verified empirically'
+cross_references:
+  - "concepts.yaml:entities[Scheduled Task Subsystem].performance_aggregate.weaknesses.[Single-thread executor default — operator-invisible serialisation of all @Scheduled jobs]"
+  - "P-183 probe"
+  - "TEST-GAP-214 (multi-instance ShedLock race — different concern: race vs serialisation)"
+  - "TEST-GAP-465 (14m-vs-15m ShedLock window race — adjacent contention point)"
+  - "DOC-NNN candidate: surface single-thread default + spring.task.scheduling.pool.size override on /configuration-and-deployment/odd-platform"
+  - "REFACTOR-NNN candidate: declare an explicit `@Bean public TaskScheduler` with `poolSize=4` + Micrometer instrumentation"
+related_features: [F-010]
+related_pillar_features: ["P-04:F-010", "P-07:F-NNN"]
+proposed_action: |-
+  Two-test approach. **Test 1** — `SchedulingThreadPoolTest.twoScheduledJobsDueSimultaneously_secondWaitsForFirst`: declare two `@Scheduled(fixedRate = 1s)` test components, one sleeping for 5 seconds; assert via Micrometer or simple System.currentTimeMillis differencing that the second's `start` is ≥ first's `end`, not concurrent. Locks the single-thread contract. **Test 2** — `SchedulingPoolSizeOverrideTest.springTaskSchedulingPoolSize4_jobsRunConcurrently`: same fixture but with `spring.task.scheduling.pool.size: 4` in test properties; assert both jobs' wall-clock windows overlap. Locks the operator-mitigation contract. When the maintainer ships an explicit `@Bean public TaskScheduler` declaration (REFACTOR-NNN), both tests anchor the new behaviour.
+batch: 2026-05-26-ZK
+feature_id: null

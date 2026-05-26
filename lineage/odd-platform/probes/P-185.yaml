@@ -1,0 +1,174 @@
+---
+probe_id: P-185
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__auth__config-properties-class__ODDLDAPProperties.md
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: null  # ActiveDirectory branch of P-09:F-001 LDAP-mode — silent-degradation hypothesis
+test_class: security
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category F — ActiveDirectory.domain unvalidated despite
+  docs-named requirement):
+
+  ODDLDAPProperties.ActiveDirectory (lines 35-38) declares `boolean enabled`
+  and `String domain`. The live LDAP docs (WebFetched 2026-05-26) say `domain`
+  is "Required when AD is enabled". The Properties class's `validate()`
+  method (lines 40-49) enforces ONLY {url, dnPattern-or-filter} — it does
+  NOT enforce {enabled=true → domain non-empty}.
+
+  Pin the hypothesis: with `auth.ldap.active-directory.enabled: true` and
+  `auth.ldap.active-directory.domain` UNSET, the platform:
+  (a) boots successfully (validate() does NOT throw — confirms the unvalidated
+      pairing);
+  (b) constructs `new ActiveDirectoryLdapAuthenticationProvider(null, url)`
+      at LDAPSecurityConfiguration.java:78 — confirms Spring Security accepts
+      the null domain;
+  (c) at first login, attempts an AD bind with the missing domain — the
+      operator-visible outcome (401 vs unexpected success vs different bind
+      shape) is what the probe pins.
+
+  If the platform boots AND first-login returns 401 with no log line naming
+  the missing domain, this is the silent-degradation scenario the sidecar's
+  bugs_limitations_corner_cases[AD.domain unvalidated] documents.
+---
+arrange:
+  - kind: docker-compose-up
+    profile: odd-minimal
+    services: [odd-platform, odd-postgres, openldap]
+  - kind: docker-compose-service
+    name: openldap
+    description: |
+      Seed an OpenLDAP container with one user. The probe uses OpenLDAP
+      (not actual Active Directory) — Spring Security's
+      ActiveDirectoryLdapAuthenticationProvider talks LDAP-protocol; the
+      probe is testing the platform's behavioural shape, not real AD
+      semantics.
+    env:
+      LDAP_ORGANISATION: "Probe Org"
+      LDAP_DOMAIN: "example.com"
+      LDAP_ADMIN_PASSWORD: "probe-bind-2026"
+    ldif: |
+      dn: ou=people,dc=example,dc=com
+      objectClass: organizationalUnit
+      ou: people
+
+      dn: uid=carol,ou=people,dc=example,dc=com
+      objectClass: inetOrgPerson
+      uid: carol
+      sn: Carol
+      cn: Carol User
+      userPassword: carol-pass
+  - kind: env
+    description: |
+      Configure auth.type=LDAP with active-directory.enabled=true BUT
+      active-directory.domain DELIBERATELY UNSET. The validate() pair check
+      ({url, dnPattern-or-filter}) is satisfied via dnPattern, so the
+      validation passes; the AD-pair check ({enabled, domain}) is NOT
+      enforced by validate().
+    vars:
+      AUTH_TYPE: LDAP
+      AUTH_LDAP_URL: "ldap://openldap:389"
+      AUTH_LDAP_DN_PATTERN: "uid={0},ou=people,dc=example,dc=com"  # satisfies validate() at line 45-48
+      AUTH_LDAP_ACTIVE_DIRECTORY_ENABLED: "true"
+      # AUTH_LDAP_ACTIVE_DIRECTORY_DOMAIN is INTENTIONALLY UNSET — the hypothesis
+  - kind: restart-service
+    service: odd-platform
+    wait_for_healthy: 60s
+    capture_boot_log_as: ad_no_domain_boot_log
+act:
+  - kind: derived
+    description: "Verify the platform BOOTED (validate did NOT throw)."
+    expressions:
+      - "platform_booted_successfully: 'Started OddPlatformApplication' in ad_no_domain_boot_log or 'Started Application' in ad_no_domain_boot_log"
+  - kind: form-login
+    description: |
+      Attempt login as carol. Under the silent-degradation hypothesis, this
+      goes through `new ActiveDirectoryLdapAuthenticationProvider(null, ldap_url)`.
+      Spring's AD provider with null domain falls back to a bind shape that
+      will either (a) succeed against the openldap user with no UPN suffix,
+      (b) fail with 401 because the provider expects UPN-form binds, or
+      (c) throw at provider-construction (unlikely — Spring accepts null).
+    username: carol
+    password: carol-pass
+    capture_session_as: carol_session_attempt
+    capture_status_as: carol_login_status
+  - kind: rest
+    description: "Verify whether carol's session is authenticated."
+    method: GET
+    path: /api/identity
+    headers:
+      Cookie: "${carol_session_attempt}"
+    capture_as: carol_identity
+observe:
+  - kind: derived
+    expressions:
+      - "platform_booted: platform_booted_successfully == True"
+      - "validate_did_not_throw: 'IllegalStateException' not in ad_no_domain_boot_log or 'LDAP server url is not defined' not in ad_no_domain_boot_log"
+      - "boot_log_warns_about_missing_domain: ('domain' in ad_no_domain_boot_log.lower() and ('missing' in ad_no_domain_boot_log.lower() or 'required' in ad_no_domain_boot_log.lower() or 'null' in ad_no_domain_boot_log.lower()))"
+      - "carol_login_succeeded: carol_login_status in [200, 302]"
+      - "carol_login_returns_401: carol_login_status == 401"
+      - "carol_identity_authenticated: carol_identity.status_code == 200 and 'carol' in carol_identity.body"
+assert:
+  # PRIMARY HYPOTHESIS: validate() does NOT catch the missing domain.
+  - "platform_booted == True"
+  - "validate_did_not_throw == True"
+  # SECONDARY HYPOTHESIS: there is NO platform-side warning about the
+  # missing domain in the boot log. Silent degradation.
+  - "boot_log_warns_about_missing_domain == False"
+  # TERTIARY OBSERVATION: what does first-login look like?
+  # The assertion records the load-bearing operator-visible failure pattern:
+  # the AD-provider-with-null-domain typically rejects non-UPN binds.
+  - "carol_login_succeeded == False or carol_identity_authenticated == False"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__auth__config-properties-class__ODDLDAPProperties
+    - odd-platform__java__LDAPSecurityConfiguration__config-key-consumer__auth_type@L51
+  retrospectives: []
+realism_caveats: |
+  The probe uses OpenLDAP as the directory backend (real Active Directory
+  is not necessary to exercise Spring Security's ActiveDirectoryLdapAuthenticationProvider).
+  Spring's AD provider speaks the same LDAP protocol; the only difference
+  is the bind-shape decision (UPN `<user>@<domain>` vs the OpenLDAP-style
+  `uid=<user>,ou=people,...`).
+
+  The PRIMARY hypothesis (validate() does NOT catch missing domain) is the
+  load-bearing one. If `platform_booted == True` AND `validate_did_not_throw
+  == True`, the sidecar's bugs_limitations_corner_cases[AD.domain unvalidated]
+  finding is runtime-confirmed.
+
+  The TERTIARY observation (first-login outcome) is less deterministic.
+  Spring Security's ActiveDirectoryLdapAuthenticationProvider with a null
+  domain has version-dependent behaviour:
+    - Spring Security 6.x (used here per Spring Boot 3.4.10): the provider
+      constructs a search filter using
+      `(&(objectClass=user)(userPrincipalName={0}@<domain>))` — with
+      domain=null, the filter becomes `...userPrincipalName={0}@null...`
+      which fails to match against the OpenLDAP `inetOrgPerson` (no
+      userPrincipalName attribute).
+    - Effect: 401 at login with a generic "Bad credentials" message and no
+      log line naming the root cause as "missing AD domain".
+
+  What the probe DOES confirm regardless of the tertiary outcome:
+    (1) Boot succeeds — the unvalidated-pair finding is real.
+    (2) No diagnostic message names the missing domain — silent degradation.
+    (3) The user-visible failure is generic — operator must read code or
+        bounce config many times to find the cause.
+
+  What this probe does NOT verify:
+    - Whether against an ACTUAL Active Directory (Windows Domain Controller),
+      the null-domain provider succeeds, fails, or returns a different error
+      shape. Setting up a real AD on Testcontainers is impractical for OSS;
+      OpenLDAP is the local-only proxy.
+    - Whether the ActiveDirectoryLdapAuthenticationProvider's contract
+      semantics change in a future Spring Security upgrade (the platform's
+      pinned version is documented; future probes would re-pin against the
+      new version).
+    - Whether `domain=""` (empty string) behaves differently from
+      `domain=null` — both should be tested; a follow-up probe could
+      parametrise.

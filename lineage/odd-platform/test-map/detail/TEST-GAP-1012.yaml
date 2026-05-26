@@ -1,0 +1,167 @@
+---
+gap_id: TEST-GAP-1012
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform ts routes route:relationships"
+surfaced_by:
+  - "odd-platform__ts__routes__route__relationships.md:tests_coverage_semantic.uncovered_behaviours.[4]"
+  - "odd-platform__ts__routes__route__relationships.md:bugs_limitations_corner_cases.[1]"
+  - "odd-platform__ts__routes__route__relationships.md:security.known_security_gaps.[0]"
+  - "odd-platform__ts__routes__route__relationships.md:implicit_adrs.[0]"
+related_pillar_features:
+  - "P-02"
+pillars_affected: ["P-02", "P-09"]
+related_features: []
+feature_id: null
+test_class: missing-security
+strengthens:
+  - TEST-GAP-952   # backend zero-authz on /api/relationships
+  - TEST-GAP-994   # CROSS-CUTTING META — WithPermissionsProvider non-blocking
+  - TEST-GAP-996   # /management/integrations no permission wrapper sibling
+  - TEST-GAP-1003  # META CROSS-CUTTING DIRECTORY-WIDE GAP
+behaviour: |-
+  **MEDIUM — Relationships UI route mount has NO `WithPermissionsProvider`
+  wrapper at all** at `components/DataModelling/DataModellingRoutes.tsx:40`.
+  The bare declaration `<Route path='relationships' element={<Relationships />} />`
+  contrasts the two siblings at lines 19-25 (Query Examples LIST wrapped
+  on `QUERY_EXAMPLE_CREATE`) and 31-37 (Query Examples DETAILS wrapped on
+  `QUERY_EXAMPLE_UPDATE + QUERY_EXAMPLE_DELETE`). Relationships is the
+  ONLY inner route of the Data Modelling pillar that is **NOT** wrapped
+  in a permission context.
+
+  This is parallel to TEST-GAP-996 (the `/management/integrations*`
+  sub-route — every OTHER Management sub-tab has a wrapper; integrations
+  is the lone exception). The Relationships case is the equivalent
+  exception in Data Modelling.
+
+  **The UI-layer absence + the backend chain combine** (per TEST-GAP-952):
+  - Route (this gap): bare `<Route>`, no wrapper.
+  - Component layer (`Relationships.tsx:16-84`): reads URL state and
+    dispatches API calls; no permission checks.
+  - Backend `RelationshipController.java`: no @PreAuthorize (per
+    TEST-GAP-952).
+  - `SecurityConstants.SECURITY_RULES` table at lines 95-355: no entry
+    for `/api/relationships/**` (per TEST-GAP-952).
+  - `RelationshipsServiceImpl.java:30-49`: no permission check (per
+    TEST-GAP-952).
+  - `ReactiveDataEntityRelationshipRepositoryImpl.java:66-75`: no
+    owner JOIN, no permission filter (per TEST-GAP-952).
+
+  The chain is open end-to-end for every authenticated caller under
+  LOGIN_FORM/OAUTH2/LDAP, and reachable unauthenticated under
+  `auth.type=DISABLED`.
+
+  **Even if a wrapper WERE added** (TEST-GAP-994 cross-cutting),
+  `WithPermissionsProvider.tsx:12-49` returns children unconditionally —
+  the wrapper seeds `PermissionContext` for descendants to consult, NOT
+  a render gate. The Relationships page would render either way; the
+  wrapper-added refactor would change ONLY whether descendant
+  `<WithPermissions>` calls receive a populated context.
+
+  **Why MEDIUM not HIGH/CRITICAL** (escalated up from LOW in the sidecar):
+  - The intent IS the read-collaborative posture (per `implicit_adrs.[0]`
+    — "Relationships are platform-wide metadata that every authenticated
+    user can read; only the write paths are gated").
+  - But the doc at `https://docs.opendatadiscovery.org/features/data-modelling/relationships`
+    (WebFetched 2026-05-26, status 200) is SILENT on visibility scoping.
+    Neither the pillar page nor the per-feature page mentions who can
+    VIEW relationships.
+  - A future operator deploying ODD with RBAC expectations from the
+    `enable-security/authorization` doc has no signal that Relationships
+    are exempt.
+  - **Cross-pillar leverage** (P-02 × P-09): a regression that
+    tightened the controller to `@PreAuthorize` would break the read-
+    collaborative posture; a regression that loosened the doc to claim
+    "Relationships ARE gated" would mislead operators. No test pins the
+    deliberate openness.
+
+  P-167 Block A (the relationships sidecar's emitted probe) pins the
+  runtime observation that a reader-only user renders the full page +
+  full row count.
+test_files_existing: []
+test_files_proposed:
+  - path: "odd-platform-ui/src/components/__tests__/routes-permissions.posture.test.tsx"
+    name: "relationshipsRoute_readerOnlyUser_rendersFullPage_pinsDeliberateNoRouteGuard"
+    description: |-
+      Vitest + MemoryRouter + minimum-privilege user fixture. Mount <App />
+      with a user that has zero Permissions, zero Owner association.
+      Navigate to '/data-modelling/relationships'. Assert <Relationships />
+      mounts (page H1 'Relationships' renders, table headers render,
+      ALL/ERD/GRAPH tab strip renders). Pins the deliberate
+      no-route-guard posture. Pair with TEST-GAP-1006 (the activity-route
+      sister case) and TEST-GAP-996 (the management/integrations sister
+      case) — all three contribute to a single
+      `routes-permissions.posture.test.tsx` file documenting the
+      deliberate cross-pillar read-collaborative posture.
+  - path: "odd-platform-api/src/test/java/.../RelationshipControllerDisabledModeAnonymousReachTest.java"
+    name: "getRelationships_authTypeDisabled_anonymousCallerReturnsFullCatalog_pinsDISABLEDPosture"
+    description: |-
+      @SpringBootTest with `auth.type=DISABLED` profile + WebTestClient.
+      Send GET /api/relationships with NO Authorization header. Assert
+      HTTP 200 + a non-empty paginated list of relationships across all
+      data sources. Pins the DISABLED-mode anonymous-reach. Pair with
+      TEST-GAP-952's proposed RelationshipControllerAuthorizationPostureTest
+      (which covers the LOGIN_FORM/OAUTH2/LDAP authenticated cases);
+      together they cover all four auth modes.
+  - path: "odd-platform-ui/src/components/DataModelling/__tests__/DataModellingRoutes.permissions.test.tsx"
+    name: "dataModellingRoutes_threeChildren_onlyTwoAreWrapped_pinsRelationshipsBareMount"
+    description: |-
+      Statically assert (via React Testing Library + introspection) that
+      the DataModellingRoutes children are: Navigate → query-examples
+      (LIST), `:queryExampleId` (DETAILS), and `relationships`. Assert
+      query-examples is wrapped in WithPermissionsProvider with allowed
+      [QUERY_EXAMPLE_CREATE]; `:queryExampleId` is wrapped with
+      [QUERY_EXAMPLE_UPDATE, QUERY_EXAMPLE_DELETE]; `relationships` is
+      a BARE <Route>. Pins the deliberate asymmetry. A future change
+      that wraps relationships (e.g. on a new RELATIONSHIPS_VIEW
+      permission) must update this test deliberately.
+evidence:
+  - "relationships.md:bugs_limitations_corner_cases.[1] verbatim: 'Zero-authz exposure of the relationship catalog to every authenticated user: the route at DataModellingRoutes.tsx:40 is unwrapped (no WithPermissionsProvider); the backend at ZE (RelationshipController) has no @PreAuthorize, no SECURITY_RULES match for /api/relationships/**, no service check, no owner-scoping.' severity: MEDIUM"
+  - "relationships.md:security.known_security_gaps.[0]: 'The /data-modelling/relationships route is ungated end-to-end — no WithPermissionsProvider at the route, no @PreAuthorize on RelationshipController, no SECURITY_RULES entry for /api/relationships/**, no service check, no owner scoping. Any authenticated user sees every relationship across every data source.' severity: LOW"
+  - "relationships.md:implicit_adrs.[0]: 'The Relationships sub-route does NOT carry a WithPermissionsProvider wrapper at DataModellingRoutes.tsx:40 (contrast siblings at lines 19-25, 31-37 which wrap Query Examples). This is the deliberate read-collaborative shape.'"
+  - "relationships.md:tests_coverage_semantic.uncovered_behaviours.[4] criticality: MEDIUM (Route is reachable by every authenticated user; under auth.type=DISABLED reachable unauthenticated)"
+  - "Primary source: DataModellingRoutes.tsx:40 (bare <Route>) + DataModellingRoutes.tsx:19-25, 31-37 (the two wrapped siblings, for shape contrast) + WithPermissionsProvider.tsx:12-49 (non-blocking semantic — even if wrapped, would not gate render) + RelationshipController sidecar (zero authz at any layer end-to-end)"
+  - "Grep against test files for /data-modelling OR DataModellingRoutes in odd-platform-ui/src/.../__tests__/: 0 matches (verified 2026-05-26)"
+cross_references:
+  - "TEST-GAP-952 (backend zero-authz on /api/relationships; complementary — TEST-GAP-1012 is the UI-route-tier counterpart)"
+  - "TEST-GAP-994 (WithPermissionsProvider non-blocking cross-cutting; TEST-GAP-1012 is the relationships-specific surface of THIS family)"
+  - "TEST-GAP-996 (sibling Management/Integrations bare-mount case; same shape)"
+  - "TEST-GAP-1003 (META CROSS-CUTTING — directory-wide gap; TEST-GAP-1012 is one of the contributing instances)"
+  - "TEST-GAP-1006 (sister activity-route case; both contribute to the routes-permissions.posture.test.tsx integration suite)"
+  - "P-167 (probe for the relationships zero-authz posture — Block A pins the UI-tier)"
+  - "REFACTOR-024 (read-collaborative cross-owner enumeration posture family)"
+proposed_action: |-
+  (1) Add the three tests in a single Vitest + WebTestClient + integration
+  triple. (2) Surface a doc-gap to add a 'Visibility' section to the
+  Relationships feature page disclosing the read-collaborative posture
+  ("Relationships are platform-wide metadata visible to every
+  authenticated user"). (3) The integration suite
+  routes-permissions.posture.test.tsx becomes the META scaffold
+  consolidating TEST-GAP-1006, TEST-GAP-996, TEST-GAP-1012, and the
+  remaining route-tier security pins across the codebase. One file
+  closes the cross-pillar deliberate-openness posture's regression-pin
+  gap.
+maintainer_curated: false
+strengthened_in: [2026-05-26-ZL]
+strengthened_evidence: |-
+  Batch ZL (2026-05-26): the DataModelling.tsx component sidecar
+  (odd-platform__ts__react-component__component__DataModelling.md)
+  triangulates the Relationships-no-PermissionContext finding from
+  the pillar-root perspective. The new sidecar's
+  bugs_limitations_corner_cases.[0]: 'Inconsistent permission
+  gating across the three inner routes (inherited from
+  DataModellingRoutes): query-examples and query-examples/:id are
+  wrapped in WithPermissionsProvider; relationships is wrapped in
+  NOTHING. At the component layer the rendering composition is
+  identical but the operator-visible consequence cascades — the
+  Relationships subtree has NO PermissionContext, so any child
+  reading usePermissions reads from the default empty context.
+  Combined with the ZE RelationshipController having ZERO
+  @PreAuthorize on any endpoint, the /data-modelling/relationships
+  surface is ungated end-to-end.' The DataModelling.tsx sidecar
+  also surfaces a doc-clarity finding (doc page says 'RBAC-gated
+  by QUERY_EXAMPLE_CREATE' but the actual gating chain renders
+  the list page unconditionally — only the +Add button is hidden;
+  see DOC-NNN candidate from batch ZL). No contradiction with
+  existing artefacts.

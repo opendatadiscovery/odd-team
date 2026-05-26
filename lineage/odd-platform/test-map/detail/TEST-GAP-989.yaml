@@ -1,0 +1,57 @@
+gap_id: TEST-GAP-989
+category: missing-edge-case
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java DatasetFieldController controller-class:DatasetFieldController"
+pillars_affected: [P-01, P-09]
+surfaced_by:
+  - "DatasetFieldController.md:bugs_limitations_corner_cases.[8] (createEnumValue is BULK-REPLACE, not BULK-CREATE — the operationId NAME promises CREATE. A partial body (one item) submitted against a field that has three existing items WILL soft-delete the other two. Operator-visible failure: a UI that does not preserve the full current item list when sending the form can silently destroy data — severity HIGH)"
+  - "DatasetFieldController.md:tests_coverage_semantic.uncovered_behaviours.[10] (POST /api/datasetfields/{id}/enum_values with a partial body (1 of 3 existing items) soft-deletes the omitted 2 items — BULK-REPLACE semantics — Stress Cat B name-vs-behaviour drift)"
+  - "DatasetFieldController.md:concepts.invariants.[9] (createEnumValue is BULK-REPLACE despite its CREATE name — Stress Cat B)"
+behaviour: |-
+  **`POST /api/datasetfields/{id}/enum_values` is SILENT BULK-REPLACE: a partial body (one item) submitted against a field with three existing items soft-deletes the OTHER TWO.** The operationId says `createEnumValue` (singular CREATE verb — `openapi.yaml:2539`); the OpenAPI summary says "Enum Value CRUD" (hinting at the multi-action shape but burying it). The implementation at `EnumValueServiceImpl.java:91-122`:
+
+  - Partitions input by `id != null` (line 97-100): items with id → bulkUpdate path; items without id → bulkCreate path.
+  - `softDeleteExcept(datasetFieldId, idsToKeep)` (line 105) — removes every existing row whose id is NOT in the request's `idsToKeep`.
+
+  **Operator-visible failure mode** — a third-party API consumer OR a future UI refactor sending only the changed item against a field with three existing enum values will SILENTLY DESTROY the other two values. The current UI (`DatasetFieldEnumsForm.tsx:90-105`) is well-behaved — it preserves the full `data.enums` array on every submit (lines 45-60 initialise defaultValues from the existing enum-list) — but this is a UI-side convention that the API does NOT enforce.
+
+  **Why CRITICAL**:
+  - **Silent data destruction**: the response is HTTP 201 + the new state — no warning, no diff log of what was removed. An API consumer building an enum value via a "fire-and-forget POST one item" pattern (the most natural read of `createEnumValue`) will destroy other operator-edited values.
+  - **Activity-feed insufficiency**: the soft-delete fires a single `DATASET_FIELD_VALUES_UPDATED` activity event with no diff payload — the operator reviewing the feed sees "values updated" not "values destroyed".
+  - **Compound with TEST-GAP-990** (no concurrency control): two operators concurrently sending different partial bodies guaranteed to interleave the soft-delete cycles, multiplying the destruction.
+  - **OpenAPI contract failure**: the spec at `openapi.yaml:2536-2554` declares operationId `createEnumValue` with body `BulkEnumValueFormData` — but does NOT declare in the description that the body IS THE NEW STATE. Generated client SDKs in Python/Go/Java will offer the method with NO warning.
+  - **Live docs silent**: per the sidecar's doc_drift_findings: the live docs do not describe BULK-REPLACE semantics. Operator has no way to discover the failure mode pre-incident.
+
+  Probe P-154 pins this directly.
+test_class: missing-edge-case
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/service/EnumValueServiceTest.java:77-163 (service-tier unit tests for createEnumValues happy-path; does NOT exercise the BULK-REPLACE partial-body scenario)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/CreateEnumValueBulkReplaceTest.java"
+  name: "createEnumValue_partialBody_softDeletesOmittedItems_pinsBulkReplaceSemantics"
+evidence:
+  - "DatasetFieldController.md:bugs_limitations_corner_cases.[8] verbatim: 'createEnumValue is BULK-REPLACE, not BULK-CREATE — the operationId NAME promises CREATE. A partial body (one item) submitted against a field that has three existing items WILL soft-delete the other two. Operator-visible failure: a UI that does not preserve the full current item list when sending the form can silently destroy data. The DatasetFieldEnumsForm at ... correctly sends the FULL data.enums array (every item), avoiding this trap; a third-party API consumer or a future UI refactor that sends only the changed item would corrupt the data.' severity: HIGH"
+  - "DatasetFieldController.md:stress_findings.name_behavior_pairs.[0] verbatim drift: DRIFT_NAME_VS_BEHAVIOR; operator_visible_consequence: 'Partial-body submission silently deletes every other live enum value on the field. The OpenAPI summary Enum Value CRUD hints at the truth; the operationId hides it.'"
+  - "Verified at primary source: EnumValueServiceImpl.java:91-122 (the partition + softDeleteExcept algorithm) + DatasetFieldController.java:65-72 + openapi.yaml:2536-2554"
+  - "Probe P-154 emits the canonical scenario"
+cross_references:
+  - "TEST-GAP-990 (sibling — no concurrency control on the same endpoint — race amplifies destruction)"
+  - "TEST-GAP-991 (sibling — deleteTermFromDatasetField cascade limitation — same controller different surface)"
+  - "P-154 (the probe skeleton emitted in the sidecar)"
+  - "LSN-019 family (operationId name vs implementation behaviour drift class)"
+  - "DOC-NNN candidate: surface the BULK-REPLACE semantics on the live dataset-field enum-values doc; the OpenAPI description should warn 'the body IS the new state — omitting an item soft-deletes it'"
+  - "REFACTOR-NNN candidate: split the endpoint into POST /enum_values/replace (current behavior) + POST /enum_values (true bulk-create-only) OR add an explicit `replace_existing: bool` body field"
+related_features: []
+related_pillar_features: ["P-01:F-004"]
+proposed_action: |-
+  Add `CreateEnumValueBulkReplaceTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Five test methods:
+  1. `createEnumValue_partialBody_softDeletesOmittedItems_pinsBulkReplaceSemantics` — seed field F with 3 enum values [A, B, C]; POST body containing only item A (with its id); GET field's enum values; assert B and C are soft-deleted, only A remains. PIN the destruction.
+  2. `createEnumValue_emptyItemsArray_softDeletesAllExistingItems_pinsAbsoluteWipe` — seed field F with 3 values; POST `items: []`; GET; assert ALL three are soft-deleted. PIN the wipe-via-empty-array shape.
+  3. `createEnumValue_fullBody_preservesAllExistingItems_pinsHappyPathContract` — seed field F with [A, B, C]; POST full body with all three ids; GET; assert all three remain. Baseline non-regression.
+  4. `createEnumValue_newItemWithoutId_bulkCreated_preExistingItems_softDeleted_pinsMixedPath` — seed [A]; POST body with new item D (no id) only; assert A is soft-deleted, D is created. PIN the new-item path doesn't preserve old ones unless explicitly included.
+  5. `createEnumValue_responseShape_returnsNewStateNotDiff_pinsResponseContract` — execute the partial-body scenario; assert the response body includes only the surviving items (no soft-deleted ones). PIN that the API gives no destruction signal in the response.
+
+  Pair with REFACTOR-NNN: split into two endpoints OR add explicit `replace_existing` flag. Pair with DOC-NNN: warn loudly in the OpenAPI description + live doc page that body = new state.
+batch: 2026-05-25-ZG
+feature_id: null

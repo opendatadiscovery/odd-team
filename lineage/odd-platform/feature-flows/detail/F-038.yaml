@@ -1,0 +1,810 @@
+feature_id: F-038
+pillar_id: P-07
+pillar_anchored_id: P-07:F-006
+pillar_anchored_feature_name: Data Collaboration (Slack Discussions)
+feature_name: |-
+  Data Collaboration — Slack-integrated Discussions tab on Data Entity
+  detail pages (opt-in via `datacollaboration.enabled`).
+primary_drift_class: unauthenticated_slack_webhook_no_signature_verification
+drift_class_summary:
+- unauthenticated_slack_webhook_no_signature_verification
+- slack_oauth_token_sole_workspace_secret_no_rotation
+- rbac_ungated_three_endpoints_pillar_catch_all_only
+- open_redirect_class_slack_permalink_trusted_verbatim
+- openapi_301_vs_impl_302_redirect_status_code_drift
+- slack_channel_autocomplete_starts_with_not_contains_filter
+- slack_channels_one_minute_caffeine_cache_stale_invites_invisible
+- non_uuid_v1_message_id_returns_200_not_404_silent_conflation
+- at_least_once_slack_event_delivery_no_dedup_no_unique_constraint
+- malformed_json_request_body_undefined_http_status
+- unchecked_event_inner_cast_classcastexception_5xx
+- unknown_event_type_silently_filtered_log_debug_only_no_metric
+- active_platform_features_data_collaboration_feature_page_404_live_doc
+- incoming_webhook_scope_requested_but_unused_doc_vs_code_drift
+- under_disabled_auth_three_endpoints_anonymously_reachable_with_feature_flag_only_defence
+cross_pillar_relationships:
+- pillar_id: P-09
+  kind: feeds
+  via: |-
+    The Data Collaboration feature has TWO HTTP surfaces, BOTH gated
+    by `datacollaboration.enabled` ONLY: (a) the controller-class
+    DataCollaborationController surfaces 3 outbound endpoints (channel
+    autocomplete + send message + redirect); (b) EventApiController
+    surfaces 1 inbound webhook (Slack Events API receiver). Neither
+    surface has any RBAC permission gate; both surfaces are whitelisted
+    from auth in all 4 auth modes via SecurityConstants.WHITELIST_PATHS
+    (line 96 `/api/datacollaboration/**` + `/api/slack/events`). Under
+    auth.type=DISABLED ALL FOUR endpoints are anonymously reachable.
+    Per the system-mission P-07 pillar invariant, the SOLE defence is
+    the feature flag — operators enabling the feature on a
+    DISABLED-mode deployment publish all four endpoints to the network.
+    Strengthens REFACTOR-185 (DISABLED-mode bypass cluster) with the
+    20th-22nd surface (3 outbound + 1 inbound endpoint, all whitelisted).
+- pillar_id: P-08
+  kind: feeds_from
+  via: |-
+    The Data Collaboration feature is OPT-IN via the
+    `datacollaboration.*` config namespace (default `enabled: false`
+    per application.yml:205). The platform-operator audience configures
+    `datacollaboration.enabled=true` plus `datacollaboration.slack-oauth-token`
+    (a Slack bot OAuth token — `xoxb-...`) plus four advisory-lock-id
+    and partition tunables. Cross-link to P-08 Management surfaces
+    (no UI page exists to manage Discussions — the config is
+    YAML-only).
+- pillar_id: P-01
+  kind: shares_data_with
+  via: |-
+    The Discussions tab is mounted on the Data Entity Details page
+    (the same DOM tree that fires F-001's view_count inflation chain).
+    The Message DTO carries a `url` field that is `/api/messages/{uuid}/url`
+    (the redirect endpoint on THIS controller); the UI's
+    `<Button to={url} target='_blank'>` triggers the redirect.
+    Cross-link to F-001 (Detail-page view tracking) — Discussions is
+    a sub-feature mounted on the same detail-page chrome.
+batch_origin: ZF
+created_in_batch: ZF
+batch_extensions:
+- batch: ZF
+  entry_point_added: |-
+    controller-class:DataCollaborationController + controller-class:EventApiController —
+    the TWO HTTP surfaces of the Data Collaboration feature. Together
+    they expose 4 endpoints: 3 outbound (channels autocomplete + post
+    message + redirect to Slack permalink) + 1 inbound webhook (Slack
+    Events API receiver for thread-reply mirroring). Both controller
+    classes are gated by `@ConditionalOnDataCollaboration` (the bean
+    is not registered when `datacollaboration.enabled=false`). This
+    is a NET-NEW feature in the F-NNN ontology — previously the
+    Discussions sub-feature of P-07 was named in `system-mission.md`
+    but no feature-flow detail file anchored its chain.
+  contributing_nodes_added:
+  - odd-platform java DataCollaborationController controller-class:DataCollaborationController
+  - odd-platform java EventApiController controller-class:EventApiController
+  notes: |-
+    NET-NEW feature. The Discussions sub-feature of P-07 Active Platform
+    Features (per system-mission.md:200-215) has been documented at the
+    pillar level since rev 3 of the ontology but did not have a
+    feature-flow detail file until this batch. Two controller-class
+    sidecars from batch ZF (DataCollaborationController + EventApiController)
+    converge on a single user-observable surface — the Discussions tab
+    on Data Entity Details — and surface 15 drift facets across SIX
+    architectural concerns.
+discovered_from_entry_point: |-
+  rest:GET /api/datacollaboration/providers/slack/channels +
+  rest:POST /api/datacollaboration/providers/slack/messages +
+  rest:GET /api/messages/{message_id}/url +
+  rest:POST /api/slack/events
+description: |-
+  The Data Collaboration feature (sub-feature of P-07 Active Platform
+  Features, per `system-mission.md:200-215` and `documentation/docs/active-platform-features.md`)
+  is the Slack-integrated **Discussions** tab on Data Entity detail
+  pages. When `datacollaboration.enabled=true` (default `false` per
+  `application.yml:205`) the feature exposes FOUR endpoints across TWO
+  controller classes:
+
+  (1) `GET /api/datacollaboration/providers/slack/channels` — Slack
+  channel autocomplete for the channel-picker; returns the bot-joined
+  public channels filtered by `name.startsWith(query)`.
+
+  (2) `POST /api/datacollaboration/providers/slack/messages` — enqueue
+  a new Discussion message for asynchronous delivery (202 Accepted).
+  The actual `chat.postMessage` happens in
+  `DataCollaborationMessageSenderJob` under a Postgres-advisory-lock-
+  elected leader (lock id `datacollaboration.sender-message-advisory-lock-id`,
+  default 120).
+
+  (3) `GET /api/messages/{message_id}/url` — server-side 302 to the
+  Slack permalink for a tracked message (calls Slack's `chat.getPermalink`
+  and emits the URL verbatim in a `Location:` header).
+
+  (4) `POST /api/slack/events` — the inbound Slack Events API webhook.
+  Handles the URL-verification CHALLENGE handshake (echoes the
+  challenge back) AND receives `message.channels` events. Thread
+  replies whose parent thread_ts matches a tracked ODD message
+  insert a row into `message_provider_event` (state=PENDING) for the
+  asynchronous `DataCollaborationMessageEventProcessor` to materialise
+  into a child `message` row. Slack's at-least-once delivery model
+  + the schema's missing uniqueness constraint on (provider, event_id)
+  → duplicate deliveries produce N child message rows.
+
+  The user-observable promise: an in-platform Discussions tab on every
+  Data Entity, mirrored to a chosen Slack channel, with bidirectional
+  thread-reply sync.
+
+  The user-observable reality, per primary-source code-walk of the two
+  controller classes + their dependencies (DataCollaborationConfiguration
+  + SlackAPIClientImpl + SlackMessageProviderClient + SlackEventParser +
+  DataCollaborationServiceImpl + ReactiveMessageRepositoryImpl +
+  AuthorizationCustomizer + SecurityConstants):
+
+  (a) **No Slack request signature verification.** The Slack docs
+  (`https://api.slack.com/authentication/verifying-requests-from-slack`)
+  mandate HMAC-SHA256 verification of `X-Slack-Signature` for any
+  Events API receiver; the entire ODD codebase contains zero matches
+  for `X-Slack-Signature`, `signing.secret`, `verifySignature`, or
+  any related primitive. The controller deserializes raw body straight
+  from `@RequestBody Mono<String>` and never reads any header.
+
+  (b) **All four endpoints have NO RBAC permission gate.**
+  `SecurityConstants.SECURITY_RULES` has zero entries for
+  `/api/datacollaboration/**` or `/api/messages/**` or `/api/slack/events`;
+  all four fall through to the per-mode authentication only.
+
+  (c) **Under `auth.type=DISABLED` ALL FOUR endpoints are anonymously
+  reachable.** The feature flag `datacollaboration.enabled` is the
+  ONLY defence — turning Discussions on in a DISABLED-mode deployment
+  publishes the entire surface to the network.
+
+  (d) **`/api/messages/{uuid}/url` is an open-redirect class surface.**
+  The controller trusts Slack's `chat.getPermalink` response verbatim;
+  no host/scheme/structure validation; if Slack ever returned an
+  attacker-controlled URL the controller would 302 to it.
+
+  (e) **Multiple silent-200 conflations.** A non-v1 UUID in the
+  message_id path → empty mono → 200 OK with no body (NOT 404). An
+  unknown Slack event type → 200 ack (intentional, to avoid Slack
+  retry storms, but undocumented). A malformed JSON event payload →
+  undefined HTTP status (no try/catch on JSON deserialize).
+
+  (f) **Slack channel autocomplete uses startsWith, not contains.**
+  Combined with a 1-minute Caffeine cache (size 1, fixed sentinel
+  key), the autocomplete shows STALE channel membership for up to 60
+  seconds.
+
+  (g) **OpenAPI vs impl status drift on `redirect`** — spec says 301,
+  impl emits 302.
+
+  (h) **No live doc page for the Discussions feature.** WebFetched
+  2026-05-25 against `/active-platform-features/data-collaboration`
+  returns 404; the source markdown exists in the documentation repo
+  but is not live-published. An operator Googling "odd discussions"
+  lands on broken pages.
+contributing_nodes:
+- odd-platform java DataCollaborationController controller-class:DataCollaborationController
+- odd-platform java EventApiController controller-class:EventApiController
+- odd-platform java DataCollaborationController controller-method:postMessageInSlack
+- odd-platform java service service:DataCollaborationServiceImpl
+- odd-platform java service service:SlackMessageProviderClient
+- odd-platform java service service:SlackAPIClientImpl
+- odd-platform java service service:DataCollaborationMessageEventProcessor
+- odd-platform java service service:SlackEventParser
+- odd-platform java repository reactive repository:ReactiveMessageRepositoryImpl
+- odd-platform java config:DataCollaborationConfiguration
+- odd-platform java config:DataCollaborationFeatureCondition
+- odd-platform java config-properties-class:DataCollaborationProperties
+chain:
+- hop: 1
+  node: ui-tier
+  sidecar: not-yet-enriched-CreateMessageForm.tsx + SlackChannelsAutocomplete.tsx + Message.tsx
+  multiplicity_per_trigger: 1
+  evidence: |-
+    The Discussions tab UI surfaces 3 affordances:
+    (a) `SlackChannelsAutocomplete.tsx:43-54` calls the
+    `fetchSlackChannels` thunk on every debounced keystroke (500ms);
+    (b) `CreateMessageForm.tsx` calls the `createMessageToSlack`
+    thunk on submit; (c) `Message.tsx:60-66` renders an "Open in
+    Slack" button that opens `/api/messages/{uuid}/url` in a new
+    tab. UI sidecars are NOT YET ENRICHED at this layer — this
+    hop's contract is described from the backend's dependency
+    references. UI-INCOMPLETE per APPROACH.md rule 18: drift facets
+    depending on UI-layer meaning carry `ui_unverified: true`.
+  unresolved: true
+  ui_unverified: true
+- hop: 2
+  node: odd-platform java DataCollaborationController controller-class:DataCollaborationController
+  sidecar: odd-platform__java__DataCollaborationController__controller-class__DataCollaborationController.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    DataCollaborationController.java:18-50 — 3-endpoint thin reactive
+    proxy; class-gated by `@ConditionalOnDataCollaboration` (line 21);
+    constructor-injects a single DataCollaborationService (line 23).
+    Per the class-level sidecar's `bugs_limitations_corner_cases`:
+    (a) 3 endpoints with NO RBAC gate; (b) redirect is open-redirect
+    class; (c) status-code drift 301 vs 302 on redirect;
+    (d) startsWith filter on channels; (e) 1-minute Caffeine cache;
+    (f) channels only visible if bot is invited.
+  unresolved: false
+  resolved_in_batch: ZF
+- hop: 2.5
+  node: odd-platform java EventApiController controller-class:EventApiController
+  sidecar: odd-platform__java__EventApiController__controller-class__EventApiController.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    EventApiController.java:18-57 — single-endpoint inbound webhook
+    receiver; class-gated by `@ConditionalOnDataCollaboration`
+    (line 15). Per the class-level sidecar's `bugs_limitations_corner_cases`:
+    (a) no Slack signature verification (the highest-severity
+    finding); (b) no auth gate in any auth mode (path whitelisted in
+    all 4 modes); (c) no idempotency / dedup on Slack at-least-once
+    delivery — schema lacks unique constraint on (provider, event_id);
+    (d) X-Slack-Retry-Num header ignored; (e) malformed JSON →
+    undefined HTTP status; (f) unchecked inner-event cast.
+  unresolved: false
+  resolved_in_batch: ZF
+- hop: 3
+  node: odd-platform java service service:DataCollaborationServiceImpl
+  sidecar: not-yet-enriched-service
+  multiplicity_per_trigger: 1
+  evidence: |-
+    Service-tier orchestrator — 4-method interface
+    (DataCollaborationService.java:11-19) with methods `getChannels`,
+    `createAndSendMessage`, `resolveMessageUrl`, `enqueueMessageEvent`.
+    The controller-class sidecars cite this layer extensively
+    (DataCollaborationServiceImpl.java:40-77 for the 3 outbound
+    methods; line 64-69 for the enqueue path called by
+    EventApiController). NOT YET ENRICHED as its own sidecar.
+  unresolved: true
+- hop: 4
+  node: odd-platform java service service:SlackAPIClientImpl
+  sidecar: not-yet-enriched-slack-client
+  multiplicity_per_trigger: 1
+  evidence: |-
+    SlackAPIClientImpl.java:25-141 — wraps the `com.slack.api:slack-api-client`
+    SDK's AsyncMethodsClient (the SDK is constructor-injected from
+    DataCollaborationConfiguration.slackAPIClient at line 27). Three
+    outbound Slack API calls: `conversations.list` (paginated 200/page
+    at lines 26 + 130-141), `chat.postMessage` (per the per-method
+    sidecar), `chat.getPermalink` (lines 83-95). NOT YET ENRICHED as
+    its own sidecar.
+  unresolved: true
+- hop: 5
+  node: odd-platform java repository reactive repository:ReactiveMessageRepositoryImpl
+  sidecar: not-yet-enriched-repository
+  multiplicity_per_trigger: 1
+  evidence: |-
+    Persistence-tier — INSERT into `message` (sender path) +
+    INSERT into `message_provider_event` (receiver path) +
+    `getMessageProviderIdentity(UUID)` lookup at lines 171-185 (the
+    UUIDv1-only quirk where MESSAGE.CREATED_AT.eq(extractDateTimeFromUUID(messageId))
+    silently filters non-v1 UUIDs to empty). NO unique constraint
+    on (provider, event_id) per V0_0_59__data_collaboration.sql:25-39.
+    NOT YET ENRICHED as its own sidecar.
+  unresolved: true
+terminal_side_effect:
+  side_effect_class: external-call
+  description: |-
+    Outbound Slack API calls (chat.postMessage, chat.getPermalink,
+    conversations.list) + db-write on `message` / `message_provider_event`
+    tables + sse-push to UI Discussions tab (via the polling refresh
+    of the messages list).
+  evidence: |-
+    DataCollaborationController.java:33-49 (postMessageInSlack +
+    redirect call sites) + EventApiController.java:22-42 (enqueue
+    path) + SlackAPIClientImpl.java:25-141 (Slack SDK invocations)
+  cardinality_per_call: 1
+amplification_factor: 1
+amplification_factor_provenance: |-
+  STATIC per controller-class sidecars. Each user-observable
+  Discussions action (open channel picker / send message / click Open
+  in Slack) fires exactly one HTTP call to the corresponding
+  endpoint. The 1-minute Caffeine cache MAY suppress
+  `conversations.list` calls but the user-observable response is
+  unchanged. No probe has run; amplification = 1 is the static-source
+  read.
+observed_vs_expected:
+  facets:
+  - facet: no Slack request signature verification on the events webhook
+    observed: |-
+      EventApiController.java:22-27 deserializes the raw body straight
+      from `@RequestBody Mono<String>` and never reads any header.
+      Grep across the codebase for `X-Slack-Signature`,
+      `signing.secret`, `signingSecret`, `verifySignature`,
+      `HMAC.SHA256` returns ZERO matches. The endpoint accepts forged
+      POSTs from any internet caller. Slack's documented protocol
+      (https://api.slack.com/authentication/verifying-requests-from-slack)
+      requires receivers to compute HMAC-SHA256 over
+      `v0:{X-Slack-Request-Timestamp}:{raw body}` using the app's
+      signing-secret and compare to `X-Slack-Signature`. ODD does
+      none of this.
+    expected: |-
+      Either (a) implement the signature verification per Slack's
+      documented protocol AND fail the request with 401 when the
+      signature is missing/invalid, OR (b) document the gap
+      explicitly with a deployment-guidance caveat (deploy behind a
+      reverse-proxy that performs signature verification).
+    drift_class: unauthenticated_slack_webhook_no_signature_verification
+    provenance: |-
+      STATIC — primary-source in batch ZF EventApiController
+      controller-class sidecar bugs_limitations_corner_cases[0] +
+      EventApiController.java:22-27 + SlackEventParser.java:22-23
+      (parse signature lacks headers / timestamp / signature).
+      Severity: HIGH. The endpoint is the load-bearing untested
+      security surface of the Data Collaboration feature.
+  - facet: Slack OAuth bot token is the SOLE workspace secret with no rotation hook
+    observed: |-
+      `datacollaboration.slack-oauth-token` (DataCollaborationConfiguration.java:21)
+      is the bot OAuth token (`xoxb-...`) that signs every outbound
+      Slack call. Used to construct a SINGLETON AsyncMethodsClient at
+      boot (line 27); reused across all requests. Spring's default
+      Sanitizer DOES mask `token`-suffixed property names but masking
+      is the sole defence. NO env-var-rotation hook; NO token-lifecycle
+      integration; NO fail-closed on token revocation (a revoked
+      token returns `invalid_auth` from Slack → SlackAPIException →
+      5xx, but the platform does NOT mark the feature as broken).
+      Any compromise of the platform process / `/actuator/env` /
+      configured property leaks workspace channel enumeration + post-
+      as-bot capability across the bot's scope (`channels:history`,
+      `channels:read`, `chat:write`, `users:read`, `incoming-webhook`).
+    expected: |-
+      Documented operational invariant on the live
+      `/active-platform-features/data-collaboration` page (currently
+      404) describing the token's blast radius + a rotation procedure +
+      a fail-closed contract on Slack-side revocation.
+    drift_class: slack_oauth_token_sole_workspace_secret_no_rotation
+    provenance: |-
+      STATIC — primary-source in batch ZF DataCollaborationController
+      controller-class sidecar bugs_limitations_corner_cases[0] +
+      DataCollaborationConfiguration.java:19-29. Severity: HIGH
+      (operational invariant for any operator running Discussions).
+  - facet: all four endpoints have NO RBAC permission gate
+    observed: |-
+      `SecurityConstants.SECURITY_RULES` has zero entries for
+      `/api/datacollaboration/**`, `/api/messages/**`, or
+      `/api/slack/events` (verified via Grep against
+      SecurityConstants.java:98-355 — all four are absent). All four
+      fall through to either (a) `AuthorizationCustomizer.customize`'s
+      catch-all `pathMatchers("/**").authenticated()`
+      (AuthorizationCustomizer.java:29-30) under OAUTH2/LDAP, or
+      (b) explicit whitelist entries in LoginFormSecurityConfiguration.java:49-51
+      under LOGIN_FORM mode (the `/api/slack/events` path is
+      explicitly whitelisted; the `/api/datacollaboration/**` paths
+      fall through). The Permissions docs (WebFetched 2026-05-25
+      status 200) list no DATA_COLLABORATION-class permission. Any
+      authenticated user under LOGIN_FORM/OAUTH2/LDAP can call all
+      four endpoints regardless of which DATA_* permissions they
+      hold; under DISABLED the four endpoints are anonymously
+      reachable.
+    expected: |-
+      Either (a) introduce a DATA_COLLABORATION_{POST,READ,SEND}
+      permission family and gate the outbound endpoints accordingly,
+      OR (b) document the read-collaborative posture explicitly with
+      the rationale (in-product Discussions are by design accessible
+      to any platform user).
+    drift_class: rbac_ungated_three_endpoints_pillar_catch_all_only
+    provenance: |-
+      STATIC — primary-source in batch ZF DataCollaborationController
+      sidecar invariants[2] + DataCollaborationController.java:18-50 +
+      EventApiController.java:18-57 + SecurityConstants.java:95-355.
+      Severity: HIGH (combined with finding 1 + 4 the surface is
+      open-by-design).
+  - facet: redirect endpoint is open-redirect class — Slack permalink trusted verbatim
+    observed: |-
+      DataCollaborationController.java:42-48 emits
+      `ResponseEntity.status(FOUND).headers(h -> h.setLocation(URI.create(providerUrl))).build()`
+      where `providerUrl` comes from Slack's `chat.getPermalink` API
+      (SlackAPIClientImpl.java:84-95) UNCONDITIONALLY — no host check
+      (e.g. `URI.create(providerUrl).getHost().endsWith("slack.com")`),
+      no scheme check (could be `javascript:` if Slack ever returned
+      one), no malformed-URI handler (`URI.create` throws
+      IllegalArgumentException for malformed input, bubbles to the
+      WebFlux exception handler as 5xx). The trust assumption is
+      "Slack returns a slack.com URL"; the assumption is enforced
+      nowhere.
+    expected: |-
+      Defence-in-depth: validate `providerUrl` against an allowlist
+      of Slack hostnames (e.g. `slack.com`, `*.slack.com`) before
+      emitting the redirect; reject and log on mismatch. Cost is
+      one regex check; benefit is bounded blast radius if Slack's
+      contract changes or if an attacker compromises the bot's Slack
+      app to return crafted permalinks.
+    drift_class: open_redirect_class_slack_permalink_trusted_verbatim
+    provenance: |-
+      STATIC — primary-source in batch ZF DataCollaborationController
+      sidecar bugs_limitations_corner_cases[2] +
+      DataCollaborationController.java:42-48 +
+      SlackAPIClientImpl.java:83-95. Severity: MEDIUM.
+  - facet: OpenAPI declares 301 on redirect, controller emits 302
+    observed: |-
+      OpenAPI declares `301 Moved Permanently` for
+      `/api/messages/{message_id}/url` (openapi.yaml:1788-1789) but
+      the controller emits `HttpStatus.FOUND` (302) at
+      DataCollaborationController.java:45. The live api-reference doc
+      page (`https://docs.opendatadiscovery.org/developer-guides/api-reference/data-collaboration`,
+      WebFetched 2026-05-25 status 200) acknowledges the drift
+      explicitly. OpenAPI-codegen clients are wrongly typed for the
+      response; functional behaviour matches (browsers follow both
+      301 and 302).
+    expected: |-
+      Align spec and implementation — either change spec to 302 OR
+      change controller to 301. The semantic difference (301 implies
+      cacheable, 302 implies temporary) suggests 302 is correct;
+      spec should be updated.
+    drift_class: openapi_301_vs_impl_302_redirect_status_code_drift
+    provenance: |-
+      STATIC — primary-source in batch ZF DataCollaborationController
+      sidecar invariants[9] + openapi.yaml:1788-1789 +
+      DataCollaborationController.java:45. Severity: LOW (operator
+      consequence is OpenAPI-codegen client mis-typing).
+  - facet: getSlackChannels uses startsWith filter, not contains
+    observed: |-
+      SlackMessageProviderClient.java:52 invokes
+      `slackChannel.name().startsWith(nameLike)`. A user typing the
+      middle of a channel name (`platform` to find `#odd-platform-alerts`)
+      gets zero results despite the channel existing in the bot's
+      joined set. The UI's `useDebouncedCallback(500ms)`
+      (SlackChannelsAutocomplete.tsx:43-54) drives this filter on
+      every keystroke. UI ui_unverified: false here — the backend
+      semantics are unambiguous.
+    expected: |-
+      Either (a) change to `containsIgnoreCase(nameLike)` to match
+      the standard autocomplete UX expectation, OR (b) document the
+      prefix-only behaviour on the live Discussions doc page.
+    drift_class: slack_channel_autocomplete_starts_with_not_contains_filter
+    provenance: |-
+      STATIC — primary-source in batch ZF DataCollaborationController
+      sidecar invariants[5] + SlackMessageProviderClient.java:50-55.
+      Severity: LOW (UX defect).
+  - facet: 1-minute Caffeine cache for channels — fresh invites invisible for up to 60 seconds
+    observed: |-
+      SlackMessageProviderClient.java:36-44 builds an
+      AsyncLoadingCache with `expireAfterWrite(1, MINUTES)` and
+      `maximumSize(1)` keyed on a fixed sentinel string. The actual
+      `conversations.list` Slack API call (paginated 200/page at
+      SlackAPIClientImpl.java:26, 130-141) happens on cache miss.
+      Under a stale-cache window of up to 60 seconds, freshly-invited
+      or freshly-removed bot-channel membership is invisible to the
+      autocomplete. Combined with Slack's `excludeArchived(true)`
+      (line 131) + `filter(Conversation::isMember)` (line 45) +
+      `ConversationType.PUBLIC_CHANNEL` only (line 132), the autocomplete
+      shows ONLY active public channels the bot is in — fresh invites
+      take up to 60 seconds.
+    expected: |-
+      Document the cache TTL on the live Discussions doc page so
+      operators inviting the bot to a channel know to expect ~60s
+      propagation; OR shorten the TTL OR add a cache-bust on a
+      relevant Slack event.
+    drift_class: slack_channels_one_minute_caffeine_cache_stale_invites_invisible
+    provenance: |-
+      STATIC — primary-source in batch ZF DataCollaborationController
+      sidecar invariants[6] + SlackMessageProviderClient.java:36-44.
+      Severity: LOW (UX defect; operator-debug confusion).
+  - facet: non-UUID-v1 message_id returns 200 not 404 silent conflation
+    observed: |-
+      `messageId` MUST be a UUIDv1 — ReactiveMessageRepositoryImpl.getMessageProviderIdentity
+      (lines 171-185) binds an extra
+      `MESSAGE.CREATED_AT.eq(UUIDHelper.extractDateTimeFromUUID(messageId))`
+      condition (a covering-index assist). A non-v1 UUID extracts a
+      wrong timestamp, the WHERE clause fails, the inner Mono is
+      empty, and the redirect endpoint returns 200 OK with no body —
+      NOT 404. The path lacks any `switchIfEmpty(Mono.error(new
+      NotFoundException(...)))`.
+    expected: |-
+      Add explicit `switchIfEmpty(Mono.error(new NotFoundException(...)))`
+      after the repository lookup; return 404 with a clear error body.
+      Operators have a contract to distinguish "message doesn't exist"
+      from "redirect succeeded".
+    drift_class: non_uuid_v1_message_id_returns_200_not_404_silent_conflation
+    provenance: |-
+      STATIC — primary-source in batch ZF DataCollaborationController
+      sidecar invariants[8] + ReactiveMessageRepositoryImpl.java:171-185.
+      Severity: MEDIUM. Same family as F-004 silent-200 +
+      F-013 silent-200 patterns.
+  - facet: Slack at-least-once delivery has no idempotency, no unique constraint
+    observed: |-
+      Slack documents that the Events API retries undelivered events
+      for up to 3 attempts and may double-deliver under load
+      (https://api.slack.com/apis/events-api#retries). The
+      `message_provider_event` table (V0_0_59__data_collaboration.sql:25-39)
+      has no unique constraint on `(provider, event_id)` — `id` is
+      a BIGSERIAL and the only constraints are PK on `id` and FK on
+      `(parent_message_uuid, parent_message_created_at)`. The
+      repository INSERT (ReactiveMessageRepositoryImpl.java:136-155)
+      performs a plain INSERT with no ON CONFLICT clause. A duplicated
+      Slack delivery for the same `event_ts` inserts N rows; the
+      processor materialises N child message rows with N distinct
+      `message.uuid` values but the same `provider_message_id`.
+      Downstream `getUUIDByProviderInfo` does
+      `select uuid from message where provider_message_id = ? and
+      provider = ?` with no LIMIT 1 — multi-result returns an
+      arbitrary first row (order-undefined).
+    expected: |-
+      Add unique constraint on (provider, event_id) in
+      message_provider_event + ON CONFLICT DO NOTHING on insert.
+      This is the standard at-least-once-to-exactly-once pattern.
+    drift_class: at_least_once_slack_event_delivery_no_dedup_no_unique_constraint
+    provenance: |-
+      STATIC — primary-source in batch ZF EventApiController sidecar
+      bugs_limitations_corner_cases[2] +
+      ReactiveMessageRepositoryImpl.java:136-155 +
+      V0_0_59__data_collaboration.sql:25-39 +
+      DataCollaborationMessageEventProcessor.java:88-101. Severity:
+      HIGH (each duplicate delivery is silently materialised into
+      catalog rows).
+  - facet: malformed JSON request body produces undefined HTTP status
+    observed: |-
+      JSONSerDeUtils.deserializeJson (SlackEventParser.java:23) is
+      called inside `.map(slackEventParser::parse)` without a
+      try/catch; an IOException-class failure propagates as a reactive
+      error and the response shape is determined by the global Spring
+      WebFlux error handler. Untested, undocumented, and may return
+      a non-2xx response that Slack interprets as "retry this event".
+    expected: |-
+      Catch deserialization failures explicitly + return 200 (since
+      Slack will retry on non-2xx) + log the malformed payload for
+      operator diagnosis.
+    drift_class: malformed_json_request_body_undefined_http_status
+    provenance: |-
+      STATIC — primary-source in batch ZF EventApiController sidecar
+      bugs_limitations_corner_cases[5] + SlackEventParser.java:22-23.
+      Severity: MEDIUM.
+  - facet: unchecked inner-event cast throws ClassCastException
+    observed: |-
+      SlackEventParser.java:45 performs an unchecked cast
+      `(Map<String, Object>) requestMap.get("event")`; if a malicious
+      payload sends `event: "string-not-object"` or `event: 42`,
+      ClassCastException propagates from inside the parse step.
+      Same response-shape uncertainty as the malformed-JSON case.
+    expected: |-
+      Defensive `instanceof Map` check before the cast + return ack
+      on failure.
+    drift_class: unchecked_event_inner_cast_classcastexception_5xx
+    provenance: |-
+      STATIC — primary-source in batch ZF EventApiController sidecar
+      bugs_limitations_corner_cases[6] + SlackEventParser.java:45.
+      Severity: LOW.
+  - facet: unknown Slack event types silently filtered (log.debug only)
+    observed: |-
+      The Slack app manifest in the docs subscribes only to
+      `message.channels`, but additional event subscriptions configured
+      in the Slack UI but not handled in SlackEventParser are dropped
+      at `log.debug` level (SlackEventParser.java:38-43) with NO DLQ,
+      NO metric, NO operator-visible signal. The trade-off (silent
+      drop in exchange for no Slack retry storm) is intentional but
+      undocumented.
+    expected: |-
+      Either (a) document the silent-filter behaviour in the operator
+      docs + the Slack app manifest scope; OR (b) emit a metric
+      counter on dropped events + surface a CONFIG_WARNING-class
+      alert.
+    drift_class: unknown_event_type_silently_filtered_log_debug_only_no_metric
+    provenance: |-
+      STATIC — primary-source in batch ZF EventApiController sidecar
+      bugs_limitations_corner_cases[4] + SlackEventParser.java:38-43.
+      Severity: LOW.
+  - facet: live doc page for Data Collaboration feature returns 404
+    observed: |-
+      Live `https://docs.opendatadiscovery.org/active-platform-features/data-collaboration`
+      returns 404 (WebFetched 2026-05-25). Source markdown exists at
+      `documentation/docs/active-platform-features/data-collaboration.md`
+      but is not live-published. Operator Googling "odd discussions"
+      lands on broken pages. The configuration-and-deployment page
+      DOES document the feature ENABLE procedure (`#enable-data-collaboration`
+      anchor — WebFetched 200) including the Slack app manifest +
+      the request_url + the bot scopes — but is silent about
+      (a) the absence of signature verification, (b) the no-auth
+      whitelist on all 4 endpoints, (c) Slack's at-least-once
+      duplicate-row hazard.
+    expected: |-
+      Publish the source markdown to the live site; add the
+      load-bearing security caveats to the configure section
+      (signature verification absence + auth whitelist + duplicate
+      delivery hazard).
+    drift_class: active_platform_features_data_collaboration_feature_page_404_live_doc
+    provenance: |-
+      STATIC — primary-source in batch ZF DataCollaborationController
+      sidecar inferred_docs[0] + EventApiController sidecar
+      inferred_docs[1] (both WebFetched 2026-05-25 returned 404).
+      Severity: HIGH (operator-facing canonical home is broken).
+  - facet: incoming-webhook scope requested but unused — doc-vs-code drift
+    observed: |-
+      Live docs (configuration-and-deployment/odd-platform#enable-data-collaboration)
+      mention `incoming-webhook` as a requested bot scope in the Slack
+      app manifest but the code never uses Slack incoming webhooks
+      (the codebase uses chat.postMessage via the bot-user OAuth token
+      in SlackAPIClientImpl). The scope is requested but unused —
+      historical leftover or copy-paste from a Slack example manifest.
+    expected: |-
+      Remove the unused scope from the Slack app manifest in the docs.
+      Operators following the docs grant an unneeded permission.
+    drift_class: incoming_webhook_scope_requested_but_unused_doc_vs_code_drift
+    provenance: |-
+      STATIC — primary-source in batch ZF EventApiController sidecar
+      doc_drift_findings[1]. Severity: LOW.
+  - facet: under auth.type=DISABLED all four endpoints anonymously reachable
+    observed: |-
+      DisabledAuthSecurityConfiguration.java:13-17 sets
+      `.anyExchange().permitAll()`; under DISABLED ALL FOUR endpoints
+      reach the controller without auth. The feature flag
+      `datacollaboration.enabled` is the SOLE defence in DISABLED
+      mode — turning Discussions on in a DISABLED-mode deployment
+      publishes all four endpoints to the network. Combined with the
+      no-signature-verification on the events webhook + the
+      no-RBAC-gate on the outbound trio + the open-redirect on the
+      redirect endpoint, an attacker reaching the platform's port
+      can (a) enumerate the bot's channels, (b) post messages as the
+      bot to any joined channel, (c) follow redirect to any URL
+      Slack returns, AND (d) inject forged Slack events into the
+      catalog's message stream.
+    expected: |-
+      Documented operator-warning on the configuration page that
+      DISABLED + datacollaboration.enabled together expose the
+      4-endpoint surface unconditionally. The recommendation should
+      be: NEVER enable Discussions in DISABLED mode.
+    drift_class: under_disabled_auth_three_endpoints_anonymously_reachable_with_feature_flag_only_defence
+    provenance: |-
+      STATIC — primary-source in batch ZF DataCollaborationController
+      sidecar invariants[3] + AuthorizationCustomizer.java:20-30 +
+      DisabledAuthSecurityConfiguration.java:13-17. Severity: HIGH
+      (compound surface with findings 1 + 2 + 3 + 4).
+  surfaced_by:
+  - lineage/odd-platform/understanding/odd-platform__java__DataCollaborationController__controller-class__DataCollaborationController.md
+    (controller-class — outbound trio — batch ZF)
+  - lineage/odd-platform/understanding/odd-platform__java__EventApiController__controller-class__EventApiController.md
+    (controller-class — inbound webhook — batch ZF)
+  - lineage/odd-platform/understanding/odd-platform__java__DataCollaborationController__controller-method__postMessageInSlack.md
+    (controller-method — sender deep-dive — earlier batch)
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+    - SlackEventParser.parse — assert CHALLENGE / FILTER / ERROR / PAYLOAD classification on the 4 documented input shapes
+    - SlackEventParser malformed JSON — assert the IOException is caught + 200 ack returned (the explicit Slack retry contract)
+    - SlackEventParser unchecked inner-event cast — assert defensive instanceof check before cast
+    - DataCollaborationServiceImpl.resolveMessageUrl on non-UUIDv1 input — assert NotFoundException raised (the silent-200 fix)
+    - SlackMessageProviderClient.getChannels filter — assert containsIgnoreCase semantics (the startsWith fix)
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+    - 404 on all 4 endpoints when datacollaboration.enabled=false (class-gate)
+    - URL-verification CHALLENGE returns 200 with the echoed challenge value in a JSON body (the load-bearing Slack contract)
+    - thread-reply message event without thread_ts is FILTERed (acked, not enqueued)
+    - message_changed subtype with thread_ts enqueues UPDATE
+    - unknown outer event type / unknown inner event type / null inner event all return 200 (FILTER / ERROR)
+    - redirect happy path — UUIDv1 of an existing PENDING_SENT message → 302 with Location = slack.com permalink
+    - redirect status-code drift — assert response is 302 (de facto) vs OpenAPI 301
+    - duplicate Slack delivery — same event_id arriving twice inserts only one message_provider_event row (regression-pin after the unique-constraint fix)
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+    - Sustained Slack delivery burst (100 events/sec from a chatty workspace) — single-controller throughput, processor backlog growth
+    - Channel cache hit-vs-miss latency — measure the 60-second TTL boundary
+    - Concurrent postMessageInSlack — assert single-leader advisory-lock serialisation does not starve callers
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+    - Endpoint accepts forged POSTs from any internet caller (no X-Slack-Signature, no auth gate, path whitelisted) — the load-bearing untested behaviour
+    - DISABLED-mode anonymous reach across all 4 endpoints — regression-pin for the auth-mode bypass
+    - Open-redirect class — mock SlackAPIClient to return an attacker-controlled URL + assert controller 302s to that URL (the bug-class boundary)
+    - Slack OAuth token leak via /actuator/env — assert the property is masked + assert Spring's default Sanitizer applies
+    - Authorization regression — caller WITHOUT any specific RBAC permission successfully reaches all 4 endpoints under LOGIN_FORM/OAUTH2/LDAP (the read-collaborative posture pin)
+control_summary: |-
+  0 of 4 cells PROBED — NEW pillar-anchored feature minted in batch ZF
+  from the convergence of two controller-class sidecars
+  (DataCollaborationController + EventApiController) plus the earlier
+  postMessageInSlack method-tier sidecar. 15 load-bearing drift facets
+  cluster around SIX architectural concerns:
+
+  (1) **Security** — no Slack signature verification on the events
+      webhook; no RBAC gate on any of 4 endpoints; Slack OAuth token
+      has no rotation hook; DISABLED-mode publishes the 4-endpoint
+      surface anonymously. Combined this is the highest-leverage
+      finding cluster.
+  (2) **Open-redirect class** — redirect trusts Slack permalink
+      verbatim; no host/scheme/structure validation.
+  (3) **At-least-once delivery without idempotency** — schema lacks
+      unique constraint on (provider, event_id); duplicate Slack
+      deliveries materialise N child message rows.
+  (4) **Silent-200 conflations** — non-UUIDv1 message_id returns 200
+      not 404; malformed JSON returns undefined status; unchecked
+      cast throws ClassCastException; unknown event types silently
+      filtered without operator-visible signal.
+  (5) **UX defects on autocomplete** — startsWith not contains filter;
+      1-minute Caffeine cache + bot-must-be-invited gating.
+  (6) **Documentation absence** — live feature page returns 404;
+      configuration page documents the enable procedure but is silent
+      on the security caveats.
+
+  The HIGHEST-LEVERAGE probe candidates (deferred):
+
+  (a) **Signature verification probe** — local docker-compose
+      Discussions stack + curl-forged POST to /api/slack/events with
+      empty/missing X-Slack-Signature + assert the endpoint accepts
+      it; pins the current behaviour as a regression-pin AND becomes
+      the assertion-flip target after the fix.
+
+  (b) **DISABLED-mode anonymous reach probe** — local docker-compose
+      with `auth.type=DISABLED` + `datacollaboration.enabled=true` +
+      anonymous POSTs to all 4 endpoints + assert 200/202/302/200
+      responses; pins the bypass behaviour.
+
+  (c) **Duplicate delivery regression-pin** — local docker-compose +
+      curl two identical Slack events with the same event_id + count
+      message_provider_event rows in Postgres + assert exactly 2 are
+      inserted (pinning the current bug) + after the unique-constraint
+      fix the assertion flips to exactly 1.
+
+  Local docker-compose probe stack: ODD platform + Postgres +
+  MockServer for Slack API + a seeded `messages` row in PENDING_SENT
+  state for the redirect happy-path test. No external Slack workspace
+  required (all probes mock the SDK at the SlackAPIClient interface).
+
+  Cross-feature coherence: STRENGTHENS F-009 (WAL-driven outbound
+  alert fan-out) which is the SIBLING outbound-to-Slack feature on
+  the same pillar (P-07:F-002 vs P-07:F-006); the two features share
+  the Slack SDK dependency but have entirely different authentication
+  models (Slack webhook URL vs Slack OAuth bot token) and entirely
+  different reliability postures (in-process retry vs WAL-driven
+  fan-out). Cross-link to F-008 (Batch Ingestion) — both features
+  surface the REFACTOR-185 DISABLED-mode bypass cluster (this batch
+  adds the 20th-22nd surface — the 3 outbound + 1 inbound Data
+  Collaboration endpoints).
+related_refactoring_scopes:
+- REFACTOR-185  # DISABLED-mode bypass cluster — 20th-22nd surface added by Data Collaboration's 4 endpoints
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+- Data Collaboration
+- Discussions (Slack-integrated tab on Data Entity detail page)
+- Slack Events API receiver
+- Slack OAuth bot token
+- message / message_provider_event tables
+- DataCollaborationFeatureCondition (opt-in feature flag)
+- Caffeine LoadingCache (1-minute TTL on Slack channel listing)
+related_retrospectives:
+- LSN-001  # silent-insecure-default class-of-failure — datacollaboration.enabled=false ships safely but enabling it on a DISABLED-mode deployment publishes 4 endpoints
+related_probes: null
+probe_verifications: []
+related_features:
+- F-001  # Detail-page view tracking — Discussions tab is mounted on the same detail-page chrome
+- F-008  # Batch Ingestion — both features carry REFACTOR-185 DISABLED-mode bypass surfaces
+- F-009  # WAL-driven outbound alert fan-out — sibling Slack-outbound feature on same pillar (P-07)
+- F-006  # RBAC — Data Collaboration is the canonical case of "no per-feature permission family in the catalog"
+related_test_gaps_batch_zf_candidates:
+- TEST-GAP-NNN (SlackEventParser.parse 4-case classification — deferred to test-coverage-mapper reducer)
+- TEST-GAP-NNN (Signature verification regression-pin — deferred to test-coverage-mapper)
+- TEST-GAP-NNN (DISABLED-mode anonymous reach regression-pin for all 4 endpoints — deferred to test-coverage-mapper)
+- TEST-GAP-NNN (Duplicate Slack event delivery dedup regression-pin — deferred to test-coverage-mapper)
+- TEST-GAP-NNN (Open-redirect class probe — mock SlackAPIClient returns attacker-controlled URL — deferred to test-coverage-mapper)
+- TEST-GAP-NNN (Non-UUIDv1 message_id returns 200 not 404 regression-pin — deferred to test-coverage-mapper)
+related_doc_gaps_batch_zf_candidates:
+- DOC-GAP-NNN (live active-platform-features/data-collaboration returns 404 — feature's canonical home is broken; deferred to doc-gap-finder)
+- DOC-GAP-NNN (configuration-and-deployment/odd-platform#enable-data-collaboration silent on signature verification absence; deferred to doc-gap-finder)
+- DOC-GAP-NNN (configuration-and-deployment/odd-platform#enable-data-collaboration silent on auth-whitelist on all 4 endpoints; deferred to doc-gap-finder)
+- DOC-GAP-NNN (incoming-webhook scope requested in manifest but unused in code — doc/code drift; deferred to doc-gap-finder)
+- DOC-GAP-NNN (Permissions reference page silent on Data Collaboration — no DATA_COLLABORATION_* permission in the catalog; deferred to doc-gap-finder)
+- DOC-GAP-NNN (api-reference data-collaboration page acknowledges 301-vs-302 drift but doesn't say which is correct; deferred to doc-gap-finder)
+related_refactoring_scopes_batch_zf_candidates:
+- REFACTOR-NNN (Slack signature verification — implement HMAC-SHA256 verification of X-Slack-Signature; first-priority security finding)
+- REFACTOR-NNN (Unique constraint on message_provider_event(provider, event_id) + ON CONFLICT DO NOTHING; at-least-once-to-exactly-once)
+- REFACTOR-NNN (Open-redirect defence-in-depth — host allowlist on /api/messages/{uuid}/url redirects)
+- REFACTOR-NNN (DATA_COLLABORATION_{POST,READ,SEND} permission family OR documented read-collaborative posture)
+- REFACTOR-NNN (Non-UUIDv1 message_id explicit NotFoundException; same family as F-004 silent-200)
+- REFACTOR-NNN (Slack channel autocomplete startsWith → containsIgnoreCase OR documented prefix-only behaviour)
+maintainer_curated: false
+merge_candidate_with: null
+ui_incomplete: true
+ui_incomplete_note: |-
+  UI-tier sidecars are NOT yet enriched (CreateMessageForm.tsx +
+  SlackChannelsAutocomplete.tsx + Message.tsx are referenced by the
+  controller-class sidecars but not yet promoted to per-file sidecars).
+  Per APPROACH.md rule 18 + Rule 0b on UI-completeness: every drift
+  facet that depends on UI-layer meaning carries `ui_unverified: true`
+  where applicable. The 15 drift facets above are anchored on backend
+  primary source (controllers + services + repository + schema +
+  Slack SDK invocations); none depend on UI-layer meaning that would
+  flip the verdict under a different UI assumption. The feature is
+  status `ui-incomplete` for the purpose of upstream-flow completeness,
+  but the drift findings stand on backend evidence alone.

@@ -1,0 +1,166 @@
+---
+probe_id: P-134
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__SearchController__controller-class__SearchController
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-018
+test_class: integration
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category B + C): SearchController.getSearchSuggestions
+  promises "top five search suggestions for a given query" per
+  openapi.yaml:784. The implementation at
+  ReactiveDataEntityRepositoryImpl.java:470-513 orders the CTE by
+  RANK_FIELD_ALIAS DESC LIMIT 5, then the OUTER select re-orders by
+  rank DESC again. There is NO secondary tie-breaker.
+
+  Hypothesis: when 6+ data entities have IDENTICAL ts_rank values
+  (which happens easily with synonym-rich content — e.g. 10 entities
+  all named "users" matching the FTS query "users"), the top-5
+  returned is determined by Postgres storage/heap order — i.e. the
+  same query repeated may return DIFFERENT top-5 across calls. The
+  UI's SearchSuggestionsAutocomplete renders results in input order
+  via `filterOptions={option => option}` (line 206), so the user
+  sees a flickering / non-deterministic autocomplete on
+  synonym-rich catalogs.
+
+  PASS = top-5 is stable across repeat queries AND a no-op UPDATE
+  pass on the dataset. FAIL = top-5 changes between repeat queries
+  OR after no-op UPDATE — surface as Category B drift requiring
+  either (a) add ORDER BY DATA_ENTITY.ID DESC secondary key OR
+  (b) document the non-determinism on the (currently absent) live
+  doc page for /api/search/suggestions.
+---
+arrange:
+  - kind: docker-compose-up
+    services: [postgres, odd-platform-api]
+  - kind: sql
+    description: "Seed 10 data entities all matching the FTS query 'p134-users' with intentionally identical FTS rank (same searchable text)"
+    query: |
+      DELETE FROM search_entrypoint WHERE data_entity_id IN
+        (SELECT id FROM data_entity WHERE oddrn LIKE '//probe-source/p134/%');
+      DELETE FROM data_entity WHERE oddrn LIKE '//probe-source/p134/%';
+      INSERT INTO data_entity (id, oddrn, external_name, internal_name, data_source_id, type_id, entity_class_ids, status, hollow, manually_created, exclude_from_search, created_at, updated_at)
+      SELECT
+        20000 + i,
+        '//probe-source/p134/users-' || lpad(i::text, 2, '0'),
+        'p134 users entity ' || lpad(i::text, 2, '0'),
+        NULL,
+        1,
+        1,
+        ARRAY[1],
+        1,
+        false,
+        false,
+        false,
+        NOW() - (10 - i) * INTERVAL '1 minute',
+        NOW() - (10 - i) * INTERVAL '1 minute'
+      FROM generate_series(1, 10) AS i;
+      INSERT INTO search_entrypoint (data_entity_id, search_vector)
+      SELECT
+        20000 + i,
+        to_tsvector('english', 'p134 users entity ' || lpad(i::text, 2, '0'))
+      FROM generate_series(1, 10) AS i;
+  - kind: rest
+    description: "Authenticate via the active auth mode (LOGIN_FORM expected on odd-minimal). Adjust if DISABLED is the active mode."
+    method: POST
+    path: /login
+    body: |
+      username=admin&password=admin
+    headers:
+      Content-Type: "application/x-www-form-urlencoded"
+    capture_as: session_cookie
+act:
+  - kind: rest
+    description: "Query 1: baseline top-5 for 'p134'"
+    method: GET
+    path: /api/search/suggestions?query=p134
+    headers:
+      Cookie: "${session_cookie}"
+    capture_as: response_q1
+  - kind: rest
+    description: "Query 2: repeat — assert stability on unchanged dataset"
+    method: GET
+    path: /api/search/suggestions?query=p134
+    headers:
+      Cookie: "${session_cookie}"
+    capture_as: response_q2
+  - kind: sql
+    description: "No-op UPDATE pass to mutate heap layout without changing semantic content"
+    query: |
+      UPDATE data_entity SET updated_at = updated_at WHERE oddrn LIKE '//probe-source/p134/%';
+  - kind: rest
+    description: "Query 3: post-mutation — assert determinism survives no-op heap shuffle"
+    method: GET
+    path: /api/search/suggestions?query=p134
+    headers:
+      Cookie: "${session_cookie}"
+    capture_as: response_q3
+observe:
+  - kind: extract
+    from: response_q1
+    field: "[].id"
+    capture_as: ids_q1
+  - kind: extract
+    from: response_q2
+    field: "[].id"
+    capture_as: ids_q2
+  - kind: extract
+    from: response_q3
+    field: "[].id"
+    capture_as: ids_q3
+  - kind: sql
+    description: "Reference: ascending creation order (oldest first)"
+    query: |
+      SELECT id FROM data_entity WHERE oddrn LIKE '//probe-source/p134/%' ORDER BY created_at ASC LIMIT 5;
+    capture_as: creation_asc
+  - kind: sql
+    description: "Reference: descending id order (the typical heap-storage default for fresh inserts)"
+    query: |
+      SELECT id FROM data_entity WHERE oddrn LIKE '//probe-source/p134/%' ORDER BY id DESC LIMIT 5;
+    capture_as: id_desc
+assert:
+  - "ids_q1.length == 5  # top-5 limit honored"
+  - "ids_q1 == ids_q2  # stability across repeat queries on unchanged data"
+  - "ids_q1 == ids_q3  # stability survives no-op heap mutation"
+  - "if (ids_q1 != ids_q2 OR ids_q1 != ids_q3) then FAIL 'top-5 is non-deterministic — Category B drift confirmed; either add ORDER BY DATA_ENTITY.ID DESC secondary key OR document the non-determinism'"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM search_entrypoint WHERE data_entity_id IN
+        (SELECT id FROM data_entity WHERE oddrn LIKE '//probe-source/p134/%');
+      DELETE FROM data_entity WHERE oddrn LIKE '//probe-source/p134/%';
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__SearchController__controller-class__SearchController
+    - odd-platform__java__repository_reactive__repository__ReactiveDataEntityRepositoryImpl
+  retrospectives:
+    - LSN-019
+  features:
+    - F-018
+  drift_classes:
+    - undefined_suggestion_ordering_equal_rank_ties
+realism_caveats: |
+  The probe specifically targets the equal-rank-tiebreaker question.
+  It does NOT exercise:
+  - The truncation boundary at entities 6-10 (these are simply invisible)
+  - The interaction between ts_rank's underlying scoring formula and
+    document length / term frequency normalization
+  - The ENTITY_CLASS_IDS filter shape
+  - The manuallyCreated filter shape
+
+  If the assertions PASS, the top-5 is deterministically ordered by
+  some implementation-defined heap/index criterion that's stable on
+  this dataset; that's not a guarantee for all datasets but is a
+  practical pass. If the assertions FAIL, the methodology has
+  surfaced a Category B drift: the operator-visible autocomplete is
+  non-deterministic; fix by adding a secondary ORDER BY at the
+  ReactiveDataEntityRepositoryImpl.getQuerySuggestions OUTER select.
+
+  Authentication assumes LOGIN_FORM on odd-minimal; adjust for
+  DISABLED if that's the active mode.

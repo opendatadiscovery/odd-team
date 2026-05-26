@@ -1,0 +1,73 @@
+name: DataEntityList.pageInfo.hasNext is ALWAYS true — pagination-loop contract bug
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-11
+description: |-
+  NEW INVARIANT, batch ZE — DataEntityServiceImpl.findByState:192
+  constructs `new Page<>(dtos, total, true)` with `true` HARD-CODED
+  for the hasNext boolean, regardless of remaining rows. The mapper
+  DataEntityMapper.mapPojos writes the value into
+  DataEntityList.pageInfo.hasNext verbatim.
+
+  CATEGORY B DRIFT (Name/contract vs behaviour) — the OpenAPI
+  PageInfo schema at openapi.yaml:734-755 declares hasNext as a
+  boolean indicating whether MORE pages of results exist after the
+  returned page. The implementation lies; the contract is broken.
+
+  OPERATOR-VISIBLE CONSEQUENCES:
+    (a) Third-party API consumers using the OpenAPI contract
+        directly — mobile clients, CLI integrations, automated
+        tests, third-party catalog connectors — will
+        pagination-loop INDEFINITELY, fetching empty pages until
+        rate-limited or timed out.
+    (b) The UI compensates client-side at
+        dataentitiesSearch.thunks.ts:62-63 with
+        `hasNext: page * size < pageInfo.total` — operator-visible
+        UI behaviour is CORRECT, but the API contract is broken
+        for non-UI consumers.
+    (c) Documented PageInfo.hasNext shape in the OpenAPI spec is
+        a lie.
+
+  REACHED FROM: GET /api/search/{search_id}/results
+  (SearchController.getSearchResults), which is the canonical
+  surface where this manifests. Other DataEntityList responses
+  (e.g. /api/dataentities/my, /api/dataentities/popular) likely
+  share the bug because they route through the same
+  DataEntityServiceImpl.findByState wrapper.
+
+  Same shape as REFACTOR-024 / 053 (UI compensates for a backend
+  bug) but specifically on a documented OpenAPI response field.
+
+  FIX ANCHOR — DataEntityServiceImpl.java:192 change
+  `true` → `(page * size) < total`. Single-line fix; removes the
+  UI's client-side workaround AND honours the OpenAPI contract.
+
+  Severity: HIGH for third-party consumers; INVISIBLE for UI.
+axes_present:
+  - controllers
+  - services
+  - openapi_schemas
+  - ui_components
+nodes:
+  - odd-platform java SearchController controller-class:SearchController
+contributors:
+  - 'SearchController.md:concepts.invariants.[6] — hasNext: true ALWAYS regardless of remaining rows'
+  - 'SearchController.md:bugs_limitations_corner_cases.[1] — Category B drift'
+  - 'SearchController.md:stress_findings.name_behavior_pairs.[0] — DataEntityList.pageInfo.hasNext drift'
+evidence:
+  - SearchController.md:concepts.invariants.[6]
+  - SearchController.md:bugs_limitations_corner_cases.[1]
+  - SearchController.md:stress_findings.name_behavior_pairs.[0]
+notes: |-
+  Pairs with invariant:pagination-parameters-declared-but-unconstrained-at-spec-and-controller-layers
+  (size unbounded) and operation:get-search-suggestions-top-five
+  (a distinct pagination contract — top-5 hard truncation).
+  Distinct from `hasNext: false` early-stop semantics on
+  /api/dataentitygroups/{id}/lineage which has no pagination
+  at all.
+related_features: []
+related_pillar_features:
+  - P-01
+  - P-11

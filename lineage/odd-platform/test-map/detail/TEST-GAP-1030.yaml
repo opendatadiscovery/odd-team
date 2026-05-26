@@ -1,0 +1,42 @@
+gap_id: TEST-GAP-1030
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java org.opendatadiscovery.oddplatform.config.properties config-properties-class:GenAIProperties"
+  - "odd-platform java org.opendatadiscovery.oddplatform.controller controller:GenAIController"
+pillars_affected: [P-09, P-06]
+surfaced_by:
+  - "GenAIProperties.md:bugs_limitations_corner_cases.[5] (POJO carries no apiKey, no authToken, no model, no maxTokens, no provider, no rateLimit, no temperature — HIGH severity)"
+  - "GenAIProperties.md:bugs_limitations_corner_cases.[6] (No provider abstraction: QUERY_DATA = '/query_data' and QUESTION_FIELD = 'question' hardcoded — MEDIUM severity)"
+behaviour: |-
+  **`GenAIProperties` carries ONLY three fields (`enabled`, `url`, `requestTimeout`) — NO `apiKey`, NO `authToken`, NO `model`, NO `maxTokens`, NO `provider`, NO `rateLimit`, NO `temperature`.** Operators integrating ODD Platform's Gen AI Assistant with a paid LLM (OpenAI, Anthropic, Azure OpenAI, AWS Bedrock) MUST front the platform with their own auth-injecting proxy — there is no extension point in this POJO and `WebClientConfiguration.java:26-29` provides no `defaultHeader(HttpHeaders.AUTHORIZATION, ...)` and no `ExchangeFilterFunction` insertion hook.
+
+  Additionally, `GenAIServiceImpl.java:22-23` hardcodes `QUERY_DATA = "/query_data"` and `QUESTION_FIELD = "question"`. The implicit contract is "an unauthenticated HTTP service reachable on the platform's egress, accepting JSON `{"question": "..."}` at `{genai.url}/query_data` and returning a string body." Off-the-shelf LLM provider APIs (OpenAI Chat Completions, Anthropic Messages, Azure OpenAI) do NOT match this shape — they require auth headers, model parameters, and structured request schemas (`messages: [...]` for OpenAI, `messages: [...]` + `system: ...` for Anthropic).
+
+  The live docs page (verified via WebFetch in GenAIProperties sidecar) does NOT warn operators of:
+  1. The complete absence of credential-injection surface in `GenAIProperties`.
+  2. The hardcoded request path + field name making the feature un-pluggable to standard LLM SDKs.
+  3. The implication that any production deployment requires deploying a separate proxy service (a doc-gap class — operators discover this AFTER they've configured `genai.url` and the feature 401s on first request).
+
+  Test gap shape: security-class test asserting (a) `GenAIProperties` exposes no setter for `apiKey` / `authorization` / `model` (current absent-surface contract); (b) an integration test driving a real `POST /api/genai/ask` against a mock LLM endpoint that requires `Authorization: Bearer ...` — the request fails because no header is sent. Documents the proxy-required architecture.
+test_class: security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/GenAINoCredentialSurfaceTest.java"
+  name: "genAiProperties_exposesNoCredentialField_proxyRequiredArchitecture_pinsCurrentAbsentAuthSurface"
+evidence:
+  - 'GenAIProperties.md says (bugs_limitations_corner_cases.[5] verbatim): ''The POJO carries no `apiKey`, no `authToken`, no `model`, no `maxTokens`, no `provider`, no `rateLimit`, no `temperature`. Operators integrating with a paid LLM (OpenAI, Anthropic, Azure OpenAI) MUST front the platform with their own auth-injecting proxy — there is no extension point in this POJO.'''
+  - 'GenAIProperties.md says (bugs_limitations_corner_cases.[6] verbatim): ''The constants QUERY_DATA = "/query_data" and QUESTION_FIELD = "question" are hardcoded in GenAIServiceImpl.java:22-23. The POJO has no `endpoint` field to override the path and no `requestSchema` field to switch between provider request shapes.'''
+  - 'Verified: GenAIProperties.java:8-12 contains only 3 fields; WebClientConfiguration.java:26-29 has no defaultHeader/ExchangeFilterFunction'
+cross_references:
+  - "TEST-GAP-034 (GenAI request_timeout=0 LSN-002 — sister GenAI silent-misconfiguration gap)"
+  - "TEST-GAP-976 (GenAI no rate limit / DoS surface — sister missing-protection concern)"
+  - "concepts.yaml:entities[GenAI Assistant].security_aggregate.weaknesses.[No credential-injection surface — every paid-LLM deployment requires a proxy]"
+  - "DOC-NNN candidate: surface the proxy-required architecture on the live config page; document the implicit ODD-shape contract (POST /query_data with {question: ...})"
+  - "REFACTOR-NNN candidate: add `auth` block to GenAIProperties (apiKey, authHeader, customHeaders Map) + `requestSchema` field with values ODD | OPENAI | ANTHROPIC"
+related_features: [F-NNN]
+related_pillar_features: ["P-09:F-NNN"]
+proposed_action: |-
+  Two-test approach. **Test 1** — Compile-time reflection test verifying `GenAIProperties.class.getDeclaredFields()` has length 3 and contains exactly `enabled`, `url`, `requestTimeout`. Pin the current absent-surface contract. When the maintainer adds an `auth` field (REFACTOR-NNN), the test breaks deliberately and forces re-authoring with the new contract. **Test 2** — `@SpringBootTest` + WireMock for the genai backend; configure WireMock to require `Authorization: Bearer test-token` AND respond 401 if absent; drive `POST /api/genai/ask`; assert HTTP 500 from GenAIController (because the upstream 401'd). Demonstrates the proxy-required posture; pins the gap so a future credential-injection feature lands with full coverage.
+batch: 2026-05-26-ZK
+feature_id: null

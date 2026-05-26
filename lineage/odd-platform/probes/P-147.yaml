@@ -1,0 +1,103 @@
+---
+probe_id: P-147
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DataSetController__controller-class__DataSetController
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: security
+verified_against_commit: ede5d277
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category D — auth gate; Category F — dataEntityId promise):
+  the four DataSetController GETs declare a dataEntityId path parameter but
+  the service-layer / repository never re-checks that the version_id /
+  first_version_id / second_version_id requested actually belong to that
+  dataset. Concretely, ReactiveDatasetVersionRepositoryImpl.getDatasetVersion
+  is keyed on DATASET_VERSION.ID only (line 129) — the dataEntityId path
+  parameter is consumed by the controller and forwarded to the service, then
+  dropped at the repository layer.
+
+  Two operator-observable consequences this probe verifies:
+    (a) any authenticated user can request /api/datasets/{X}/structure/{V}
+        with any version_id V that belongs to a different dataset Y, and the
+        response is 200 with dataset Y's structure (a small data-exposure
+        leak; the path looks scoped, the response is not);
+    (b) /api/datasets/{X}/structure/diff?first_version_id=V1&second_version_id=V2
+        where V1 belongs to dataset X and V2 belongs to dataset Z computes a
+        cross-dataset diff (the service throws "Query returned N rows for diff
+        request" only when one of the version ids does NOT exist at all; two
+        existing ids from different datasets are returned and diffed).
+
+  Hypothesis: both (a) and (b) succeed. The dataEntityId path param is
+  documentation, not enforcement.
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: sql
+    query: |
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id)
+      VALUES (50001, '//probe-source/p147/dataset-a', 'p147_a', 1, 1),
+             (50002, '//probe-source/p147/dataset-b', 'p147_b', 1, 1)
+  - kind: sql
+    query: |
+      INSERT INTO dataset_version (id, dataset_oddrn, version, version_hash, created_at)
+      VALUES (50101, '//probe-source/p147/dataset-a', 1, 'hash-a-v1', NOW() - INTERVAL '2 hours'),
+             (50102, '//probe-source/p147/dataset-a', 2, 'hash-a-v2', NOW() - INTERVAL '1 hour'),
+             (50201, '//probe-source/p147/dataset-b', 1, 'hash-b-v1', NOW() - INTERVAL '30 minutes')
+  - kind: sql
+    query: |
+      INSERT INTO dataset_field (id, name, oddrn, type, is_key, is_value)
+      VALUES (50901, 'col_a', '//probe-source/p147/dataset-a/col_a', '{"type":"TYPE_STRING","logical_type":"text"}'::jsonb, false, true),
+             (50902, 'col_b', '//probe-source/p147/dataset-b/col_b', '{"type":"TYPE_NUMBER","logical_type":"int"}'::jsonb, false, true)
+  - kind: sql
+    query: |
+      INSERT INTO dataset_structure (dataset_version_id, dataset_field_id)
+      VALUES (50101, 50901), (50102, 50901), (50201, 50902)
+act:
+  - kind: rest
+    method: GET
+    path: /api/datasets/50001/structure/50201          # ds-A url, ds-B version
+    auth: any-authenticated-user
+    capture_as: cross_dataset_version_response
+  - kind: rest
+    method: GET
+    path: /api/datasets/50001/structure/diff?first_version_id=50101&second_version_id=50201
+    auth: any-authenticated-user
+    capture_as: cross_dataset_diff_response
+  - kind: rest
+    method: GET
+    path: /api/datasets/50001/structure/50101
+    auth: any-authenticated-user
+    capture_as: legitimate_response
+observe:
+  - kind: capture_http_status
+    of: cross_dataset_version_response
+    capture_as: cross_version_status
+  - kind: capture_http_status
+    of: cross_dataset_diff_response
+    capture_as: cross_diff_status
+  - kind: capture_http_status
+    of: legitimate_response
+    capture_as: legit_status
+assert:
+  - "legit_status == 200                                                      # baseline"
+  - "cross_version_status == 200                                              # drift hypothesis: cross-dataset version_id returns 200, not 404"
+  - "cross_dataset_version_response.dataSetVersion.id == 50201               # body shows ds-B's version even though ds-A is in URL"
+  - "any(f.name == 'col_b' for f in cross_dataset_version_response.fieldList) # field belongs to ds-B"
+  - "cross_diff_status == 200                                                 # drift hypothesis: cross-dataset diff returns 200"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars: [odd-platform__java__DataSetController__controller-class__DataSetController]
+  retrospectives: [LSN-020]
+realism_caveats: |
+  This probe verifies the per-endpoint exposure. It does NOT verify whether
+  this is actually exploited at scale (a real attacker would need to enumerate
+  version_ids from another dataset — feasible since version_id is bigserial
+  and sequential across the platform). The "leak" is on the order of "table
+  schema + field types + tag list + metadata + term linkage" — i.e. the full
+  DataSetStructure payload. No row-level data leaks; ODD does not store
+  dataset rows.

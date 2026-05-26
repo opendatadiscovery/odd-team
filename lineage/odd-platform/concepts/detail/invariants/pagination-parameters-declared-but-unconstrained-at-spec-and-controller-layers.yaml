@@ -36,6 +36,50 @@ description: |-
         pagination cost grows linearly with page because OFFSET = (page-1) * size
         forces Postgres to scan and discard rows before returning the
         window.
+
+  ## STRENGTHENED batch ZE (2026-05-25) — FOUR new surfaces
+
+  Batch ZE adds FOUR new pagination-unbounded surfaces, bringing the
+  cross-cutting pattern to 17+ surfaces:
+
+    (d) GET /api/titles (TitleController.getTitleList) — Integer page +
+        Integer size unannotated at controller; inherited
+        ReactiveAbstractCRUDRepository.list at line 91 computes
+        `paginate(..., (page-1)*size, size)` with no clamping. Title
+        directory is typically tens of rows but the same Integer-size
+        pattern is now class-wide via the abstract base class.
+        Operator-visible: an authenticated caller may pass
+        size=1_000_000 against any list-CRUD controller using the
+        base; the JVM materialises whatever Postgres returns.
+
+    (e) GET /api/relationships (RelationshipController.getRelationships)
+        — Integer page + Integer size unannotated;
+        ReactiveDataEntityRelationshipRepositoryImpl.java:79 computes
+        `(page - 1) * size` with no Math.max guard. page=0 →
+        offset = -size → Postgres rejects negative OFFSET with
+        `OFFSET must not be negative` → HTTP 500. Asymmetric to
+        the JavaScript 0-indexed convention; pinned by P-130.
+
+    (f) GET /api/search/{id}/results (SearchController.getSearchResults
+        — already in pattern but with the additional Category B
+        DRIFT: pageInfo.hasNext is hardcoded `true` regardless of
+        remaining rows per DataEntityServiceImpl.findByState:192.
+        Cross-link: invariant:has-next-true-contract-bug-pagination-loop
+        — pagination is unbounded AND the response lies about whether
+        more pages exist.
+
+    (g) GET /api/search/suggestions — NO pagination at all (top-5 hard
+        truncation via SUGGESTION_LIMIT=5 at
+        ReactiveDataEntityRepositoryImpl.java:92). Entities ranked
+        6+ are silently invisible. Distinct surface from (b) DEG-lineage
+        no-pagination — here the truncation is at the response-shape
+        layer (LIMIT 5 hard-coded), not at the spec layer.
+
+  Cumulative observation: the pillar-wide
+  ReactiveAbstractCRUDRepository.list at line 91 + the catalog-wide
+  components.yaml PageParam/SizeParam are the THREE common causes of
+  the cross-cutting weakness. A central fix at either layer would
+  close all 17+ surfaces atomically.
 axes_present:
   - openapi_tags
   - controllers
@@ -53,6 +97,9 @@ nodes:
   - odd-platform java DataEntityController controller-method:getMyObjectsWithUpstream
   - odd-platform java DataEntityController controller-method:getMyObjectsWithDownstream
   - odd-platform java DataEntityController controller-method:getDataEntityGroupsLineage
+  - odd-platform java SearchController controller-class:SearchController
+  - odd-platform java TitleController controller-class:TitleController
+  - odd-platform java RelationshipController controller-class:RelationshipController
 contributors:
   - openapi-tag:alert.implicit_adrs (page/size are required int32 with no min/max/default)
   - openapi-tag:dataEntity.implicit_adrs[1]
@@ -73,47 +120,32 @@ contributors:
     but no @Min/@Max — same shape as REFACTOR-024; size=1_000_000
     accepted structurally
   - |-
-    **batch L STRENGTHENS** —
-    getDataEntityAlerts.bugs_limitations_corner_cases.[2]: pagination
-    parameters are unbounded at every layer this method touches.
+    batch L STRENGTHENS — getDataEntityAlerts.bugs_limitations_corner_cases.[2]:
+    pagination parameters are unbounded at every layer this method touches.
     components.yaml:4213-4229 has no minimum/maximum; controller's
     Integer page, Integer size are unannotated; repository computes
     OFFSET=(page-1)*size at ReactiveAlertRepositoryImpl.java:189 with no
     clamping. AMPLIFIED RISK — the audit-export workaround on the
-    alerting page recommends this endpoint and operators will use large
-    pages for complete exports.
+    alerting page recommends this endpoint.
   - |-
-    **NEW batch M STRENGTHENS** —
-    getMyObjectsWithUpstream.bugs_limitations_corner_cases.[5,6]:
-    pagination unbounded + NO ORDER BY on listByOddrns produces UNSTABLE
-    pagination across consecutive requests (a new failure mode this
-    invariant did not previously capture). evidence:
-    ReactiveDataEntityRepositoryImpl.java:247-250.
+    NEW batch M STRENGTHENS — getMyObjectsWithUpstream + getMyObjectsWithDownstream
+    + getDataEntityGroupsLineage + facets (4 new surfaces). UNSTABLE-pagination
+    (no ORDER BY on listByOddrns); NO-PAGINATION-AT-ALL (DEG lineage);
+    DEEP-PAGINATION-COST-AMPLIFIED (facet drill-downs).
   - |-
-    **NEW batch M STRENGTHENS** —
-    getMyObjectsWithDownstream.bugs_limitations_corner_cases.[3,4]:
-    page=0 produces negative SQL offset → 500 instead of 400; unbounded
-    size at listByOddrns. Same shape as the upstream sibling.
+    NEW batch ZE STRENGTHENS — SearchController class-level confirms
+    all 7 endpoints (search/results/facets/facet-options/suggestions/highlight)
+    inherit the unbounded pagination from the AbstractCRUDRepository base
+    AND from the components.yaml PageParam/SizeParam. Plus Category B
+    DRIFT on hasNext: hardcoded true regardless of remaining rows.
   - |-
-    **NEW batch M STRENGTHENS** —
-    getDataEntityGroupsLineage.bugs_limitations_corner_cases.[8]: NO
-    pagination AT ALL on this endpoint — no lineage_depth, no
-    expanded_entity_ids, no page/size; the response shape is bounded
-    only by the DEG member cardinality. A new failure mode for the
-    pattern: pagination is unconstrained AT THE SPEC LEVEL because the
-    endpoint declares NO parameters. evidence:
-    openapi.yaml:2418-2433 (no parameters declared).
+    NEW batch ZE STRENGTHENS — TitleController.getTitleList Integer size
+    unannotated; ReactiveAbstractCRUDRepository.list line 91 same shape.
+    Pillar-wide via the abstract base class.
   - |-
-    **NEW batch M STRENGTHENS** —
-    facets.bugs_limitations_corner_cases.[3]: pagination on
-    getFiltersForFacet is unbounded at every layer — controller params
-    Integer page, Integer size are unannotated; PageParam/SizeParam in
-    components.yaml have no minimum/maximum; the repository computes
-    OFFSET = (page - 1) * size at multiple sites (lines 129, 157, 315,
-    369, 404, 449, 515) with no clamping. Same shape as all sibling
-    endpoints. evidence: SearchController.java:33-34 +
-    components.yaml:4213-4229 + ReactiveSearchFacetRepositoryImpl.java:129
-    (and 6 other sites).
+    NEW batch ZE STRENGTHENS — RelationshipController.getRelationships
+    page=0 produces offset=-size; ReactiveDataEntityRelationshipRepositoryImpl
+    line 79; pinned by P-130.
 evidence:
   - openapi-tag-alert.md:performance.known_performance_gaps.[0]
   - openapi-tag-dataEntity.md:performance.known_performance_gaps.[3]
@@ -122,60 +154,49 @@ evidence:
   - getAllAlerts.md:bugs_limitations_corner_cases.[1]
   - getActivity.md:bugs_limitations_corner_cases.[3]
   - search.md:performance.known_performance_gaps.[1] + scaling_characteristics
+  - getDataEntityAlerts.md:bugs_limitations_corner_cases.[2] + performance.known_performance_gaps.[0]
+  - getMyObjectsWithUpstream.md:bugs_limitations_corner_cases.[5,6]
+  - getMyObjectsWithDownstream.md:bugs_limitations_corner_cases.[3,4]
+  - getDataEntityGroupsLineage.md:bugs_limitations_corner_cases.[8]
+  - facets.md:bugs_limitations_corner_cases.[3]
   - |-
-    getDataEntityAlerts.md:bugs_limitations_corner_cases.[2] +
-    performance.known_performance_gaps.[0] (batch L — the audit-export
-    workaround AMPLIFIES the risk)
+    NEW batch ZE
+    odd-platform__java__SearchController__controller-class__SearchController.md
+    bugs_limitations_corner_cases.[4] + concepts.invariants.[5]
   - |-
-    **NEW batch M**
-    getMyObjectsWithUpstream.md:bugs_limitations_corner_cases.[5,6] +
-    performance.known_performance_gaps.[*]
+    NEW batch ZE
+    odd-platform__java__TitleController__controller-class__TitleController.md
+    bugs_limitations_corner_cases.[1,2]
   - |-
-    **NEW batch M**
-    getMyObjectsWithDownstream.md:bugs_limitations_corner_cases.[3,4] +
-    performance.*
-  - |-
-    **NEW batch M**
-    getDataEntityGroupsLineage.md:bugs_limitations_corner_cases.[8] +
-    performance.scaling_characteristics
-  - |-
-    **NEW batch M** facets.md:bugs_limitations_corner_cases.[3] +
-    performance.known_performance_gaps.[0]
+    NEW batch ZE
+    odd-platform__java__RelationshipController__controller-class__RelationshipController.md
+    bugs_limitations_corner_cases.[2] + stress_findings.tunables.[0]
 notes: |-
-  **STRENGTHENED batch 2026-05-19M to 13-surface pattern**. Batch M adds
-  FOUR new surfaces (the anchor-set-defence audit family) bringing the
-  cross-cutting pagination weakness count from 9 to 13. Three new
-  observation modes batch M surfaces:
-    (a) UNSTABLE-pagination — /my/upstream + /my/downstream lack ORDER BY
-        on the final listByOddrns scan; consecutive pages may overlap or
-        skip entries even WITHOUT size manipulation;
-    (b) NO-PAGINATION-AT-ALL — /api/dataentitygroups/{id}/lineage has NO
-        parameters declared in the OpenAPI spec; the response shape is
-        bounded only by the DEG member cardinality + edge count; a
-        bug-class-of-its-own for unbounded responses;
-    (c) DEEP-PAGINATION-COST-AMPLIFIED — facet drill-downs at
-        getFiltersForFacet use OFFSET-based pagination at 7+ sites in the
-        repository; deep pagination cost grows linearly with page.
-
-  STRENGTHENED batch 2026-05-19L with the per-entity-alerts surface
-  (P-07-shaped). The audit-export-workaround amplification on
-  getDataEntityAlerts is the most operationally-significant
-  single-surface observation pre-batch-M.
+  STRENGTHENED batch 2026-05-19M to 13-surface pattern. STRENGTHENED batch
+  ZE to 17+ surface pattern. The repository-wide
+  ReactiveAbstractCRUDRepository.list at line 91 + components.yaml
+  PageParam/SizeParam are the load-bearing structural sources. A
+  central fix at either layer would close all 17+ surfaces atomically.
 
   Recommended cleanup paths (in increasing scope):
     - Document a recommended size value on the audit-export workaround
       section of the alerting page (operator-facing immediate fix).
     - Add @Min/@Max validation annotations to controller params at every
       list-shape endpoint.
-    - **NEW batch M** — Add stable ORDER BY (e.g. ORDER BY id ASC) to
-      listByOddrns at ReactiveDataEntityRepositoryImpl.java:247-250
-      — single-line fix that addresses the unstable-pagination failure
-      mode at the /my/upstream and /my/downstream endpoints.
-    - **NEW batch M** — Add page/size parameters to the DEG-lineage
-      OpenAPI spec at openapi.yaml:2418-2433 + the controller — closes the
-      no-pagination-at-all failure mode on the WIDEST-BLAST DEG-anchored
-      surface.
+    - NEW batch M — Add stable ORDER BY (e.g. ORDER BY id ASC) to
+      listByOddrns at ReactiveDataEntityRepositoryImpl.java:247-250.
+    - NEW batch M — Add page/size parameters to the DEG-lineage
+      OpenAPI spec at openapi.yaml:2418-2433.
+    - NEW batch ZE — Fix DataEntityServiceImpl.findByState:192 to
+      compute `hasNext = (page * size) < total` instead of hard-coded
+      true (resolves the Category B drift on /api/search/{id}/results).
     - Standardise a service-layer clamp helper that every paginated
       controller method invokes.
     - Constrain the OpenAPI PageParam / SizeParam at the spec level
       (would require regenerating clients).
+related_features: []
+related_pillar_features:
+  - P-01
+  - P-02
+  - P-08
+  - P-11

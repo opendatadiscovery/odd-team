@@ -1,0 +1,185 @@
+---
+probe_id: P-153
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DatasetFieldController__controller-class__DatasetFieldController
+emitted_at: 2026-05-25T17:50:00Z
+status: pending-stress-protocol
+feature_id: F-004
+test_class: security
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress questions surfaced by Category D (authorization) on
+  DatasetFieldController: two coupled permission-wiring bugs at
+  SecurityConstants.java:295-303.
+
+  (a) /api/datasetfields/{id}/terms POST is wired in code to
+      DATA_ENTITY_ADD_TERM (SecurityConstants.java:297-299) but the
+      published permission catalog at
+      https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions
+      declares DATASET_FIELD_ADD_TERM as the gate.
+
+  (b) /api/alerts/{alert_id}/status PUT is wired to DATASET_FIELD_ADD_TERM
+      (SecurityConstants.java:295-296) — copy-paste leak from the
+      dataset-field auth block immediately preceding it; the published
+      permission catalog declares DATA_ENTITY_ALERT_RESOLVE as the
+      natural gate for alert state mutation.
+
+  Hypothesis: a user assigned exactly ONE of (DATA_ENTITY_ADD_TERM,
+  DATASET_FIELD_ADD_TERM) experiences a permission matrix that contradicts
+  the documented model. Specifically:
+
+   - User holding DATA_ENTITY_ADD_TERM but NOT DATASET_FIELD_ADD_TERM
+     CAN add a term to a dataset field (because code wires the endpoint
+     to DATA_ENTITY_ADD_TERM) — but the docs say they cannot.
+   - User holding DATASET_FIELD_ADD_TERM but NOT DATA_ENTITY_ADD_TERM
+     CANNOT add a term to a dataset field — but the docs say they can.
+   - User holding ONLY DATASET_FIELD_ADD_TERM (and no ALERT permission)
+     CAN resolve alerts via PUT /api/alerts/{id}/status — a permission
+     the docs do not connect to alert resolution.
+
+  This probe asserts each of those mismatches at the HTTP boundary,
+  pinning the bugs from the operator's perspective rather than from
+  inspection of SecurityConstants.java alone.
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: sql
+    description: Two policies, one granting DATA_ENTITY_ADD_TERM only, one granting DATASET_FIELD_ADD_TERM only
+    query: |
+      INSERT INTO policy (id, name, statement, created_at, updated_at) VALUES
+        (9101, 'policy-only-de-addterm',
+         '{"statements":[{"resource":{"type":"DATA_ENTITY"},
+                          "permissions":["DATA_ENTITY_ADD_TERM"]}]}'::jsonb,
+         NOW(), NOW()),
+        (9102, 'policy-only-df-addterm',
+         '{"statements":[{"resource":{"type":"DATA_ENTITY"},
+                          "permissions":["DATASET_FIELD_ADD_TERM"]}]}'::jsonb,
+         NOW(), NOW())
+  - kind: sql
+    description: Two roles, each bound to one policy
+    query: |
+      INSERT INTO role (id, name, created_at, updated_at) VALUES
+        (9201, 'role-only-de-addterm', NOW(), NOW()),
+        (9202, 'role-only-df-addterm', NOW(), NOW());
+      INSERT INTO role_to_policy (role_id, policy_id) VALUES
+        (9201, 9101),
+        (9202, 9102);
+  - kind: sql
+    description: Two owners, each bound to one role; user-owner-mapping binds test users to their owners
+    query: |
+      INSERT INTO owner (id, name, created_at, updated_at) VALUES
+        (9301, 'owner-only-de-addterm', NOW(), NOW()),
+        (9302, 'owner-only-df-addterm', NOW(), NOW());
+      INSERT INTO role_to_owner (role_id, owner_id) VALUES
+        (9201, 9301),
+        (9202, 9302);
+      INSERT INTO user_owner_mapping (owner_id, oidc_username) VALUES
+        (9301, 'user-only-de-addterm'),
+        (9302, 'user-only-df-addterm');
+  - kind: sql
+    description: A dataset entity + field + term + open alert
+    query: |
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, created_at)
+      VALUES (9401, '//probe-source/p-153/ds', 'p153_ds', 1, 3, NOW());
+
+      INSERT INTO dataset_version (id, dataset_oddrn, version, version_hash, created_at)
+      VALUES (9501, '//probe-source/p-153/ds', 1, 'h1', NOW());
+
+      INSERT INTO dataset_field (id, oddrn, name, type, dataset_version_id, created_at)
+      VALUES (9601, '//probe-source/p-153/ds/col1', 'col1',
+              '{"type":"TYPE_STRING"}'::jsonb, 9501, NOW());
+
+      INSERT INTO term (id, name, namespace_id, created_at, updated_at)
+      VALUES (9701, 'probe-term', 1, NOW(), NOW());
+
+      INSERT INTO alert (id, data_entity_id, status, type, last_created_at, created_at)
+      VALUES (9801, 9401, 'OPEN', 'BACKWARDS_INCOMPATIBLE_SCHEMA', NOW(), NOW())
+act:
+  - kind: rest
+    description: Arm 1 — User with ONLY DATA_ENTITY_ADD_TERM adds a term to a dataset field
+    method: POST
+    path: /api/datasetfields/9601/terms
+    auth_as: user-only-de-addterm
+    body: '{"termId": 9701}'
+    capture_as: arm1_response
+    capture_status_as: arm1_status
+  - kind: sql
+    description: Cleanup before arm 2 — remove any successful link from arm 1
+    query: DELETE FROM dataset_field_to_term WHERE dataset_field_id = 9601 AND term_id = 9701
+  - kind: rest
+    description: Arm 2 — User with ONLY DATASET_FIELD_ADD_TERM adds a term to a dataset field
+    method: POST
+    path: /api/datasetfields/9601/terms
+    auth_as: user-only-df-addterm
+    body: '{"termId": 9701}'
+    capture_as: arm2_response
+    capture_status_as: arm2_status
+  - kind: rest
+    description: Arm 3 — User with ONLY DATASET_FIELD_ADD_TERM resolves an alert
+    method: PUT
+    path: /api/alerts/9801/status
+    auth_as: user-only-df-addterm
+    body: '{"status": "RESOLVED"}'
+    capture_as: arm3_response
+    capture_status_as: arm3_status
+observe:
+  - kind: sql
+    query: SELECT count(*) AS n FROM dataset_field_to_term WHERE dataset_field_id = 9601 AND term_id = 9701
+    capture_as: link_rows_after_arms
+  - kind: sql
+    query: SELECT status FROM alert WHERE id = 9801
+    capture_as: alert_status_after_arm3
+assert:
+  - "arm1_status == 200  # DOCS_VS_CODE_DRIFT: docs say DE_ADD_TERM should NOT gate this; code wires it"
+  - "arm2_status == 403  # DOCS_VS_CODE_DRIFT: docs say DF_ADD_TERM SHOULD gate this; code rejects"
+  - "arm3_status == 200  # COPY_PASTE_BUG: DF_ADD_TERM should NOT gate alert-status; code wires it"
+  - "alert_status_after_arm3 == 'RESOLVED'  # confirms alert mutation happened under wrong permission"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM dataset_field_to_term WHERE dataset_field_id = 9601;
+      DELETE FROM dataset_field WHERE id = 9601;
+      DELETE FROM dataset_version WHERE id = 9501;
+      DELETE FROM alert WHERE id = 9801;
+      DELETE FROM data_entity WHERE id = 9401;
+      DELETE FROM term WHERE id = 9701;
+      DELETE FROM user_owner_mapping WHERE owner_id IN (9301, 9302);
+      DELETE FROM role_to_owner WHERE role_id IN (9201, 9202);
+      DELETE FROM role_to_policy WHERE role_id IN (9201, 9202);
+      DELETE FROM owner WHERE id IN (9301, 9302);
+      DELETE FROM role  WHERE id IN (9201, 9202);
+      DELETE FROM policy WHERE id IN (9101, 9102)
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DatasetFieldController__controller-class__DatasetFieldController
+    - odd-platform__java__AlertController__controller-method__changeAlertStatus
+  retrospectives:
+    - LSN-020
+  documents:
+    - https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions
+realism_caveats: |
+  The probe pins three documented permission-vs-implementation drifts. If all
+  three asserts PASS, the SecurityConstants wiring at lines 295-303 is
+  authoritatively broken per the documented permission model. If arm2 PASSES
+  (status 200) instead of FAILING (403), it means there is some additional
+  permission resolution path that I missed (e.g. a fallback at the
+  ReactiveResourcePermissionAuthorizationManager level that re-checks against
+  the documented permission name) — re-read SecurityConstants.java and
+  ReactiveResourcePermissionAuthorizationManager carefully.
+
+  The probe does NOT verify the FOURTH question of Category D — the auth-mode
+  matrix (DISABLED, LOGIN_FORM, OAUTH2, LDAP). The asserts assume LOGIN_FORM
+  is active; a separate probe would iterate the auth.type configurations. The
+  wiring bug is auth-mode-independent (it lives in SecurityConstants which is
+  mode-invariant), so the bug-pinning asserts hold across all four modes.
+
+  The probe inserts test fixtures (owners 9301, 9302, role/policy 9101, 9102,
+  data entity 9401, etc.) in the 9000-range to minimise collision with
+  existing seed data; cleanup is correspondingly id-scoped.
+
+  The probe relies on probe-runner's local-only stack (Testcontainers + docker
+  compose); per Rule 8 no remote infrastructure is invoked.

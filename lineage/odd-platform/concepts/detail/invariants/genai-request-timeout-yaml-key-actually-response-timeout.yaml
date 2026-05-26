@@ -1,0 +1,166 @@
+name: 'genai.request_timeout YAML key actually wires Reactor Netty responseTimeout — DRIFT_NAME_VS_BEHAVIOR'
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-08
+description: |-
+  **NEW INVARIANT, batch ZK (2026-05-26) — focused DRIFT_NAME_VS_BEHAVIOR
+  pin at the operator-facing GenAI config key.**
+
+  The operator-facing YAML key `genai.request_timeout` (and the
+  `GENAI_REQUEST_TIMEOUT` env-var equivalent) carries a name that
+  promises: 'how long the platform spends SENDING the request to the
+  external AI service' — a request-side budget that an operator
+  reasonably interprets as `connect timeout + send timeout`.
+
+  The IMPLEMENTATION at `WebClientConfiguration.java:23` wires the value
+  into Reactor Netty's `HttpClient.responseTimeout(Duration.ofMinutes(N))`
+  — which is the RESPONSE timeout, i.e. how long to wait for a REPLY
+  AFTER the request has been sent. The actual request-side timeout
+  (connect + send) uses Reactor Netty's defaults — there is no
+  operator-tunable knob for the SENDING side anywhere in the platform.
+
+  **THE OPERATOR-VISIBLE CONSEQUENCE**:
+
+  - An operator who sets `genai.request_timeout=5` expecting "fail fast
+    if the request takes more than 5 minutes to SEND" actually gets
+    "wait up to 5 minutes for the external AI service to REPLY".
+  - For LLMs (where the wait is almost entirely server-side processing
+    time), the practical result is close to the operator's intent —
+    most users perceive the timeout as "how long until I give up".
+  - BUT a misconfigured downstream proxy that HANGS at the TCP/TLS
+    handshake stage is NOT governed by `genai.request_timeout`; it is
+    governed by Reactor Netty's defaults (the connect timeout is
+    typically 30s on Reactor Netty). The operator's mental model
+    breaks for this failure-mode class.
+
+  **THE LIVE DOC PAGE DOES NAME THE CORRECTION**: WebFetch
+  `/configuration-and-deployment/odd-platform#genai-configuration`
+  2026-05-26 (HTTP 200) describes the field as "outbound response
+  timeout, **in minutes**" — which is the SDK call's actual behaviour.
+  The YAML key + Java field name preserve the misleading promise; the
+  doc page corrects it.
+
+  THE DRIFT IS THEREFORE: doc page is CORRECT; YAML key + Java field
+  name are MISLEADING. An operator copying the YAML key from
+  `application.yml.example` or env-var documentation without reading
+  the prose paragraph inherits the misleading semantic.
+
+  **CONNECTION TO LSN-002**: this invariant is a sibling case to the
+  GenAIProperties `requestTimeout=0` silent-misconfiguration finding
+  (the
+  `lsn-002-class-primitive-default-ships-disabled-but-broken-when-enabled`
+  invariant's GenAIProperties.requestTimeout instance). Both findings
+  trace to the same Java field at `GenAIProperties.java:11`:
+    - LSN-002 angle: `private int` default `0` → `Duration.ofMinutes(0)` →
+      immediate-timeout silent misconfiguration when operator sets
+      `genai.enabled=true` without `genai.request_timeout`.
+    - THIS invariant: even when the operator DOES set a positive value,
+      the field's NAME promises a different semantic than the
+      implementation delivers.
+
+  **CROSS-CUTTING CONNECTIONS**:
+
+    - Pairs with the LSN-002-class invariant — same line, different
+      angle (silent-misconfiguration when unset vs name-vs-behavior
+      when set).
+    - Pairs with the `partial-home-configurationproperties-pattern` —
+      GenAIProperties is NOT a partial-home instance (it binds all 3
+      keys in the `genai.*` prefix), but the field-name-vs-SDK-call
+      drift is a DIFFERENT kind of misalignment that travels with
+      ConfigurationProperties POJOs (the typed binding does NOT enforce
+      semantic alignment between the field name and the SDK call site).
+
+  **FIX SHAPES**:
+
+  Option A (least disruptive — docs-side only):
+    Update the live doc to call out the name vs implementation
+    explicitly: "The YAML key `genai.request_timeout` controls the
+    response-wait timeout, NOT the send timeout. Reactor Netty's
+    default connect+send timeouts apply to the request-side."
+
+  Option B (deprecate-rename — operator-facing):
+    Rename the YAML key to `genai.response_timeout` over a deprecation
+    window, accepting both names during the transition. The Java
+    field follows. The migration cost is small; the operator-visible
+    contract becomes self-explanatory.
+
+  Option C (add a second knob):
+    Add a separate `genai.connect_timeout` / `genai.request_send_timeout`
+    field bound to Reactor Netty's connect/send timeouts. Closes the
+    handshake-hang loophole + makes the operator surface complete.
+
+  Severity: MEDIUM — DRIFT_NAME_VS_BEHAVIOR; operator-confusion-class
+  rather than data-loss. Bounded by the fact that the live docs page
+  DOES correct the name; operators reading the docs page learn the
+  correct semantic.
+nodes:
+  - odd-platform java org.opendatadiscovery.oddplatform.config.properties config-properties-class:GenAIProperties
+  - odd-platform java org.opendatadiscovery.oddplatform.config config-class:WebClientConfiguration
+contributors:
+  - |-
+    GenAIProperties REV-2.md (batch ZK NEW — PRIMARY-SOURCE pin from
+    the config-properties-class angle):
+    bugs_limitations_corner_cases.[4] MEDIUM (field-name vs SDK-call
+    drift — the load-bearing finding);
+    stress_findings.name_behavior_pairs.[requestTimeout / genai.request_timeout]
+    DRIFT_NAME_VS_BEHAVIOR with formal classification;
+    docs_link_semantic.doc_drift_findings.[1] (the YAML key + Java field
+    name preserve the misleading promise; the live doc page corrects
+    it to 'outbound response timeout' — naming-vs-behaviour drift class)
+evidence:
+  - 'GenAIProperties.md:bugs_limitations_corner_cases.[4] — field-name vs SDK-call drift between `requestTimeout` and `HttpClient.responseTimeout(...)`'
+  - 'GenAIProperties.md:stress_findings.name_behavior_pairs.[requestTimeout-vs-responseTimeout] — DRIFT_NAME_VS_BEHAVIOR with operator-visible-consequence narrative'
+  - 'GenAIProperties.md:docs_link_semantic.doc_drift_findings.[1] — doc page describes the field correctly as "outbound response timeout"; YAML key preserves the misleading semantic'
+  - 'GenAIProperties.md:dependencies_semantic.requires-runtime — the wiring chain GenAIProperties.requestTimeout → WebClientConfiguration.java:23 .responseTimeout(...)'
+  - WebClientConfiguration.java:23 (cited at the SDK-call site by GenAIProperties.md)
+axes_present:
+  - config_classes
+  - config_properties
+triangulation_count: 1
+cross_batch: false
+severity: MEDIUM
+severity_dim: name-vs-behavior-drift
+mitigations_unimplemented:
+  - |-
+    Docs-side: update the live `/configuration-and-deployment/odd-platform#genai-configuration`
+    page to surface the name-vs-implementation point explicitly — call
+    out "the YAML key `genai.request_timeout` controls the
+    response-wait timeout, NOT the send timeout".
+  - |-
+    Optional rename: deprecate `genai.request_timeout` → introduce
+    `genai.response_timeout` over a transition window; accept both
+    names; document the deprecation cycle. The Java field follows.
+  - |-
+    Add a second knob (`genai.connect_timeout` or equivalent) bound
+    to Reactor Netty's connect timeout — closes the handshake-hang
+    loophole that the current key cannot address.
+  - |-
+    Add an integration test asserting that a configured
+    `genai.request_timeout=N` minutes wires the actual
+    `HttpClient.responseTimeout(Duration.ofMinutes(N))` SDK call (pin
+    the current behaviour explicitly so a future rename / refactor
+    cannot silently change the semantic).
+related_features: []
+related_pillar_features:
+  - P-08
+notes: |-
+  NEW invariant batch ZK (2026-05-26). The first focused
+  DRIFT_NAME_VS_BEHAVIOR pin at the operator-facing GenAI config-key
+  layer. Sibling to the LSN-002 instance at the same field
+  (GenAIProperties.java:11) but DIFFERENT failure mode — LSN-002
+  captures unset-default silent-misconfiguration; THIS invariant
+  captures the name-vs-behavior drift when the operator DOES set a
+  positive value.
+
+  Three DOC-NNN candidates:
+    (a) Docs-side: explicit name-vs-implementation admonition on the
+        GenAI configuration page
+    (b) Optional rename to `genai.response_timeout` over a deprecation
+        cycle
+    (c) Add a second knob for the connect/send timeout side that the
+        current key cannot address
+
+  Cross-cutting connection: the LSN-002 invariant's GenAIProperties
+  bullet now cross-references THIS invariant; readers of either learn
+  the full story.

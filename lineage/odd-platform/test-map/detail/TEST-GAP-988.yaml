@@ -1,0 +1,53 @@
+gap_id: TEST-GAP-988
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DataSetController controller-class:DataSetController"
+pillars_affected: [P-01]
+surfaced_by:
+  - "DataSetController.md:bugs_limitations_corner_cases.[3] ('Latest' = max(version), not max(created_at): getLatestDatasetVersion computes max(DATASET_VERSION.VERSION) in a subquery; in normal ingestion this matches the latest-by-time but after manual SQL fixup / replay / backfill, the highest-version row may have an older created_at than another row)"
+  - "DataSetController.md:tests_coverage_semantic.uncovered_behaviours.[2] (Latest semantics under non-monotonic ingestion (manual SQL fixup or replay): a row with version=N but older created_at is returned as 'latest' over a newer-but-lower-version row)"
+behaviour: |-
+  **`GET /api/datasets/{id}/structure` returns the `max(DATASET_VERSION.VERSION)` row — NOT the `max(created_at)` row.** This is correct under normal monotonic ingestion (the ingestion path at `DatasetStructureIngestionRequestProcessor.java:171-178` increments `version.getVersion() + 1` per re-ingest, so highest-version IS the most-recently-created). But the load-bearing assumption — monotonicity — has NO test pinning it.
+
+  **When monotonicity breaks**:
+  - **Manual SQL fixup**: an operator running `UPDATE dataset_version SET created_at = ... WHERE id = ...` to repair a backfill.
+  - **Replay**: re-ingestion of historical data that resets the version counter (e.g. a migration from V1 of an ingestion adapter to V2 where versions reset).
+  - **Backfill**: bulk-loading historical structure snapshots that arrive with non-monotonic timestamps.
+  - **Race in ingestion**: two concurrent ingestion paths writing to the same dataset_oddrn — if version counter is read+incremented without serialisation, both writes could land at the same `version` value (corruption — separate bug) OR one could land at a higher version with an earlier created_at.
+
+  **Operator-visible failure mode**: An operator running a `terraform-odd-provider`-style bulk import that manipulates `dataset_version` records directly may see "Latest" returning the wrong row. The UI's `DatasetStructureOverview` (TestRunsHistory.tsx siblings) labels the displayed row "Latest" without surfacing the underlying ordering key — the operator assumes most-recently-ingested.
+
+  **Why MEDIUM**:
+  - **Code path is correct under intended use** (monotonic ingestion); the ADR `"Dataset structure versions are surfaced as a thin pass-through"` (`DatasetController.md:implicit_adrs.[0]`) implicitly accepts the monotonicity assumption.
+  - **Doc-side**: the live schema-diff doc at `https://docs.opendatadiscovery.org/features/data-discovery/schema-diff` does NOT define "latest". An operator running fixup work has no documentation to refer to.
+  - **Regression-pin matters**: a future maintainer "fixing" the ordering to use `max(created_at)` would flip this — and arguably more correctly match the operator's mental model. The test pins the current `max(version)` contract so the change becomes deliberate.
+
+  Distinct from existing TEST-GAP-767 (cross-dataset by-version leak) and TEST-GAP-768 (cross-dataset diff leak) — those are CROSS-DATASET access bugs; this gap is WITHIN-DATASET ordering semantics.
+test_class: missing-edge-case
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/BaseIngestionTest.java:170-186 (covers happy-path 'after first ingestion, latest returns a structure body' — does NOT exercise non-monotonic scenarios)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DatasetVersionLatestSemanticPinTest.java"
+  name: "getDataSetStructureLatest_higherVersionWithOlderCreatedAt_returnsByVersion_pinsMaxVersionSemantics"
+evidence:
+  - "DataSetController.md:bugs_limitations_corner_cases.[3] verbatim: '''Latest'' = max(version), not max(created_at): getLatestDatasetVersion (ReactiveDatasetVersionRepositoryImpl.java:160-217) computes max(DATASET_VERSION.VERSION).as(''dsv_max'') in a subquery joined back to the row with that version. In normal ingestion (DatasetStructureIngestionRequestProcessor.java:171-178: version.getVersion() + 1), this matches the latest-by-time. After manual SQL fixup / replay / backfill, the highest-version row may have an older created_at than another row; the endpoint returns the version-max row. Operator copying the URL /api/datasets/{id}/structure with the expectation most-recently-ingested is not exactly what the code returns under those conditions.' severity: LOW (promoted to MEDIUM here per regression-pin importance — a future maintainer 'fixing' the SQL would silently flip semantics)"
+  - "Verified at primary source: ReactiveDatasetVersionRepositoryImpl.java:160-217 (the max(VERSION) subquery) + DatasetStructureIngestionRequestProcessor.java:171-178 (the monotonic + 1 increment)"
+  - "Probe P-148 emits the canonical non-monotonic scenario"
+cross_references:
+  - "TEST-GAP-767 (sibling — cross-dataset by-version leak; same controller different bug class)"
+  - "TEST-GAP-768 (sibling — cross-dataset diff leak)"
+  - "P-148 (the probe skeleton emitted in the sidecar)"
+  - "DOC-NNN candidate: define 'Latest' explicitly on the live schema-diff doc page; surface the version-monotonicity assumption"
+  - "REFACTOR-NNN candidate: rename `getLatestDatasetVersion` → `getHighestVersionDatasetVersion` OR add an explicit `max(created_at)` variant if the operator-mental-model alignment matters more than version-monotonicity"
+related_features: []
+related_pillar_features: ["P-01:F-001"]
+proposed_action: |-
+  Add `DatasetVersionLatestSemanticPinTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Three test methods:
+  1. `getDataSetStructureLatest_higherVersionWithOlderCreatedAt_returnsByVersion_pinsMaxVersionSemantics` — seed dataset D with version=5 (created_at=yesterday) AND version=4 (created_at=today); GET `/api/datasets/D/structure`; assert response.version=5 (NOT 4). PIN the max-version-over-max-created-at contract.
+  2. `getDataSetStructureLatest_normalMonotonicIngestion_returnsMostRecentlyIngested_baselineNonRegression` — seed dataset D with versions 1, 2, 3 ingested in temporal order; GET; assert response.version=3 (matches both max-version AND max-created-at because of monotonicity). Baseline so test 1 is unambiguous.
+  3. `getDataSetStructureLatest_emptyDataset_returnsNotFound_pinsAbsenceContract` — seed a dataset D with NO dataset_version rows; GET; assert HTTP 404. Locates the not-found path.
+
+  Pair with DOC-NNN: define "Latest" on the live schema-diff doc page with explicit language ("highest version number, which under normal ingestion matches most-recently-ingested"). Pair with REFACTOR-NNN if the operator-mental-model alignment is prioritised.
+batch: 2026-05-25-ZG
+feature_id: null

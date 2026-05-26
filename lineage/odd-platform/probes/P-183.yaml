@@ -1,0 +1,130 @@
+---
+probe_id: P-183
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__config__config-class__SchedulingConfiguration.md
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: null  # SchedulingConfiguration is platform-internal infrastructure; not feature-scoped
+test_class: integration
+verified_against_commit: ede5d277
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question: under Spring Boot's default single-thread TaskScheduler
+  (no `spring.task.scheduling.pool.size` configured anywhere in the codebase
+   — confirmed via grep returning zero matches), when a long-running
+  `@Scheduled(fixedRate = X-minutes)` task occupies the executor's only thread
+  AND a `@Scheduled(cron = "...")` task is scheduled to fire during that window,
+  does the cron task:
+
+    (a) RUN LATE — queued behind the running task, executes once the thread is
+        free (Spring's default `MissedTaskBehavior` semantics);
+    (b) SKIP — discarded as misfired (would require non-default config);
+    (c) THROW — error logged, no execution (unexpected).
+
+  Hypothesis: outcome (a). Spring's default `ThreadPoolTaskScheduler` uses
+  `MissedTaskBehavior.RUN_LATE` — missed cron evaluations are queued and
+  executed as soon as the executor has capacity.
+
+  Operator-visible consequence if hypothesis confirms: the daily 00:01 partition-
+  creation cron CAN be delayed by minutes-to-hours if housekeeping runs past
+  midnight (housekeeping 14-minute window + a backlog could plausibly start at
+  23:59 and finish at 00:13+). The cron still runs eventually, but partitions
+  for the next day may not exist until 00:13+; INSERTs against ACTIVITY/MESSAGE
+  in that window would fail with "no partition exists for the given key" IF
+  the partition-creation job is also responsible for the CURRENT day's
+  partition (cross-reference: PostgreSQLPartitionCreationJob's
+  createPartitionsIfNotExists is invoked at @PostConstruct AND on the cron;
+  the boot-time @PostConstruct path covers this gap on application restart).
+
+  This probe pins the cron-misfire contract empirically and documents the
+  operator-visible latency under thread-starvation.
+
+---
+arrange:
+  - kind: docker-compose-up
+    services: [postgres]
+  - kind: sql
+    query: |
+      -- The shedlock table is created by Flyway migration V0_0_52, but for
+      -- this probe we exercise the executor's behaviour, not ShedLock arbitration.
+      -- Ensure the shedlock table is present so the surrounding scheduled jobs
+      -- can boot without lock-provider errors.
+      CREATE TABLE IF NOT EXISTS shedlock (
+        name       VARCHAR(64)  NOT NULL,
+        lock_until TIMESTAMP    NOT NULL,
+        locked_at  TIMESTAMP    NOT NULL,
+        locked_by  VARCHAR(255) NOT NULL,
+        PRIMARY KEY (name)
+      );
+  - kind: spring-test-harness
+    notes: |
+      Build a minimal Spring Boot test application that:
+        (1) imports SchedulingConfiguration as-is (no override of the default
+            TaskScheduler);
+        (2) declares ONE custom @Component with TWO scheduled methods:
+              - longRunningJob: @Scheduled(fixedRate = 30, timeUnit = SECONDS)
+                + @SchedulerLock(name = "stressLongJob", lockAtMostFor = "60s")
+                — sleeps Thread.sleep(20_000) inside the method; tracks
+                invocation timestamps to a List<Instant>.
+              - frequentCronJob: @Scheduled(cron = "*/5 * * * * *")
+                — every 5 seconds; tracks invocation timestamps to a separate
+                List<Instant>; the method body is a single
+                System.currentTimeMillis() capture (fast, no sleep).
+        (3) does NOT set `spring.task.scheduling.pool.size` — exercises the
+            default poolSize=1.
+        (4) runs for 60 seconds total real time.
+act:
+  - kind: spring-boot-run
+    duration_seconds: 60
+    capture_as: longRunningInvocations
+    capture_target: "the List<Instant> of longRunningJob start-times"
+  - kind: spring-boot-run-capture
+    capture_as: frequentCronInvocations
+    capture_target: "the List<Instant> of frequentCronJob start-times"
+observe:
+  - kind: derived
+    expression: |
+      // Expected if hypothesis (a) holds:
+      //   longRunningJob fires at t=0, t=30, t=60 → 2-3 invocations in 60s.
+      //   frequentCronJob is scheduled every 5s → ideally 12 invocations.
+      //   BUT because the executor has 1 thread occupied by the 20-second
+      //   longRunningJob, the cron invocations queued during the long-running
+      //   window are deferred. We expect frequentCronJob.size() < 12 OR
+      //   we expect to see GAPS in frequentCronInvocations greater than 5s.
+      gap_observed = max( frequentCronInvocations[i+1] - frequentCronInvocations[i]
+                          for i in range(len(frequentCronInvocations) - 1) )
+    capture_as: maxFrequentCronGap
+assert:
+  - "longRunningInvocations.size() >= 2"  # ran at least twice in 60s
+  - "longRunningInvocations.size() <= 3"  # not more than thrice (single thread, 20s sleep)
+  - "frequentCronInvocations.size() < 12"  # would be 12 with infinite threads; <12 confirms starvation
+  - "maxFrequentCronGap >= 15.seconds"  # confirms cron was queued during the 20s longRunningJob window
+  - "frequentCronInvocations.size() >= 1"  # confirms (a) RUN LATE, not (b) SKIP or (c) THROW
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__config__config-class__SchedulingConfiguration
+    - odd-platform__java__service__service__HousekeepingJobManager
+  retrospectives: []
+realism_caveats: |
+  This probe pins the cron-misfire contract on a synthetic harness with
+  controlled cadences (30s fixedRate sleeping 20s; */5s cron). The real
+  codebase has cadences in minutes (15min housekeeping, 10min status-switch,
+  daily partition-creation) and the housekeepingJob's actual duration is
+  data-dependent (sub-second on a quiet system; many minutes on a busy
+  one). The probe answers "what is the executor's misfire behaviour?",
+  NOT "does this happen in production with the platform's actual data load?".
+
+  The follow-on operator-facing question — "does my deployment's housekeeping
+  ever run past midnight and delay partition-creation?" — requires production
+  log telemetry, not a probe. Suggested follow-on: add a Micrometer counter
+  for `spring_task_scheduler_queued_tasks_total` to make the production
+  question answerable from metrics, OR rely on the boot-time
+  @PostConstruct partition-creation path (PostgreSQLPartitionCreationJob.java:29-38)
+  which covers the application-restart path independent of the cron.
+
+  This probe does NOT verify the ShedLock multi-instance lock arbitration
+  semantics — that is P-182's scope.

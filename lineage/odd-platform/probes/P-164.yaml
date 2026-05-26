@@ -1,0 +1,150 @@
+---
+probe_id: P-164
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__routes__route__terms
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-P-06-glossary-nav   # P-06 Data Glossary; the navigation surface (no explicit F-NNN for the route layer yet)
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question: `termsRoutes.ts:21-23` declares `termsPath()` returning the
+  bare string `/terms`. App.tsx:66-68 mounts `<Route path={termsPath()}>` as a
+  PARENT route with one child `<Route path=':termId/*' element={<TermDetails />} />`,
+  NO `index` route, NO `element` on the parent, NO `Navigate` fallback. The
+  Dictionary tab in ToolbarTabs.tsx:67 navigates to `termsSearchPath()` (i.e.
+  `/termsearch`), NOT `/terms`. So `/terms` is reachable only by:
+    (a) an operator typing it in the address bar;
+    (b) clicking a stale shared link;
+    (c) a future bug where some code calls `termsPath()` and navigates.
+
+  Hypothesis: visiting `/terms` in a running SPA renders a blank page beneath
+  the AppToolbar — no content, no error message, no redirect. The page is a
+  dead-end with no recovery path.
+
+  The live Business Glossary doc says "The Dictionary tab is the catalog-wide
+  list of all terms in the platform" — an operator who deduces from
+  the URL builder name `termsPath` that maybe `/terms` is THE list surface
+  will land on the blank page with no fallback.
+
+  This probe pins what the operator actually sees and informs whether to log:
+    (a) a UI bug to add an index route at `/terms` redirecting to `/termsearch`,
+    (b) a doc-coherence finding (the list-vs-search drift),
+    (c) both.
+---
+arrange:
+  - kind: docker-compose-up
+    profile: odd-minimal
+    services: [odd-platform-api, odd-platform-ui, postgres]
+  - kind: wait-for
+    target: http://localhost:8080/actuator/health
+    timeout_seconds: 60
+  - kind: env-precondition
+    description: |
+      Confirm auth mode at startup. The probe runs against `auth.type=DISABLED`
+      (the dev default per system-mission.md P-09) so the SPA boot does not
+      redirect to an identity provider before the address-bar navigation.
+  - kind: sql
+    query: |
+      -- Probe asserts pure-UI rendering behaviour; no DB state needed for the
+      -- /terms-bare-mount case. The /terms/:id case is included as a control
+      -- (assert that the WORKING URL renders the term detail page).
+      INSERT INTO namespace (id, name, created_at, updated_at, is_deleted)
+      VALUES (9001, 'p164_namespace', NOW(), NOW(), false)
+      ON CONFLICT (id) DO NOTHING;
+  - kind: sql
+    query: |
+      INSERT INTO term (id, name, definition, namespace_id, created_at, updated_at)
+      VALUES (9164, 'p164_control_term', 'Control term for the /terms/:id positive case', 9001, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING;
+act:
+  - kind: dom-probe
+    tool: playwright
+    url: http://localhost:8080/terms
+    wait_for: networkidle
+    capture_as: bare_terms_page
+    capture:
+      - selector: 'body'
+        property: textContent
+      - selector: 'main'
+        property: textContent
+        optional: true
+      - selector: '[data-testid="termSearch"], [data-testid="term-details"], .MuiAlert-root'
+        property: textContent
+        optional: true
+      - kind: url-after-navigate
+        timeout_ms: 2000   # observe whether the SPA performs a client-side redirect within 2s
+  - kind: dom-probe
+    tool: playwright
+    url: http://localhost:8080/terms/9164/overview
+    wait_for: networkidle
+    capture_as: control_term_detail
+    capture:
+      - selector: 'body'
+        property: textContent
+      - selector: 'h1, h2, [data-testid="term-name"]'
+        property: textContent
+        optional: true
+  - kind: dom-probe
+    tool: playwright
+    url: http://localhost:8080/termsearch
+    wait_for: networkidle
+    capture_as: termsearch_baseline
+    capture:
+      - selector: 'body'
+        property: textContent
+      - selector: '[data-testid="termSearchFilters"], [data-testid="termSearchResults"]'
+        property: textContent
+        optional: true
+observe:
+  - capture_as: bare_terms_url_final
+    kind: url
+    source: bare_terms_page
+  - capture_as: bare_terms_main_text_length
+    kind: derived
+    expr: "len(bare_terms_page.main.textContent)"
+  - capture_as: termsearch_main_text_length
+    kind: derived
+    expr: "len(termsearch_baseline.body.textContent)"
+assert:
+  # Primary hypothesis: bare /terms renders nothing useful — text length under the toolbar is near-zero.
+  - "bare_terms_url_final == 'http://localhost:8080/terms'  # SPA did NOT redirect; URL stayed at /terms"
+  - "bare_terms_main_text_length < termsearch_main_text_length / 10  # bare /terms renders <10% of the content of /termsearch — i.e. nearly empty"
+  # Control: positive case still works.
+  - "control_term_detail.body.textContent contains 'p164_control_term'  # /terms/:id renders the term detail"
+  # Control: /termsearch still works as the Dictionary tab landing.
+  - "'No results' in termsearch_baseline.body.textContent OR len(termsearch_baseline.body.textContent) > 200  # search UI surface renders"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM term WHERE id = 9164;
+      DELETE FROM namespace WHERE id = 9001;
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__routes__route__terms
+    - odd-platform__ts__react-component__component__TermDetails
+    - odd-platform__ts__react-component__component__TermSearch
+  related_retrospectives: []
+realism_caveats: |
+  The probe pins the operator-observable rendering at the URL `/terms` in the
+  running SPA. It does NOT prove:
+    (a) what other routes look like under auth.type=OAUTH2/LDAP/LOGIN_FORM
+        (the identity-provider redirect happens before the address-bar
+        navigation in those modes; the blank-page question becomes moot
+        unless the user is already authenticated).
+    (b) whether the blank-page behaviour persists when JavaScript is
+        disabled (irrelevant for SPA, included for completeness).
+    (c) whether a future routes refactor adds an `index` route that
+        redirects to `/termsearch` — this probe is a one-shot pin against
+        commit 80637ed; re-run after any change to App.tsx route topology
+        or termsRoutes.ts to detect a fix.
+  If the assertions PASS, the UX gap is confirmed and a UI fix (add an
+  index route on `/terms` redirecting to `/termsearch`, OR add an explicit
+  404 component, OR add a doc warning) is warranted. If the assertions FAIL
+  (i.e. /terms renders meaningful content), the file-analyser's reading of
+  App.tsx:66-68 was incorrect; re-read the routes mount and update the
+  sidecar's `bugs_limitations_corner_cases.[0]` accordingly.

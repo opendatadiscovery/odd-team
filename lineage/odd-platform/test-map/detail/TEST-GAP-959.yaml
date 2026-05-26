@@ -1,0 +1,68 @@
+gap_id: TEST-GAP-959
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java EventApiController controller-class:EventApiController"
+pillars_affected: [P-07, P-09]
+surfaced_by:
+  - "EventApiController__controller-class.md:tests_coverage_semantic.uncovered_behaviours.[4]"
+  - "EventApiController__controller-class.md:tests_coverage_semantic.gaps"
+behaviour: |-
+  **CRITICAL — `POST /api/slack/events` is reachable by ANY internet caller AND no `X-Slack-Signature` / `X-Slack-Request-Timestamp` verification exists in the controller, the parser, or the service. Forged Slack events can be injected by any HTTP caller able to reach the platform's port.**
+
+  Three independent vulnerabilities compound:
+
+  1. **No signature verification in code path**: Grep `X-Slack-Signature|x-slack-signature|SLACK_SIGNING_SECRET|signing-secret` against `/home/raman/work/odd/odd-platform/odd-platform-api/src/main/java/`: 0 hits (verified 2026-05-25). The controller `EventApiController.java:18-57` reads the raw JSON body via `JSONSerDeUtils.deserializeJson` (SlackEventParser.java:23) and acts on its contents without verifying the request actually came from Slack.
+
+  2. **Path is whitelisted in EVERY auth mode**: `/api/slack/events` is in `LoginFormSecurityConfiguration.WHITELIST_PATHS` and `SecurityConstants.WHITELIST_PATHS` (per the sidecar's verified grep). Under LOGIN_FORM/OAUTH2/LDAP, the path bypasses the SecurityWebFilterChain. Under `auth.type=DISABLED`, every path is anonymous anyway.
+
+  3. **No bot/installation-id check**: even if Slack DID send the event, there's no check that `team_id` / `app_id` / `api_app_id` match the configured Slack app — a forged payload with the right shape gets accepted regardless of origin.
+
+  **Exploit shape**: An attacker who learns the platform's base URL (e.g. via the published Slack manifest template at `docs.opendatadiscovery.org/configuration-and-deployment/odd-platform#enable-data-collaboration`) can POST a crafted JSON body:
+  ```
+  POST /api/slack/events
+  {"type":"event_callback","event":{"type":"message","subtype":null,"thread_ts":"<existing-message-provider-id>","channel":"<bot-channel>","text":"forged content","user":"<spoof-user-id>","ts":"<ts>"}}
+  ```
+  → `SlackEventParser` classifies as PAYLOAD → `DataCollaborationService.enqueueMessageEvent` inserts a row into `message_provider_event` with state=PENDING → the asynchronous `DataCollaborationMessageEventProcessor` materialises a child `message` row attributed to the spoofed user → the UI's Discussions tab shows the forged message thread-attached to a real ODD message.
+
+  **Blast radius**:
+  - Inject arbitrary thread-reply messages onto any Data Entity's Discussions thread.
+  - Forge author attribution (the `user` field is consumed verbatim per SlackMessageProviderEventHandler.java:31).
+  - Inject `message_changed` subtypes to alter visible history.
+  - Combined with TEST-GAP-960 (no idempotency), an attacker can flood the platform with millions of forged events.
+
+  **Slack's mandate**: per `https://api.slack.com/authentication/verifying-requests-from-slack` (WebFetched 2026-05-25), production Slack integrations MUST verify the HMAC-SHA256 signature in the `X-Slack-Signature` header against the bot's signing secret, using the timestamp from `X-Slack-Request-Timestamp` to prevent replay (5-minute window). ODD Platform implements none of this.
+
+  **Why CRITICAL**: this is a P-07 Data Collaboration multi-class vulnerability (forged content + author spoofing + UI deception) gated only by feature-flag enablement (`datacollaboration.enabled=true`). The sidecar's `uncovered_behaviours.[4]` notes: 'this is the load-bearing untested behaviour'. There's no live doc warning operators that enabling Discussions means publishing an unauthenticated webhook receiver to the public internet.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/datacollaboration/EventApiControllerSlackSignatureVerificationTest.java"
+  name: "post_slackEvents_withoutXSlackSignatureHeader_currentBehaviour_accepts200_pinsForgedEventVulnerability"
+evidence:
+  - 'EventApiController.md says (tests_coverage_semantic.uncovered_behaviours.[4]): ''endpoint accepts forged POSTs from any internet caller (no X-Slack-Signature verification, no auth gate, path whitelisted in all auth modes) — See known_security_gaps below; this is the load-bearing untested behaviour'' (criticality HIGH — promoted to CRITICAL at the reducer level because the vulnerability is exploitable from any HTTP caller and produces forged user content with no operator-detectable trace)'
+  - 'EventApiController.md says (tests_coverage_semantic.gaps): ''the codebase contains no test, no documentation, and no implementation of the Slack signing-secret verification that Slack mandates for production-grade integrations (`https://api.slack.com/authentication/verifying-requests-from-slack`)'''
+  - "Reducer-side Grep `X-Slack-Signature|x-slack-signature|SLACK_SIGNING_SECRET|signing-secret` against `/home/raman/work/odd/odd-platform/odd-platform-api/src/main/java/`: 0 hits (verified 2026-05-25)"
+  - "Verified at primary source: EventApiController.java:18-57 (controller body, no signature read); SlackEventParser.java:23 (raw deserialize, no verification); SlackMessageProviderEventHandler.java:31-35 (handler trusts event.user verbatim)"
+  - "Live docs WebFetch 2026-05-25 status 200 of `docs.opendatadiscovery.org/configuration-and-deployment/odd-platform#enable-data-collaboration`: NO mention of signing-secret / signature verification / X-Slack-Signature / X-Slack-Request-Timestamp (verified silent by the sidecar's WebFetch)"
+cross_references:
+  - "TEST-GAP-960 (CRITICAL sister — no idempotency on duplicate Slack delivery; combined exploit surface)"
+  - "TEST-GAP-961 (CRITICAL sister — URL CHALLENGE handshake regression-pin)"
+  - "TEST-GAP-087 (existing — datacollaboration.enabled=false 404; STRENGTHENS by class-level anchor)"
+  - 'TEST-GAP-963 (sister — DataCollaboration redirect open-redirect class via Slack permalink trust; same trust-the-Slack-API anti-pattern)'
+  - 'concepts/detail/invariants/openapi-200-vs-201-status-code-drift.yaml (not the same gap; recorded for cross-feature)'
+  - "F-009 (Notification subsystem — webhook signature concept-sibling)"
+  - "REFACTOR-NNN-candidate (FIX: add Slack signing-secret HMAC verification filter; mandate `datacollaboration.slack-signing-secret` config key)"
+  - 'DOC-GAP-NNN-candidate (live docs MUST warn operators that enabling Discussions publishes an unauthenticated webhook receiver; manifest section must add signing-secret config field)'
+related_features: [F-022]
+related_pillar_features: ["P-07:F-NNN Data Collaboration (Discussions)", "P-09:Security & Access Control"]
+proposed_action: |-
+  Add `EventApiControllerSlackSignatureVerificationTest`:
+
+  1. `post_slackEvents_currentImplementation_acceptsAnyPayloadWithoutXSlackSignatureHeader_pinsVulnerability` — WebTestClient `.post().uri("/api/slack/events").bodyValue(forgedMessageEvent).exchange().expectStatus().isOk()`. Comment block: '// REGRESSION-PIN — current implementation accepts unverified events. When TEST-GAP-959 is fixed, this test MUST FLIP to expectStatus().isUnauthorized() and a sibling test asserting valid HMAC signature is accepted is added.'
+  2. `post_slackEvents_currentImplementation_acceptsForgedMessageEvent_writesToMessageProviderEventTable_pinsExploit` — assert the exploit chain: forged POST → assert `message_provider_event` table contains a new PENDING row → assert no audit log entry.
+  3. `post_slackEvents_currentImplementation_acceptsCrossWorkspaceEvent_noTeamIdValidation` — POST with a `team_id` not matching the configured Slack app's installation → assert 200 (the vulnerability extends to cross-workspace forgery).
+  4. Pair with REFACTOR-NNN-candidate (add HMAC-SHA256 verification filter) and DOC-GAP-NNN-candidate (live docs MUST warn).
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. Dedup query "EventApiController Slack webhook signature verification" returned only F-009 webhook-no-HMAC TEST-GAP-799 (HIGH — outbound webhook from ODD to consumer) — opposite direction. TEST-GAP-959 is the INBOUND complement. STRENGTHENS no existing entries.
+batch: 2026-05-25-ZF
+feature_id: F-022

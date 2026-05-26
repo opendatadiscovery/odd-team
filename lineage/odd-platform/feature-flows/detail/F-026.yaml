@@ -190,6 +190,225 @@ batch_extensions:
     consumer) but ALSO affect F-008 / F-005 / F-007 / F-011
     (all platform features run on the PRIMARY R2DBC pool — saturation
     risk is platform-wide).
+- batch: ZH
+  entry_point_added: |-
+    route-module:routes/masterDataRoutes.ts — the URL-shape contract declaring
+    `BASE_PATH = '/master-data'` + `lookupTablesPath()` builder returning
+    `/master-data/lookup-tables`. THREE consumers: App.tsx:20,76 (route
+    mount under WithPermissionsProvider), ToolbarTabs.tsx:18,57 ("Master
+    Data" tab link), LookupTableForm.tsx:9,69 (post-create / post-edit
+    redirect target). The route module reserves `/master-data` as a top-level
+    URL namespace but exposes EXACTLY one nested route today — `/lookup-tables`
+    — per the P-03 pillar's intentionally narrow scope (system-mission.md:125-141).
+  contributing_nodes_added:
+  - odd-platform ts routes route:masterData
+  notes: |-
+    hop-0 (UI route module) PRIMARY-SOURCE resolved this batch via the
+    batch-ZH masterData route sidecar. The route layer surfaces THREE
+    novel UI-layer findings that extend the existing F-026 facet cluster:
+
+    (a) **Bare `/master-data` URL produces no `<Route>` match — blank page**
+    (route sidecar bugs_limitations_corner_cases[0], severity LOW). App.tsx
+    declares NO `<Route path="/master-data" ...>` and NO wildcard fallback;
+    a user typing `/master-data` directly (bookmarked URL, external link,
+    hand-typed) lands on an empty content area. The toolbar tab uses
+    `lookupTablesPath()` so users following the UI never hit this. NEW
+    drift facet for F-026:
+    `bare_master_data_url_renders_nothing_no_redirect_no_404`. The
+    `BASE_PATH` constant suggests a navigable namespace but is purely an
+    in-code organisational marker (route sidecar's Category F input-name
+    drift finding).
+
+    (b) **WithPermissionsProvider at App.tsx:75-88 lists THREE permissions
+    but does NOT block rendering** (route sidecar
+    bugs_limitations_corner_cases[1], severity HIGH). The route mount
+    wraps `<LookupTables />` in `<WithPermissionsProvider allowedPermissions={[LOOKUP_TABLE_CREATE, LOOKUP_TABLE_UPDATE, LOOKUP_TABLE_DELETE]}>`,
+    misleading a reader to conclude the page is gated. INSPECTION of
+    PermissionProvider.tsx:12-44 + WithPermissionsProvider.tsx:11-49: the
+    wrapper renders unconditionally and only seeds context. A user with
+    zero LOOKUP_TABLE_* permissions still sees the Lookup Tables list page
+    (chrome + search + table list); only the inner `+ Add new` button is
+    gated by `<WithPermissions permissionTo={LOOKUP_TABLE_CREATE}>` at
+    LookupTables.tsx:72-82. The doc page (live
+    `https://docs.opendatadiscovery.org/features/master-data-management/lookup-tables`
+    WebFetched 2026-05-26 status 200) mentions only the `+Add new` button
+    gating — SILENT on route-level gating. NEW drift facet for F-026:
+    `with_permissions_provider_at_route_mount_misleads_reviewer_no_actual_block`.
+    This is the UI-tier manifestation of F-026's existing
+    `read_endpoints_no_security_rule_six_of_fourteen` facet.
+
+    (c) **Route mount lists 3 of 9 LOOKUP_TABLE_* permissions** (route
+    sidecar security.known_security_gaps[1]). The 9-permission backend
+    model (LOOKUP_TABLE_{,_DEFINITION_,_DATA_}{CREATE,UPDATE,DELETE}) is
+    partially represented at the App.tsx:79-83 mount (only the 3
+    table-level permissions). The 6 definition/data permissions appear
+    neither at the route mount nor in any per-component gate that an audit
+    can grep for — they are enforced only at the backend SecurityConstants.
+    NEW drift facet for F-026:
+    `route_mount_partial_permission_enumeration_three_of_nine_six_backend_only`.
+
+    Coherence sweep STRENGTHENS=2:
+    - F-026 `lookup_table_global_no_context_scoped_permissions_no_per_owner_scope` —
+      route-tier confirms the UI also exposes the URL globally; no per-table
+      gating at any layer (route, component, backend NO_CONTEXT resolver).
+    - F-026 `zero_controller_tier_test_coverage` — extended to the route
+      module's zero-test-coverage (Grep verified — directory-wide gap
+      across odd-platform-ui/src/routes/).
+
+- batch: ZL
+  entry_point_added: |-
+    react-component:LookupTables (the SINGLE user-observable page-root
+    of the entire Master Data Management pillar P-03). 93-line top-level
+    component mounted at `/master-data/lookup-tables` via App.tsx:75-88.
+    Renders the H1 title with live count badge, global text-search
+    input, permission-gated `+ Add new` button (mounting LookupTableForm
+    as modal dialog), and virtualised infinite-scroll list. On mount
+    POSTs `/api/referencedata/search` with empty query to bootstrap a
+    server-side session, persists the returned UUID back into
+    `?searchId=<uuid>` via setSearchParams. hop-0 UI component-layer
+    root that closes F-026's OPERATOR-VISIBLE surface — substituted for
+    the phantom `MasterData.tsx` wrapper per LSN-018 (substrate had
+    inferred a wrapper from the toolbar tab name; no wrapper exists,
+    `LookupTables` IS the de-facto root).
+  contributing_nodes_added:
+  - odd-platform ts react-component component:LookupTables
+  notes: |-
+    The batch-ZL LookupTables.tsx + LookupTablesList.tsx +
+    LookupTableForm.tsx + LookupTablesListItem.tsx primary-source walk
+    (session-2026-05-26-ZL-LookupTables) surfaces THREE HIGH-severity
+    UI-tier drift facets + supporting context. All three are NEW
+    discoveries not previously surfaced in F-026's backend-anchored
+    batches:
+
+    (1) NEW UI-TIER DRIFT FACET — InfiniteScroll `scrollableTarget`
+    MIS-TARGETS A NON-EXISTENT DOM ID (HIGH, operator-visible
+    truncation regression). LookupTablesList.tsx:51-53 mounts
+    `<ScrollableContainer id='lookup-tables-list'>` around
+    `<InfiniteScroll scrollableTarget='directory-entities-list'>`. The
+    `scrollableTarget` is a COPY-PASTE from the Directory feature — it
+    references a DOM id that DOES NOT EXIST on this page. Per
+    `react-infinite-scroll-component` docs, an unresolvable
+    `scrollableTarget` falls back to window scroll; but
+    `ScrollableContainer` declares `$offsetY={165}` and likely sets
+    `overflow:auto` so window scroll never fires for content INSIDE
+    the container. Likely runtime effect — `fetchNextPage` NEVER fires
+    from scrolling within the table; any tenant with > 30 lookup
+    tables sees only the first 30 rows in the UI with NO signal that
+    more exist. P-192 emitted to confirm. NEW DRIFT FACET to add to
+    drift_class_summary —
+    `lookup_tables_list_infinite_scroll_scrollable_target_directory_entities_list_copy_paste_mismatches_actual_container_id_lookup_tables_list_pagination_silently_capped_at_thirty`.
+
+    (2) NEW UI-TIER DRIFT FACET — `LookupTableForm` SENDS
+    `namespace_name` ON THE WIRE ON EVERY EDIT THOUGH
+    `LookupTableUpdateFormData` SCHEMA REJECTS IT (HIGH, type-system
+    lie, doc-vs-code drift). LookupTableForm.tsx:49 types form data as
+    `LookupTableFormData` (the CREATE shape with required
+    `namespaceName`). On edit submit (lines 60-66), it submits the
+    SAME shape to `editLookupTable({ lookupTableUpdateFormData: data,
+    lookupTableId })`. The OpenAPI contract for UPDATE
+    (`LookupTableUpdateFormData`, components.yaml:3853-3862) defines
+    ONLY `name` + `description`. The `namespace_name` field is sent
+    on the wire on every edit + silently discarded by the server
+    (assuming Spring's default lenient binding — Jackson
+    `FAIL_ON_UNKNOWN_PROPERTIES=false`). The form-visual
+    `disabled={!!lookupTable}` (line 120) hides this from the user.
+    The live doc page (WebFetched 2026-05-26 status 200) says
+    "Renaming a lookup table or editing its description" under
+    LOOKUP_TABLE_UPDATE, implying namespace is NOT updateable —
+    which is correct at the API contract; the UI sends a field
+    that the API silently discards. P-191 emitted to pin the
+    discard-vs-reject behaviour. NEW DRIFT FACET to add to
+    drift_class_summary —
+    `lookup_table_form_sends_namespace_name_on_wire_for_update_open_api_schema_lookup_table_update_form_data_rejects_field_spring_default_lenient_binding_silently_discards`.
+
+    (3) NEW UI-TIER DRIFT FACET — GLOBAL COUNTER LEAK; ANY
+    AUTHENTICATED USER SEES PLATFORM-WIDE LOOKUP-TABLE POPULATION
+    SIZE (MEDIUM, read-collaborative posture refinement). LookupTables.tsx:60-62
+    renders the H1 row as `<NumberFormatted value={facets?.total} />
+    {t('lookup tables overall')}`. `facets.total` comes from
+    `LookupDataSearchServiceImpl.countByState` which counts ALL
+    tables matching the (empty) query — there is NO owner-filter, NO
+    namespace-scope, NO per-permission filter applied. Any
+    authenticated user sees the global lookup-table population size
+    EVEN IF backend RBAC would limit which individual rows they can
+    act on. STRENGTHENS F-026's existing
+    `lookup_table_global_no_context_scoped_permissions_no_per_owner_scope`
+    facet with the COUNTER-tier confirmation that the
+    read-collaborative posture is reified in the UI counter. The
+    docs page is silent on this — operator reading the doc cannot
+    anticipate the counter shape. NEW DRIFT FACET to add to
+    drift_class_summary —
+    `lookup_tables_h1_counter_leaks_global_population_size_no_owner_filter_no_namespace_scope_no_permission_filter_authenticated_user_sees_full_count`.
+
+    (4) NEW UI-TIER DRIFT FACET — PER-KEYSTROKE PUT TO
+    `/api/referencedata/search/{id}` IF SearchInput DOES NOT DEBOUNCE
+    (MEDIUM, performance envelope). LookupTables.tsx:50-52 — the
+    `handleSearch` handler fires `updateFacets({...facets, query})`
+    per keystroke. Each keystroke is a PUT — server-side
+    `LookupDataSearchServiceImpl.updateFacets` merges +
+    countByState-recomputes. If shared-infra `SearchInput` does not
+    debounce internally, the cost is N keystrokes × O(catalog-size)
+    backend cost per keystroke. NEW DRIFT FACET to add to
+    drift_class_summary —
+    `lookup_tables_search_input_no_visible_debounce_per_keystroke_put_to_reference_data_search_facets_endpoint_server_side_face_state_dto_merge_and_count_by_state_recompute`.
+
+    (5) F-026 LSN-018 SUBSTITUTION CONFIRMATION (LOW, methodology
+    refinement). The substrate had inferred a phantom `MasterData.tsx`
+    wrapper from the toolbar tab name; the batch-ZH masterData route
+    sidecar surfaced no such wrapper. The batch-ZL LookupTables.tsx
+    sidecar IS the de-facto page-root component (single MDM
+    sub-feature, single page-root). LSN-018 substitution-class is
+    confirmed — the pillar P-03 is intentionally narrow (one user-
+    observable surface), so the registry's "page root component"
+    slot for P-03 = LookupTables.tsx. STRENGTHENS the existing
+    `feature_inferred_from_toolbar_label_substituted_with_actual_page_root_per_lsn_018`
+    pattern surfaced at batch-ZH.
+
+    (6) STRUCTURAL — REACT STRICT-MODE DOUBLE-MOUNT TRIGGERS DUAL
+    `createFacets('')` (LOW, dev-only). LookupTables.tsx:30-37 — the
+    useEffect has `[searchId]` as dep; on first mount, searchId is
+    `''`, the early-return at line 31 is skipped, createFacets is
+    called. If React strict-mode causes a double-mount (development
+    only), createFacets fires twice — minting two search sessions.
+    The URL update setSearchParams happens only after `.then()`, so
+    the second mount's check sees searchId still empty and fires
+    AGAIN. The second session row becomes orphaned (cleaned by
+    SearchFacetsHousekeepingJob per F-010 +
+    housekeeping.ttl.search_facets_days). LOW operator-visible
+    consequence (server-side cleanup absorbs the drift); but the
+    smell exists.
+
+    (7) STRUCTURAL — STALE FACET-DATA HYDRATION GUARD CORRECT BUT
+    FRAGILE (LOW, refactor-magnet). LookupTables.tsx:39-43 — `useEffect`
+    hydrates `facets` from `data` only when `facets` is still
+    undefined. `if (!data || facets) return;` is the one-shot guard
+    preventing later refetches from clobbering in-progress user
+    edits. Correct, but fragile — a future refactor removing the
+    guard would race. Same shape as TermSearch + Search batches.
+
+    Coherence sweep STRENGTHENS=3:
+    F-026 `lookup_table_global_no_context_scoped_permissions_no_per_owner_scope`
+    extended to UI counter tier (the H1 counter is the user-visible
+    consequence of NO_CONTEXT permission scope);
+    F-026 `read_endpoints_no_security_rule_six_of_fourteen`
+    reaffirmed at LookupTables.tsx (the page is reachable + the
+    counter renders for any authenticated user without LOOKUP_TABLE_*);
+    F-017 + F-024 + F-025 search-session-pattern family — LookupTables
+    inherits the URL-backed UUID session pattern (LookupTables.tsx:20-37);
+    REFACTOR-073 (xss-class extension) — LookupTablesListItem.tsx:30-44
+    renders row name + description + namespace verbatim, F-004 family
+    descriptor extension. SUPERSEDES=0. CONFLICTS=0.
+
+    Probe candidates from the sidecar — P-191 (the namespace_name
+    on-wire silent-discard regression pin), P-192 (the InfiniteScroll
+    scrollableTarget mis-target regression pin — confirms the 30-row
+    cap on > 30-table tenants), P-193 (zero-LOOKUP_TABLE-permissions
+    user renders the page including the counter — confirms the
+    global-count leak). Local probe stack — docker-compose with ODD
+    platform + Postgres + a multi-role-seeded test deployment +
+    Playwright headless visiting `/master-data/lookup-tables` with
+    > 30 seeded tables.
+
 discovered_from_entry_point: rest:POST/GET/PUT/PATCH/DELETE /api/referencedata/** (14-path controller-class surface)
 description: |-
   Lookup Tables are the Master Data Management pillar's operator-curated
@@ -255,6 +474,7 @@ contributing_nodes:
 - odd-platform java DataEntityClassDto
 - odd-platform java ReactiveLookupTableSearchEntrypointRepositoryImpl
 - odd-platform java R2DBCConfiguration config-class:R2DBCConfiguration
+- odd-platform ts react-component component:LookupTables (batch ZL — hop-0 UI page-root /master-data/lookup-tables; THREE HIGH defects pinned at primary source: InfiniteScroll scrollableTarget='directory-entities-list' mismatches container id 'lookup-tables-list' (P-192 — silently caps UI at 30 rows); LookupTableForm sends namespace_name on every edit though LookupTableUpdateFormData rejects it (P-191 — server silently discards); H1 counter '<NumberFormatted total /> lookup tables overall' leaks global population size to any authenticated user (P-193 — no owner/namespace/permission filter). LSN-018 substitution confirmed — no MasterData.tsx wrapper exists; LookupTables IS the pillar's page-root.)
 chain:
 - hop: 1
   node: odd-platform java ReferenceDataController controller-class:ReferenceDataController

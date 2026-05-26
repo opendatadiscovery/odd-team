@@ -1,0 +1,162 @@
+---
+probe_id: P-180
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__config_properties__config-properties-class__GenAIProperties
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-039
+test_class: integration
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress questions Q-A-url-null and Q-A-tunable-boundaries on
+  GenAIProperties.url:
+
+  Pin the silent-misconfiguration class: when the operator sets
+  genai.enabled=true but leaves genai.url and genai.request_timeout
+  unset (i.e. relying on Java primitive defaults), confirm:
+
+  (1) The platform BOOTS CLEANLY — no startup failure, no
+      BindException, no warning log, no @ConditionalOnProperty
+      gate trips. The genAiWebClient bean is constructed with
+      baseUrl=null and responseTimeout=Duration.ZERO.
+
+  (2) POST /api/genai/ask returns a DETERMINISTIC error response.
+      The exact failure mode depends on Reactor Netty's behavior
+      at .post().uri('/query_data') when baseUrl is null — the
+      hypothesis is IllegalArgumentException (relative-URI
+      resolution failure) wrapped into a GenAIException, surfaced
+      as HTTP 500 to the caller.
+
+  (3) The error response message DOES NOT contain '0 min' (i.e.
+      the failure happens at URL resolution, BEFORE the
+      responseTimeout kicks in). If '0 min' DOES appear, the
+      failure path is the immediate-timeout branch — different
+      class.
+
+  (4) Confirm the LSN-002 analogue: an unset SDK parameter
+      (url left null) silently boots and surfaces only at first
+      use, with a confusing error message rather than a
+      configuration-mistake-at-startup signal.
+
+  This is a SEVERITY:HIGH gap the live doc page already warns
+  about — but no automated test pins it. A future code change
+  that adds a null-check at WebClient construction (e.g. to
+  fail-fast at boot) MUST be allowed to break this probe; the
+  probe-runner should be re-run with the expected behavior
+  updated to 'boot fails with a clear error message'.
+---
+arrange:
+  - kind: docker-compose-up
+    profile: odd-minimal
+    services: [odd-platform, odd-postgres]
+  - kind: env
+    description: |
+      Start the platform with genai.enabled=true, genai.url and
+      genai.request_timeout UNSET (no env, no override). The
+      Spring @ConfigurationProperties binding will pick up
+      enabled=true from the env var; url and requestTimeout will
+      fall back to Java primitive defaults (null / 0).
+    vars:
+      AUTH_TYPE: DISABLED
+      GENAI_ENABLED: "true"
+      # GENAI_URL: NOT SET
+      # GENAI_REQUEST_TIMEOUT: NOT SET
+  - kind: wait
+    description: "Wait for the platform health check to pass."
+    expression: "platform_health == 'UP'"
+    timeout_seconds: 90
+  - kind: capture
+    description: "Capture the boot logs to confirm no warning about genai.* misconfiguration."
+    source: docker-logs
+    service: odd-platform
+    capture_as: boot_logs
+act:
+  - kind: rest
+    description: "Fire one POST /api/genai/ask. Observe the response shape and the error message."
+    method: POST
+    path: /api/genai/ask
+    headers:
+      Content-Type: application/json
+    body: |
+      {"body": "What is the weather today?"}
+    capture_as: response
+  - kind: capture
+    description: "Capture the boot+request logs to inspect the failure trace."
+    source: docker-logs
+    service: odd-platform
+    capture_as: request_logs
+observe:
+  - kind: derived
+    description: "Boot-time observations."
+    expressions:
+      - "boot_clean: 'BindException' not in boot_logs and 'IllegalStateException' not in boot_logs"
+      - "boot_warn_genai_url: 'genai.url' in boot_logs.lower() and ('warn' in boot_logs.lower() or 'null' in boot_logs.lower())"
+      - "boot_warn_genai_timeout: 'request_timeout' in boot_logs.lower() and ('warn' in boot_logs.lower() or 'zero' in boot_logs.lower())"
+  - kind: derived
+    description: "Request-time observations."
+    expressions:
+      - "status_code: response.status_code"
+      - "response_body_text: response.body.text"
+      - "error_mentions_zero_min: '0 min' in response_body_text"
+      - "error_mentions_url: 'url' in response_body_text.lower() or 'uri' in response_body_text.lower() or 'illegalargument' in response_body_text.lower()"
+      - "error_mentions_timeout: 'timeout' in response_body_text.lower() or 'readtimeout' in response_body_text.lower()"
+assert:
+  # Q-A-url-null: the platform DOES boot cleanly with url=null + enabled=true
+  - "boot_clean == True"
+  # Q-A-url-null: the platform does NOT log a startup warning naming the misconfig
+  - "boot_warn_genai_url == False"
+  - "boot_warn_genai_timeout == False"
+  # The first POST /api/genai/ask returns a 4xx or 5xx (NOT 200)
+  - "status_code >= 400"
+  # Hypothesis: failure happens at URL resolution, NOT at timeout. The error
+  # message should mention url/uri/IllegalArgument, NOT '0 min'. If this assertion
+  # FAILS (i.e. '0 min' does appear), the failure path is the immediate-timeout
+  # branch — record as a separate finding and update the probe expectation.
+  - "error_mentions_url == True"
+  - "error_mentions_zero_min == False"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__config_properties__config-properties-class__GenAIProperties
+    - odd-platform__java__GenAIController__controller-class__GenAIController
+  retrospectives:
+    - LSN-001-attachment-ephemeral-default
+    - LSN-002-minio-region-unset
+realism_caveats: |
+  What this probe pins:
+    - The boot-time silent-acceptance contract: with enabled=true + url
+      unset + request_timeout unset, the platform boots cleanly with no
+      explicit warning naming the misconfiguration.
+    - The failure-class at first request: hypothesis is URL-resolution
+      failure (because baseUrl is null, .uri('/query_data') has no host
+      to resolve against). If the failure is actually immediate-timeout
+      (because Reactor Netty's responseTimeout(ZERO) fires before
+      URL-resolution is attempted), the probe assertions flip — record
+      this as the surfaced behavior, not as a defect.
+    - The operator-visible error message shape.
+
+  What this probe does NOT verify:
+    - The boundary case where ONLY url is unset (request_timeout=valid)
+      — a separate probe (or a parametric extension of this one) could
+      pin that the failure is purely URL-resolution.
+    - The boundary case where ONLY request_timeout=0 (url=valid) — see
+      P-179 for that case.
+    - Whether the global Spring Security chain intercepts before the
+      controller is reached (under AUTH_TYPE=DISABLED it should not,
+      but under LOGIN_FORM the test would need a session cookie).
+    - The behavior under @ConditionalOnProperty (none present on
+      GenAIController) — if a future change adds one, the boot path
+      changes.
+
+  The probe-runner should:
+    - Record the EXACT error message string returned at /api/genai/ask
+      so the GenAIProperties sidecar can quote it verbatim in
+      bugs_limitations_corner_cases.[0] (currently 'fails downstream'
+      is descriptive transcription; the probe converts it to a
+      verified literal).
+    - Re-run with GENAI_REQUEST_TIMEOUT="2" + GENAI_URL still unset to
+      isolate the URL-only-null branch.

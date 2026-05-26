@@ -1,0 +1,191 @@
+---
+probe_id: P-127
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__RoleController__controller-class__RoleController
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-006
+test_class: integration
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category C — orderings): GET /api/roles routes to
+  RoleServiceImpl.list (RoleServiceImpl.java:40-47). The ADMIN branch falls
+  through to roleRepository.listDto(page, size, query) — the CTE-paginated
+  JOOQ chain at ReactiveRoleRepositoryImpl per batch N — which has NO
+  explicit `ORDER BY` clause in the OUTER select. The non-ADMIN branch
+  uses filterUserRoles (lines 136-142) which preserves the input order
+  from getUserRolesByOwner (the 5-table JOIN at
+  ReactiveUserOwnerMappingRepositoryImpl.java:99-114 — also no ORDER BY).
+
+  Hypothesis: the operator-visible role ordering is non-deterministic —
+  rows may appear in storage / heap order, which is creation order on a
+  cold table but can shift after UPDATEs / VACUUM / re-clustering. The
+  RolesList UI (batch Q) appends pages via Redux entity-adapter setMany
+  without re-sorting, so the API's natural order IS the operator-visible
+  order. Repeat-query determinism is suspect: client A and client B
+  hitting GET /api/roles?page=1&size=100 may receive the SAME content in
+  DIFFERENT orders. Pin both (a) whether the ordering is deterministic
+  across repeat queries on a stable dataset, and (b) what the actual
+  ordering CRITERION is (creation order? id ASC? alphabetical?).
+
+  Same question applies to the non-ADMIN branch — but the input set is
+  typically small (1-3 roles per user) and the in-memory filter preserves
+  the JOIN's output order; the same JOIN-determinism question applies.
+
+  PASS = ordering is deterministic across repeat queries AND matches one
+  of (creation_order / alphabetical / id_asc). FAIL = ordering is
+  non-deterministic OR has an unidentified criterion — both outcomes are
+  operator-relevant findings worth surfacing on the live Roles doc page.
+---
+arrange:
+  - kind: docker-compose-up
+    services: [postgres, odd-platform-api]
+  - kind: sql
+    description: "Clean test residue and seed 50 roles with intentionally non-alphabetic names interleaved with creation timestamps. This breaks the 'created_at ASC' hypothesis from 'name ASC' hypothesis — the criterion is observable from the result order."
+    query: |
+      DELETE FROM role_to_policy WHERE role_id IN (SELECT id FROM role WHERE name LIKE 'p127-%');
+      DELETE FROM role WHERE name LIKE 'p127-%';
+      INSERT INTO role (name, created_at, updated_at)
+      SELECT
+        'p127-' || CASE (i % 5)
+          WHEN 0 THEN 'zeta-'
+          WHEN 1 THEN 'alpha-'
+          WHEN 2 THEN 'mike-'
+          WHEN 3 THEN 'beta-'
+          WHEN 4 THEN 'yankee-'
+        END || lpad(i::text, 3, '0'),
+        NOW() - (50 - i) * INTERVAL '1 minute',
+        NOW() - (50 - i) * INTERVAL '1 minute'
+      FROM generate_series(1, 50) AS i;
+  - kind: rest
+    description: "Authenticate as Administrator (LOGIN_FORM mode) to trigger the ADMIN branch of RoleServiceImpl.list. Assumes stack-profile odd-minimal sets auth.type=LOGIN_FORM. If auth.type=DISABLED, the synthesised anonymous-admin reaches the ADMIN branch without an explicit login step."
+    method: POST
+    path: /login
+    body: |
+      username=admin&password=admin
+    headers:
+      Content-Type: "application/x-www-form-urlencoded"
+    capture_as: admin_session_cookie
+act:
+  - kind: rest
+    description: "Query 1 — Admin path, baseline"
+    method: GET
+    path: /api/roles?page=1&size=100
+    headers:
+      Cookie: "${admin_session_cookie}"
+    capture_as: response_query_1
+  - kind: rest
+    description: "Query 2 — Admin path, repeat (same dataset, no intervening writes)"
+    method: GET
+    path: /api/roles?page=1&size=100
+    headers:
+      Cookie: "${admin_session_cookie}"
+    capture_as: response_query_2
+  - kind: sql
+    description: "Force a no-op UPDATE on every test role row to alter heap layout (without changing semantic data). This pins whether ordering survives heap-mutation."
+    query: |
+      UPDATE role SET updated_at = updated_at WHERE name LIKE 'p127-%' AND deleted_at IS NULL;
+  - kind: rest
+    description: "Query 3 — Admin path AFTER no-op UPDATE pass. If there's a deterministic ORDER BY, order_3 == order_1."
+    method: GET
+    path: /api/roles?page=1&size=100
+    headers:
+      Cookie: "${admin_session_cookie}"
+    capture_as: response_query_3
+observe:
+  - kind: extract
+    from: response_query_1.items
+    field: "[].name"
+    capture_as: order_1
+  - kind: extract
+    from: response_query_2.items
+    field: "[].name"
+    capture_as: order_2
+  - kind: extract
+    from: response_query_3.items
+    field: "[].name"
+    capture_as: order_3
+  - kind: sql
+    description: "Reference: creation order for cross-comparison"
+    query: |
+      SELECT name FROM role
+      WHERE name LIKE 'p127-%' AND deleted_at IS NULL
+      ORDER BY created_at ASC;
+    capture_as: creation_order
+  - kind: sql
+    description: "Reference: alphabetical order for cross-comparison"
+    query: |
+      SELECT name FROM role
+      WHERE name LIKE 'p127-%' AND deleted_at IS NULL
+      ORDER BY name ASC;
+    capture_as: alphabetical_order
+  - kind: sql
+    description: "Reference: id ASC order for cross-comparison"
+    query: |
+      SELECT name FROM role
+      WHERE name LIKE 'p127-%' AND deleted_at IS NULL
+      ORDER BY id ASC;
+    capture_as: id_asc_order
+assert:
+  - "order_1 == order_2  # determinism across repeat queries on stable data"
+  - "order_1 == order_3  # determinism survives heap-mutation pass (no semantic change)"
+  - "(order_1 == creation_order) OR (order_1 == alphabetical_order) OR (order_1 == id_asc_order)  # identify the actual criterion among the three hypotheses"
+  - "if ((order_1 != creation_order) AND (order_1 != alphabetical_order) AND (order_1 != id_asc_order)) then FAIL 'ordering is non-deterministic OR has an unidentified criterion — record order_1 verbatim for further investigation'"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM role_to_policy WHERE role_id IN (SELECT id FROM role WHERE name LIKE 'p127-%');
+      DELETE FROM role WHERE name LIKE 'p127-%';
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__RoleController__controller-class__RoleController
+    - odd-platform__java__service__service__RoleServiceImpl
+    - odd-platform__java__repository__reactive__repository__ReactiveRoleRepositoryImpl
+  retrospectives:
+    - LSN-019
+  features:
+    - F-006
+  drift_classes:
+    - undefined_listdto_ordering_role_repository
+realism_caveats: |
+  This probe targets the ADMIN-path ordering. The non-ADMIN path is
+  structurally similar (filterUserRoles preserves input order) but the
+  input set is typically too small (1-3 roles) to surface a determinism
+  issue at the API surface; if the ADMIN probe shows non-determinism, the
+  non-ADMIN path is non-deterministic by inheritance.
+
+  The probe does NOT test the role_to_policy / policy LEFT JOIN ordering
+  within each role's `policies[]` field — that is a separate question
+  (would multi-row jsonArrayAgg materialise in deterministic order by
+  policy.id? — captured in batch N's analysis but not pinned here).
+
+  Outcomes:
+  - PASS order_1 == creation_order: the de facto contract is creation order;
+    fine to document on the live Roles page as 'Roles appear in the order
+    they were created'.
+  - PASS order_1 == id_asc_order: equivalent to creation order on a freshly
+    seeded DB; same documentation outcome.
+  - PASS order_1 == alphabetical_order: surprising but defensible; document
+    accordingly.
+  - FAIL: ordering is either heap-storage-dependent (which Postgres is
+    reasonably stable for until VACUUM but not GUARANTEED) or has an
+    undocumented criterion. Surface as 'undefined' on the docs page OR
+    fix by adding `ORDER BY role.id ASC` to ReactiveRoleRepositoryImpl
+    per batch N's invariants.
+
+  The probe pins a CONTRACT (deterministic? what?) — it does NOT fix the
+  underlying drift. A maintainer would either (a) accept current behaviour
+  and document the determinism contract on the live Roles page, or (b)
+  add an `ORDER BY role.id ASC` to the listDto OUTER select to make the
+  contract explicit at the SQL layer.
+
+  The probe's authentication mechanism (POST /login with form-urlencoded
+  body) assumes auth.type=LOGIN_FORM is set in the docker-compose'd
+  odd-platform-api. If the stack-profile defaults to auth.type=DISABLED,
+  the /login endpoint may not exist and the probe needs to be adjusted to
+  proceed without auth (DISABLED-mode synthesises an anonymous-admin
+  per batch E). Probe-runner should auto-detect the active auth mode.

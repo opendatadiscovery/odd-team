@@ -1,0 +1,327 @@
+name: useParams type-lie — typed-wrapper hooks erase react-router-dom Partial<> semantics and coerce parseInt without isNaN guards
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-02
+  - P-06
+  - P-08
+description: |-
+  ## STRENGTHENED — batch ZI (2026-05-26)
+
+  Batch ZI adds THREE MORE confirmed instances of the typed-wrapper
+  hook pattern with the same shared shape (Partial<>-erasing cast +
+  parseInt-without-guard):
+
+  (c) `useDirectoryRouteParams()` at `routes/directoryRoutes.ts:29-41`:
+      - calls `useParams<keyof DirectoryRouteParams>()` (line 30,
+        where DirectoryRouteParams has `dataSourceTypePrefix: string`,
+        `dataSourceId: string`, `typeId: string`)
+      - destructures all three (line 31), asserts
+        `as DirectoryRouteParams` (line 32) erasing the Partial<>
+        shape
+      - coerces `dataSourceId` via `parseInt(dataSourceId, 10)`
+        (line 37) with NO isNaN guard
+      - coerces `typeId` via `typeId === 'all' ? undefined :
+        parseInt(typeId, 10)` (line 34) with NO isNaN guard for the
+        non-'all' branch
+      - SIX consumers (DataSourceList.tsx:27, Entities.tsx:20,
+        DirectoryBreadCrumbs.tsx:13, EntitiesTabs.tsx:13,
+        EntityItem.tsx:40, TableHeader.tsx:13) — NO consumer guards
+        against NaN dataSourceId
+      - URL `/directory/postgresql/abc/all` (non-numeric
+        dataSourceId): consumers receive `NaN`, call
+        `useGetDataSourceEntities({dataSourceId: NaN})` which calls
+        `directoryApi.getDatasourceEntities({dataSourceId: NaN})` —
+        backend rejects with 400/404; UI surfaces `AppErrorPage`.
+
+  (d) `useQueryExamplesRouteParams()` at `routes/dataModelling/queryExamplesRoutes.ts:19-27`:
+      - calls `useParams<keyof QueryExamplesRouteParams>()` (line 21,
+        where QueryExamplesRouteParams has `queryExampleId: string`)
+      - destructures `queryExampleId` (line 21), asserts
+        `as QueryExamplesRouteParams` (line 22) erasing the Partial<>
+        shape
+      - coerces `queryExampleId` via `parseInt(queryExampleId, 10)`
+        (line 25) with NO isNaN guard
+      - Single consumer (`QueryExampleDetailsContainer.tsx:19`) is
+        inside `:queryExampleId` route so the assertion holds today
+        — but identical foot-gun shape as the others.
+      - URL `/data-modelling/query-examples/abc` (non-numeric
+        queryExampleId): hook returns `{queryExampleId: NaN}`;
+        downstream `useGetQueryExampleDetails({exampleId: NaN})`
+        fires `GET /api/queryexample/NaN` → backend returns 400/404
+        → UI hangs on `AppLoadingPage` (`QueryExampleDetailsContainer.tsx:97`)
+        indefinitely before the error surfaces.
+      - ADDITIONAL anti-pattern: hook is UNSAFE to call from the
+        LIST route (`/data-modelling/query-examples`, no
+        `:queryExampleId` segment) — `useParams()` returns
+        `{queryExampleId: undefined}`, the cast claims `string`,
+        `parseInt(undefined, 10)` returns `NaN`, hook returns
+        `{queryExampleId: NaN}` silently. Currently only called
+        from the details container so safe today, but future-foot-
+        gun.
+
+  (e) `useSearchRouteParams()` at `routes/searchRoutes.ts:18-19`:
+      - 2-line wrapper: `useParams<keyof SearchRouteParams>()` cast
+        as `SearchRouteParams` (where the interface declares
+        `searchId: string`)
+      - **NO parseInt** here (the searchId IS a UUID string, not a
+        number) — but the SAME type-lie pattern: when called on the
+        bare `/search` route (no UUID), `useParams()` returns `{}`,
+        the cast asserts it as `{searchId: string}`, so the
+        consumer reads `searchId` as `undefined` despite the type
+        claiming `string`.
+      - `Search.tsx:27` destructures and uses truthy-check at lines
+        38 + 45 — handles undefined correctly. But the TYPE LIES.
+      - A new caller writing `useSearchRouteParams().searchId.toUpperCase()`
+        on the root `/search` URL crashes at runtime.
+      - The correct type would be `{searchId?: string}` or
+        `{searchId: string | undefined}`.
+
+  **Cross-batch pattern is now FIVE confirmed instances**: termId
+  (batch ZH), integrationId (batch ZH), dataSourceId+typeId (batch
+  ZI), queryExampleId (batch ZI), searchId (batch ZI). The pattern
+  is uniform — every typed-wrapper hook around `useParams` strips
+  the Partial<> shape via assertion and propagates either `undefined`
+  or `NaN` silently when the assumption is violated.
+
+  ## ORIGINAL — batch ZH (2026-05-26)
+
+  **NEW LOW-severity INVARIANT, batch ZH (2026-05-26)** — the SPA's
+  typed-wrapper hooks around react-router-dom's `useParams` exhibit
+  a shared name-vs-behaviour drift: they ASSERT a non-undefined
+  return shape to callers, but at runtime return `undefined` (or
+  `NaN` after parseInt coercion) when invoked outside the matching
+  route subtree.
+
+  **Two confirmed instances in batch ZH**:
+
+  (a) `useTermsRouteParams()` at `routes/termsRoutes.ts:54-63`:
+      - calls `useParams<keyof TermsRouteParams>()` (line 55, where
+        TermsRouteParams has `termId: Term['id']` = `number` and
+        `termSearchId: string`)
+      - destructures `termId` + `termSearchId` (line 55), asserts
+        `as TermsRouteParams` (line 57) erasing the Partial<> shape
+      - coerces `termId` from string to number via `parseInt(termId,
+        10)` (line 60) with NO isNaN guard
+      - Result: if invoked outside a `/terms/:termId/*` route,
+        `useParams()` returns `{}`, `termId = undefined`,
+        `parseInt(undefined, 10) = NaN`, and the hook returns
+        `{termId: NaN, termSearchId: undefined}` while the type
+        system reports `{termId: number, termSearchId: string}`.
+      - Currently 4 consumers (TermDetails.tsx:25, TermSearch.tsx:26,
+        TermDetailsRoutes.tsx:20, TermDetailsTabs.tsx:11). TermSearch
+        is inside /termsearch/:termSearchId where termId is NOT
+        bound — termId is NaN but the consumer ignores it; the hook
+        'works by accident' in that caller.
+      - URL `/terms/abc/overview` (non-numeric termId): `useParams()`
+        returns `{termId: 'abc'}`, `parseInt('abc', 10) = NaN`,
+        downstream `fetchTermDetails({termId: NaN})` serialises
+        to `termId=NaN` in the URL, backend returns 404, UI surfaces
+        AppErrorPage.
+
+  (b) `useIntegrationRouteParams()` at `routes/managementRoutes.ts:43-44`:
+      - calls `useParams<keyof IntegrationRouteParams>()` (where
+        IntegrationRouteParams has `integrationId: string`)
+      - asserts `as IntegrationRouteParams` (line 44) erasing the
+        Partial<> shape
+      - PROMISES `integrationId: string` to every caller
+      - Result: if invoked outside an `:integrationId`-bearing
+        route, `useParams()` returns `{}`, `integrationId = undefined`,
+        but the type system reports `string`. A consumer calling
+        `fetchIntegration(integrationId)` passes `undefined` to the
+        backend without compile-time warning.
+      - Single in-repo caller (IntegrationHeader.tsx) is inside an
+        `:integrationId` route so the assertion holds today — but
+        the cast is a future-foot-gun for any new caller.
+
+  **The shared shape**:
+    - React Router v6 `useParams<Key>()` natively returns
+      `Partial<Record<Key, string>>` to acknowledge that path-params
+      are absent outside the matching route.
+    - The typed wrappers strip Partial<> via a type assertion,
+      lying to TypeScript about runtime guarantees.
+    - parseInt(<undefined|non-numeric>, 10) returns NaN and IS
+      propagated downstream without an isNaN guard.
+    - The hooks ARE safe IF called only inside the right route
+      subtree — the SPA's React Router declaration enforces this
+      structurally for the current call sites. The drift is a
+      LATENT bug: a future caller relocating the hook breaks
+      silently.
+
+  **The architectural intent**: typed wrappers exist precisely TO
+  make consumer code cleaner — `const { termId } = useTermsRouteParams()`
+  is more ergonomic than threading the Partial<>-aware unwrap on every
+  call. The drift is the tradeoff: ergonomic API vs runtime safety
+  honesty. The pragmatic decision is correct (typed coverage of the
+  primary code paths) but the lack of any guard at the wrapper layer
+  means the type assertion is the ONLY documentation of the contract.
+
+  **Minimum-viable corrections**:
+    (1) Add `isNaN` guard in useTermsRouteParams: return
+        `parseInt(termId, 10) || undefined` and update the consumer
+        type to `Term['id'] | undefined`.
+    (2) Add a runtime invariant check in useIntegrationRouteParams:
+        `if (!integrationId) throw new Error('useIntegrationRouteParams
+        called outside :integrationId route')` to surface the misuse
+        at the first sign of relocation.
+    (3) Replace the type assertion with a runtime-safe wrapper hook
+        that returns `Partial<TermsRouteParams>` honestly and forces
+        consumers to handle undefined.
+
+  vocabulary_status: codebase-anchored. The pattern is observable
+  but not documented as an idiom.
+vocabulary_status: codebase-anchored
+axes_present:
+  - ui_routes
+  - hook
+nodes:
+  - odd-platform ts routes route:terms
+  - odd-platform ts routes route:management
+  - odd-platform ts routes route:directory
+  - odd-platform ts routes route:queryExamples
+  - odd-platform ts routes route:search
+contributors:
+  - |-
+    terms route batch ZH:
+      concepts.invariants[The termId coercion in useTermsRouteParams swallows NaN. Line 60: parseInt(termId, 10). If the URL path is /terms/abc/overview, termId is 'abc', parseInt returns NaN, no guard];
+      concepts.invariants[useTermsRouteParams is a typed wrapper around useParams — no undefined-guard];
+      bugs_limitations_corner_cases[useTermsRouteParams returns termId: NaN when the URL has a non-numeric segment; type-system lie];
+      bugs_limitations_corner_cases[useTermsRouteParams is reused outside the /terms/:termId/* subtree — TermSearch.tsx:26 calls it from /termsearch/* — hook 'works by accident'];
+      stress_findings.name_behavior_pairs.[useTermsRouteParams — DRIFT_MINOR]
+  - |-
+    management route batch ZH:
+      concepts.invariants[useIntegrationRouteParams performs an `as` cast — hook PROMISES a non-undefined integrationId];
+      bugs_limitations_corner_cases[useIntegrationRouteParams performs a type assertion that PROMISES integrationId: string — if called outside an :integrationId-bearing route, undefined at runtime despite the type];
+      stress_findings.name_behavior_pairs.[useIntegrationRouteParams — DRIFT_NAME_VS_BEHAVIOR]
+  - |-
+    directory route batch ZI:
+      concepts.invariants[useDirectoryRouteParams coerces dataSourceId via parseInt(dataSourceId, 10) (line 37) with NO isNaN guard; deep-link to /directory/postgresql/abc/all produces dataSourceId: NaN; six consumers receive NaN without guard; useGetDataSourceEntities calls backend with dataSourceId=NaN — backend 400/404 — same shape as the useTermsRouteParams NaN-swallowing pattern];
+      bugs_limitations_corner_cases[useDirectoryRouteParams coerces dataSourceId via parseInt with NO isNaN guard — same shape as useTermsRouteParams NaN-swallowing pattern];
+      stress_findings.name_behavior_pairs.[useDirectoryRouteParams — NO defensive guards: a non-numeric dataSourceId becomes NaN; a typeId that is neither 'all' nor numeric becomes NaN]
+  - |-
+    queryExamples route batch ZI:
+      bugs_limitations_corner_cases[useQueryExamplesRouteParams propagates NaN silently when the URL segment is non-numeric — line 22's `as QueryExamplesRouteParams` is a type-system LIE — it claims queryExampleId is a non-undefined string when the React Router segment may be missing OR may not be numeric; downstream useGetQueryExampleDetails({exampleId: NaN}) then fires GET /api/queryexample/NaN — UI hangs on AppLoadingPage until the error response arrives];
+      bugs_limitations_corner_cases[useQueryExamplesRouteParams is unsafe to call from the LIST route — useParams() returns {queryExampleId: undefined}; the type cast claims string; parseInt(undefined, 10) returns NaN; hook does NOT throw, does NOT warn, does NOT return null — silent NaN downstream];
+      stress_findings.name_behavior_pairs.[useQueryExamplesRouteParams — MINOR DRIFT — type-system lie hides string | undefined];
+      security.known_security_gaps[useQueryExamplesRouteParams propagates NaN on malformed URLs — graceful-degradation gap; low-severity DoS vector if a bot fetches many /abc/def/... segments]
+  - |-
+    search route batch ZI:
+      stress_findings.name_behavior_pairs[useSearchRouteParams — DRIFT_MINOR — Type-safety lie: TypeScript callers see searchId: string and may forget to handle undefined; Search.tsx:27 happens to handle it correctly via if (!routerSearchId) checks, but a new caller could write useSearchRouteParams().searchId.toUpperCase() and crash at runtime on the root /search URL; the correct type would be {searchId?: string} or {searchId: string | undefined}]
+evidence:
+  - "terms.md:concepts.invariants.[2] (parseInt(termId, 10) swallows NaN — no isNaN guard)"
+  - "terms.md:concepts.invariants.[5] (useTermsRouteParams typed wrapper erases Partial<> — currently safe but future-foot-gun)"
+  - "terms.md:bugs_limitations_corner_cases.[1] (NaN coercion drift) + [5] (cross-route reuse from /termsearch)"
+  - "terms.md:stress_findings.name_behavior_pairs.[useTermsRouteParams] DRIFT_MINOR"
+  - "management.md:bugs_limitations_corner_cases.[2] LOW (useIntegrationRouteParams type-asserts; integrationId can be undefined)"
+  - "management.md:stress_findings.name_behavior_pairs.[useIntegrationRouteParams] DRIFT_NAME_VS_BEHAVIOR"
+  - "directory.md:concepts.invariants.[2] (useDirectoryRouteParams coerces dataSourceId via parseInt(dataSourceId, 10) with NO isNaN guard)"
+  - "directory.md:bugs_limitations_corner_cases.[1] LOW (NaN coercion — same shape as termsRoutes)"
+  - "directory.md:stress_findings.name_behavior_pairs.[useDirectoryRouteParams] (no defensive guards)"
+  - "queryExamples.md:bugs_limitations_corner_cases.[1] MEDIUM (NaN propagation — AppLoadingPage hangs indefinitely until backend error)"
+  - "queryExamples.md:bugs_limitations_corner_cases.[2] LOW (unsafe to call from LIST route — silent NaN downstream)"
+  - "queryExamples.md:stress_findings.name_behavior_pairs.[useQueryExamplesRouteParams] MINOR DRIFT"
+  - "queryExamples.md:security.known_security_gaps.[1] LOW (NaN propagation graceful-degradation gap)"
+  - "search.md:stress_findings.name_behavior_pairs.[useSearchRouteParams] DRIFT_MINOR (type-safety lie)"
+security_aggregate:
+  overall: HIGH
+  auth_modes_relevant: []
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: N/A
+    detail: |-
+      Not an authorization invariant. The NaN coercion can cause
+      404 responses but those are correctly-shaped errors at the
+      backend, not authorization bypasses.
+  owner_scoping:
+    verdict: N/A
+    detail: ''
+  strengths:
+    - |-
+      The hooks ARE safe for current call sites — React Router's
+      route declaration structurally pins where each hook can be
+      called.
+    - |-
+      **NEW batch ZI** — the pattern is uniform across 5 confirmed
+      instances; a maintainer who learns the convention reads any
+      typed-wrapper hook in routes/ correctly. The architectural
+      shape (typed wrapper + parseInt + cast) IS predictable, even
+      if individually each is a foot-gun.
+  weaknesses:
+    - |-
+      The type-system assertions are LIES — a future caller
+      relocating the hook gets silently NaN/undefined with no
+      compile-time warning. Tests would catch it; no tests exist
+      (zero UI coverage per the existing
+      zero-ui-test-coverage-vitest-installed-no-test-files
+      invariant).
+    - |-
+      **NEW batch ZI** — the queryExamples instance shows a SPECIFIC
+      operator-visible failure mode: AppLoadingPage hangs indefinitely
+      on NaN-id URLs until the backend's 400/404 response arrives.
+      A typo'd URL or stale bookmark produces an apparent-infinite-
+      loading UX. Low-severity but operator-confusing.
+  cross_file_inconsistencies: []
+  contributing_files:
+    - odd-platform__ts__routes__route__terms.md
+    - odd-platform__ts__routes__route__management.md
+    - odd-platform__ts__routes__route__directory.md
+    - odd-platform__ts__routes__route__queryExamples.md
+    - odd-platform__ts__routes__route__search.md
+  evidence: []
+performance_aggregate:
+  overall: HIGH
+  hot_paths: []
+  throughput_shape:
+    verdict: N/A
+    detail: |-
+      Not a performance concept — pure type-system drift.
+  scaling_shape:
+    verdict: N/A
+    detail: ''
+  strengths: []
+  weaknesses: []
+  cross_file_inconsistencies: []
+  contributing_files:
+    - odd-platform__ts__routes__route__terms.md
+    - odd-platform__ts__routes__route__management.md
+    - odd-platform__ts__routes__route__directory.md
+    - odd-platform__ts__routes__route__queryExamples.md
+    - odd-platform__ts__routes__route__search.md
+  evidence: []
+triangulation_count: 5
+cross_batch: true
+cross_batch_refs:
+  - batch-ZH (2 route sidecars exhibit the shared pattern — useTermsRouteParams, useIntegrationRouteParams)
+  - batch-ZI (3 more route sidecars — useDirectoryRouteParams, useQueryExamplesRouteParams, useSearchRouteParams)
+severity: LOW
+severity_dim: ux
+related_features: []
+related_pillar_features:
+  - "P-01"
+  - "P-02"
+  - "P-06"
+  - "P-08"
+related_concepts:
+  - invariant:zero-ui-test-coverage-vitest-installed-no-test-files
+  - invariant:search-route-wildcard-accepts-garbage-no-uuid-validation
+  - entitie:ui-route-path-builder-convention
+notes: |-
+  Coherence (Rule 6): No existing concept describes this pattern
+  outside this invariant. Pure batch-ZH net-new + batch-ZI
+  extension. The 5-instance triangulation across four different
+  pillars (P-01 Discovery, P-02 Data Modelling, P-06 Glossary, P-08
+  Management) confirms the pattern is conventional — additional
+  route modules with `:id` params likely exhibit the same drift but
+  the batches did not enrich them.
+
+  Surfaced for future batches: any new `use*RouteParams` hook
+  authored in a route module SHOULD include an isNaN guard or
+  honest Partial<>-aware return type. A repository-wide audit + uniform
+  fix would close the foot-gun class in one batch.
+
+  Batch ZI's queryExamples instance is the SHARPEST observable
+  failure mode (AppLoadingPage hangs indefinitely on NaN-id URLs)
+  — recommend prioritising the queryExamples fix as a leading
+  example. Same fix shape applies to the other four.
+maintainer_curated: false

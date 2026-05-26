@@ -1,0 +1,135 @@
+---
+gap_id: TEST-GAP-1033
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform ts react-component:Alerts"
+  - "odd-platform java AlertController controller-method:getAllAlerts"
+pillars_affected: ["P-09", "P-06"]
+surfaced_by:
+  - "Alerts.md:bugs_limitations_corner_cases.[0] verbatim: 'All-tab name vs behaviour mismatch: docs say open and resolved; backend SQL filters STATUS=OPEN only (ReactiveAlertRepositoryImpl.java:145, 166, 230). RESOLVED and RESOLVED_AUTOMATICALLY alerts are invisible in every global tab.' severity: HIGH"
+  - "Alerts.md:docs_link_semantic.doc_drift_findings.[0] verbatim: 'DRIFT: docs says All tab shows Every open and resolved alert across the whole platform but ReactiveAlertRepositoryImpl.java:142-145 hard-filters ALERT.STATUS.eq(OPEN.getCode()). The list NEVER shows RESOLVED or RESOLVED_AUTOMATICALLY alerts in the global tabs — only on a single data entity's Alerts tab via getAlertsByDataEntityId (no status filter, line 182-199). Operator who follows the docs expects to see resolved alerts and cannot find them; mistakes them for purged.'"
+  - "Alerts.md:stress_findings.name_behavior_pairs.[1] verbatim: 'AlertsTabs labels — All, My Objects, Dependents — All tab shows the full alert population across the platform (per live docs: Every open and resolved alert). Backend getAllAlerts -> listAll -> listAllWithStatusOpen filters STATUS=OPEN only. Resolved alerts are absent. UI label promises All; UI shows OPEN-only subset.' drift: DRIFT_NAME_VS_BEHAVIOR"
+related_pillar_features:
+  - "P-09:F-Alerting"
+  - "P-06:F-Activity-Feed (alerting is a sibling of activity in the audit-trail family)"
+related_features: []
+feature_id: null
+test_class: integration
+strengthens: []
+behaviour: |-
+  **HIGH — Category B (DRIFT_NAME_VS_BEHAVIOR) on the global Alerts page's
+  "All" tab.** The live docs page at
+  `https://docs.opendatadiscovery.org/features/active-platform-features/alerting`
+  (WebFetched 2026-05-26, status 200) describes the All tab as: "Every open
+  and resolved alert across the whole platform." The implementation
+  (`AlertController.getAllAlerts` -> `AlertServiceImpl.listAll` ->
+  `ReactiveAlertRepositoryImpl.listAllWithStatusOpen`) hard-filters
+  `ALERT.STATUS.eq(OPEN.getCode())` at three call sites:
+  `ReactiveAlertRepositoryImpl.java:145, 166, 230` (the three global-tab
+  list methods: `listAllWithStatusOpen`, `listByOwner`,
+  `listDependentObjectsAlerts`).
+
+  **Operator-observable consequence**: an operator opens `/alerts/all`
+  expecting to see ALL alerts (per the docs), searches for a known
+  RESOLVED alert from yesterday, and cannot find it. The natural
+  conclusion is "the alert was purged" — even though the alert is still
+  in the database, still attached to the entity's per-entity Alerts tab
+  (which IS unfiltered: `getAlertsByDataEntityId` has no status filter,
+  lines 182-199), and would re-surface if reopened.
+
+  **Why HIGH**:
+  - **Operator harm**: a security-relevant alert (e.g. data-quality test
+    failure) that was resolved-then-recreated or resolved-prematurely is
+    invisible to the on-call. Forensic incident-response is misled.
+  - **Cross-locale uniformity**: the "All" label is the i18n key
+    `t('All')` — no locale corrects it (verified via batch ZJ en.json
+    sidecar; all six locales translate to the same misleading label).
+  - **Sibling-tab consistency**: "My Objects" and "Dependents" tabs
+    have the same OPEN-only filter (lines 166, 230); the drift is
+    uniform across the global page surface.
+  - **Same Category B failure class as LSN-019** (TagController
+    `listMostPopular` — the name "most popular" vs the SQL "most used
+    in popular entities"). Category B classification confirmed in the
+    sidecar.
+
+  **The OPEN-only filter is INTENTIONAL** (the implicit ADR per
+  Alerts.md:implicit_adrs[3] — alerts are reset on resolve, so the
+  global tabs are inbox-style rather than archive-style). The fix is
+  EITHER (a) update the docs to say "every OPEN alert" OR (b) add a
+  status filter to the page so operators can opt into resolved-view
+  OR (c) the per-entity Alerts tab already shows full history; cross-
+  link to it from the global page's empty state when the user
+  searches for a resolved alert.
+
+  **Test gap shape**:
+  1. **Backend regression-pin**: `AlertControllerStatusFilterTest` —
+     POST an alert, mark it RESOLVED, GET /api/alerts (all), assert
+     the alert is ABSENT. PINS the OPEN-only filter at the controller
+     surface; flips assertion direction if the fix path (b) is taken.
+  2. **UI regression-pin**: `Alerts.AllTab.OpenOnlyFilter.test.tsx` —
+     mock the alerts thunk to return mixed-status payloads, render
+     the All tab, assert only OPEN-status items render in the list.
+     PINS the UI-side accommodation of the backend filter.
+  3. **Doc-drift regression**: `Alerts.AllTab.DocVsImpl.test.tsx` —
+     parse the live docs page (or its archived snapshot at commit
+     time) and assert the page text either (a) says "every OPEN
+     alert" (after doc fix) OR (b) the docs and the impl agree on
+     scope. PINS the cross-artefact coherence.
+test_files_existing: []
+test_files_proposed:
+  - path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/AlertControllerStatusFilterTest.java"
+    name: "getAllAlerts_returnsOpenStatusOnly_pinsBackendBehaviourBatchZL"
+    description: |-
+      Insert one OPEN alert + one RESOLVED alert + one RESOLVED_AUTOMATICALLY
+      alert. Call GET /api/alerts. Assert response.items contains EXACTLY
+      the OPEN alert. PINS the current OPEN-only filter. After fix, flip
+      assertion direction.
+  - path: "odd-platform-ui/src/components/Alerts/__tests__/Alerts.AllTab.OpenOnlyFilter.test.tsx"
+    name: "allTab_rendersOpenStatusOnly_pinsUIAccommodationBatchZL"
+    description: |-
+      Mock alerts thunk to dispatch mixed-status payloads (OPEN +
+      RESOLVED + RESOLVED_AUTOMATICALLY). Render <Alerts/> at the
+      /alerts/all route. Assert only OPEN-status AlertItem rows render.
+      PINS the UI accommodation of the backend filter.
+  - path: "odd-platform-api/src/test/java/.../AlertsAllTabDocVsImplTest.java"
+    name: "docPageScope_matchesBackendScope_pinsAcrossArtefactCoherence"
+    description: |-
+      Verifies the live docs page's All-tab description matches the
+      backend SQL filter. PINS the cross-artefact coherence (docs
+      side-of-truth + impl side-of-truth must agree).
+evidence:
+  - "Alerts.md (batch ZL) bugs_limitations_corner_cases.[0]: cited above; severity HIGH"
+  - "Alerts.md (batch ZL) docs_link_semantic.doc_drift_findings.[0]: cited above; explicit drift documented"
+  - "Alerts.md (batch ZL) stress_findings.name_behavior_pairs.[1]: cited above; DRIFT_NAME_VS_BEHAVIOR classification; operator-visible consequence 'an operator searching for a resolved alert on the global page cannot find it' enumerated"
+  - "WebFetch verified 2026-05-26 status 200: live docs page describes All tab as 'Every open and resolved alert across the whole platform'"
+  - "Primary source verified: ReactiveAlertRepositoryImpl.java:142-145 (listAllWithStatusOpen filter), 160-179 (listByOwner same filter), 217-243 (listDependentObjectsAlerts same filter); contrast getAlertsByDataEntityId (lines 182-199) has NO status filter"
+  - "Glob verified: zero Alerts*.test.* / AlertController*Test.java for status-filter assertions (run 2026-05-26)"
+cross_references:
+  - "LSN-019 (Category B classification — TagController listMostPopular as the canonical case)"
+  - "LSN-020 (Category F sibling — the User filter drift on Activity Feed is the same drift class on a different surface)"
+  - "DOC-NNN candidate (batch ZL Alerts): the live docs page needs the OPEN-only restriction documented"
+  - "F-Alerting (the pillar-level feature flow this gap is anchored to)"
+proposed_action: |-
+  Two-PR strategy. PR-1 ships the three regression-pin tests
+  (backend + UI + doc-vs-impl), all PINNING the current behaviour.
+  After the tests are GREEN, decide on the fix-path:
+  (a) Conservative: update the docs to say "every OPEN alert across
+      the platform; per-entity Alerts tab shows the full history
+      (open + resolved)" — flip the doc-vs-impl test assertion to
+      match the new docs.
+  (b) Progressive: add a status filter to the page (UI control
+      stored in URL query param), making the docs claim achievable.
+      Flip the UI regression-pin assertion to match the new
+      behaviour.
+  (c) Cross-link path: keep the OPEN-only filter, but update the
+      page's empty-state message to read "no open alerts; see the
+      per-entity Alerts tab for resolved history" with a deep-link.
+      Flip the doc test assertion to match a documented design.
+
+  Maintainer recommendation per pillar bar (DOC pillar Cornerstone 1
+  — Discoverability without context): path (b) is the operator-honest
+  fix. Path (a) is the minimum-velocity fix. Path (c) is the
+  best-of-both for OSS velocity.
+maintainer_curated: false
+batch: 2026-05-26-ZL

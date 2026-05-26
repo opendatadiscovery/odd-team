@@ -1,0 +1,234 @@
+name: Per-Entity Run History (DataEntityRunList — paginated run-history read surface for one DQ test or transformer)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-04
+description: |-
+  NEW ENTITY, batch ZG (2026-05-25, DataEntityRunController class-level
+  primary source). The paginated run-history view surfaced via
+  GET /api/dataentities/{data_entity_id}/runs — the per-entity
+  drill-down complement to the catalog-wide Data Quality Dashboard
+  (`aggregate-catalog-wide-data-quality` operation) and the
+  per-dataset Test Reports tab (F-022).
+
+  Wire-side shape (`components.yaml:1037-1048`): DataEntityRunList =
+  `{items: List<DataEntityRun>, pageInfo: {total, hasNext}}`. Each
+  DataEntityRun (`components.yaml:960-980`) projects a row of
+  `data_entity_task_run` joined to its parent entity: dataEntityId +
+  startTime + endTime + status + statusReason + type.
+
+  THREE UI surfaces consume this entity:
+    - Dedicated `/dataentities/{id}/history` tab (TestRunsHistory.tsx)
+      — page-size 100, infinite scroll, status-filter dropdown.
+    - Test-report-details preview (TestReportDetailsHistory.tsx) —
+      first 10 runs, no pagination.
+    - Third-party API consumers reading the documented OpenAPI
+      endpoint — multiplicity unbounded.
+
+  THREE LOAD-BEARING semantic properties (the entity's quality
+  surface):
+
+    (1) CROSS-OWNER READ POSTURE: GET /api/dataentities/{id}/runs
+        is NOT in SecurityConstants.SECURITY_RULES; falls through
+        to `pathMatchers('/**').authenticated()`. Any authenticated
+        user reads any DQ test's or transformer's history including
+        `statusReason` text — diagnostic text that test frameworks
+        (Great Expectations, dbt, custom) commonly populate with
+        failed-row samples potentially containing PII. The 5th
+        invocation site of REFACTOR-024 read-collaborative family.
+
+    (2) WIRE ENUM vs DB ENUM ASYMMETRY: DB column accepts the
+        seven-value `IngestionTaskRunStatus`
+        (SUCCESS|FAILED|SKIPPED|BROKEN|ABORTED|RUNNING|UNKNOWN) but
+        the wire enum DataEntityRunStatus declares only six values
+        (RUNNING is missing). When a result set contains a RUNNING
+        row, the DataEntityRunMapper's String→enum conversion via
+        `Enum.valueOf()` throws — the runs-history page returns 500
+        EXACTLY WHILE A TEST IS IN FLIGHT (the moment the operator
+        most wants to see the page). Captured in
+        `wire-enum-running-asymmetry-data-entity-run-status` invariant.
+
+    (3) PAGINATION UNBOUNDED: OpenAPI `SizeParam` (components.yaml
+        :4222-4229) declares int32 with no min/max. The UI ships
+        size=100 (TestRunsHistory.tsx:27) and size=10
+        (TestReportDetailsHistory.tsx:31); a deliberately-crafted
+        curl with size=10000000 reaches the LIMIT clause as-is.
+
+  Distinct from `per-entity-alert-listing` (the per-entity ALERT
+  read surface; different OpenAPI tag, different controller,
+  different data) and from `data-quality-dashboard` (the
+  CATALOG-WIDE aggregate, different DTO shape).
+vocabulary_status: codebase-anchored, doc-side-gap
+axes_present:
+  - controllers
+  - openapi_schemas
+nodes:
+  - odd-platform java DataEntityRunController controller-class:DataEntityRunController
+contributors:
+  - |-
+    DataEntityRunController (controller-class, batch ZG PRIMARY SOURCE):
+      entities[DataEntityRunList, DataEntityRun, DataEntityRunStatus,
+      data_entity_task_run row];
+      operations[list-runs-for-dq-test-or-transformer];
+      invariants[reactive Mono signature, entity-class gate at service
+      tier, 404 on missing entity, ORDER BY end_time DESC no tie-breaker
+      no NULLS-FIRST/LAST directive, status filter optional, pagination
+      contract 1-based with no upper bound];
+      bugs[page-size unbounded HIGH, wire enum vs DB enum asymmetry HIGH,
+      NULL end_time ordering implementation-defined MEDIUM, no tie-breaker
+      on identical end_time LOW, UI sort key start_time vs backend sort
+      key end_time LOW, endpoint not in SECURITY_RULES HIGH,
+      entity-class gate accepts parent classes only LOW,
+      no existsIncludingSoftDeleted soft-delete forensic gap LOW];
+      audiences[data-quality-engineer via /history tab,
+      data-engineer-analyst via test-report-details preview,
+      any authenticated platform user (cross-owner read posture)];
+      security_aggregate[overall HIGH-risk — cross-owner read +
+      status_reason diagnostic-text broadcast channel];
+      performance_aggregate[overall MEDIUM — non-blocking reactive but
+      size-unbounded + two-query-per-request pattern]
+evidence:
+  - DataEntityRunController.md:concepts.entities (DataEntityRunList, DataEntityRun, DataEntityRunStatus, data_entity_task_run row)
+  - DataEntityRunController.md:concepts.operations (list-runs-for-dq-test-or-transformer)
+  - DataEntityRunController.md:concepts.invariants[1-7] (reactive, entity-class gate, 404, ORDER BY, status filter, pagination contract, status filter SQL bind)
+  - DataEntityRunController.md:bugs_limitations_corner_cases.[0-7] (8 findings including HIGH-severity cross-owner-read + wire-enum-asymmetry)
+  - DataEntityRunController.md:security.known_security_gaps.[0-2]
+  - DataEntityRunController.md:upstream_callers.[0-2] (TestRunsHistory + TestReportDetailsHistory + third-party)
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+    - DISABLED
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: UNGATED
+    detail: |-
+      No @PreAuthorize on DataEntityRunController; no programmatic
+      permissionService.hasPermission(...) call in the service; no
+      owner predicate in ReactiveDataEntityTaskRunRepositoryImpl.
+      No entry in SecurityConstants.SECURITY_RULES (verified by
+      grep over SecurityConstants.java:98-355 returning zero matches
+      for `/runs`). The catch-all `pathMatchers('/**').authenticated()`
+      at AuthorizationCustomizer.java:29-30 is the entire gate.
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      ReactiveDataEntityTaskRunRepositoryImpl.getDataEntityRuns
+      (lines 161-191) filters only on DATA_ENTITY.ID.eq(dataQualityTestId)
+      and optionally STATUS.eq(...); NO ownership JOIN, NO filter by
+      the calling user's owners. 5th invocation site of REFACTOR-024
+      cross-owner-read family.
+  strengths:
+    - |-
+      Reactive Mono signature throughout — non-blocking I/O from the
+      platform's perspective; success always emits 200 OK via .map(ResponseEntity::ok).
+    - |-
+      Entity-class gate at the SERVICE tier (`checkIfDeClassSupposedToHaveRuns`)
+      rejects non-transformer / non-quality-test entities with
+      BadUserRequestException (400) — typed error, not a generic 500.
+    - |-
+      404 (NotFoundException) on missing entity via `.switchIfEmpty` —
+      clear error contract for the absent-id path.
+  weaknesses:
+    - |-
+      Cross-owner read posture undocumented at the runs-history surface;
+      status_reason free-form text from test frameworks may carry PII
+      (failed-row samples for Great Expectations) and is broadcast to
+      every authenticated user across the catalog (severity HIGH).
+    - |-
+      Wire enum vs DB enum asymmetry — DataEntityRunStatus declares 6
+      values, DB accepts 7 (includes RUNNING). The DataEntityRunMapper
+      flat-maps String→wire enum via MapStruct's Enum.valueOf which
+      throws on unknown literals — runs-history returns HTTP 500 for
+      any result set containing a RUNNING row, exactly while a test
+      is in flight (severity HIGH).
+    - |-
+      Size parameter unbounded — components.yaml:4222-4229 declares
+      int32 with no min/max; the controller passes through verbatim
+      to SQL LIMIT (severity MEDIUM — DoS vector via single large
+      page request).
+    - |-
+      Under auth.type=DISABLED, the runs-history endpoint is anonymously
+      reachable; no fail-closed behaviour (severity LOW — DISABLED is
+      dev-only per docs).
+  cross_file_inconsistencies: []
+  contributing_files:
+    - DataEntityRunController.md
+  evidence:
+    - DataEntityRunController.md:security.known_security_gaps.[0-2]
+    - DataEntityRunController.md:bugs_limitations_corner_cases.[1,5] (HIGH severity)
+performance_aggregate:
+  overall: MEDIUM
+  hot_paths:
+    - |-
+      List query runs synchronously per request, paginated, no cache:
+      SELECT data_entity_task_run.* FROM data_entity_task_run JOIN
+      data_entity ON data_entity.oddrn = data_entity_task_run.task_oddrn
+      WHERE data_entity.id = ? AND status = ? ORDER BY end_time DESC
+      LIMIT ? OFFSET ?. Plus a `SELECT COUNT(*)` over the base query
+      for pageInfo.total. Two DB round-trips per request.
+      (ReactiveDataEntityTaskRunRepositoryImpl.java:170-191)
+  throughput_shape:
+    verdict: SINGLE_ITEM_ONLY
+    detail: |-
+      One paginated fetch per request. No bulk / batch variant. The
+      InfiniteScroll consumer accumulates pages client-side; a user
+      scrolling through 1000 runs triggers 10 round-trips.
+  scaling_shape:
+    verdict: UNPAGINATED
+    detail: |-
+      Pagination declared but UNCONSTRAINED — size has no upper bound;
+      a single request with size=1000000 reaches the LIMIT clause as-is.
+      Combined with no rate limit, operator with high-volume DQ
+      ingestion + large size param can sustain DB pressure.
+  strengths:
+    - |-
+      Reactive Mono/Flux signature — non-blocking I/O; each request
+      consumes one Postgres connection from the reactive pool for the
+      duration of the two queries.
+    - |-
+      Stateless controller — instances scale horizontally; bottleneck
+      is the DB tier, not API CPU.
+  weaknesses:
+    - |-
+      size parameter unbounded (severity MEDIUM) — a deliberately-crafted
+      curl with size=10000000 attempts to materialise 1M rows through
+      JOOQ + MapStruct + Jackson serialisation.
+    - |-
+      Two-query pattern per request (data + COUNT subquery) — the COUNT
+      subquery is unnecessary if hasNext could be computed from LIMIT
+      size+1 peek (severity LOW — premature optimisation at scale).
+    - |-
+      No caching at controller / service layer — popular DQ tests with
+      stable history re-run the same query per page-load (severity LOW).
+  cross_file_inconsistencies: []
+  contributing_files:
+    - DataEntityRunController.md
+  evidence:
+    - DataEntityRunController.md:performance.hot_paths.[0]
+    - DataEntityRunController.md:performance.known_performance_gaps.[0-2]
+related_features:
+  - F-022
+related_pillar_features:
+  - "P-04:F-001"
+notes: |-
+  The per-entity run-history surface is conceptually a peer of the
+  catalog-wide `data-quality-dashboard` (P-04:F-002 aggregate view)
+  and of the per-dataset Test Reports tab (F-022 — DataSetTestReport
+  DTO). Three distinct surfaces, three different DTOs, all consuming
+  the `data-entity-run-status` enum (and all surfacing the same
+  6-vs-7 wire-enum-asymmetry risk if a RUNNING row appears).
+
+  Pairs with:
+    - operation:list-runs-for-data-entity (the operation backing
+      this entity)
+    - entitie:data-entity-task-last-run (the DENORMALISED PK-per-test
+      table used by the DASHBOARD; this entity reads from
+      data_entity_task_run, NOT from the denormalised table)
+    - invariant:wire-enum-running-asymmetry-data-entity-run-status
+      (the HIGH severity mapper-failure risk on RUNNING result rows)
+    - invariant:read-collaborative-cross-owner-enumeration (the
+      cross-owner read posture this is a 5th invocation site of)
+maintainer_curated: false

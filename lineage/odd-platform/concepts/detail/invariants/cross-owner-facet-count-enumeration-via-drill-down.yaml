@@ -34,12 +34,43 @@ description: |-
   each owns. Pairs with REFACTOR-024 (the BATCH alert read) and REFACTOR-340
   (the per-entity alert read) — together they form the catalog-wide
   cross-owner enumeration surface. **Severity**: HIGH.
+
+  ## STRENGTHENED batch ZE (2026-05-25) — class-level + relationships surface
+
+  Batch ZE adds TWO new pieces:
+
+  (1) SearchController class-level — confirms ALL SEVEN endpoints
+      participate in the catalog-wide enumeration surface, not just
+      the facet drill-downs. The full catalog enumeration scope is:
+      - getSearchResults (paginate the whole catalog);
+      - getFiltersForFacet (drill any of TAGS/OWNERS/TYPES/GROUPS/STATUSES);
+      - getSearchSuggestions (top-5 autocomplete — no owner filter);
+      - getSearchFacetList (aggregate counts — myObjects scopes
+        RESULTS not COUNTS);
+      - highlightDataEntity (render highlights for any entity within
+        any session — TRUE SQL injection in addition).
+      Plus the bearer-token-shaped UUID semantic means ANY authenticated
+      caller holding ANY UUID drives the surface. The class is the
+      LARGEST single discovery surface in the catalog.
+
+  (2) Relationships surface — the same catalog-wide read posture
+      applies at /api/relationships (per the
+      invariant:relationships-no-exclude-from-search-asymmetry-vs-dataentities
+      finding). Two list surfaces (search + relationships) both share
+      the catalog-as-public-metadata stance; the surfaces are
+      asymmetrically gated relative to /api/dataentities which
+      DOES apply EXCLUDE_FROM_SEARCH.
+
+  Updated tally: 20+ cross-owner-readable surfaces across the
+  platform.
 axes_present:
   - controllers
   - services
   - repositories_reactive
 nodes:
   - odd-platform java SearchController controller-method:facets
+  - odd-platform java SearchController controller-class:SearchController
+  - odd-platform java RelationshipController controller-class:RelationshipController
   - odd-platform java service service:SearchServiceImpl
   - odd-platform java repository reactive repository:ReactiveSearchFacetRepositoryImpl
 contributors:
@@ -47,23 +78,33 @@ contributors:
     facets.md (batch M PRIMARY SOURCE):
     bugs_limitations_corner_cases.[0] HIGH — GET /api/search/{search_id} and
     GET /api/search/{search_id}/facet/{facet_type} expose CROSS-OWNER catalog
-    cardinality to any authenticated user via facet drill-down — the same
-    cross-owner read posture as REFACTOR-024 / REFACTOR-340 applied to the
-    facet-COUNTS surface;
+    cardinality to any authenticated user via facet drill-down;
     security.owner_scoping BYPASSES — facet counts are computed catalog-wide;
     security.known_security_gaps.[0] HIGH severity — an authenticated caller
     can drill getFiltersForFacet(OWNERS) to enumerate every owner name +
     per-owner entity count;
-    implicit_adrs.[1] Catalog-wide facet counts are the design — myObjects
-    is an EXTRA opt-in scope, not a permission boundary.
+    implicit_adrs.[1] Catalog-wide facet counts are the design.
   - |-
     search.md (batch E cross-reference): catalog-wide cross-owner enumeration
     finding for the SEARCH-RESULTS surface; this invariant is the FACET-COUNTS
     sibling.
   - |-
     Cross-batch L getDataEntityAlerts (cross-reference): REFACTOR-340 per-entity
-    alert-read surface; this invariant is the same posture applied to the
-    facet-drill-down surface.
+    alert-read surface.
+  - |-
+    SearchController class-level batch ZE:
+    bugs_limitations_corner_cases.[0] — Catalog-wide cross-owner enumeration
+    via getSearchResults + getFiltersForFacet (any authenticated caller can
+    paginate every non-EXCLUDE entity AND enumerate every owner + per-owner
+    count);
+    security.known_security_gaps.[0] HIGH — Cross-owner catalog enumeration
+    via 7 distinct endpoints with no permission gate.
+  - |-
+    RelationshipController batch ZE:
+    bugs_limitations_corner_cases.[1] — No authorization gate at any layer;
+    every authenticated user (or anonymous under DISABLED) sees every
+    relationship across every data source; cross-link with the
+    relationships-no-exclude-from-search-asymmetry-vs-dataentities invariant.
 evidence:
   - |-
     ReactiveSearchFacetRepositoryImpl.java:163-249 (entity-class facet
@@ -96,6 +137,16 @@ evidence:
     security.owner_scoping +
     security.known_security_gaps.[0] +
     implicit_adrs.[1]
+  - |-
+    NEW batch ZE
+    odd-platform__java__SearchController__controller-class__SearchController.md
+    bugs_limitations_corner_cases.[0] +
+    security.known_security_gaps.[0]
+  - |-
+    NEW batch ZE
+    odd-platform__java__RelationshipController__controller-class__RelationshipController.md
+    bugs_limitations_corner_cases.[1] +
+    security.known_security_gaps.[2,3]
 mitigations_unimplemented:
   - |-
     Add OWNERSHIP join to every facet aggregator — gated by the caller
@@ -108,43 +159,51 @@ mitigations_unimplemented:
     tenant-isolated deployments.
   - |-
     Doc: extend /features/data-discovery/search with a "Facet count scoping"
-    section explicitly stating that facet counts reflect the WHOLE CATALOG
-    (not the caller scope) — operators must understand the discovery
-    surface.
+    section explicitly stating that facet counts reflect the WHOLE CATALOG.
   - |-
     Doc: extend /configuration-and-deployment/enable-security/authorization
     "Read-side posture" section to enumerate the cross-owner facet count
-    surface alongside the other 15 read-collaborative surfaces.
+    surface alongside the other 19 read-collaborative surfaces.
   - |-
     Backlog: a REFACTOR-NNN tracked follow-up for the OWNERSHIP-join
     refactor; cite this invariant as the requirement spec.
 notes: |-
-  Cross-batch finding: the facet-drill-down surface is the SIXTEENTH
-  cross-owner-readable read surface in the platform — adding to the
-  fifteen-surface tally documented at read-collaborative-cross-owner-enumeration
-  (15 sidecars at batch L). With batch M's four sidecars all on or
-  adjacent to anchor-set / cross-owner findings, the total reachable
-  posture surfaces are now 19+ across the codebase.
+  STRENGTHENED batch ZE (2026-05-25) — SearchController class-level
+  confirms full-class catalog-wide enumeration; RelationshipController
+  adds a second class to the 20+ surfaces tally. Cross-link
+  invariant:relationships-no-exclude-from-search-asymmetry-vs-dataentities
+  for the relationship-list specific finding.
 
   Operator-relevant compounding:
     (a) /api/search/{id}/facet/OWNERS — enumerate every owner name + count;
-    (b) /api/search/{id}/facet/NAMESPACES (via getSearchFacetList aggregate)
-        — enumerate every namespace;
+    (b) /api/search/{id}/facet/NAMESPACES — enumerate every namespace;
     (c) /api/search/{id}/facet/TAGS — enumerate every tag + frequency;
     (d) /api/search/{id}/facet/GROUPS — enumerate every DEG + size;
     (e) /api/search/{id}/facet/STATUSES — enumerate every status + count;
     (f) /api/search/{id}/facet/TYPES — enumerate every entity type + count;
-  A single authenticated caller drilling all six facet panels reconstructs
+    (g) NEW batch ZE — /api/relationships — enumerate every relationship
+        across every data source;
+    (h) NEW batch ZE — /api/search/{id}/results — paginate the whole
+        catalog (paired with the hasNext: true contract bug that lets
+        third-party consumers fetch every page indefinitely);
+    (i) NEW batch ZE — /api/search/suggestions — top-5 autocomplete
+        across the whole catalog (poor-man enumeration via query
+        prefixes).
+  A single authenticated caller drilling all NINE panels reconstructs
   most of the catalog topology with no per-entity-read required.
 
   Cross-references:
     - Read-collaborative cross-owner enumeration — the broader pattern;
-      this is the SIXTEENTH cross-owner-readable surface.
+      this is now THE PILLAR-WIDE cross-owner-readable surface.
     - Search Catalog (faceted, session-as-server-state) — the parent
-      operation that creates the bearer-token session feeding the facet
-      drill-down.
+      operation creating the bearer-token session.
     - tsquery operator-injection via persisted state — the SAME aggregators
       that suffer this finding ALSO suffer the tsquery injection.
-    - REFACTOR-024 / REFACTOR-340 — the per-entity alert read family;
-      this invariant extends the cross-owner enumeration to the
-      catalog-cardinality surface.
+    - REFACTOR-024 / REFACTOR-340 — the per-entity alert read family.
+    - relationships-no-exclude-from-search-asymmetry-vs-dataentities —
+      the relationships variant of the same read-collaborative posture.
+related_features: []
+related_pillar_features:
+  - P-01
+  - P-02
+  - P-09

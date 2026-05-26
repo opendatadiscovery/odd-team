@@ -1,0 +1,179 @@
+name: |-
+  Catalog and Dictionary tab clicks silently fail on backend rejection — create-thunk-then-navigate handlers omit .catch()
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-02
+  - P-09
+description: |-
+  NEW MEDIUM-severity UX INVARIANT, batch ZJ (2026-05-26) — both
+  create-thunk-then-navigate handlers in `ToolbarTabs.tsx` call
+  `.unwrap().then(...)` WITHOUT a `.catch(...)`. If the thunk
+  rejects (e.g. backend unavailable, 5xx on the search-create
+  POST), the user clicks the tab and NOTHING happens. No error
+  toast, no navigation, no state change.
+
+  **The two affected handlers**:
+
+  (a) **Catalog tab click** (`useCreateSearch.ts:14-19` via
+      ToolbarTabs.tsx:121-123):
+
+          dispatch(createDataEntitiesSearch(initialParams))
+            .unwrap()
+            .then((searchId) => {
+              navigate(searchPath(searchId));
+            });
+
+      No `.catch()`. If `createDataEntitiesSearch` rejects, the
+      promise is silently unhandled.
+
+  (b) **Dictionary tab click** (ToolbarTabs.tsx:112-117):
+
+          dispatch(createTermSearch({termSearchFormData}))
+            .unwrap()
+            .then(({searchId}) => {
+              navigate(termsSearchPath(searchId));
+            });
+
+      Same shape, same silent-failure surface.
+
+  **The operator-visible failure mode**: the user clicks 'Catalog'
+  or 'Dictionary' expecting to navigate to a fresh search session.
+  If the backend is degraded (5xx) or returning unexpected data
+  (4xx), the click DOES NOTHING. The user is left on their
+  previous page with no error toast, no navigation, no log
+  indicator. They click again — same silent no-op. Eventually
+  they may refresh the page or report 'the Catalog tab is broken'
+  to support, with no diagnostic information.
+
+  **The pattern matches LSN-019 / LSN-020 silent-failure class** —
+  the failure-mode where the UI surfaces nothing on a backend
+  error and the operator has no path to diagnose. Both create-
+  thunk-then-navigate handlers are on the critical path for a
+  primary nav action; a silent failure on a primary nav action
+  is the highest-leverage form of this class.
+
+  **The other seven tabs do NOT have this problem** — they are
+  pure `<Link to=...>` navigations rendered by AppLinkTab (no JS
+  handler intercept). React-router-dom Link cannot fail in a
+  way the user wouldn't see (the URL bar would update; the
+  destination component would mount; any error there would be
+  the destination's responsibility).
+
+  **The fix is minimal — 2-line `.catch()` per handler**:
+
+  (a) Catalog:
+
+          dispatch(createDataEntitiesSearch(initialParams))
+            .unwrap()
+            .then((searchId) => navigate(searchPath(searchId)))
+            .catch(err => {
+              showServerErrorToast({err, message: 'Failed to start Catalog search'});
+            });
+
+  (b) Dictionary: same shape.
+
+  Approximate cost: 4 lines, no new imports (showServerErrorToast
+  is already used across the platform per the
+  `app-error-page-as-error-render-surface-suppressed-toasts`
+  invariant).
+
+  **Cross-batch coherence**: this invariant is the silent-failure-
+  on-nav-action sibling of the broader `tab-click-drops-session-
+  state-cross-route-pattern` invariant. The latter captures the
+  intentional homecoming pattern (drop URL state, mint new
+  session). This invariant captures the UNINTENTIONAL silent-
+  failure pattern when that mint operation fails. The two
+  invariants together describe Catalog + Dictionary tab semantics
+  end-to-end.
+vocabulary_status: codebase-anchored
+axes_present:
+  - ui_shell
+  - ui_components
+nodes:
+  - odd-platform ts components/shared/elements/AppToolbar/ToolbarTabs ui-shell-widget:ToolbarTabs
+contributors:
+  - |-
+    ToolbarTabs.md (batch ZJ ui-shell-widget primary source):
+      bugs_limitations_corner_cases.[5] MEDIUM (Both create-thunk-then-navigate handlers .unwrap().then(...) without .catch(); silent failure on a primary nav action);
+      tests_coverage_semantic.uncovered_behaviours[Clicking Catalog dispatches createDataEntitiesSearch — thunk rejection produces a no-op click; untested HIGH criticality];
+      tests_coverage_semantic.uncovered_behaviours[Clicking Dictionary dispatches createTermSearch — same fragility]
+evidence:
+  - 'ToolbarTabs.md:bugs_limitations_corner_cases.[5] MEDIUM (Both create-thunk-then-navigate handlers call .unwrap().then(...) WITHOUT a .catch(...) — if the thunk rejects, the user clicks the tab and NOTHING happens)'
+  - 'ToolbarTabs.md:tests_coverage_semantic.uncovered_behaviours[Clicking Catalog dispatches createDataEntitiesSearch — HIGH criticality]'
+  - 'ToolbarTabs.md:tests_coverage_semantic.uncovered_behaviours[Clicking Dictionary dispatches createTermSearch — HIGH criticality]'
+  - 'ToolbarTabs.tsx:112-117 (the Dictionary handler — no .catch)'
+  - 'ToolbarTabs.tsx:121-123 (the Catalog handler — delegates to useCreateSearch)'
+  - 'useCreateSearch.ts:14-19 (the Catalog handler chain — no .catch)'
+security_aggregate:
+  overall: HIGH
+  auth_modes_relevant: []
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: 'N/A'
+    detail: 'Not a security gate. UX silent-failure invariant.'
+  owner_scoping:
+    verdict: 'N/A'
+    detail: ''
+  strengths: []
+  weaknesses:
+    - 'Operator-visible silent no-op on a primary nav action — clicking Catalog or Dictionary with degraded backend does NOTHING; user has no diagnostic path (MEDIUM)'
+    - 'Pattern matches LSN-019 / LSN-020 silent-failure class — backend rejection produces no UI signal, no log, no metric (MEDIUM)'
+    - 'Untested at unit OR integration class — no AppToolbar.test.tsx or ToolbarTabs.test.tsx exists; the regression class is invisible until a user reports the no-op click (HIGH)'
+  cross_file_inconsistencies: []
+  contributing_files:
+    - 'odd-platform__ts__components_shared_elements_AppToolbar_ToolbarTabs__ui-shell-widget__ToolbarTabs.md'
+  evidence:
+    - 'ToolbarTabs.md:bugs_limitations_corner_cases.[5]'
+    - 'ToolbarTabs.md:tests_coverage_semantic.uncovered_behaviours'
+performance_aggregate:
+  overall: 'HIGH'
+  hot_paths: []
+  throughput_shape:
+    verdict: 'N/A'
+    detail: 'Not a performance concept.'
+  scaling_shape:
+    verdict: 'N/A'
+    detail: ''
+  strengths: []
+  weaknesses: []
+  cross_file_inconsistencies: []
+  contributing_files:
+    - 'odd-platform__ts__components_shared_elements_AppToolbar_ToolbarTabs__ui-shell-widget__ToolbarTabs.md'
+  evidence: []
+triangulation_count: 1
+cross_batch: false
+cross_batch_refs:
+  - batch-ZJ (ToolbarTabs primary source)
+severity: MEDIUM
+severity_dim: ux
+mitigations_unimplemented:
+  - |-
+    Add `.catch(err => showServerErrorToast({err, message: '...'}))`
+    after the `.then()` in both create-thunk-then-navigate handlers.
+    Two lines per handler. No new imports required.
+  - |-
+    Add an integration test asserting that backend rejection of
+    createDataEntitiesSearch / createTermSearch produces a visible
+    error indicator. Without this test the regression class is
+    invisible.
+related_features:
+  - F-001
+related_pillar_features:
+  - 'P-01:F-001'
+  - 'P-02:F-024'
+related_concepts:
+  - 'entitie:toolbar-tabs-hardcoded-nine-tab-primary-nav (the widget)'
+  - 'invariant:tab-click-drops-session-state-cross-route-pattern (the intentional pattern this invariant sits alongside)'
+  - 'invariant:app-error-page-as-error-render-surface-suppressed-toasts (the broader pattern; showServerErrorToast is the fix anchor)'
+notes: |-
+  Coherence (Rule 6): grepped `concepts/detail/invariants/` for
+  "silent" + "thunk" + "no catch" — no existing concept covers
+  the create-thunk-then-navigate silent-failure pattern.
+
+  This invariant is structurally a LSN-019 / LSN-020 class
+  finding (silent failure on a primary nav action). The fix
+  pattern (add .catch + showServerErrorToast) is the standard
+  remediation across the platform.
+maintainer_curated: false

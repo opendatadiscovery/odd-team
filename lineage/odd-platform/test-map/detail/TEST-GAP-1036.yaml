@@ -1,0 +1,146 @@
+---
+gap_id: TEST-GAP-1036
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform ts react-component:LookupTables"
+pillars_affected: ["P-03"]
+surfaced_by:
+  - "LookupTables.md:bugs_limitations_corner_cases.[2] verbatim: 'Edit-form DTO drift: LookupTableForm.tsx:49 types form data as LookupTableFormData (the CREATE shape with required namespaceName). On edit (line 60-66), it submits the SAME shape to editLookupTable({ lookupTableUpdateFormData: data, ... }), but the OpenAPI contract for UPDATE (LookupTableUpdateFormData, components.yaml:3853-3862) defines ONLY name + description. The namespace_name field is sent on the wire on every edit but silently discarded by the server (assuming Spring lenient binding). The form-visual disabled={!!lookupTable} (line 120) hides this from the user.' severity: HIGH"
+  - "LookupTables.md:tests_coverage_semantic.uncovered_behaviours.[4] verbatim: 'Editing an existing lookup table sends namespace_name in the request body even though LookupTableUpdateFormData schema rejects it' test_class: integration; criticality: HIGH; note: PROBE-NEEDED — see P-191."
+  - "LookupTables.md:docs_link_semantic.doc_drift_findings.[0]: 'Doc page says Renaming a lookup table or editing its description under LOOKUP_TABLE_UPDATE, implying the namespace is NOT updateable — and the OpenAPI schema confirms this. The UI form disables the namespace field on edit AND sends it anyway in the request body via lookupTableUpdateFormData: data — drift between UX intent (field disabled = field not editable) and wire reality (field sent and silently discarded). Operator inspecting the network tab on edit sees namespace_name on the wire, but reading the docs would assume the field is not transmitted.' severity: MEDIUM"
+related_pillar_features:
+  - "P-03:F-Lookup-Tables"
+related_features: []
+feature_id: null
+test_class: integration
+strengthens: []
+behaviour: |-
+  **HIGH — CREATE-DTO submitted to UPDATE endpoint. The form
+  conflates CREATE and UPDATE shapes; the discarded field is
+  invisible to the user but visible on the wire.**
+
+  `LookupTableForm.tsx:49` types form data as
+  `LookupTableFormData` — the CREATE shape with REQUIRED
+  `namespaceName: string`. On edit (lines 60-66), the form submits
+  the SAME shape to `editLookupTable({lookupTableUpdateFormData:
+  data, ...})`. The OpenAPI contract for UPDATE
+  (`LookupTableUpdateFormData`, components.yaml:3853-3862) defines
+  ONLY `name` + `description` — `namespace_name` is NOT in the
+  schema.
+
+  **What actually happens on the wire**: the request body on every
+  edit includes `{name, description, namespace_name}` — the
+  namespace_name is sent. Spring's WebFlux Jackson binding (per
+  the project default — no strict-binding configuration found in
+  the platform) is lenient by default: unknown JSON fields are
+  silently ignored on deserialisation. So `namespace_name` is sent
+  but silently discarded by the server.
+
+  **The form-visual `disabled={!!lookupTable}` (line 120) hides
+  this from the user**. The Namespace field IS rendered (so the
+  user sees what the table's namespace is) but is greyed out and
+  unfocusable. The UX signal: "this field is not editable in
+  this mode". The wire signal: "this field is on the wire on
+  every submission".
+
+  **Why HIGH**:
+  - **Schema drift**: the UI does not respect the OpenAPI schema
+    boundary. A future contract tightening (Jackson FAIL_ON_UNKNOWN_PROPERTIES
+    flipped to true; or the schema getting `additionalProperties:
+    false`) breaks every UPDATE silently. The form would 400 and
+    no test would catch the regression at PR time.
+  - **Doc-side drift**: the live doc page at
+    `https://docs.opendatadiscovery.org/features/master-data-management/lookup-tables`
+    (WebFetched 2026-05-26 status 200) describes LOOKUP_TABLE_UPDATE
+    as "Renaming a lookup table or editing its description" —
+    implying namespace is NOT updateable. An operator inspecting
+    the network tab during an edit sees namespace_name on the
+    wire and concludes the docs are wrong (or worse, that they
+    CAN edit namespace via curl).
+  - **Forensic-integrity**: any future audit log of the UPDATE
+    payload (e.g. via a Spring `@RequestBody` log filter) records
+    a misleading `namespace_name` field that was never honoured.
+    Investigators reading the log assume an UPDATE-with-namespace
+    was attempted; the wire-level data tells a different story
+    than the actual behaviour.
+  - **Trivial fix**: change the form's submit handler to construct
+    a `LookupTableUpdateFormData` (just `{name, description}`) on
+    the edit branch. One line of code.
+
+  **Probe P-191** (emitted in batch ZL): boot the platform, edit
+  an existing lookup table, inspect the PUT request body,
+  observe `namespace_name` on the wire. Probe RED today
+  (namespace_name present); GREEN after the fix (only name +
+  description on the wire).
+
+  **Cross-pillar pattern**: this is the second instance of
+  "frontend submits a CREATE-shape DTO to an UPDATE endpoint
+  that the server silently truncates" found in this batch
+  series. The architectural recommendation is to enforce strict
+  Jackson binding (FAIL_ON_UNKNOWN_PROPERTIES=true) globally;
+  this surfaces every silent-discard at request time. Surface
+  as REFACTOR-NNN candidate.
+
+  **Compounds with TEST-GAP-697** (
+  DataSourceIngestionServiceImpl SILENTLY DROPS PAYLOAD
+  namespace_name) — that's a backend silent-discard of the SAME
+  namespace_name field on a DIFFERENT endpoint
+  (/ingestion/datasources). The systemic pattern: the platform
+  has a recurring "namespace_name is silently dropped" failure
+  mode across multiple surfaces.
+test_files_existing: []
+test_files_proposed:
+  - path: "odd-platform-ui/src/components/LookupTables/LookupTableForm/__tests__/LookupTableForm.UpdatePayloadShape.test.tsx"
+    name: "editLookupTable_submitsOnlyNameAndDescription_NOT_namespace_name_pinsFixContract_BatchZL"
+    description: |-
+      Render <LookupTableForm/> with the edit-mode prop (existing
+      lookupTable). Fill in name + description. Submit. Spy on the
+      editLookupTable thunk and assert the payload is EXACTLY
+      `{name: "...", description: "..."}` — NO namespace_name field.
+      RED today (namespace_name is in the payload); GREEN after fix.
+  - path: "odd-platform-ui/src/components/LookupTables/LookupTableForm/__tests__/LookupTableForm.UpdatePayloadShape.test.tsx"
+    name: "editLookupTable_currentlyDoesNotMatchUpdateSchema_pinsCurrentDrift_BatchZL"
+    description: |-
+      Same render setup, but assert the payload INCLUDES
+      namespace_name. PINS the current drift; flips assertion
+      direction after fix.
+  - path: "odd-platform-api/src/test/java/.../LookupTableControllerStrictBindingTest.java"
+    name: "putLookupTable_extraField_namespace_name_silentlyDiscarded_pinsLenientBinding_BatchZL"
+    description: |-
+      PUT /api/referencedata/{id} with body
+      `{name: "x", description: "y", namespace_name: "z"}`.
+      Assert response 200 (the namespace_name is silently
+      discarded). PINS the lenient-binding posture; after the
+      architectural fix to FAIL_ON_UNKNOWN_PROPERTIES=true, flip
+      to assert 400.
+evidence:
+  - "LookupTables.md (batch ZL) bugs_limitations_corner_cases.[2]: cited above; severity HIGH"
+  - "LookupTables.md (batch ZL) tests_coverage_semantic.uncovered_behaviours.[4]: HIGH integration test class"
+  - "LookupTables.md (batch ZL) docs_link_semantic.doc_drift_findings.[0]: doc-side drift cited above; severity MEDIUM"
+  - "Primary source verified: LookupTableForm.tsx:49 (form data typing) + lines 60-66 (edit branch submit) + line 120 (disabled attribute) + components.yaml:3853-3862 (LookupTableUpdateFormData schema — only name + description)"
+  - "WebFetch verified 2026-05-26 status 200: live doc page LOOKUP_TABLE_UPDATE description is 'Renaming a lookup table or editing its description' (no mention of namespace_name)"
+  - "Cross-batch verified: TEST-GAP-697 (DataSourceIngestionServiceImpl namespace_name silent-discard) — same field name dropped on a different endpoint; sibling pattern"
+  - "Glob verified: zero LookupTableForm*.test.* under odd-platform-ui/src (run 2026-05-26)"
+  - "Probe P-191 emitted in batch ZL: real-platform reproduction"
+cross_references:
+  - "P-191 probe (verifies the wire-level namespace_name on edit)"
+  - "TEST-GAP-697 (sibling — backend silent-discard of namespace_name on /ingestion/datasources; same field-name pattern across two endpoints)"
+  - "F-Lookup-Tables (the pillar-level feature flow this gap is anchored to; P-03 Master Data Management)"
+  - "REFACTOR-NNN candidate: global Jackson FAIL_ON_UNKNOWN_PROPERTIES enforcement"
+proposed_action: |-
+  Two-step fix. (1) Update LookupTableForm.tsx's edit branch
+  submit handler to construct a LookupTableUpdateFormData
+  (just {name, description}) — one line of code. (2) Land the
+  three regression-pin tests (UI shape + UI current-drift + backend
+  lenient-binding pin).
+
+  Architectural follow-up (REFACTOR-NNN candidate): enforce
+  Jackson FAIL_ON_UNKNOWN_PROPERTIES=true globally across the
+  Spring WebFlux configuration. This converts every
+  silent-discard into a 400 at request time, surfacing the
+  TEST-GAP-1036 + TEST-GAP-697 pattern systematically. Coordinate
+  with the SDK clients (ODD collectors, platform UI) to ensure
+  no caller is currently relying on lenient binding.
+maintainer_curated: false
+batch: 2026-05-26-ZL

@@ -1,0 +1,54 @@
+gap_id: TEST-GAP-992
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DatasetFieldController controller-class:DatasetFieldController"
+pillars_affected: [P-01]
+surfaced_by:
+  - "DatasetFieldController.md:bugs_limitations_corner_cases.[2] (Spec/code response-code drift: OpenAPI declares HTTP 201 for the three PUT endpoints, controller returns 200 OK — openapi.yaml:2465, :2488, :2511 ('201': description: OK) vs DatasetFieldController.java:42, :52, :62 (ResponseEntity::ok → HTTP 200) — severity MEDIUM)"
+  - "DatasetFieldController.md:tests_coverage_semantic.uncovered_behaviours.[7] (PUT /api/datasetfields/{id}/description returns HTTP 200 (NOT the spec-declared 201))"
+  - "DatasetFieldController.md:docs_link_semantic.doc_drift_findings.[0] (OpenAPI spec declares HTTP 201 for the three PUT endpoints but the controller returns HTTP 200 via ResponseEntity::ok. Spec/code drift. Generated client SDKs branching on 201-vs-200 would silently mishandle the response)"
+behaviour: |-
+  **Three PUT endpoints on `DatasetFieldController` return HTTP 200 — but the OpenAPI spec declares HTTP 201.** The spec/code drift affects:
+
+  - `PUT /api/datasetfields/{id}/description` — spec at `openapi.yaml:2465` declares `'201': description: OK`; controller returns `ResponseEntity::ok` (`DatasetFieldController.java:42`) = HTTP 200.
+  - `PUT /api/datasetfields/{id}/name` — spec at `openapi.yaml:2488` declares 201; controller returns 200 (line 52).
+  - `PUT /api/datasetfields/{id}/tags` — spec at `openapi.yaml:2511` declares 201; controller returns 200 (line 62).
+
+  **Notable asymmetry** (per `DatasetFieldController.md:bugs_limitations_corner_cases.[5]`): the `POST /enum_values` endpoint CORRECTLY returns HTTP 201 (`HttpStatus.CREATED` at line 71) matching the spec at `openapi.yaml:2549`. So only the three PUTs drift; the POST does not. The drift implies the controller author followed the spec for one endpoint but not the others.
+
+  **Operator-visible failure modes**:
+  - Generated client SDKs (Python, Go, Java) generated FROM the OpenAPI spec branch on the declared response code. An SDK that branches `if (response.status == 201) { /* parse body */ } else { /* error */ }` will silently mishandle the 200 success path — falling into the error branch, possibly retrying, possibly raising an unmodeled exception.
+  - Reverse-proxy / API gateway logging that filters by 2xx subgroup boundaries.
+  - Operator-facing API documentation generated from the OpenAPI spec advertises 201 — operator testing in curl sees 200 and assumes a documentation bug.
+
+  **Why MEDIUM not HIGH**:
+  - Both 200 and 201 are 2xx success; the practical impact is limited to SDK-consumer correctness.
+  - The fix is trivial — change `ResponseEntity::ok` to `ResponseEntity::created` (or update the spec to 200). The choice is the question: spec or code is the source of truth?
+  - The asymmetry (POST 201 ok, PUTs 200 drift) suggests the spec is the source-of-truth and the PUTs should follow `ResponseEntity::created`.
+
+  No test pins the current drift. A regression-pin test asserting "200 on PUT" locks the current state; a fix flipping the assertion locks the intent.
+test_class: missing-integration
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DatasetFieldResponseCodeDriftTest.java"
+  name: "putDatasetField_threeMutationEndpoints_returnHTTP200_pinsSpecCodeDrift"
+evidence:
+  - "DatasetFieldController.md:bugs_limitations_corner_cases.[2] verbatim: 'Spec/code response-code drift: OpenAPI declares HTTP 201 for the three PUT endpoints, controller returns 200 OK.' severity: MEDIUM"
+  - "DatasetFieldController.md:bugs_limitations_corner_cases.[5] verbatim: 'createEnumValue returns HTTP 201 from the controller AND the spec says 201 — no drift here. Note this asymmetry: ONLY the POST endpoint correctly returns 201; the three PUT endpoints DO drift.'"
+  - "Verified at primary source: openapi.yaml:2465 + :2488 + :2511 (all declare '201': description: OK) + DatasetFieldController.java:42 + :52 + :62 (all call ResponseEntity::ok)"
+cross_references:
+  - "concepts.yaml:invariants[OpenAPI spec is the source of truth for HTTP contract; controller code must match]"
+  - "REFACTOR-NNN candidate: change ResponseEntity::ok to ResponseEntity::created at the three PUT endpoints OR update the spec to '200' (operator-pick which is source of truth)"
+  - "DOC-NNN candidate: regenerate operator-facing API reference from the OpenAPI spec; flag during regeneration whether intent is 200 or 201"
+related_features: []
+related_pillar_features: ["P-01:F-004"]
+proposed_action: |-
+  Add `DatasetFieldResponseCodeDriftTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Three test methods:
+  1. `putDatasetField_threeMutationEndpoints_returnHTTP200_pinsSpecCodeDrift` — for each of /description, /name, /tags PUT endpoints, submit a valid request; assert HTTP 200 (NOT 201). PIN the current drift.
+  2. `postDatasetField_enumValues_returnsHTTP201_baselineNonRegression` — submit a valid POST /enum_values; assert HTTP 201. Verifies the spec-aligned shape (so the test class as a whole isolates the drift).
+  3. `openApiSpec_declaresResponseCode201_forThreePUTEndpoints_pinsSpecContract` — parse the OpenAPI spec at build/runtime; assert the three PUT endpoints declare 201 in their responses block. PIN that the spec hasn't drifted to match the code.
+
+  Pair with REFACTOR-NNN: pick a source-of-truth (spec or code) and align. The natural choice: SPEC wins (matches the POST endpoint behaviour). Change `ResponseEntity::ok` → `ResponseEntity::created` at the three PUT sites. When the fix lands, test 1 inverts to 201.
+batch: 2026-05-25-ZG
+feature_id: null

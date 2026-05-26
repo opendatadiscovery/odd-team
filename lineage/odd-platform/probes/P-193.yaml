@@ -1,0 +1,101 @@
+---
+probe_id: P-193
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__LookupTables
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: integration
+verified_against_commit: 9ac6436e9bd36ba132d765076c6bbd5916fde729
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question: when an authenticated user with ZERO of LOOKUP_TABLE_CREATE / _UPDATE / _DELETE
+  permissions visits /master-data/lookup-tables, does the LookupTables page render at all?
+  The route mount in App.tsx:75-88 wraps <LookupTables /> in <WithPermissionsProvider
+  allowedPermissions={[CREATE, UPDATE, DELETE]}>, but PermissionProvider.tsx:12-44 never
+  uses isAllowedTo to short-circuit rendering — it just exposes isAllowedTo via React
+  context. Hypothesis: the page chrome renders fully (title "Lookup Tables", search input,
+  table list with whatever rows backend RBAC permits, "X lookup tables overall" counter);
+  ONLY the inner <WithPermissions permissionTo={LOOKUP_TABLE_CREATE}> guard around the
+  "+ Add new" button (LookupTables.tsx:72-82) hides anything. The "X lookup tables overall"
+  counter therefore leaks the global lookup-table count to any authenticated user. If the
+  hypothesis is wrong (page renders an empty state or 403), the WithPermissionsProvider
+  has hidden gate semantics not visible in the source.
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: sql
+    query: |
+      INSERT INTO owner (id, name) VALUES (9990, 'user_no_lookup_perms') ON CONFLICT DO NOTHING;
+      INSERT INTO role (id, name) VALUES (9990, 'NoLookupRole') ON CONFLICT DO NOTHING;
+  - kind: rest
+    method: POST
+    path: /api/namespaces
+    headers:
+      X-S2S-Token: ${S2S_ADMIN_TOKEN}
+      Content-Type: application/json
+    body: |
+      {"name": "p193_ns"}
+  - kind: rest
+    method: POST
+    path: /api/referencedata/table
+    headers:
+      X-S2S-Token: ${S2S_ADMIN_TOKEN}
+      Content-Type: application/json
+    body: |
+      {"name": "p193_table_1", "namespace_name": "p193_ns", "description": "seed"}
+  - kind: rest
+    method: POST
+    path: /api/referencedata/table
+    headers:
+      X-S2S-Token: ${S2S_ADMIN_TOKEN}
+      Content-Type: application/json
+    body: |
+      {"name": "p193_table_2", "namespace_name": "p193_ns", "description": "seed"}
+act:
+  - kind: dom-probe
+    description: |
+      Open Playwright to http://localhost:8080/master-data/lookup-tables logged in as
+      user_no_lookup_perms. Wait for the network-idle event. Capture:
+      - whether the H1 "Lookup Tables" renders
+      - whether the SearchInput renders
+      - whether the "+ Add new" button is visible (should be HIDDEN per the inner WithPermissions gate)
+      - whether the table-list rows render (should be VISIBLE — the backend permits
+        read for any authenticated user per ReferenceDataController sidecar known_security_gaps[0])
+      - the numeric "X lookup tables overall" counter
+    capture_as: page_state
+observe:
+  - kind: sql
+    query: |
+      SELECT COUNT(*) AS total_tables FROM lookup_tables;
+    capture_as: db_total
+assert:
+  - "page_state.h1_lookup_tables_visible == true  -- page chrome renders despite no permissions"
+  - "page_state.search_input_visible == true     -- search is reachable"
+  - "page_state.add_new_button_visible == false  -- inner WithPermissions hides the button"
+  - "page_state.row_count >= 2                   -- list renders (backend allows read)"
+  - "page_state.counter_value == db_total        -- 'X lookup tables overall' leaks global count"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM lookup_tables WHERE name LIKE 'p193_%';
+      DELETE FROM namespace WHERE name = 'p193_ns';
+      DELETE FROM owner WHERE name = 'user_no_lookup_perms';
+      DELETE FROM role WHERE name = 'NoLookupRole';
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__LookupTables
+    - odd-platform__ts__routes__route__masterData
+    - odd-platform__java__ReferenceDataController__controller-class__ReferenceDataController
+  retrospectives: []
+realism_caveats: |
+  Probe pins three claims simultaneously: (a) WithPermissionsProvider is NOT a route-level
+  gate (the page renders); (b) the inner WithPermissions IS a button gate (Add-new hidden);
+  (c) the global counter leaks the lookup-table population size to any authenticated user
+  regardless of per-table backend RBAC. If (a) fails, the Provider has hidden gate semantics.
+  If (b) fails, the button gate is broken. If (c) passes, surface as a separate
+  data-disclosure finding even if (a) and (b) match the hypothesis. Does NOT verify the
+  S2S path; assumes the test harness has a known admin token.

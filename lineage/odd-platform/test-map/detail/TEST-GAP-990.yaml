@@ -1,0 +1,61 @@
+gap_id: TEST-GAP-990
+category: missing-edge-case
+criticality: HIGH
+node_ids:
+  - "odd-platform java DatasetFieldController controller-class:DatasetFieldController"
+pillars_affected: [P-01, P-09]
+surfaced_by:
+  - "DatasetFieldController.md:bugs_limitations_corner_cases.[10] (createEnumValue has NO concurrency control — two concurrent POSTs against the same datasetFieldId produce silent last-write-wins. Each transaction at READ-COMMITTED isolation reads the pre-T2 state, softDeleteExcept its idsToKeep, bulkCreates its body, commits. Whichever transaction COMMITS LAST has its softDeleteExcept run AFTER the other's writes — wiping them — severity HIGH)"
+  - "DatasetFieldController.md:tests_coverage_semantic.uncovered_behaviours.[12] (Two concurrent POST /enum_values calls against the same datasetFieldId produce silent last-write-wins — no optimistic locking)"
+  - "DatasetFieldController.md:stress_findings.resource_boundaries.[0] (Can two simultaneous calls produce corrupted state? YES)"
+behaviour: |-
+  **Two concurrent `POST /api/datasetfields/{id}/enum_values` against the same datasetFieldId produce silent last-write-wins — there is NO optimistic locking, NO advisory lock, NO version check.** The implementation runs each call in its own `@ReactiveTransactional` transaction at READ-COMMITTED isolation (`EnumValueServiceImpl.java:40`):
+
+  Concurrent T1 + T2 timeline:
+  1. T1 reads `getEnumState` (line 51) — pre-T1 state.
+  2. T2 reads `getEnumState` — pre-T2 state (= pre-T1 + T1's not-yet-committed writes are invisible).
+  3. T1 `softDeleteExcept(idsToKeep_T1)` — soft-deletes everything not in T1's request.
+  4. T1 `bulkCreate(items_T1)` — creates T1's new items.
+  5. T2 `softDeleteExcept(idsToKeep_T2)` — soft-deletes everything not in T2's request (INCLUDING T1's just-created items, since T2's read happened before T1's create was visible).
+  6. T2 `bulkCreate(items_T2)` — creates T2's new items.
+  7. T1 COMMITS. T2 COMMITS LAST. Final state = T2's items only. T1's writes are silently lost.
+
+  **Operator-visible failure mode**:
+  - One operator editing enum values via the UI form (well-behaved — sends the full current list).
+  - One automated script (terraform-odd-provider, glossary-importer) editing the same field's enum values concurrently.
+  - Result: whichever commits last wins; the other's edits are silently destroyed.
+  - The activity feed emits TWO `DATASET_FIELD_VALUES_UPDATED` events; the operator inspecting the feed sees "values updated twice" with no indication that work was lost.
+
+  **Why HIGH**:
+  - **Silent data destruction (cross-amplifies TEST-GAP-989)**: even when both operators send "full" bodies, their states differ (different concurrent edits) — last-write-wins drops the other's edits.
+  - **No optimistic-lock recovery path**: no HTTP 409 Conflict, no version field on enum_value, no Etag header on the field. The operator cannot retry-on-conflict because there IS no conflict signaled.
+  - **Compound with bulk import patterns**: bulk-import scripts often parallelise across fields, but operator + script may collide on the SAME field. The race window is the SQL transaction window — small in absolute terms but realistic during sustained traffic.
+  - **Probe P-154 pins this**: emit two concurrent POSTs via `Flux.parallel(2).flatMap(...)` and assert exactly ONE of the two states survives — the other is silently dropped.
+
+  Distinct from TEST-GAP-989: that gap is about ONE caller submitting a partial body. THIS gap is about TWO callers submitting different bodies that destructively interleave.
+test_class: missing-edge-case
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/CreateEnumValueConcurrencyRaceTest.java"
+  name: "createEnumValue_concurrentTwoPosts_oneWritesSilentlyLost_pinsLastWriteWins"
+evidence:
+  - "DatasetFieldController.md:bugs_limitations_corner_cases.[10] verbatim: 'createEnumValue has NO concurrency control — two concurrent POSTs against the same datasetFieldId produce silent last-write-wins. Each transaction at READ-COMMITTED isolation reads the pre-T2 state, softDeleteExcept its idsToKeep, bulkCreates its body, commits. Whichever transaction COMMITS LAST has its softDeleteExcept run AFTER the other's writes — wiping them. There is no optimistic-lock version check, no advisory lock at the dataset_field_id level, no SERIALIZABLE isolation declaration. The UI typically issues only one PUT per form-submission so this is a thin race window, but two operators editing the same field's enum values concurrently (e.g. one via UI, one via API) will silently lose one set of edits.' severity: HIGH"
+  - "DatasetFieldController.md:stress_findings.resource_boundaries.[0].kind=transactional, question_1.answer verbatim: 'YES — the @ReactiveTransactional at line 40 wraps each call in its own transaction at READ-COMMITTED isolation. Two concurrent calls each read getEnumState (the PRE-write state), softDeleteExcept their own idsToKeep, bulkCreate their own items. The last committer wins; the first committer's writes are silently soft-deleted. No optimistic-lock version check on enum_value; no advisory lock on dataset_field_id.'"
+  - "Verified at primary source: EnumValueServiceImpl.java:39-82 (the @ReactiveTransactional alone — no advisory lock, no version field check)"
+  - "Probe P-154 emits the canonical concurrent scenario"
+cross_references:
+  - "TEST-GAP-989 (sibling — same endpoint, single-caller partial-body BULK-REPLACE; together = data destruction via two pathways)"
+  - "P-154 (the probe skeleton emitted in the sidecar)"
+  - "concepts.yaml:invariants[Bulk-replace endpoints without optimistic locking or advisory locks at the resource level produce silent last-write-wins under concurrency]"
+  - "REFACTOR-NNN candidate: add advisory lock on dataset_field_id at the SQL layer OR introduce optimistic-version field on enum_value OR escalate isolation to SERIALIZABLE for this method"
+related_features: []
+related_pillar_features: ["P-01:F-004"]
+proposed_action: |-
+  Add `CreateEnumValueConcurrencyRaceTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Three test methods:
+  1. `createEnumValue_concurrentTwoPosts_oneWritesSilentlyLost_pinsLastWriteWins` — seed field F with [A]; concurrently POST body=[A,B] AND body=[A,C] via `Flux.parallel(2).flatMap(...)`; await both responses; GET field's enum values; assert the final state contains EITHER [A,B] OR [A,C] but NOT [A,B,C] (one set silently lost). PIN the race window.
+  2. `createEnumValue_concurrentTenPosts_silentDestructionAmplifies_pinsSustainedRace` — concurrently POST 10 different bodies; verify the survivor count is far less than 10 cumulative items (each loser's items are destroyed by the next softDeleteExcept). Stress-test the race window.
+  3. `createEnumValue_responseAndActivityEvents_noConflictSignal_pinsSilentLossContract` — execute test 1 and capture both responses + activity events; assert BOTH return HTTP 201 success (no 409, no warning) AND TWO `DATASET_FIELD_VALUES_UPDATED` activity events fire. PIN the no-conflict-signal contract.
+
+  Pair with REFACTOR-NNN: introduce advisory lock on dataset_field_id via `SELECT pg_advisory_xact_lock(?)` at start of @ReactiveTransactional method, OR add optimistic-version on the dataset_field row + check-and-update pattern. When the fix lands, test 1 inverts (one POST returns 409 OR both serialise correctly).
+batch: 2026-05-25-ZG
+feature_id: null

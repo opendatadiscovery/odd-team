@@ -1,0 +1,130 @@
+name: |-
+  Integration Wizard case-insensitive id collision silently merges manifests (last-load-wins)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-10
+description: |-
+  **NEW INVARIANT, batch 2026-05-25-ZD** — two wizard manifests
+  with same-lowercased ids (e.g. `Snowflake.yaml` declaring `id:
+  Snowflake` + `snowflake.yaml` declaring `id: snowflake`)
+  silently collapse into ONE registry entry. The later-loaded
+  manifest survives; the earlier is silently dropped. No log, no
+  warning, no exception.
+
+  ## Mechanism
+
+  `IntegrationRegistryFactory.java:32-37` constructs the registry
+  TreeMap via:
+
+      .collect(Collectors.toMap(
+          dto -> dto.integration().id(),       // key extractor
+          Function.identity(),                  // value
+          (o1, o2) -> o2,                       // merge function (last-wins)
+          () -> new TreeMap<>(
+              Comparator.comparing(String::toLowerCase))));  // map factory
+
+  Two ingredients combine to produce the silent collision:
+
+    1. The TreeMap comparator
+       `Comparator.comparing(String::toLowerCase)` treats
+       `Snowflake` and `snowflake` as the SAME key. Insertion of
+       both into the same TreeMap would normally trigger the
+       collector's merge function (the third argument).
+
+    2. The merge function `(o1, o2) -> o2` LAST-WINS. The
+       second-arriving value replaces the first. No log, no
+       warning, no exception.
+
+  ## When this fires
+
+  - Operator authors a custom `META-INF/wizard/snowflake.yaml`
+    overriding a vendor's `META-INF/wizard/Snowflake.yaml`
+    (different case in filename + manifest id) — MAY work or
+    MAY fail depending on classpath load order.
+  - Two vendor jars ship wizards with same-lowercased ids — the
+    later-loaded vendor's wizard silently shadows the earlier.
+
+  The `classpath*:` scan order is FILESYSTEM-DEPENDENT and
+  NON-DETERMINISTIC across deployments. The same set of jars on
+  two different operator's machines may produce DIFFERENT
+  surviving wizards.
+
+  ## Compare to genuinely-different keys
+
+  For keys with different lowercase forms (e.g. `snowflake-prod`
+  vs `snowflake-dev`), the comparator's natural String
+  `compareTo` on the lowercased values provides a DETERMINISTIC
+  secondary order. The collision only fires for keys that
+  lowercased-equal.
+
+  ## Severity
+
+  LOW. Requires two wizards with case-divergent ids — rare in
+  practice. But the silent posture means the operator cannot
+  even DETECT the collision through application logs.
+
+  ## Mitigation candidates
+
+  - **Code (preferred)**: replace the `(o1, o2) -> o2` merge
+    function with a throwing one:
+
+        (o1, o2) -> {
+            throw new IllegalStateException(
+                "Wizard id collision (case-insensitive): %s vs %s"
+                    .formatted(o1.integration().id(),
+                               o2.integration().id()));
+        }
+
+    Surfaces the collision at boot as a fail-fast — consistent
+    with the platform's `boot-fail-fast-on-malformed-yaml`
+    architectural commitment.
+
+  - **Code (alternative)**: emit a `log.warn` on collision
+    detection but proceed with last-wins. Surfaces the collision
+    in logs; doesn't block boot. Inconsistent with the
+    fail-fast posture.
+
+  - **Doc**: document the case-insensitive id requirement on the
+    wizard live page. Wizard authors get an explicit guarantee
+    that ids must be globally unique even across case.
+
+  ## Live doc drift
+
+  The wizard live page (WebFetched 2026-05-25, status 200) does
+  NOT mention the case-insensitive comparator nor the silent
+  last-wins collision. Wizard authors have no documented
+  guidance on id uniqueness requirements.
+axes_present:
+- backend
+nodes:
+- odd-platform java IntegrationController controller-class:IntegrationController
+contributors:
+- 'IntegrationController.md (batch ZD class-level sidecar):
+  invariants.[3] + bugs_limitations_corner_cases.[3] + stress_findings.tunables.[1]'
+evidence:
+- 'IntegrationRegistryFactory.java:32-37 (the collector with
+  case-insensitive comparator + last-wins merge function)'
+- 'classpath*: scan order documented as filesystem-dependent in
+  Spring Resource resolution semantics'
+related_features:
+- F-001
+related_pillar_features:
+- P-10
+related_concepts:
+- 'entitie:integration-wizard-manifest-classpath-meta-inf-yaml'
+- 'operation:list-integrations-wizard-registry'
+- 'invariant:integration-wizard-boot-fail-fast-on-malformed-yaml (the
+  sister fail-fast architectural commitment; the collision merge
+  function should be aligned)'
+notes: |-
+  NEW invariant captured in batch 2026-05-25-ZD. The case-insensitive
+  comparator is intentional (operators look up by id without caring
+  about case) but the merge function is silently destructive (vs the
+  fail-fast pattern the boot-time YAML-parse path uses). The
+  asymmetry — fail-fast on YAML parse error, silent-drop on id
+  collision — is an internal inconsistency that the maintainer may
+  not have intended.
+
+  DOC-NNN candidate: a single line on the wizard live page making
+  the case-insensitive id uniqueness requirement explicit.

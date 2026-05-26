@@ -1,0 +1,143 @@
+---
+probe_id: P-142
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__OwnerController__controller-class__OwnerController
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-019
+test_class: security
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category D + class-level NEW finding): Is GET /api/owners
+  reachable by (a) an authenticated caller holding ONLY a benign read
+  permission (no OWNER_*), and (b) an anonymous caller under
+  auth.type=DISABLED?
+
+  The class-level finding is that `SecurityConstants.SECURITY_RULES`
+  contains entries for POST/PUT/DELETE under `/api/owners[/{owner_id}]`
+  but NO entry for GET /api/owners (verified by Grep `/api/owners` against
+  SecurityConstants.java 2026-05-25 — three mutation rules + two mapping
+  rules; zero GET rules). The implementation hypothesis is that:
+    (a) Under LOGIN_FORM/OAUTH2/LDAP: any authenticated session, regardless
+        of permission set, can enumerate the full Owner directory.
+    (b) Under DISABLED: any anonymous caller (no session) can enumerate.
+
+  Operator consequence: if the OWNER directory contains personally-named
+  rows (e.g. 'alice@acme.com' or '[Pseudonymous Researcher]'), the listing
+  is information-disclosure under any authentication mode. The live doc
+  pages are silent on this posture (verified WebFetch 2026-05-25); the
+  OpenAPI spec for getOwnerList declares only 200 and 500 responses,
+  implicitly confirming the design intent — but no policy claim is on
+  the operator-readable record.
+---
+arrange:
+  - kind: docker-compose-up
+    profile: odd-minimal
+  - kind: sql
+    query: |
+      -- Bootstrap a few Owners with names that would carry PII in a real deployment.
+      INSERT INTO owner (id, name, deleted_at) VALUES
+        (9101, 'P142-Owner-Alice', NULL),
+        (9102, 'P142-Owner-Bob', NULL),
+        (9103, 'P142-Owner-Charlie', NULL);
+  - kind: sql
+    query: |
+      -- Create a probe user + role with ONLY a benign read permission (e.g. QUERY_EXAMPLE_VIEW),
+      -- NOT any OWNER_* permission.
+      INSERT INTO role (id, name, deleted_at) VALUES (902, 'p142-benign-reader', NULL);
+      INSERT INTO policy (id, name, policy, deleted_at)
+      VALUES (902, 'p142-benign-reader-policy',
+              '{"statements":[{"resource":{"type":"NO_CONTEXT"},"permissions":["QUERY_EXAMPLE_VIEW"]}]}'::jsonb,
+              NULL);
+      INSERT INTO role_to_policy (role_id, policy_id) VALUES (902, 902);
+      INSERT INTO owner (id, name, deleted_at) VALUES (9100, 'p142-probe-owner', NULL);
+      INSERT INTO owner_to_role (owner_id, role_id) VALUES (9100, 902);
+      INSERT INTO user_owner_mapping (oidc_username, provider, owner_id, deleted_at)
+      VALUES ('p142-probe-user', 'INTERNAL', 9100, NULL);
+act:
+  # Test (a): authenticated benign-reader under LOGIN_FORM
+  - kind: env
+    var: ODDPLATFORM_AUTH_TYPE
+    value: LOGIN_FORM
+  - kind: rest
+    method: POST
+    path: /api/login
+    body: '{"username":"p142-probe-user","password":"p142-probe-secret"}'
+    expect_status: 200
+    capture_as: probe_session_cookie
+  - kind: rest
+    method: GET
+    path: /api/owners?query=P142-Owner
+    cookie: ${probe_session_cookie}
+    capture_as: get_owners_as_benign_reader
+
+  # Test (b): anonymous caller under DISABLED — full restart with new env
+  - kind: docker-compose-down
+    destroy_volumes: false
+  - kind: env
+    var: ODDPLATFORM_AUTH_TYPE
+    value: DISABLED
+  - kind: docker-compose-up
+    profile: odd-minimal
+  - kind: rest
+    method: GET
+    path: /api/owners?query=P142-Owner
+    # No cookie — explicitly anonymous
+    capture_as: get_owners_as_anonymous_disabled
+observe:
+  - kind: sql
+    query: |
+      SELECT id, name FROM owner WHERE name LIKE 'P142-Owner%' ORDER BY id;
+    capture_as: seeded_owners
+assert:
+  # Test (a): authenticated benign-reader should successfully read
+  - "get_owners_as_benign_reader.status == 200   # GET /api/owners returns 200 to a benign-reader-only session"
+  - "get_owners_as_benign_reader.body.items.length >= 3   # all three seeded owners are visible"
+  - "get_owners_as_benign_reader.body.items.find(o => o.name == 'P142-Owner-Alice') != null"
+  - "get_owners_as_benign_reader.body.items.find(o => o.name == 'P142-Owner-Bob') != null"
+  - "get_owners_as_benign_reader.body.items.find(o => o.name == 'P142-Owner-Charlie') != null"
+
+  # Test (b): anonymous caller under DISABLED should also succeed
+  - "get_owners_as_anonymous_disabled.status == 200   # under DISABLED, anonymous read succeeds"
+  - "get_owners_as_anonymous_disabled.body.items.length >= 3   # full directory still enumerated"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM owner_to_role WHERE owner_id IN (9100) OR role_id = 902;
+      DELETE FROM user_owner_mapping WHERE oidc_username = 'p142-probe-user';
+      DELETE FROM role_to_policy WHERE role_id = 902;
+      DELETE FROM policy WHERE id = 902;
+      DELETE FROM role WHERE id = 902;
+      DELETE FROM owner WHERE name LIKE 'P142-Owner%' OR id IN (9100);
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__OwnerController__controller-class__OwnerController
+    - odd-platform__java__service__service__OwnerServiceImpl
+  retrospectives: [LSN-019, LSN-020]
+realism_caveats: |
+  The probe pins the UNGATED-READ hypothesis via two complementary tests.
+  If both PASS, the GET /api/owners endpoint is genuinely UNGATED at the
+  permission layer under LOGIN_FORM/OAUTH2/LDAP and anonymously reachable
+  under DISABLED. Doc-gap-finder should add an explicit "Owner directory
+  enumeration policy" section to the live owners page.
+
+  Realism caveats:
+  - The probe tests LOGIN_FORM only; OAUTH2 and LDAP modes have similar
+    SecurityConstants wiring but their session-cookie acquisition is
+    different (the arrange section's login endpoint depends on the mode).
+    A complete coverage would run the same assertions under all three
+    authenticated modes; the current probe is sufficient to establish
+    the class of behavior under LOGIN_FORM and the DISABLED bypass.
+  - The probe assumes the `query` filter narrows by exact-prefix match.
+    Per the repository-tier sidecar, the predicate is a name-LIKE filter;
+    'P142-Owner' should match the three seeded names.
+  - If test (a) FAILS (the benign-reader is denied 403), the analyser's
+    SecurityConstants Grep was wrong; re-check the SecurityRule list for
+    a wildcard / NO_CONTEXT-pattern rule that covers GET /api/owners.
+  - If test (b) FAILS (anonymous is denied under DISABLED), the analyser's
+    cross-link to the batch-C DisabledAuthSecurityConfiguration sidecar
+    is wrong; re-check the filter-chain registration under DISABLED.

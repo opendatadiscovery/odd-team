@@ -1,0 +1,207 @@
+name: |-
+  No React error boundary AND no path='*' catch-all route — blank-page root cause for 4 failure classes
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-09
+description: |-
+  NEW HIGH-severity INVARIANT, batch ZJ (2026-05-26) — the platform
+  UI has TWO ARCHITECTURAL ABSENCES that compose into a uniform
+  failure-mode pattern: any URL or render-error that doesn't reach
+  one of the 23 page-level components that mount `<AppErrorPage>`
+  produces a BLANK PAGE below the toolbar.
+
+  **Absence #1 — No React error boundary anywhere in the platform
+  UI**. Grep across `odd-platform-ui/src/` for `ErrorBoundary|
+  componentDidCatch|getDerivedStateFromError` returns ZERO matches.
+  The closest is `AppSuspenseWrapper` (`AppSuspenseWrapper.tsx:1-23`)
+  which is Suspense only, no error handling. `AppErrorPage` is a
+  functional component with no class lifecycle methods and is
+  rendered as a SIBLING inside page subtrees, not as an ANCESTOR.
+
+  **Absence #2 — No `path='*'` catch-all `<Route>` in App.tsx**.
+  `App.tsx:59-89` declares exactly 11 `<Route>` entries; none has
+  `path='*'`, none uses `<NotFound>` or `<Page404>` (grep for
+  `path=['"]\*['"]|NotFound|Page404|404Page|NoMatch` over
+  odd-platform-ui/src returns NO matches). React Router DOM v6's
+  NO-MATCH behaviour is to render nothing inside `<Routes>`.
+
+  **Compose into 4 failure-mode classes producing blank pages**:
+
+  (a) **Bare URLs that don't match any explicit route**: typing
+      `/master-data` (no parent route declared in App.tsx) or
+      `/terms` (parent route exists but with no index/element)
+      produces blank-below-toolbar (per the
+      `bare-base-url-behavior-divergence-redirect-vs-blank`
+      invariant). No 404 surface.
+
+  (b) **Synchronous JS render errors**: if any component in the
+      route subtree throws during render, React 18's default
+      behaviour is to unmount the entire tree to the closest
+      boundary (NONE -> unmounts the whole App), leaving a blank
+      page or console error. AppErrorPage cannot catch these
+      because it is a sibling, not an ancestor.
+
+  (c) **Lazy chunk-load failures**: `React.lazy(() => import(...))`
+      at App.tsx:30-41 + AppSuspenseWrapper means chunk-load
+      failures surface as uncaught promise rejections in
+      development AND as INDEFINITELY-PENDING Suspense fallbacks
+      in production. Same blank-page-from-no-boundary mechanism.
+
+  (d) **Unknown URLs typed by an operator** — bookmark, copy-paste,
+      hand-typed, any URL not in the 11 explicit routes produces
+      blank-below-toolbar with no error, no 404, no redirect.
+
+  **The user-visible failure is identical across all four classes**:
+  the AppToolbar (line 56) still renders because it sits OUTSIDE
+  `<Routes>`, but the route-body area is empty. No 404 code, no
+  status text, no Home Page link.
+
+  **AppErrorPage's scope is intentionally limited** — it is the
+  per-page-component-owned controlled render helper. Its design
+  is the right choice for async-thunk-rejection (where the parent
+  page knows what failed). The architectural-absence is that the
+  ROUTING-LAYER fall-through + SYNCHRONOUS-RENDER-ERROR class is
+  not covered by ANY component.
+
+  **A 5-line fix would close ALL FOUR failure classes simultaneously**:
+
+      // App.tsx:89 (just before </Routes>)
+      <Route
+        path="*"
+        element={
+          <AppErrorPage
+            showError
+            error={{
+              status: 404,
+              statusText: 'Page Not Found',
+              url: '',
+              message: '',
+            }}
+          />
+        }
+      />
+
+  Plus optionally an `<ErrorBoundary>` wrapper around `<Routes>` for
+  class (b) and (c). The fix is named in the AppErrorPage sidecar
+  bugs_limitations_corner_cases.[0].
+
+  **The architectural-absence has been the structural root cause
+  of every blank-page operator report in batches ZH + ZI + ZJ**:
+
+    - batch ZH bare /master-data + bare /terms (per
+      `bare-base-url-behavior-divergence-redirect-vs-blank` invariant)
+    - batch ZJ same observations, now pinned to the structural
+      cause via the AppErrorPage.tsx primary source
+
+  **Cross-batch coherence (LSN-018)**: the
+  `bare-base-url-behavior-divergence-redirect-vs-blank` invariant
+  identifies the OBSERVATIONS (some routes redirect, some blank);
+  this invariant identifies the CAUSE (architectural absence of
+  catch-all + error boundary). The two are sibling concepts —
+  observation + root-cause.
+vocabulary_status: codebase-anchored
+axes_present:
+  - ui_shell
+  - ui_routes
+  - react_components
+nodes:
+  - odd-platform ts components/shared/elements/AppErrorPage ui-shell-widget:AppErrorPage
+  - odd-platform ts react-component component:App
+contributors:
+  - |-
+    AppErrorPage.md (batch ZJ ui-shell-widget primary source):
+      bugs_limitations_corner_cases.[0] MEDIUM (App.tsx:59-89 declares no path=* catch-all; React Router DOM v6 NO-MATCH = render nothing);
+      bugs_limitations_corner_cases.[1] HIGH (NO React error boundary anywhere in odd-platform-ui; Grep verifier 0 matches);
+      docs_link_semantic.doc_drift_findings.[1] (the load-bearing cross-finding with batches ZH+ZI);
+      stress_findings.probes_emitted P-176
+evidence:
+  - 'AppErrorPage.md:bugs_limitations_corner_cases.[0] MEDIUM (no path=* catch-all in App.tsx; React Router DOM v6 NO-MATCH renders nothing; Grep verifier 0 matches across odd-platform-ui/src)'
+  - 'AppErrorPage.md:bugs_limitations_corner_cases.[1] HIGH (NO React error boundary anywhere in odd-platform-ui; Grep verifier returns 0 matches for ErrorBoundary|componentDidCatch|getDerivedStateFromError; closest is AppSuspenseWrapper which is Suspense-only)'
+  - 'AppErrorPage.md:docs_link_semantic.doc_drift_findings.[1] (bare-URL fall-through produces a BLANK PAGE not the AppErrorPage; cross-batch load-bearing finding with ZH+ZI)'
+  - 'AppErrorPage.md:stress_findings.probes_emitted P-176 (runtime verification of bare-/terms and bare-/master-data behaviour)'
+  - 'AppErrorPage.tsx:1-40 (the 40-line component file — no class lifecycle methods, no error boundary)'
+  - 'App.tsx:59-89 (the 11 Route entries — none has path=*)'
+security_aggregate:
+  overall: HIGH
+  auth_modes_relevant:
+    - DISABLED
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: 'N/A'
+    detail: 'UX architectural-absence; not an authorization invariant.'
+  owner_scoping:
+    verdict: 'N/A'
+    detail: ''
+  strengths: []
+  weaknesses:
+    - 'Operator-visible-surprise — bare URLs produce blank page with no error code, no message, no redirect (HIGH)'
+    - 'Synchronous JS render errors unmount the entire React tree to no boundary -> whole-app blank page (HIGH)'
+    - 'Lazy chunk-load failures surface as indefinitely-pending Suspense fallbacks in production (MEDIUM)'
+    - 'Test coverage absent — no test verifies the catch-all behaviour or error-boundary behaviour because neither exists (verifier grep returns 0 matches in odd-platform-ui/src) (LOW)'
+  cross_file_inconsistencies: []
+  contributing_files:
+    - 'odd-platform__ts__components_shared_elements_AppErrorPage__ui-shell-widget__AppErrorPage.md'
+  evidence:
+    - 'AppErrorPage.md:bugs_limitations_corner_cases.[0,1]'
+performance_aggregate:
+  overall: 'HIGH'
+  hot_paths: []
+  throughput_shape:
+    verdict: 'N/A'
+    detail: 'Architectural absence — not a performance concept.'
+  scaling_shape:
+    verdict: 'N/A'
+    detail: ''
+  strengths: []
+  weaknesses: []
+  cross_file_inconsistencies: []
+  contributing_files:
+    - 'odd-platform__ts__components_shared_elements_AppErrorPage__ui-shell-widget__AppErrorPage.md'
+  evidence: []
+triangulation_count: 3
+cross_batch: true
+cross_batch_refs:
+  - batch-ZH (bare /master-data + bare /terms observations)
+  - batch-ZI (bare /master-data behaviour reconfirmed)
+  - batch-ZJ (AppErrorPage primary source — structural root cause)
+severity: HIGH
+severity_dim: ux
+mitigations_unimplemented:
+  - |-
+    5-line fix: add `<Route path='*' element={<AppErrorPage
+    showError error={{status:404, statusText:'Page Not Found',
+    url:'', message:''}} />} />` just before `</Routes>` in
+    `App.tsx:89`. Closes failure classes (a) and (d) — bare URLs
+    + unknown URLs.
+  - |-
+    Wrap `<Routes>` in an `<ErrorBoundary>` (e.g. react-error-boundary
+    npm package or hand-rolled). Closes failure classes (b) and (c)
+    — synchronous JS render errors + lazy chunk-load failures.
+  - |-
+    Add a Cypress/Playwright integration test asserting that
+    visiting `/__nonexistent-url__` produces the AppErrorPage 404
+    surface, and that synchronous render errors fall to the
+    boundary. Without this test, future regressions land silently.
+related_features: []
+related_pillar_features:
+  - 'P-09'
+related_concepts:
+  - 'invariant:bare-base-url-behavior-divergence-redirect-vs-blank (the OBSERVATIONS this invariant explains the CAUSE of)'
+  - 'entitie:app-error-page-controlled-render-helper-not-error-boundary (the widget that has the limited scope which composes the absence)'
+notes: |-
+  Coherence (Rule 6): the
+  `bare-base-url-behavior-divergence-redirect-vs-blank` invariant
+  is the OBSERVATION (some routes redirect, some blank); this
+  invariant is the CAUSE (architectural absence of catch-all +
+  error boundary). They are SIBLING concepts — observation +
+  root-cause — and cross-reference each other.
+
+  No existing concept named this architectural absence as a
+  distinct invariant; batch ZH/ZI surfaced the observation but
+  did not pin the cause. Batch ZJ AppErrorPage primary source
+  closes the loop.
+maintainer_curated: false

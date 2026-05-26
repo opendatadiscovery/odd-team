@@ -1,0 +1,143 @@
+---
+probe_id: P-143
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DataCollaborationController__controller-class__DataCollaborationController
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-051
+test_class: integration
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress questions: SlackMessageProviderClient (`:36-44`) builds an
+  AsyncLoadingCache with `expireAfterWrite(1, MINUTES)` + `maximumSize(1)` for
+  the Slack channel list. Three behaviours to verify:
+
+  (1) **Stale-cache window** — when the bot is freshly invited to a new
+      channel (or freshly removed from one), how long until the autocomplete
+      reflects the change? The hypothesis from code reading is "up to 60
+      seconds — the cache entry must expire before the next call reloads".
+      There is no event-driven invalidation hook (EventApiController processes
+      member_joined_channel events but does NOT touch SlackMessageProviderClient.cache).
+
+  (2) **Cache-refresh blocking** — does the first call after eviction block
+      on the in-flight load, or does it serve the just-evicted stale value
+      during refresh? Caffeine's AsyncLoadingCache.get returns a
+      CompletableFuture that completes when the load completes — i.e., the
+      caller waits. The probe verifies this by injecting a 2-second delay on
+      the Slack-side `conversations.list` mock and timing the first
+      post-eviction get.
+
+  (3) **Multi-replica cache duplication** — each platform process has its
+      own Caffeine cache. N replicas = N copies of the channel map = N Slack
+      `conversations.list` calls per cache TTL. The probe arranges a 2-replica
+      compose-up and asserts the Slack mock receives 2 separate
+      `conversations.list` calls within a single 60-second window.
+
+  Hypothesis: all three claims hold per the code reading. If (1) fails (the
+  freshly-invited channel appears in <60s), the cache is invalidated somewhere
+  the code-walk did not find. If (2) fails (the call doesn't block), the
+  Caffeine async-loading semantics are different from the documented behaviour.
+  If (3) fails (replicas share state), there's a hidden cache backplane that
+  the code-walk missed.
+---
+arrange:
+  - kind: docker-compose-up
+    services: [postgres, odd-platform-api]
+    env:
+      DATACOLLABORATION_ENABLED: "true"
+      DATACOLLABORATION_SLACK_OAUTH_TOKEN: "xoxb-stub-for-probe"
+      AUTH_TYPE: "LOGIN_FORM"
+      AUTH_LOGIN_FORM_CREDENTIALS: "probe:probe"
+  - kind: wiremock-up
+    matcher: "POST https://slack.com/api/conversations.list"
+    response_initial: |
+      { "ok": true, "channels": [
+        {"id": "C001", "name": "alerts-team", "is_member": true, "is_archived": false},
+        {"id": "C002", "name": "platform-eng", "is_member": true, "is_archived": false}
+      ], "response_metadata": { "next_cursor": "" } }
+    delay_ms: 0
+  - kind: rest
+    method: POST
+    path: /login
+    body: { username: probe, password: probe }
+    capture_as: session_cookie
+act:
+  - kind: rest
+    method: GET
+    path: /api/datacollaboration/providers/slack/channels
+    cookie: "{session_cookie}"
+    capture_as: first_call_cold_start
+  - kind: wiremock-update
+    matcher: "POST https://slack.com/api/conversations.list"
+    response_updated: |
+      { "ok": true, "channels": [
+        {"id": "C001", "name": "alerts-team", "is_member": true, "is_archived": false},
+        {"id": "C002", "name": "platform-eng", "is_member": true, "is_archived": false},
+        {"id": "C003", "name": "newly-invited", "is_member": true, "is_archived": false}
+      ], "response_metadata": { "next_cursor": "" } }
+  - kind: rest
+    method: GET
+    path: /api/datacollaboration/providers/slack/channels
+    cookie: "{session_cookie}"
+    capture_as: second_call_within_ttl
+  - kind: sleep
+    duration_seconds: 65
+  - kind: rest
+    method: GET
+    path: /api/datacollaboration/providers/slack/channels
+    cookie: "{session_cookie}"
+    capture_as: third_call_after_eviction
+observe:
+  - kind: wiremock-count
+    matcher: "POST https://slack.com/api/conversations.list"
+    capture_as: slack_conversations_list_call_count
+assert:
+  # (1) Stale-cache window: second call returns 2 channels (cached) NOT 3 (Slack-side state has 3)
+  - "first_call_cold_start.items.length == 2"
+  - "second_call_within_ttl.items.length == 2 # cache still serving stale"
+  - "third_call_after_eviction.items.length == 3 # cache evicted, fresh load picked up the newly-invited channel"
+  # (2) Cache-refresh blocking: only 2 distinct Slack conversations.list calls happened (cold start + after eviction); second call hit the cache
+  - "slack_conversations_list_call_count == 2"
+  # (3) Multi-replica duplication: re-run with a 2-replica compose-up; assert call_count == 2*single_replica_count
+  # (deferred to a separate test run; sketched in realism_caveats)
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+  - kind: wiremock-down
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DataCollaborationController__controller-class__DataCollaborationController
+    - odd-platform__java__DataCollaborationController__controller-method__postMessageInSlack
+  retrospectives: []
+realism_caveats: |
+  The probe pins the 60-second cache staleness window for the single-replica
+  case. Multi-replica verification is sketched but not executed inside this
+  probe — running a 2-replica compose-up would require Postgres-shared session
+  state which odd-platform-api does NOT have (the Caffeine cache is per-JVM by
+  design; the LoginForm UserDetailsService is a MapReactiveUserDetailsService
+  per `LoginFormSecurityConfiguration.java:68-86`, not a shared store). A
+  separate test class running 2 replicas + a shared LB would confirm the
+  N-times-Slack-call hypothesis.
+
+  The probe does NOT exercise:
+  - The blocking-vs-stale-during-refresh question with concurrent calls
+    (asserts the cache-miss happens once via the call-count). A follow-up
+    probe with `concurrent_callers: 10` after eviction + a delay_ms of 2000 on
+    the Slack mock would isolate the blocking behaviour.
+  - The "member_left_channel" reverse case (a channel that was visible
+    becomes invisible after 60s). The shape is symmetric to the
+    "member_joined_channel" case so it's not separately exercised here.
+  - The cache behaviour with `nameLike` non-empty — the probe omits the
+    `channelName` query parameter; the filter is exercised by a separate
+    Category F probe on the startsWith semantics.
+
+  The probe assumes the wiremock-up step is supported by the probe-runner
+  harness; if not, a Testcontainers-based MockServer/WireMock setup is
+  equivalent.
+
+  If the platform ever adds an event-driven cache-invalidation hook (e.g.,
+  EventApiController parses `member_joined_channel` and invalidates the
+  Caffeine cache), this probe MUST be re-run; the current claim is correct
+  only for the (no-event-invalidation) state at commit 4ec2b20.

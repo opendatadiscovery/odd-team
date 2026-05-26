@@ -11,3 +11,35 @@
   - **Co-surfaced gaps** (link from `refactoring-scopes.md`): REFACTOR-187 (catalog-wide cross-owner enumeration — HIGH; the session-state pattern combined with the read-collaborative posture produces the catalog's largest enumeration vector), REFACTOR-192 (Postgres to_tsquery syntax-error vector — MEDIUM), REFACTOR-204 (persistent raw query text — LOW PII surface), REFACTOR-205 (session-UUID no per-user binding — LOW under read-collaborative posture; HIGH under any future owner-scoped tightening), REFACTOR-206 (unbounded query length + unbounded `search_facets` writes — MEDIUM DoS amplification surface), REFACTOR-207 (no HTTP-level JVM test for the search surface — MEDIUM regression risk).
   - **Proposed action**: Promote to `adrs/drafts/server-side-search-sessions.md` (new ADR). Document the four-surface convention (catalog + terms + query-examples + reference-data) + the multi-step lifecycle (create → fetch → refine → mutate → drop-by-TTL) + the trade-offs (server-state cost vs. UI session continuity). Cross-link with ADR-CANDIDATE-045 (housekeeping-vs-partition) and ADR-CANDIDATE-003 (read-collaborative). Doc-side: the live `/features/data-discovery/search` page should document the session-UUID lifecycle (currently silent) AND the WHO-can-search question (currently silent — per ADR-CANDIDATE-003 borderline).
   - **Severity rationale**: MEDIUM — feature-architecture decision affecting four feature surfaces + the housekeeping cleanup contract.
+
+
+## STRENGTHENS — Batch ZL (2026-05-26 — Search.tsx page-root + LookupTables.tsx confirm the UI-orchestrator end of the server-side-session pattern across TWO additional features)
+
+Batch ZL's Search.tsx and LookupTables.tsx sidecars surface the UI-orchestrator end of the server-side-session pattern at two more features. Prior coverage was: batch E (SearchController.search method), batch ZE (SearchController class-level — 7-endpoint surface), batch ZI (searchRoutes.ts URL-shape). Batch ZL adds the page-root REACT COMPONENT side at both Search (Catalog) and LookupTables (Master Data) — the FULL Round-trip is now visible: route module → page-root component → backend session create/restore/update → URL-back via navigate().
+
+**New surfaced_by entries**:
+
+- `odd-platform__ts__react-component__component__Search.md:implicit_adrs[0]` (HIGH) — "**Server-side search session model with URL-backed UUID — the canonical/older pattern (TermSearch.tsx batch U clones it).** Lines 37-48 + searchRoutes.ts:3-19 + slice.ts:22-36. The decision is: persist the search session (query + myObjects + facetState + result page info) on the SERVER, identified by UUID, surfaced as the URL path segment. ... Search.tsx is the CANONICAL instance; TermSearch.tsx batch-U is the term-catalog clone (verified by Grep `PageWithLeftSidebar.MainContainer` returning both files; useEffect dep-array shape identical; debouncer wiring identical)."
+
+- `odd-platform__ts__react-component__component__LookupTables.md:implicit_adrs[0]` (HIGH) — "Lookup-table search uses a server-side persisted session (`?searchId=<uuid>` URL param), not client-side query state — implies the search session can be deep-linked, reloaded, or shared by URL and the server-side facet state is the source of truth. — evidence: LookupTables.tsx:20-37 (the `useSearchParams` + `createFacets('').then(({searchId: sid}) => setSearchParams({searchId: sid}))` bootstrap) — intent_anchor: `"setSearchParams({ searchId: sid });"` (line 34 — the act of writing the server-issued id back into the URL is the design decision)" — confidence: HIGH
+
+**What this strengthening adds**: the prior coverage established the BACKEND lifecycle (POST/GET/PUT keyed by UUID across SearchController + TermController + QueryExampleController + ReferenceDataController) and the URL-shape contract (searchRoutes.ts:4 `SEARCH_ID_PARAM = ':searchId'`). Batch ZL adds the UI-orchestrator round-trip: how the page-root React component DRIVES the session lifecycle:
+
+1. **First-visit pattern is canonical across BOTH features** — Search.tsx:37-42 + LookupTables.tsx:30-37 both implement the same shape: useEffect with guard `if (!routerSearchId && !cached) createFacets('')`; chain `.then(({searchId}) => setSearchParams/navigate)` to write the UUID into the URL. The pattern is BYTE-IDENTICAL in spirit across the two unrelated features — confirms the architectural commitment.
+
+2. **Deep-link restore pattern is canonical** — Search.tsx:44-48 + LookupTables.tsx:25-28 (using `useGetReferenceDataSearch(... { enabled: !!searchId })`) both rehydrate the persisted session via GET when the URL carries a UUID. The conditional enable + URL-param-driven dispatch is the same shape at both sites.
+
+3. **The UI commits to URL-writing the session UUID** — useCreateSearch.ts:16-18 (Catalog) + LookupTables.tsx:34 (Master Data) both call `navigate/setSearchParams` IMMEDIATELY after thunk fulfilment. The URL update IS the load-bearing side-effect of session create — the maintainer sees this happen at the page-root level for both features.
+
+**Cross-feature convention reach now**: Search (Catalog) + TermSearch (Dictionary) + QueryExample-search + ReferenceData-search (LookupTables) + 4 backend controllers = **4 UI features + 4 backend controllers** consistently apply the server-side-session pattern. The convention is no longer "Search-specific" — it's the platform-wide canonical shape for stateful-list views.
+
+**Triangulation count after ZL**: 5 sidecars (was 3 — batch E + ZE class-level + ZI route module; ZL adds 2 UI page-roots: Search.tsx + LookupTables.tsx).
+
+**Severity unchanged**: HIGH — the structural commitment now spans 4 UI page-roots + 4 backend controllers + 4 route modules + 1 schema migration.
+
+**Coherence check** (LSN-018):
+- STRENGTHENS: ADR-CANDIDATE-121 (search-session bearer-token-shaped — the UI page-roots EXPOSE the UUID in the URL bar; this is the operator-visible manifestation of the bearer-token shape); REFACTOR-344 (no user binding — combined with UI-URL-exposure, makes the enumeration surface operator-facing); REFACTOR-229 (FTS injection — the same query persisted into the session is the injection sink; the UI page-roots do NO sanitisation before dispatching the typed text).
+- SUPERSEDES: none.
+- CONFLICTS: none.
+
+---

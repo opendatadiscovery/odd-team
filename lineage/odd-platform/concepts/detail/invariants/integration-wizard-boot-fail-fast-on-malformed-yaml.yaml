@@ -1,0 +1,119 @@
+name: |-
+  Integration Wizard boot-time fail-fast on a single malformed manifest
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-10
+description: |-
+  **NEW INVARIANT, batch 2026-05-25-ZD** — a single malformed
+  wizard YAML in ANY classpath overlay takes the entire application
+  context construction down at boot. There is no skip-broken-and-continue,
+  no warn-and-omit semantics. The platform refuses to start.
+
+  ## Mechanism
+
+  `IntegrationRegistryFactory.readManifest` (lines 53-61) catches
+  `IOException` and rethrows as:
+
+      throw new IllegalStateException(
+          "Couldn't read wizard manifest: %s".formatted(resource.getFilename()));
+
+  The exception propagates through `readManifests` (lines 42-51)
+  which similarly catches at the resource-scan level and rethrows
+  as:
+
+      throw new IllegalStateException("Couldn't read wizard manifests", e);
+
+  `IntegrationRegistryFactory.createResourceFilesIntegrationRegistry`
+  invokes `readManifests().stream().collect(Collectors.toMap(...))`
+  (lines 29-40); a thrown exception aborts the stream collector.
+  `IntegrationConfiguration.integrationRegistry()`
+  (`IntegrationConfiguration.java:10-13`) bubbles the exception
+  upward; Spring's application context construction propagates
+  it; bean initialization fails; the application boot fails.
+
+  ## Boot-time fail-fast IS the architectural commitment
+
+  Per `implicit_adrs.[4]` in the batch-ZD sidecar, the maintainer
+  chose explicit fail-fast messaging over silent-skip-on-error
+  semantics. The decision encodes:
+    "The wizard registry is loaded as a coherent set or not at
+     all."
+
+  Trade-off:
+    - **Pro**: an operator who adds a buggy wizard YAML to their
+      overlay discovers the bug at boot — not when a user clicks
+      the Integration panel and sees half the registry missing
+      with no error. The error message includes the resource
+      filename so root-causing is fast.
+    - **Con**: a single malformed wizard from ANY overlay jar
+      takes the entire platform down. An enterprise deployment
+      combining 10 vendor jars + a custom operator overlay has
+      11 potential failure surfaces; a vendor's broken release
+      causes the platform to refuse to start across every
+      customer who has installed that vendor's wizards.
+
+  ## Severity
+
+  LOW for the intentional posture (operator-induced; fail-fast
+  is the documented intent). The risk surface is small: wizard
+  YAMLs are usually authored by integration developers, not
+  end-users; quality is high; malformed YAMLs are rare.
+
+  Severity escalates for deployments combining many vendor
+  wizard overlays — a single vendor release with a malformed YAML
+  cascades to all consumers. The release-management discipline
+  the architectural decision implies (every wizard YAML is
+  carefully validated before publishing) is not explicit in any
+  doc.
+
+  ## Mitigation candidates
+
+  - **Code (preferred)**: replace the IllegalStateException
+    throw with a log.error + continue, building the registry
+    from the manifests that parse correctly. The error message
+    surfaces the failure; the platform boots; the broken wizard
+    is excluded from the UI. Trade-off: silent partial-registry
+    state is harder to detect than a noisy boot failure.
+
+  - **Doc**: document the fail-fast posture explicitly on the
+    wizard live page. Wizard authors get an explicit guarantee
+    that a YAML syntax error blocks platform boot — they know
+    to validate before publishing.
+
+  - **Boot-time validation tool**: provide an offline
+    `validate-wizards` CLI that wizard authors run before
+    publishing — catches malformed YAML BEFORE deployment.
+
+  ## Live doc drift
+
+  The wizard live page (WebFetched 2026-05-25, status 200) does
+  NOT mention the boot-time fail-fast semantics. Operators who
+  hit it discover the behaviour by experience.
+axes_present:
+- backend
+nodes:
+- odd-platform java IntegrationController controller-class:IntegrationController
+contributors:
+- 'IntegrationController.md (batch ZD class-level sidecar):
+  invariants.[2] + implicit_adrs.[4] + bugs_limitations_corner_cases.[4]
+  + stress_findings.tunables.[1]'
+evidence:
+- 'IntegrationRegistryFactory.java:42-61 (the two catch sites)'
+- 'IntegrationRegistryFactory.java:29-40 (the stream collector that
+  aborts on exception)'
+- 'IntegrationConfiguration.java:10-13 (the bean construction)'
+related_features:
+- F-001
+related_pillar_features:
+- P-10
+related_concepts:
+- 'entitie:integration-wizard-manifest-classpath-meta-inf-yaml'
+- 'operation:list-integrations-wizard-registry'
+notes: |-
+  NEW invariant captured in batch 2026-05-25-ZD. The
+  intentional-but-undocumented posture pattern — internally
+  consistent, externally invisible — is a recurring failure mode
+  for the platform's architectural decisions. DOC-NNN candidate:
+  a single line on the wizard live page making the fail-fast
+  posture explicit.

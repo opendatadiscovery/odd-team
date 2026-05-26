@@ -1,0 +1,146 @@
+---
+probe_id: P-168
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__routes__route__search.md
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-002       # P-01:F-002 Search and Filtering — Catalog page
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category F, request_inputs.searchId): The UI route at
+  `/search/{searchId}` exposes a server-side search-session UUID as a path
+  segment. The interface name (`searchId`) and the URL form together imply
+  a persistent/durable handle the user can bookmark, share, and return to.
+  But the implementation persists the UUID into the `search_facets` table —
+  a transient SESSION row, not a saved-search row. The question this probe
+  resolves: **is there any background job, TTL trigger, scheduled cleanup,
+  or row-eviction policy that reaps `search_facets` rows? How long does a
+  bookmarked URL stay valid?**
+
+  Hypothesis from static reading: there is no scheduled cleanup of
+  `search_facets`; the table grows unbounded. A user's bookmark stays valid
+  indefinitely UNLESS a DB admin manually truncates / a migration drops
+  the row / the user explicitly mutates the session (PUT /facets) such that
+  the bookmark now reflects DIFFERENT state than what was bookmarked. The
+  drift surface is: the URL behaves as 'pointer to whatever this row
+  currently holds', not as 'snapshot at bookmark time'.
+
+  The probe will:
+  1. Create a search session via POST /api/search.
+  2. Capture the searchId UUID.
+  3. Wait an extended period (simulated by direct SQL ageing).
+  4. Re-fetch GET /api/search/{uuid} and confirm whether the row still exists.
+  5. Run `PUT /api/search/{uuid}/facets` AFTER simulated time + verify the
+     row mutates (not creates a new one) — confirming the 'same UUID,
+     drifting state' hypothesis.
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: rest
+    method: POST
+    path: /api/search
+    body: |
+      {"query": "alpha", "pageSize": 30, "filters": {}, "myObjects": false}
+    capture_as: initial_session_response
+  - kind: capture
+    expression: initial_session_response.searchId
+    capture_as: bookmarked_uuid
+  - kind: sql
+    query: |
+      SELECT id, created_at, data FROM search_facets WHERE id = '{{bookmarked_uuid}}'::uuid
+    capture_as: initial_row_state
+
+act:
+  # Time-shift: rather than wait real-time, age the row by 24h via direct SQL.
+  - kind: sql
+    query: |
+      UPDATE search_facets
+      SET created_at = created_at - INTERVAL '24 hours'
+      WHERE id = '{{bookmarked_uuid}}'::uuid
+  - kind: rest
+    method: GET
+    path: /api/search/{{bookmarked_uuid}}
+    capture_as: deep_link_response_after_24h
+
+  # Try mutation against the same UUID
+  - kind: rest
+    method: PUT
+    path: /api/search/{{bookmarked_uuid}}/facets
+    body: |
+      {"query": "alpha-edited", "pageSize": 30, "filters": {"DATA_SOURCE": [1]}, "myObjects": true}
+    capture_as: mutation_response
+  - kind: sql
+    query: |
+      SELECT id, data FROM search_facets WHERE id = '{{bookmarked_uuid}}'::uuid
+    capture_as: post_mutation_row_state
+
+  # Confirm no scheduled cleanup is triggering in the background
+  - kind: sql
+    query: |
+      SELECT COUNT(*) AS total_rows FROM search_facets
+    capture_as: total_session_rows
+
+observe:
+  - kind: capture
+    expression: deep_link_response_after_24h.status
+    capture_as: deep_link_status
+  - kind: capture
+    expression: post_mutation_row_state.data
+    capture_as: row_data_after_mutation
+  - kind: capture
+    expression: initial_row_state.data
+    capture_as: row_data_initial
+
+assert:
+  # H1: bookmark survives 24h (no auto-reaper)
+  - "deep_link_status == 200"
+  - "deep_link_response_after_24h.searchId == bookmarked_uuid"
+
+  # H2: mutation on same UUID overwrites the row (does NOT create a new one)
+  - "mutation_response.searchId == bookmarked_uuid"
+  - "row_data_after_mutation != row_data_initial"
+
+  # H3: total row count grew by 1 (the POST), then stayed flat (PUT mutates, no reaper)
+  - "total_session_rows >= 1"
+
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM search_facets WHERE id = '{{bookmarked_uuid}}'::uuid
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__routes__route__search
+    - odd-platform__java__SearchController__controller-method__search
+    - odd-platform__ts__react-component__component__Search
+  retrospectives:
+    - LSN-020      # Category F input-name vs implementation drift
+    - LSN-023      # do not enrich without checking the UI-side meaning
+
+realism_caveats: |
+  The probe pins three behaviours:
+  - bookmark longevity (no automatic reaper),
+  - shared mutation semantics (PUT mutates same UUID — sender and recipient
+    of a deep-link can stomp each other's state),
+  - and table unbounded growth (a long-lived deployment accumulates
+    search_facets rows indefinitely; performance pillar should pick this up).
+  What the probe does NOT verify:
+  - whether a deployment-specific dbadmin job (Postgres TTL extension /
+    cron-based DELETE) IS configured somewhere outside the codebase. If
+    a maintainer has documented such a job in the deployment runbook
+    rather than the code, this probe gives a false negative on 'no
+    cleanup' — the right follow-up is a doc-search for any `search_facets`
+    cleanup mention in the operator-facing docs.
+  - whether the row eventually fails some OTHER constraint (e.g. associated
+    `search_results` or `search_filter_options` tables that DO have TTLs
+    and whose absence corrupts the session).
+  - what happens at extreme scale (1M+ session rows — does the dataentities
+    search performance degrade with table size? out of scope for this probe).
+
+  The probe is intentionally fast (24h simulated by direct SQL update,
+  not real-time) — keeps it CI-friendly.

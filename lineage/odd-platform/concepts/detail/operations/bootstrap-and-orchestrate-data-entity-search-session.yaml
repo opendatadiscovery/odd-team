@@ -1,0 +1,227 @@
+name: |-
+  Bootstrap and orchestrate data-entity search session (Catalog page UI orchestrator role)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+description: |-
+  NEW OPERATION, batch ZL (2026-05-26) — the Discovery pillar's
+  Catalog page UI orchestrator role. Search.tsx
+  (`components/Search/Search.tsx`, 92 lines) is the OPERATOR-VISIBLE
+  entry point for the P-01:F-002 Search and Filtering feature — the
+  UI half of the existing `operation:search-catalog-faceted-session-as-server-state`
+  backend operation. It orchestrates a server-side search session
+  via three thunks (createDataEntitiesSearch / getDataEntitiesSearch
+  / updateDataEntitiesSearch) and three useEffects (mount-bootstrap
+  / URL-restore / facet-state mutation).
+
+  THE OPERATION ANATOMY:
+
+    Step 1 — Session create on first mount (Search.tsx:37-42):
+      Trigger: Mount with NO `:searchId` URL parameter AND no
+               in-flight create AND no cached `searchId`.
+      Code:
+        useEffect(() => {
+          if (!routerSearchId && !isSearchCreating && !searchId)
+            createSearch({query:'', pageSize:30, filters:{}});
+        }, [routerSearchId, isSearchCreating]);
+      Note the dep-array smell — `searchId` is read in the guard
+      but missing from the deps array (correct-by-accident; see
+      `invariant:lsn-017-self-feeding-double-fetch-dep-array-cross-layer-bug`
+      class).
+      Hook: `useCreateSearch` (useCreateSearch.ts:14-19) dispatches
+            `createDataEntitiesSearch` then chains
+            `navigate(searchPath(searchId))` writing the new UUID
+            into the URL.
+      Backend chain: POST /api/search → SearchController.search
+                     → SearchServiceImpl.search → INSERT
+                     search_facets row.
+
+    Step 2 — Session restore on URL-bound mount (Search.tsx:44-48):
+      Trigger: Mount with `:searchId` URL parameter AND no cached
+               searchId (e.g., reload, deep-link from Slack message).
+      Code:
+        useEffect(() => {
+          if (!searchId && routerSearchId)
+            dispatch(getDataEntitiesSearch({searchId: routerSearchId}));
+        }, [searchId, routerSearchId]);
+      Note: this effect's deps array DOES include both guarded
+      values — the correct-deps counter-example to Step 1.
+      Backend chain: GET /api/search/{searchId} →
+                     SearchController.getSearchFacetList →
+                     SearchServiceImpl.getFacetsData.
+
+    Step 3 — Facet-state mutation (Search.tsx:50-71):
+      Trigger: Filters child component flips a facet option's
+               syncedState.
+      Code:
+        const updateSearchFacets = useCallback(
+          useDebouncedCallback(
+            () => dispatch(updateDataEntitiesSearch({
+              searchId,
+              searchFormData: {
+                query: searchQuery,
+                myObjects: searchMyObjects,
+                pageSize: 30,
+                filters: mapValues(searchFacetParams, values),
+              },
+            })),
+            1500, { leading: true }
+          ),
+          [searchId, searchFacetParams],
+        );
+        useEffect(() => {
+          if (!searchFacetsSynced) updateSearchFacets();
+        }, [searchFacetParams]);
+      BROKEN DEBOUNCER — the useCallback deps include
+      `searchFacetParams` which changes on every facet click;
+      each click constructs a NEW debouncer instance. Per
+      `invariant:broken-debouncer-pattern-recreated-on-every-render-loses-rate-limit-semantics`
+      (TermSearch primary source) — this is the SECOND primary
+      instance of the bug. Both files were authored from the
+      same template; the bug propagated through clone.
+      Backend chain: PUT /api/search/{searchId} →
+                     SearchController.updateSearchFacets →
+                     SearchServiceImpl.updateFacets.
+
+    Step 4 — Text-query input (subcomponent dispatch chain via
+             MainSearchInput.tsx:42-48):
+      Trigger: User types text + presses Enter or clicks search.
+      Code: MainSearchInput dispatches updateDataEntitiesSearch
+            SYNCHRONOUSLY (bypassing the 1500ms debouncer in
+            Search.tsx). On the Catalog page (mainSearch=false
+            per Search.tsx:80), the dispatch UPDATES the current
+            session. On the global top-nav MainSearch
+            (mainSearch=true), it CREATES a new session via
+            `useCreateSearch`.
+      Critical: typed text is dispatched AS-IS — no client-side
+            sanitisation, no max-length, no metacharacter filter.
+            See `invariant:tsquery-operator-injection-via-persisted-state`
+            (the FTS injection chain) and
+            `invariant:get-highlighted-result-formatted-sql-injection`
+            (the TRUE SQL injection vector at the highlight path).
+
+    Step 5 — Layout composition (Search.tsx:73-89):
+      Renders the three-child Catalog shell:
+        - <Filters/> in the left sidebar (xs=3) — 7 facets per
+          docs WebFetch 2026-05-20 status 200
+        - <MainSearch placeholder={t('Search')} disableSuggestions/>
+          (text input)
+        - <WithPermissionsProvider allowedPermissions=
+          [DATA_ENTITY_GROUP_CREATE]> wrapping <Results/> (the
+          result list + tabs + conditional DEG-Create CTA)
+
+    Step 6 — Pagination (Results.tsx:71-74 via infinite-scroll):
+      Trigger: User scrolls near the bottom of the list.
+      Code: fetchDataEntitySearchResults({searchId, page+1, size:30}).
+      Backend chain: GET /api/search/{searchId}/results → returns
+                     {items: DataEntity[], pageInfo}.
+      Critical asymmetry: this is a SEPARATE endpoint from
+            POST /api/search (which returns ONLY counts + searchId,
+            not result rows). The UI compensates for the backend's
+            hardcoded `hasNext: true` by computing `hasNext` client-
+            side (`page * size < pageInfo.total`). See
+            `invariant:has-next-true-contract-bug-pagination-loop`.
+
+  AUTHORISATION POSTURE:
+    The Catalog page is end-to-end UNGATED for reads:
+      - Route mount at App.tsx:61 has NO permission wrap
+      - Search.tsx itself has NO permission check
+      - <Results/> result-list rendering has NO per-row permission
+        check (every entity is shown)
+      - The <WithPermissionsProvider> at Search.tsx:81-85 SEEDS
+        the DATA_ENTITY_GROUP_CREATE context but does NOT block
+        render
+      - <WithPermissions> at Results.tsx:125 wraps the 'Add group'
+        button (DOES gate)
+      - Backend SearchController has no @PreAuthorize, no
+        SECURITY_RULES entry for /api/search* paths
+    Net: every authenticated user (under LOGIN_FORM/OAUTH2/LDAP),
+    and every anonymous caller (under DISABLED), can search the
+    full data-entity catalog. Read-collaborative posture is
+    end-to-end (per system-mission.md line 267).
+
+  CROSS-OPERATION RELATIONSHIPS:
+    - UI-layer counterpart of
+      `operation:search-catalog-faceted-session-as-server-state`
+      (the backend three-endpoint operation).
+    - Sibling of `operation:term-search-session-faceted-as-server-state`
+      (TermSearch's Dictionary tab implementation — structurally
+      identical, different feature surface). Both files were
+      authored from the same template.
+    - Pairs with `invariant:tsquery-operator-injection-via-persisted-state`
+      (the typed-text → tsquery → poisoned-session chain
+      originates at this UI surface).
+    - Pairs with `invariant:get-highlighted-result-formatted-sql-injection`
+      (the TRUE SQL injection at highlightDataEntity path
+      originates from the same typed-text payload).
+    - Pairs with `invariant:broken-debouncer-pattern-recreated-on-every-render-loses-rate-limit-semantics`
+      (Search.tsx is the SECOND primary instance of the bug).
+    - Pairs with `invariant:search-id-route-param-is-session-uuid-not-saved-search-category-f`
+      (the URL-param name vs implementation drift).
+    - Pairs with `invariant:tab-click-drops-session-state-cross-route-pattern`
+      (top-nav 'Catalog' tab drops the user's session).
+
+  CROSS-BATCH COHERENCE:
+    Search.tsx is the CANONICAL/OLDER instance of the search-
+    session orchestrator pattern; TermSearch.tsx (batch U) is
+    the term-catalog clone. Verified by Grep
+    `PageWithLeftSidebar.MainContainer` returning both files.
+    useEffect dep-array shape identical; debouncer wiring
+    identical; the broken-debouncer bug is present in BOTH (the
+    bug propagated through clone). A fix at one site warrants
+    a fix at the other (single PR can carry both).
+related_features:
+  - F-001
+  - F-008
+nodes:
+  - odd-platform ts react-component component:Search
+contributors:
+  - odd-platform ts react-component component:Search
+evidence:
+  - |-
+    Search.md:understanding — 'Search.tsx (lines 1-92) is the
+    Data Discovery pillar Catalog page root SPA component — the
+    user-facing entry point at /search/*. It orchestrates a
+    server-side search session via three thunks
+    (createDataEntitiesSearch / getDataEntitiesSearch /
+    updateDataEntitiesSearch) and three useEffects.'
+  - |-
+    Search.md:concepts.operations — six operations enumerated:
+    on-mount create, on-URL-change restore, debounced facet
+    update, layout dispatch, subcomponent dispatch chain
+    (text-query path), no cleanup.
+  - |-
+    Search.md:implicit_adrs — six load-bearing decisions
+    including the server-side session model, permission-gated
+    DEG-Create CTA, 1500ms leading-edge debouncer for facets,
+    read-collaborative posture, pageSize=30 hardcoded in two
+    places, MainSearch two-mode usage.
+axes_present:
+  - ui_components
+  - ui_routes
+triangulation_count: 1
+cross_batch: false
+severity: null
+severity_dim: null
+mitigations_unimplemented: []
+notes: |-
+  NEW operation captured in batch ZL (2026-05-26). This is the
+  UI orchestrator role, distinct from the backend search-catalog-
+  faceted-session-as-server-state operation (which describes
+  what happens after the dispatch reaches the controller).
+
+  The operation surfaces FIVE distinct invariants that are each
+  worth pinning separately:
+    1. The broken-debouncer bug (already pinned, this sidecar
+       strengthens it as a second primary instance);
+    2. The tsquery FTS injection chain (already pinned at the
+       repository layer; UI confirms the user-controlled text
+       reaches the chain unsanitised);
+    3. The TRUE SQL injection at highlightDataEntity (already
+       pinned at the repository layer; UI confirms the entry
+       surface);
+    4. The session-UUID-as-bearer-token shape (already pinned;
+       UI confirms the URL is the bearer);
+    5. The session-expiry no-recovery UX (housekeeping reaper
+       at 30 days; UI has no recovery path).

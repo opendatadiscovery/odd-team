@@ -1,0 +1,142 @@
+name: |-
+  Wire enum DataEntityRunStatus (6 values) vs DB enum IngestionTaskRunStatus (7 values, +RUNNING) — runs-history returns HTTP 500 on RUNNING result row
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-04
+description: |-
+  NEW HIGH-SEVERITY INVARIANT, batch ZG (2026-05-25, DataEntityRunController
+  class-level primary source). The wire-side enum DataEntityRunStatus
+  declares SIX values; the DB column accepts SEVEN. The MapStruct
+  flat-map at the wire boundary throws on the unknown literal — the
+  per-entity runs-history endpoint returns HTTP 500 EXACTLY WHILE A
+  TEST IS IN FLIGHT.
+
+  THE WIRE SIDE (components.yaml:1407-1415):
+    DataEntityRunStatus enum:
+      - SUCCESS
+      - FAILED
+      - SKIPPED
+      - BROKEN
+      - ABORTED
+      - UNKNOWN
+
+  THE DB SIDE (IngestionTaskRun.java:28-36):
+    IngestionTaskRunStatus enum:
+      - SUCCESS
+      - FAILED
+      - SKIPPED
+      - BROKEN
+      - ABORTED
+      - RUNNING        ← present in DB, absent on wire
+      - UNKNOWN
+
+  THE MAPPER (DataEntityRunMapper.java:13-14):
+    `@Mapping(source = "status", target = "status")`
+    MapStruct generates `target.setStatus(DataEntityRunStatus.valueOf(source.getStatus()))`
+    for the String→enum conversion. `Enum.valueOf("RUNNING")` throws
+    `IllegalArgumentException("No enum constant ... RUNNING")`.
+
+  THE OUTCOME:
+    `GET /api/dataentities/{id}/runs` materialises the result set,
+    fans through DataEntityRunMapper, and on ANY row with status =
+    RUNNING raises IllegalArgumentException. The thin reactive Mono
+    chain propagates it to Spring's default error handler — HTTP 500
+    with the verbatim "No enum constant ... RUNNING" message.
+
+  WHY THIS IS HIGH:
+    - The page returns 500 EXACTLY when a test is in flight — the
+      moment the operator most wants to view the page (active
+      monitoring during ingestion).
+    - The status filter cannot work around it: a caller wanting to
+      filter for in-flight runs has no API path (the wire enum has
+      no RUNNING literal), and the workaround (omit the filter to
+      fetch all) triggers the mapper failure.
+    - The 500 is not the typical operator-debuggable error (no
+      JSON body shape, no error code) — the page is just
+      unavailable.
+
+  CONTRAST WITH DASHBOARD: the catalog-wide DQ dashboard
+  (DataQualityRunsController + /api/dataqatests/runs) reads from
+  `data_entity_task_last_run` whose status column can hold the same
+  RUNNING value — but the dashboard's `addMissingStatuses` mapper
+  (DataQualityCategoryMapperImpl.java:45-60) iterates only the wire
+  enum values, so a RUNNING row in the source data is silently
+  EXCLUDED rather than crashing. Two different mappers, two different
+  failure modes for the same data.
+
+  PROBE: P-151 (skeleton emitted on the DataEntityRunController
+  sidecar — verifies the 500 by seeding a RUNNING-state task_run row
+  and hitting the endpoint).
+
+  RECOMMENDED REMEDIATION (cite-anchored, not adopted):
+    Option A — add RUNNING to the wire enum (extend
+    components.yaml:1407-1415; regenerate); update UI palette
+    (`theme.palette.runStatus`) to include RUNNING with a sensible
+    colour. Lowest-risk fix; consistent with the DB.
+    Option B — server-side filter out RUNNING rows from the
+    DataEntityRun mapping (skip rather than fail); operator never
+    sees in-flight runs in the history list (but at least doesn't
+    see a 500 either).
+    Option C — wire-level NULL or omission on unknown values; the
+    UI handles missing-status gracefully.
+
+  The maintainer decides routing; Option A is the conventional fix.
+axes_present:
+  - openapi_schemas
+  - mappers
+nodes:
+  - odd-platform java DataEntityRunController controller-class:DataEntityRunController
+contributors:
+  - |-
+    DataEntityRunController (controller-class, batch ZG PRIMARY SOURCE):
+      entities[DataEntityRunStatus — six-value wire enum SUCCESS|FAILED|
+      SKIPPED|BROKEN|ABORTED|UNKNOWN; DOES NOT contain RUNNING (asymmetry
+      with the DB-side IngestionTaskRunStatus seven-value enum at
+      IngestionTaskRun.java:28-36)];
+      bugs_limitations_corner_cases.[1] HIGH severity (wire enum vs DB
+      enum asymmetry — runs-history returns HTTP 500 on RUNNING row);
+      stress_findings.request_inputs[status] DRIFT_MINOR (wire vs DB
+      enum asymmetry on the filter side too);
+      probes_emitted.P-151 (the probe verifying the 500 on RUNNING row)
+evidence:
+  - DataEntityRunController.md:concepts.entities (DataEntityRunStatus
+    asymmetry with IngestionTaskRunStatus)
+  - DataEntityRunController.md:bugs_limitations_corner_cases.[1] (HIGH severity)
+  - DataEntityRunController.md:probes_emitted P-151
+  - components.yaml:1407-1415 (wire enum 6 values)
+  - IngestionTaskRun.java:28-36 (DB enum 7 values incl RUNNING)
+  - DataEntityRunMapper.java:13-14 (MapStruct String→enum conversion)
+notes: |-
+  This is a CROSS-LAYER BUG PATTERN (LSN-017 class) — the wire spec
+  declares 6 values, the persistence layer accepts 7, the mapper at
+  the boundary doesn't know about the divergence. Adjacent in spirit
+  to:
+    - invariant:run-status-three-vs-six-status-doc-drift-dashboard
+      (the DOC says 3, the CODE renders 6 — different angle on the
+      same enum; CODE-WIRE-DOC three-way drift)
+    - invariant:run-status-palette-type-error-on-out-of-enum-status-blanks-dashboard
+      (the UI palette also breaks on out-of-enum status)
+
+  The THREE FAILURE MODES OF DataEntityRunStatus:
+    Mode 1 (this invariant) — backend mapper 500 on RUNNING row
+      reaching the per-entity runs-history endpoint;
+    Mode 2 (run-status-palette-type-error) — UI palette TypeError on
+      an out-of-enum status value reaching the dashboard render;
+    Mode 3 (run-status-three-vs-six doc drift) — doc names 3 values,
+      code renders 6, operator has no source for BROKEN/ABORTED/UNKNOWN.
+
+  Three FAILURES, ONE ENUM. The hardening recommendation (option A
+  above) closes Mode 1 + Mode 2 simultaneously and provides the doc
+  hook for closing Mode 3.
+
+  ROUTES TO FOLLOW-UP: REFACTOR-NNN — extend the wire enum to match
+  the DB enum (add RUNNING), regenerate UI bindings, update the
+  palette, update the dashboard.md doc with the full 7-value table.
+maintainer_curated: false
+related_features:
+  - F-022
+  - F-032
+related_pillar_features:
+  - "P-04:F-001"
+  - "P-04:F-002"

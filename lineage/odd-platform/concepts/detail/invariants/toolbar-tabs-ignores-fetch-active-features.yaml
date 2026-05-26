@@ -1,0 +1,182 @@
+name: |-
+  ToolbarTabs ignores fetchActiveFeatures — feature-flag fetch dispatched at boot but result unused by tab list
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-09
+description: |-
+  NEW MEDIUM-severity INVARIANT, batch ZJ (2026-05-26) — App.tsx
+  dispatches `fetchActiveFeatures()` at line 49 on app mount. The
+  result is stored in the redux `profile` slice and exposed via
+  `getActiveFeatures` selector. The selector is consumed by
+  destination-page components (e.g. `Message.tsx:59`,
+  `MainThreadMessage.tsx:36`, `DataEntityDetailsHeader.tsx:132`)
+  which wrap children in `<WithFeature featureName={
+  Feature.DATA_COLLABORATION}>` — but the TAB ENTRYPOINT in
+  `ToolbarTabs.tsx:34-82` does NOT consume the selector at all.
+
+  **The 9-tab list is hardcoded regardless of which features the
+  operator enabled**. Grep against `<WithFeature` in the
+  AppToolbar subtree returns NO matches. Grep against
+  `getActiveFeatures|useActiveFeatures` in
+  ToolbarTabs.tsx returns NO matches.
+
+  **The operator-visible consequence**: a deployment with
+  `datacollaboration.enabled=false` (the default per
+  application.yml) STILL shows the Data Modelling tab to every
+  user, the Master Data tab to every user, etc. Clicking Data
+  Modelling navigates to `/data-modelling/query-examples`
+  where Query Examples lives — the destination page IS
+  wrapped in `<WithFeature>` and renders an empty / non-
+  functional surface; the user sees the tab work as labelled
+  but the page work nothing.
+
+  **The pattern applies to ANY tab whose destination is feature-
+  gated downstream**:
+
+    - Data Modelling (Query Examples uses Feature.DATA_COLLABORATION)
+    - Alerts (Feature.ALERT_NOTIFICATIONS for outbound notifications;
+      list itself is not gated)
+    - Master Data (Lookup Tables today; future Master Data sub-
+      features may be feature-gated)
+
+  Today only Data Modelling/Query Examples is observably gated
+  downstream of an unfeature-gated tab. But the architectural
+  invariant — 'tab visibility is decoupled from feature-flag
+  state' — is the load-bearing claim.
+
+  **The fix is small**: extend each tab entry in the `tabs`
+  useMemo at ToolbarTabs.tsx:34-82 with an optional `featureName`
+  field. Then wrap each tab entry in `<WithFeature
+  featureName={tab.featureName}>` when defined. Approximate
+  cost: 15 lines, no new imports beyond `WithFeature` (already
+  used elsewhere).
+
+  **Cross-batch coherence (LSN-018)**: this invariant is the
+  feature-flag-side counterpart of the
+  `management-tab-visible-to-all-authenticated-users-
+  unpermissioned-tab-visibility` invariant. The latter says
+  'tabs are not permission-gated'; this invariant says 'tabs are
+  also not feature-gated'. Both invariants share the same root
+  cause: ToolbarTabs is a hardcoded literal-array enumerator
+  with no consumption of redux state beyond the i18next `t`
+  function and the `activityQueryString`.
+
+  **The fetchActiveFeatures dispatch IS still load-bearing** —
+  it populates the selector used by destination-page WithFeature
+  wrappers. The invariant is NOT 'don't fetch' but 'fetch and
+  also consume at the toolbar layer'.
+vocabulary_status: codebase-anchored
+axes_present:
+  - ui_shell
+  - ui_components
+nodes:
+  - odd-platform ts components/shared/elements/AppToolbar/ToolbarTabs ui-shell-widget:ToolbarTabs
+  - odd-platform ts react-component component:App
+contributors:
+  - |-
+    ToolbarTabs.md (batch ZJ ui-shell-widget primary source):
+      concepts.invariants.[2] (Every tab is always-visible to every authenticated user — no hidden/disabled/permission-gated entry);
+      bugs_limitations_corner_cases.[0] HIGH (Tab visibility is structurally unconditional);
+      security.known_security_gaps.[1] LOW (Tab visibility does NOT participate in Active Features — WithFeature exists at WithFeature.tsx:15-36 but is NEVER used to wrap any tab);
+      stress_findings.probes_emitted P-175 (runtime confirmation across 4 auth modes × 3 role classes)
+  - |-
+    AppToolbar.md (batch ZJ ui-shell-widget primary source):
+      bugs_limitations_corner_cases.[0] MEDIUM (9 tabs render unconditionally regardless of feature-flag state; Data Modelling Query Examples is Feature.DATA_COLLABORATION-gated downstream but the tab entrypoint is not wrapped);
+      dependencies_semantic.requires-feature[FeatureController @ /api/features/active BUT NOT ACTUALLY USED by the toolbar's tab rendering — the data is fetched and stored at App.tsx:49 but ToolbarTabs.tsx does NOT consume getActiveFeatures]
+evidence:
+  - 'ToolbarTabs.md:concepts.invariants.[2] (every tab is always-visible)'
+  - 'ToolbarTabs.md:bugs_limitations_corner_cases.[0] HIGH (Tab visibility is structurally unconditional)'
+  - 'ToolbarTabs.md:security.known_security_gaps.[1] LOW (WithFeature exists but is NEVER used to wrap any tab; grep verifier 0 matches)'
+  - 'AppToolbar.md:bugs_limitations_corner_cases.[0] MEDIUM (9 tabs render unconditionally regardless of feature-flag state; fetchActiveFeatures dispatched at App.tsx:49 but ToolbarTabs.tsx does NOT consume getActiveFeatures)'
+  - 'AppToolbar.md:dependencies_semantic.requires-feature[FeatureController @ /api/features/active BUT NOT ACTUALLY USED by the toolbar tab rendering — the data is fetched and stored but ToolbarTabs does not consume]'
+  - 'ToolbarTabs.tsx:34-82 (the literal 9-tab array; no WithFeature wrapping)'
+  - 'WithFeature.tsx:15-36 (the capability exists in the codebase but is unused here)'
+  - 'Message.tsx:59 + MainThreadMessage.tsx:36 + DataEntityDetailsHeader.tsx:132 (the EXAMPLES of correct usage downstream)'
+security_aggregate:
+  overall: MEDIUM
+  auth_modes_relevant:
+    - DISABLED
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: 'N/A'
+    detail: |-
+      Not a security gate — feature-flag visibility, not permission
+      visibility. (Note: the sibling
+      management-tab-visible-to-all-authenticated-users-unpermissioned-
+      tab-visibility invariant covers the permission side.)
+  owner_scoping:
+    verdict: 'N/A'
+    detail: ''
+  strengths:
+    - 'Destination-page WithFeature wrappers still enforce the feature gate at the page level — the user sees an empty / non-functional page but cannot actually use disabled features'
+    - 'The fetchActiveFeatures dispatch IS load-bearing for destination-page wrappers — the absence of consumption at the toolbar layer is the gap, not the absence of the fetch'
+  weaknesses:
+    - 'User sees tab labelled Data Modelling -> clicks -> lands on a non-functional Query Examples page when datacollaboration.enabled=false. No upstream signal that the tab is dead-end (MEDIUM)'
+    - 'The capability to gate (WithFeature.tsx:15-36) EXISTS but is not used at the toolbar layer — dead code at this caller (LOW)'
+  cross_file_inconsistencies: []
+  contributing_files:
+    - 'odd-platform__ts__components_shared_elements_AppToolbar_ToolbarTabs__ui-shell-widget__ToolbarTabs.md'
+    - 'odd-platform__ts__components_shared_elements_AppToolbar__ui-shell-widget__AppToolbar.md'
+  evidence:
+    - 'ToolbarTabs.md:security.known_security_gaps.[1]'
+    - 'AppToolbar.md:bugs_limitations_corner_cases.[0]'
+performance_aggregate:
+  overall: 'HIGH'
+  hot_paths: []
+  throughput_shape:
+    verdict: 'N/A'
+    detail: 'Not a performance concept.'
+  scaling_shape:
+    verdict: 'N/A'
+    detail: ''
+  strengths: []
+  weaknesses: []
+  cross_file_inconsistencies: []
+  contributing_files:
+    - 'odd-platform__ts__components_shared_elements_AppToolbar_ToolbarTabs__ui-shell-widget__ToolbarTabs.md'
+  evidence: []
+triangulation_count: 2
+cross_batch: false
+cross_batch_refs:
+  - batch-ZJ (ToolbarTabs + AppToolbar primary sources)
+severity: MEDIUM
+severity_dim: ux
+mitigations_unimplemented:
+  - |-
+    Extend each `tabs` array entry in ToolbarTabs.tsx:34-82 with
+    an optional `featureName` field. Wrap each tab entry in
+    `<WithFeature featureName={tab.featureName}>` when defined.
+    Approximate cost: 15 lines, no new imports beyond `WithFeature`
+    (already used elsewhere in the codebase).
+  - |-
+    Author a developer-side doc page enumerating which tabs are
+    feature-gated downstream and which are not — the implicit
+    contract is invisible from the code.
+related_features:
+  - F-034
+related_pillar_features:
+  - 'P-09'
+related_concepts:
+  - 'entitie:toolbar-tabs-hardcoded-nine-tab-primary-nav'
+  - 'invariant:management-tab-visible-to-all-authenticated-users-unpermissioned-tab-visibility (the permission-side sibling)'
+  - 'entitie:active-feature-flag (the feature-flag set fetchActiveFeatures consumes)'
+  - 'operation:get-active-feature-list-boot-snapshot (the upstream fetch this invariant ignores at the toolbar layer)'
+notes: |-
+  Coherence (Rule 6): grepped `concepts/detail/invariants/` for
+  "ToolbarTabs" + "feature" + "Active" — found
+  `invariant:management-tab-visible-to-all-authenticated-users-
+  unpermissioned-tab-visibility` (the permission-side sibling;
+  same root cause — hardcoded array with no redux state
+  consumption). No existing concept covers the feature-flag-side
+  variant specifically.
+
+  This invariant compounds with the permission-side sibling: the
+  9-tab array is BOTH permission-unaware AND feature-flag-unaware.
+  A maintainer triaging the management-tab-visibility issue should
+  treat both invariants as ONE fix-shape — extend the `tabs` array
+  entries to carry permission + featureName predicates uniformly.
+maintainer_curated: false

@@ -1,0 +1,116 @@
+feature_id: F-036
+name: Owner-Relationship Title Directory
+pillar_anchored_id: P-08:F-010
+discovered_at_batch: ZE
+discovered_at_commit: 25e66b1
+discovered_from_entry_point: "Two distinct UI surfaces, each is a chain hop-1:\n(a) ui_route:/dataentities/{id} + /terms/{id} \u2014 ownership form modal (every\n    ownership grant/edit dispatches the\
+  \ autocomplete population)\n(b) ui_route:/data-quality/runs \u2014 TitleFilter (DQ runs filter populating\n    titleIds / deTitleIds query params)"
+terminal_side_effect:
+  side_effect_class: page-render
+  description: "Per chain:\n - Read chain \u2192 page-render (paginated title list shapes autocomplete dropdown)\n - Auto-create side-channel chain \u2192 db-write on title table via\n   TitleServiceImpl.getOrCreate\
+    \ called from OwnershipServiceImpl.create/update\n   (the WRITE side: directory mutated only as side effect of ownership grant)"
+contributing_nodes:
+- node_id: odd-platform java TitleController controller-class:TitleController
+  role: controller-class
+  enriched_at_batch: ZE
+  sidecar: lineage/odd-platform/understanding/odd-platform__java__TitleController__controller-class__TitleController.md
+- node_id: odd-platform java service:TitleServiceImpl
+  role: service-tier
+  unresolved: true
+- node_id: odd-platform java repository:ReactiveTitleRepositoryImpl
+  role: repository-tier
+  unresolved: true
+  note: covered by TitlesRepositoryImplTest (integration tests for repo CRUD only)
+- node_id: odd-platform java service:OwnershipServiceImpl
+  role: write-side-channel
+  enriched_at_batch: K
+- node_id: odd-platform ts react-component:OwnerTitleAutocomplete.tsx
+  role: ui-write-trigger
+  unresolved: true
+- node_id: odd-platform ts react-component:TitleFilter.tsx
+  role: ui-read-surface
+  unresolved: true
+amplification_factor: 1
+amplification_note: "Read chain \u2014 1 per autocomplete-open + 1 per 500ms-debounced substring\nkeystroke. Write chain \u2014 1 per ownership grant for an unseen title (silent\nfree-text auto-insert)."
+observed_vs_expected:
+  facets:
+  - facet_id: free_text_auto_create_no_normalisation_silent_policy_leak
+    drift_class: dimension_table_admits_duplicates_under_case_whitespace_drift
+    severity: MEDIUM
+    observed: "title.name varchar(128) UNIQUE \u2014 no @Pattern, no @Size, no normalisation\n(case-folding, trimming, slug-deduping). Two operators typing slightly\ndifferent forms ('Data Steward', 'data\
+      \ steward', 'DATA STEWARD',\n' Data Steward ', 'data-steward') accumulate as DISTINCT rows. A Policy\ncondition `dataEntity:owner:title == 'Data Steward'` silently misses\nevery other-casing variant."
+    evidence: 'V0_0_3__add_ownership.sql:1-8 + TitleServiceImpl.java:19-22 +
+
+      OwnerTitleAutocomplete.tsx:43-48 (free-text input).'
+  - facet_id: concurrent_get_or_create_race_usr003_400_not_409
+    drift_class: read_then_insert_race_no_on_conflict_handler
+    severity: LOW
+    observed: "TitleServiceImpl.java:19-22 `getByName.switchIfEmpty(create)`; two\nparallel owner-grants typing the SAME brand-new title both observe\nempty + both attempt create \u2192 one wins, the other\
+      \ hits\nTITLE_NAME_UNIQUE \u2192 UniqueConstraintException \u2192 HTTP 400 USR003.\nOwnershipServiceImpl's @ReactiveTransactional boundary rolls back the\nentire ownership-grant on the losing side."
+  - facet_id: size_unbounded_caller_controlled_pagination_amplification
+    drift_class: unbounded_pagination_request_param_amplification
+    severity: MEDIUM
+    observed: 'Integer size flows verbatim to paginate(...).limit(size). No Math.min,
+
+      no @Max, no controller-level validator.'
+  - facet_id: autocomplete_30_row_window_invisibility_for_titles_past_position_30
+    drift_class: server_side_id_asc_window_clipping_invisible_to_client_filter
+    severity: LOW
+    observed: 'Server returns 30 OLDEST non-deleted matching titles in id ASC order;
+
+      UI''s MUI createFilterOptions re-filters within those 30 client-side.
+
+      Titles older than the 30-row window are INVISIBLE to autocomplete
+
+      regardless of relevance to typed query.'
+  - facet_id: no_canonical_doc_for_title_concept
+    drift_class: doc_silent_on_load_bearing_authorization_dimension
+    severity: MEDIUM
+    observed: 'Live /configuration-and-deployment/enable-security/authorization/policies
+
+      cites :owner:title as a condition field but never explains where the
+
+      title vocabulary comes from, that any authenticated user can mint a
+
+      new title by typing one into an ownership form, or that the directory
+
+      is unbounded + case-sensitive.'
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered: []
+  integration:
+    state: PARTIAL
+    covered: []
+    uncovered: []
+  performance:
+    state: GAP
+    covered: []
+    uncovered: []
+  security:
+    state: GAP
+    covered: []
+    uncovered: []
+  control_summary: 1/4
+  partial_note: 'TitlesRepositoryImplTest exercises repository CRUD (id assignment, bulk
+
+    create/update, soft-delete, getByName) but NOT the controller/service
+
+    list path; ZERO coverage on the controller wire.'
+  highest_leverage_uncovered: 'getTitleList ordering contract + race-condition on concurrent
+
+    OwnershipServiceImpl.create + size=100000 boundary + auth-matrix probe.'
+probes_referenced:
+- P-129
+related_refactoring_scopes:
+- REFACTOR-206
+- REFACTOR-624
+related_doc_gaps:
+- DOC-GAP-283
+- DOC-GAP-289
+- DOC-GAP-146
+related_features:
+- F-019
+- F-006
+ui_unverified: false

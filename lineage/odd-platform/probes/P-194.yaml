@@ -1,0 +1,126 @@
+---
+probe_id: P-194
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__Alerts.md
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-007
+test_class: integration
+verified_against_commit: substrate-manifest-inherited
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress questions answered by this probe:
+  (1) The Alerts global page (/alerts/all, /alerts/my, /alerts/dependents) filters
+      alerts by STATUS=OPEN at the SQL layer (ReactiveAlertRepositoryImpl.java:142-148,
+      160-166, 217-230). The live docs page state the All tab shows "Every open and
+      resolved alert across the whole platform" — DRIFT against the code. Verify that
+      RESOLVED alerts do NOT appear on any global tab, but DO appear on the single
+      data entity's /dataentities/{id}/alerts tab (getAlertsByDataEntityId has no status
+      filter — ReactiveAlertRepositoryImpl.java:182-199).
+  (2) Confirm the ORDER BY is alert.last_created_at DESC, alert.id DESC (the JOOQ
+      chain at ReactiveAlertRepositoryImpl.java:475-476 + 505 applies both fields at
+      the outer SELECT).
+  (3) Confirm that hard-coded UI page size = 30 (AlertsList.tsx:72) propagates to
+      backend pagination correctly.
+
+  Hypothesis: the code DOES filter STATUS=OPEN at the global list endpoints; the live
+  docs do not warn the operator. Probe outcome is expected to confirm drift class
+  DRIFT_NAME_VS_BEHAVIOR (Category B) and DRIFT_INPUT_NAME_VS_IMPLEMENTATION (Category F
+  on the tab-route segment "all").
+---
+arrange:
+  - kind: docker-compose-up
+    notes: "Standard odd-minimal stack — postgres + odd-platform-api on port 8080 + odd-platform-ui on port 3000."
+  - kind: sql
+    query: |
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, status)
+      VALUES
+        (9101, '//probe-source/p-194/de-1', 'p_194_data_entity_1', 1, 1, 0)
+      ON CONFLICT (id) DO NOTHING;
+  - kind: sql
+    query: |
+      -- Insert 3 alerts on the same data entity, varying status and last_created_at
+      INSERT INTO alert (id, data_entity_oddrn, type, status, last_created_at, status_updated_at, status_updated_by)
+      VALUES
+        (9101, '//probe-source/p-194/de-1', 1, 0, NOW() - INTERVAL '3 minutes', NOW() - INTERVAL '3 minutes', NULL),  -- OPEN, oldest
+        (9102, '//probe-source/p-194/de-1', 2, 1, NOW() - INTERVAL '2 minutes', NOW() - INTERVAL '1 minute', 'probe_user'),  -- RESOLVED
+        (9103, '//probe-source/p-194/de-1', 3, 0, NOW() - INTERVAL '1 minute', NOW() - INTERVAL '1 minute', NULL)   -- OPEN, newest
+      ON CONFLICT (id) DO NOTHING;
+    notes: |
+      Status codes per AlertStatusEnum: OPEN=0, RESOLVED=1, RESOLVED_AUTOMATICALLY=2.
+      Type codes per AlertTypeEnum — using 1/2/3 as distinct placeholders (BIS, FDT,
+      FDQT-like). The probe-runner should align codes with the actual enum at
+      verify-time; the assertion is shape-based, not enum-name-based.
+  - kind: sql
+    query: |
+      INSERT INTO alert_chunk (alert_id, description, created_at)
+      VALUES
+        (9101, 'probe P-194 chunk for OPEN-oldest', NOW() - INTERVAL '3 minutes'),
+        (9102, 'probe P-194 chunk for RESOLVED', NOW() - INTERVAL '2 minutes'),
+        (9103, 'probe P-194 chunk for OPEN-newest', NOW() - INTERVAL '1 minute');
+act:
+  - kind: rest
+    method: GET
+    path: /api/alerts?page=1&size=30
+    headers:
+      Cookie: <session-cookie-for-authenticated-user>
+    capture_as: all_tab_response
+  - kind: rest
+    method: GET
+    path: /api/dataentities/9101/alerts?page=1&size=30
+    headers:
+      Cookie: <session-cookie-for-authenticated-user>
+    capture_as: per_entity_response
+observe:
+  - kind: sql
+    query: |
+      SELECT id, status, last_created_at FROM alert WHERE id IN (9101, 9102, 9103)
+      ORDER BY last_created_at DESC, id DESC;
+    capture_as: db_truth
+assert:
+  # 1. STATUS=OPEN drift hypothesis: /api/alerts (All tab) returns 9101 and 9103 ONLY
+  - "all_tab_response.items.length == 2"
+  - "9101 in [item.id for item in all_tab_response.items]"
+  - "9103 in [item.id for item in all_tab_response.items]"
+  - "9102 not in [item.id for item in all_tab_response.items]    # RESOLVED filtered out — DRIFT confirmed"
+  # 2. Ordering: newest last_created_at first; tiebreak id DESC
+  - "all_tab_response.items[0].id == 9103   # newest OPEN first"
+  - "all_tab_response.items[1].id == 9101"
+  # 3. Per-entity endpoint shows ALL statuses
+  - "per_entity_response.items.length == 3"
+  - "9102 in [item.id for item in per_entity_response.items]    # RESOLVED visible per-entity"
+  # 4. ORDER BY consistency: db_truth matches all_tab_response ordering for OPEN rows
+  - "db_truth[0].id == 9103"
+  - "db_truth[2].id == 9101    # OPEN-oldest is last when ordered DESC"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM alert_chunk WHERE alert_id IN (9101, 9102, 9103);
+      DELETE FROM alert WHERE id IN (9101, 9102, 9103);
+      DELETE FROM data_entity WHERE id = 9101;
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__Alerts
+    - odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__AlertController
+    - odd-platform__java__service__service__AlertServiceImpl
+    - odd-platform__java__repository_reactive__repository__ReactiveAlertRepositoryImpl
+  retrospectives:
+    - LSN-019                # tagService.listMostPopular — class B drift
+    - LSN-020                # Activity userIds — class F drift
+realism_caveats: |
+  - Probe assumes test data does not collide with existing alert ids 9101..9103;
+    the cleanup step purges by exact id so a re-run is idempotent if the body
+    succeeded.
+  - Session-cookie capture is left as a runtime concern for probe-runner — the
+    UI auth flow must be replayed (LOGIN_FORM mode) or the auth.type=DISABLED
+    docker profile must be used.
+  - The probe does NOT verify (a) the multi-page infinite-scroll behaviour beyond
+    page=1, (b) DOM virtualisation memory cost at N=3000, or (c) tab-switch race
+    conditions — those need a separate Playwright-class probe (DOM-probe), which
+    is out of scope here. Emit a follow-up probe if those questions become load-bearing.
+  - The page-size assertion only confirms that page=1&size=30 returns ≤30 items,
+    not that the UI's hard-coded `const size = 30` propagates correctly — that is
+    a UI-side fact and best verified by Playwright capturing the network request.

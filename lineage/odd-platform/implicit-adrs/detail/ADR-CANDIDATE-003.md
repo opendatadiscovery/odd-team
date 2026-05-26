@@ -77,3 +77,39 @@ The pattern now covers nearly every read surface in the platform: detail, lineag
 **Severity unchanged**: HIGH. Support count: **14 sidecars** (was 13 after batch M). The read-collaborative-GET posture is now anchored across nearly every read surface of the platform AND at the dashboard UI route layer.
 
 ---
+
+
+## STRENGTHENS — Batch ZL (2026-05-26 — Search.tsx + Alerts.tsx + LookupTables.tsx page-root sidecars confirm the read-collaborative posture at the UI surface)
+
+Batch ZL adds three more page-root component surfaces confirming the read-collaborative posture across distinct features. The pattern repeats: read endpoints have no @PreAuthorize at the backend, no permission wrap at the route, no per-row authorization at the UI; mutation buttons only are gated.
+
+**New surfaced_by entries**:
+
+- `odd-platform__ts__react-component__component__Search.md:concepts.invariants[2]` (HIGH) — "**Read-collaborative posture — no per-owner + no per-namespace scoping at this layer.** Search.tsx delegates entirely to `searchService.search` on the backend; per batch-ZE SearchController invariants the service runs `JooqFTSHelper.facetStateConditions` over the catalog with NO per-owner filter (`authIdentityProvider.fetchAssociatedOwner` is called only to compute `myObjectsTotal`, not to scope the main result list — SearchServiceImpl.java:128-130). The UI has a 'My Objects' affordance ... but BY DEFAULT every authenticated user sees every data entity across every owner / namespace."
+
+- `odd-platform__ts__react-component__component__Alerts.md:security.owner_scoping` (HIGH) — "All tab: `BYPASSES — returns OPEN alerts across all owners`. ... All tab on DISABLED auth mode reaches the alert list without any frontend or backend (per batch H controller) gate. In an internet-facing accidental DISABLED deployment, an anonymous caller can enumerate all OPEN alerts across the platform — including data-entity names, owner-association usernames, and full alertChunkList descriptions which may contain free-text diagnostic info."
+
+- `odd-platform__ts__react-component__component__LookupTables.md:security.owner_scoping` (HIGH) — "BYPASSES — the counter and list show all tables regardless of caller. The `total` rendered at line 60-62 is the global count of lookup tables matching the search query — not owner-scoped."
+
+**What this strengthening adds**: the prior support established that GETs are uniformly authenticated-only with no role/owner/permission gate. Batch ZL adds the OPERATOR-FACING UI MANIFESTATIONS at three additional surfaces:
+
+1. **The global counter / total leaks population size** — every authenticated user sees:
+   - LookupTables: "X lookup tables overall" (LookupTables.tsx:60-62) — global count
+   - Search: total entities in the catalog (Search.tsx via the Catalog list)
+   - Alerts: cross-owner aggregate counts via /api/alerts/totals (Alerts.tsx:15-17)
+   All three are computed without owner-scoping; the architectural commitment is consistent.
+
+2. **The list views expose full payload to every authenticated user** — Search results show every data entity (name, ownership, type, datasource, tags, statuses, descriptions); Alerts All-tab shows actor identity + full old/new state diffs; LookupTables shows name + description + namespace per row. No field-level redaction; no per-row owner check.
+
+3. **The UI offers OPT-IN scoping affordances** (My Objects tab in Catalog + Alerts; default tab is 'All') — operators who WANT per-team isolation must toggle the affordance. The default is wide-open; the scoping is operator-choice, not architectural enforcement.
+
+**Triangulation count after ZL**: 6 sidecars (was 3; ZL adds 3 — Search.tsx + Alerts.tsx + LookupTables.tsx page-roots).
+
+**Severity unchanged**: HIGH — the read-collaborative posture is now observable across 6+ feature surfaces; the operator-facing manifestation (cross-owner enumeration, global counts, full payload exposure) is uniform.
+
+**Coherence check** (LSN-018):
+- STRENGTHENS: ADR-CANDIDATE-192 (S2S read surface read-collaborative); REFACTOR-024 (cross-owner data exposure family); ADR-CANDIDATE-247 NEW this batch (owner-association tab visibility — the UI-side opt-in affordance for scoping); ADR-CANDIDATE-089 (partial UI permission gating — content unconditional, mutation only gated).
+- SUPERSEDES: none.
+- CONFLICTS: none.
+
+---

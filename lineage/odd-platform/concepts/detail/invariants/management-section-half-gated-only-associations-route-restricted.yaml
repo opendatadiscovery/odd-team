@@ -1,0 +1,228 @@
+name: Management section is half-gated — Associations is the ONLY route-gated sub-area (RestrictedRoute), 8 others render to every authenticated user
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-08
+description: |-
+  **NEW HIGH-severity INVARIANT, batch ZH (2026-05-26)** — the Management
+  section at `/management/*` exhibits a sharply asymmetric route gate
+  posture. The section hosts 9 sub-areas (Namespaces, Datasources,
+  Integrations, Collectors, Owners, Tags, Owner-Associations, Roles,
+  Policies) at a single splat route in App.tsx:62. **Only ONE of the 9
+  sub-routes is route-gated**:
+
+    - `/management/associations/*` at ManagementRoutes.tsx:101-110 uses
+      `<RestrictedRoute isAllowedTo={hasAccessTo(OWNER_ASSOCIATION_MANAGE)}
+       redirectTo='../namespaces' />` — a TRUE redirecting guard.
+
+  The remaining EIGHT sub-routes (Namespaces / Datasources /
+  Integrations / Collectors / Owners / Tags / Roles / Policies +
+  /policies/:policyId + /integrations/:integrationId) all render for
+  every authenticated user including users with zero Management-tier
+  permissions. The lists are fetched unconditionally on mount (e.g.
+  NamespaceList.tsx:46-48 dispatches fetchNamespaceList on the empty
+  permission set); only the create/update/delete BUTTONS are hidden
+  via the inner `<WithPermissions>` HOC HIDE-not-DISABLE convention.
+
+  **The operator mental-model trap**: an operator reading the docs
+  (which describe Permissions / Policies / Roles / Owners as
+  Authorization concepts under `enable-security/authorization`) forms
+  the mental model "the Management page is admin-only". The code says
+  "any authenticated user reads the full Owner / Role / Policy /
+  Namespace / Tag / Collector / DataSource / Integration catalogs;
+  only the Associations approval inbox is admin-gated; only mutation
+  buttons are gated everywhere else." The asymmetry is unexplained
+  in code and undocumented on the live docs (per the route sidecar's
+  doc_drift_findings — the user-facing Management UI page does NOT
+  exist on docs.opendatadiscovery.org).
+
+  **Why Associations is gated**: structurally, the OwnerAssociation
+  approval inbox lists pending/active/historical user-owner mapping
+  requests — a high-stakes admin surface where the wrong-role reader
+  would see WHO is requesting WHICH user-owner mapping (a privacy +
+  org-structure signal). The RestrictedRoute guard reflects that.
+  No equivalent guard exists for Policies (where wrong-role readers
+  see the policy JSON definitions including resource-condition
+  predicates) or for Roles (where wrong-role readers see the role-to-
+  policy mapping). The boundary case for "what is admin-only" is
+  inconsistently drawn.
+
+  **The Integrations sub-route is structurally further-broken**:
+  ManagementRoutes.tsx:150 declares `<Route path='integrations/*'
+  element={<Integrations />} />` with NO WithPermissionsProvider
+  wrapping at all (the OUTER Management.tsx provider whose
+  allowedPermissions=[OWNER_ASSOCIATION_MANAGE] is the only context
+  in scope). Any inner `usePermissions().hasAccessTo(Permission.X)`
+  call inside the Integrations subtree falls back to that outer
+  context — which only matches OWNER_ASSOCIATION_MANAGE. So any
+  Integration-form `hasAccessTo(DATA_SOURCE_UPDATE)` predicate
+  deny-by-defaults regardless of the user's GLOBAL permissions.
+  Whether the bug is BROKEN-OPEN or BROKEN-CLOSED depends on
+  which side of the gate the bug lands.
+
+  **Cross-layer consistency**: the half-gated UI posture mirrors
+  the half-gated BACKEND posture catalogued by the cross-controller
+  permission-split pattern. Each Management API surface (POST
+  /api/namespaces, POST /api/owners, POST /api/roles, POST /api/policy)
+  is independently gated at the controller layer (per the batch
+  ZD/ZF/W sidecars); READ endpoints are mostly UNgated (e.g.
+  GET /api/tags/popular is anonymously readable per the TagController
+  sidecar). UI permissive-route-level POSTURE mirrors backend
+  permissive-read posture; both are read-collaborative by design.
+
+  **Pinned by P-162** — auth-gate audit of the entire Management
+  surface for a zero-permission authenticated user.
+
+  vocabulary_status: codebase-anchored, doc-side-gap (the Management
+  UI is one of the largest navigable surfaces and has NO doc page).
+vocabulary_status: codebase-anchored, doc-side-gap
+axes_present:
+  - ui_routes
+  - react_components
+nodes:
+  - odd-platform ts routes route:management
+contributors:
+  - |-
+    management route batch ZH:
+      bugs_limitations_corner_cases[Management UI mounted in App.tsx:62 with no route-level permission guard; the only ROUTE-level gate is around /management/associations/*];
+      bugs_limitations_corner_cases[/management/integrations + /integrations/:id have NO WithPermissionsProvider wrapping at all — the outer Management.tsx context carries OWNER_ASSOCIATION_MANAGE only];
+      implicit_adrs[OwnerAssociations is the ONLY sub-route to use RestrictedRoute — a guard that redirects — rather than WithPermissionsProvider — a context provider];
+      stress_findings.auth_gates[wrong-role caller sees 8 of 9 sub-areas; only Associations bounces to /management/namespaces];
+      stress_findings.probes_emitted.P-162;
+      security.known_security_gaps[HIGH — the Management route surface has NO route-level permission guard; ANY authenticated user reads full catalogs]
+evidence:
+  - "management.md:bugs_limitations_corner_cases.[0] HIGH (Management is half-gated)"
+  - "management.md:bugs_limitations_corner_cases.[1] MEDIUM (/management/integrations has NO permission-context wrapping at all)"
+  - "management.md:implicit_adrs.[2] (Associations is the only route-gated sub-area via RestrictedRoute)"
+  - "management.md:stress_findings.auth_gates (q3 wrong-role caller — sees 8 of 9 sub-areas; q4 gate-locus — RestrictedRoute is only route-level gate in section)"
+  - "management.md:security.known_security_gaps.[0] HIGH"
+  - "management.md:security.known_security_gaps.[1] MEDIUM (/management/integrations no permission wrap; outer Management.tsx context fails inner hasAccessTo checks)"
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
+    - DISABLED
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: INCONSISTENT
+    detail: |-
+      Among 9 Management sub-routes, exactly 1 is route-gated
+      (Associations via RestrictedRoute). 8 others either wrap in
+      WithPermissionsProvider (which seeds context but does not block)
+      or are bare. The Integrations sub-route lacks even the
+      WithPermissionsProvider — its inner hasAccessTo checks fall
+      through to the outer Management.tsx context whose permission
+      set is just [OWNER_ASSOCIATION_MANAGE].
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      Every list (NamespaceList, OwnersList, RolesList, PolicyList,
+      DataSourcesList, CollectorsList, TagsList) fetches on mount
+      with no per-current-user predicate. The catalog is cross-owner
+      by design (read-collaborative posture per REFACTOR-024).
+  strengths:
+    - |-
+      The Associations sub-route IS structurally gated (RestrictedRoute
+      with redirect to /management/namespaces) — the safety case for
+      the most-sensitive surface (the user-owner mapping approval
+      inbox) is correctly applied.
+    - |-
+      The backend's per-mutation @PreAuthorize / SecurityRule pattern
+      catches every WRITE attempt at the controller layer regardless
+      of UI state — so the UI's permissive route posture does not
+      enable arbitrary mutations.
+  weaknesses:
+    - |-
+      An operator reading the docs (Authorization parent page lists
+      Policies / Permissions / Roles / Owners / Associations as
+      admin concepts) forms the mental model 'Management is
+      admin-only'. The code reveals any-auth read across 8 of 9
+      sub-areas — INCLUDING Policies (where the policy JSON
+      definitions are visible) and Roles (where role-to-policy
+      mapping is visible). This is exactly the
+      partial-permission-gating semantic, surfaced at the section
+      level rather than the page level.
+    - |-
+      The Integrations sub-route's missing WithPermissionsProvider is
+      a SECOND-order bug: any descendant component that consults
+      usePermissions for an integration-specific permission gets
+      stuck against the outer OWNER_ASSOCIATION_MANAGE context. If
+      this manifests as broken-closed (admin user cannot Edit) the
+      operator sees no Edit button despite having permission; if
+      broken-open (any user can see a sensitive integration form
+      that should be gated) it leaks.
+    - |-
+      Live docs have NO Management UI page — the largest admin
+      surface in the SPA (9 sub-areas, ~10 list+form+detail
+      components) is entirely undocumented. An operator wanting to
+      understand 'who can see what' has no doc reference.
+  cross_file_inconsistencies:
+    - |-
+      management route sidecar is the sole contributor — single-file
+      finding. No cross-file inconsistency surfaced. Consistent with
+      ManagementRoutes.tsx + Management.tsx + WithPermissionsProvider
+      sources cited inside the management sidecar.
+  contributing_files:
+    - odd-platform__ts__routes__route__management.md
+  evidence:
+    - "management.md:bugs_limitations_corner_cases.[0]"
+    - "management.md:bugs_limitations_corner_cases.[1]"
+    - "management.md:security.known_security_gaps.[0]"
+    - "management.md:security.known_security_gaps.[1]"
+performance_aggregate:
+  overall: HIGH
+  hot_paths: []
+  throughput_shape:
+    verdict: N/A
+    detail: |-
+      Security-posture invariant — not a performance concept.
+  scaling_shape:
+    verdict: N/A
+    detail: |-
+      Security-posture invariant — not a scaling concept.
+  strengths: []
+  weaknesses: []
+  cross_file_inconsistencies: []
+  contributing_files:
+    - odd-platform__ts__routes__route__management.md
+  evidence: []
+triangulation_count: 1
+cross_batch: false
+cross_batch_refs:
+  - batch-ZH (management route sidecar)
+severity: HIGH
+severity_dim: security
+related_features:
+  - F-013
+related_pillar_features:
+  - "P-08:F-001"
+  - "P-08:F-002"
+  - "P-08:F-003"
+  - "P-08:F-004"
+related_concepts:
+  - invariant:withpermissionsprovider-context-seed-not-route-gate
+  - invariant:management-tab-visible-to-all-authenticated-users-unpermissioned-tab-visibility
+  - invariant:partial-permission-gating-edit-button-gated-content-unconditional
+  - invariant:read-collaborative-cross-owner-enumeration
+  - operation:manage-management-catalogue-list-with-debounced-search-and-infinite-scroll-permission-gated-mutations
+notes: |-
+  This invariant complements the existing
+  management-tab-visible-to-all-authenticated-users-unpermissioned-tab-visibility
+  invariant — that one documents the TAB visibility (any user sees
+  the Management tab in toolbar). THIS one documents what happens
+  AFTER the user clicks through: 8 of 9 sub-routes render to them,
+  exposing the full catalogs.
+
+  Coherence (Rule 6): grepped existing detail/ files for
+  Associations + RestrictedRoute — confirmed in OwnerAssociations
+  feature traces; no contradicting claim found. The
+  existing partial-permission-gating invariant catalogues the
+  WithPermissions HIDE-not-DISABLE convention; THIS invariant
+  documents the ROUTE-LEVEL gate posture which is structurally
+  separate.
+
+  Pinned by P-162 — the auth-gate audit emitted by the management
+  route sidecar.
+maintainer_curated: false

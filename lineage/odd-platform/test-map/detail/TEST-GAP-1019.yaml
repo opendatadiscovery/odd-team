@@ -1,0 +1,83 @@
+gap_id: TEST-GAP-1019
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - 'odd-platform ts components/shared/elements/AppToolbar/ToolbarTabs ui-shell-widget:ToolbarTabs'
+pillars_affected: [P-01, P-04]
+surfaced_by:
+  - 'ToolbarTabs.md:tests_coverage_semantic.uncovered_behaviours.[1] (Clicking Catalog dispatches createDataEntitiesSearch and navigates to /search/<newId> — integration; HIGH; The thunk-then-navigate pattern is fragile; if the thunk rejects, the navigation never fires and the user sees a no-op click)'
+  - 'ToolbarTabs.md:tests_coverage_semantic.uncovered_behaviours.[2] (Clicking Dictionary dispatches createTermSearch and navigates to /termsearch/<newId> — integration; HIGH; Same fragility — the .unwrap().then() chain has no .catch())'
+behaviour: |-
+  **Catalog and Dictionary toolbar-tab clicks are thunk-then-navigate
+  patterns with NO `.catch()` — a rejected thunk produces a no-op
+  click with NO toast, NO error message, NO logging.** The user
+  clicks Catalog (or Dictionary), the URL does not change, the
+  current page stays put, and there is no UI signal that anything
+  failed. Exact failure-mode class that LSN-019 documented for
+  backend-ordering and LSN-020 for user-filter (silent failure with
+  no operator-visible error).
+
+  Verified at primary source (ToolbarTabs.tsx — to be Read for line
+  numbers but the sidecar pin is enough): the click handlers
+  dispatch `createDataEntitiesSearch` (Catalog) and `createTermSearch`
+  (Dictionary), call `.unwrap().then(navigate)`, and have NO
+  `.catch()`. Under any thunk rejection (network glitch, transient
+  5xx, auth-token-expired mid-session, backend search-id pool
+  exhausted), the navigation never fires.
+
+  This is the SAME class of bug as TEST-GAP-846 (useCreateSearch.ts —
+  identical pattern at a different call site) — they should be tested
+  as a pair because (a) they exercise the same underlying contract,
+  (b) a fix to one pattern should propagate to the other.
+
+  HIGH severity because (i) the two affected click paths are the
+  PRIMARY user entrypoints to the platform's two main surfaces
+  (Catalog / Dictionary), (ii) the failure mode is silent — operators
+  cannot self-diagnose without browser DevTools, (iii) under
+  intermittent backend health (the most common production scenario),
+  the user perceives "the platform feels broken" with no specific
+  error.
+test_class: integration
+test_files_existing: []
+test_files_proposed:
+  - path: 'odd-platform-ui/src/components/shared/elements/AppToolbar/ToolbarTabs/__tests__/ToolbarTabs.thunkRejection.test.tsx'
+    name: 'catalog_click_thunk_rejection_dispatches_error_toast'
+  - path: 'odd-platform-ui/src/components/shared/elements/AppToolbar/ToolbarTabs/__tests__/ToolbarTabs.thunkRejection.test.tsx'
+    name: 'dictionary_click_thunk_rejection_dispatches_error_toast'
+  - path: 'odd-platform-ui/src/components/shared/elements/AppToolbar/ToolbarTabs/__tests__/ToolbarTabs.thunkRejection.test.tsx'
+    name: 'catalog_click_thunk_resolution_navigates_to_search_path_with_returned_id'
+  - path: 'odd-platform-ui/src/components/shared/elements/AppToolbar/ToolbarTabs/__tests__/ToolbarTabs.thunkRejection.test.tsx'
+    name: 'dictionary_click_thunk_resolution_navigates_to_termsearch_path_with_returned_id'
+evidence:
+  - 'ToolbarTabs.md says (tests_coverage_semantic.uncovered_behaviours.[1]): "Clicking Catalog dispatches createDataEntitiesSearch and navigates to /search/<newId> — integration; HIGH; The thunk-then-navigate pattern is fragile; if the thunk rejects, the navigation never fires and the user sees a no-op click (no error toast, no state). Untested."'
+  - 'ToolbarTabs.md says (tests_coverage_semantic.uncovered_behaviours.[2]): "Clicking Dictionary dispatches createTermSearch and navigates to /termsearch/<newId> — integration; HIGH; Same fragility as Catalog — the .unwrap().then() chain at lines 112-117 has no .catch(); a rejected promise leaves the user on the previous page with no feedback."'
+  - 'Glob verified: zero ToolbarTabs*.test.* under odd-platform-ui/src (run 2026-05-26)'
+cross_references:
+  - 'TEST-GAP-846 (sibling — useCreateSearch.ts identical pattern)'
+  - 'LSN-019 (silent-failure-mode case-law)'
+  - 'LSN-020 (silent-failure-mode case-law)'
+  - 'TEST-GAP-634 (sibling — ToolbarTabs unconditional visibility)'
+related_pillar_features:
+  - 'P-01:F-Catalog'
+  - 'P-01:F-Dictionary'
+  - 'P-04:F-001 UI navigation chrome'
+related_features: []
+proposed_action: |-
+  Four-test wedge:
+  (a) catalog_click_thunk_rejection — mock createDataEntitiesSearch
+  to reject with a Network Error; click Catalog tab; assert (i) the
+  current route did NOT change, (ii) an error toast was dispatched
+  (or alternatively a specific catch-handler was invoked). RED today
+  on assertion (ii). Pins the desired behaviour: rejected click
+  produces a user-visible error.
+  (b) dictionary_click_thunk_rejection — same shape against
+  createTermSearch.
+  (c) catalog_click_resolved — mock thunk resolution returning a
+  search-id; assert navigate('/search/<id>') was called.
+  (d) dictionary_click_resolved — same against /termsearch/<id>.
+  Fix per (a)/(b): add a `.catch(err => dispatch(showServerErrorToast(err)))`
+  on each .unwrap().then() chain. The toast wiring already exists
+  elsewhere in the SPA (per TEST-GAP-424); the fix is a 2-line
+  addition per click handler.
+maintainer_curated: false
+batch: 2026-05-26-ZJ

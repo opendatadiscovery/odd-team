@@ -1,0 +1,131 @@
+---
+gap_id: TEST-GAP-1011
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform ts routes route:search"
+surfaced_by:
+  - "odd-platform__ts__routes__route__search.md:bugs_limitations_corner_cases.[0]"
+  - "odd-platform__ts__routes__route__search.md:tests_coverage_semantic.uncovered_behaviours.[3]"
+related_pillar_features:
+  - "P-01:F-002"
+pillars_affected: ["P-01"]
+related_features: ["F-001"]
+feature_id: "F-008"
+test_class: missing-edge-case
+strengthens:
+  - TEST-GAP-948   # No HTTP-level integration test for any of the 7 SearchController endpoints (parent scope)
+behaviour: |-
+  **MEDIUM — `/search/{searchId}` route has no client-side UUID
+  validation; non-UUID segments route to `<Search />` and silently dispatch
+  a doomed backend call.** `App.tsx:61` declares the route as
+  `<Route path={\`${searchPath()}/*\`} element={<Search />} />` — the
+  wildcard accepts ANY string in the `searchId` position. React Router 6's
+  wildcard semantics capture only the first segment, so
+  `/search/abc-def`, `/search/anything-at-all`, and even
+  `/search/anything-at-all/nested/garbage` all route to `<Search />` with
+  `useSearchRouteParams().searchId === 'anything-at-all'` (or whatever the
+  first segment is).
+
+  `Search.tsx:44-48` then fires
+  `dispatch(getDataEntitiesSearch({searchId: routerSearchId}))` →
+  `GET /api/search/{garbage}` → backend (per batch-M SearchController
+  sidecar) responds 404 because `search_facets WHERE id = {uuid}::uuid`
+  returns no row. The redux thunk's `handleResponseAsyncThunk` typically
+  surfaces the error as a toast OR silently — the user sees an empty
+  Catalog (zero results) which is **indistinguishable from "zero matches"
+  for an authentic search**.
+
+  Operator-visible consequences:
+
+  (a) **Mistyped URL → silent empty-results page**. A user typing
+  `/search/abc` directly (e.g. from a malformed Slack link, an email
+  forward, a typo) lands on a blank Catalog with no error banner. They
+  may conclude the catalog is empty for their search criteria. There is
+  no "session not found" message, no redirect to /search to create a new
+  session, no error toast (depending on the redux thunk's error handling
+  shape).
+
+  (b) **Bot / scanner scraping**. A bot fetching `/search/*` paths
+  (e.g. for SEO discovery, vulnerability scanning, link checking) hits
+  the backend for every garbage segment. Each fires a JVM-side
+  `GET /api/search/{garbage}` with the full ::uuid cast — a small but
+  unbounded cost. The backend's `IllegalArgumentException` (UUID parse
+  failure) returns 400 before any DB lookup, but the cost is per-request
+  for as many segments as the bot tries.
+
+  (c) **Search.tsx orchestrator confusion**. The `routerSearchId` truthy
+  check at `Search.tsx:38, 45-47` distinguishes ONLY "URL has a UUID" vs
+  "URL has no UUID". It does NOT distinguish "URL has a valid UUID" vs
+  "URL has a garbage UUID". So the orchestrator branches into
+  "session-restore" mode (`if (!searchId && routerSearchId) dispatch
+  (getDataEntitiesSearch({searchId: routerSearchId}))`) for ANY non-empty
+  segment, including garbage. The session-create branch (`createSearch`)
+  never fires for malformed URLs, leaving the user stranded on a never-
+  completing fetch.
+
+  **The fix at the router declaration layer**: replace
+  `searchPath() + '/*'` with `searchPath() + '/:searchId?'` (optional
+  param). And the React Router 6 path pattern syntax supports regex-like
+  shape constraints via a custom hook (or via a manual guard in
+  Search.tsx that checks `routerSearchId.match(/^[0-9a-f]{8}-[0-9a-f]
+  {4}-...$/i)` and dispatches createSearch otherwise — bouncing the
+  garbage URL to a fresh session). The fix is one-component-change in
+  Search.tsx.
+
+  **Why MEDIUM not LOW**: the UX failure mode is silent ("empty results"
+  vs "URL not found") and the cost of a bot-scraping load is non-zero.
+  But the bug only fires for hand-typed garbage URLs, which are rare in
+  practice; users navigating via UI flows always get a server-issued
+  valid UUID.
+
+  Pairs with TEST-GAP-948 (the broader HTTP-tier zero-coverage on
+  SearchController) — adding a single regression test here at the UI
+  tier complements the seven-endpoint HTTP test suite TEST-GAP-948
+  proposes; together they pin the contract at both UI and HTTP tiers.
+test_files_existing: []
+test_files_proposed:
+  - path: "odd-platform-ui/src/components/Search/__tests__/SearchRouteUUIDValidation.test.tsx"
+    name: "deepLinkSearchWithGarbageUUID_uiSurfacesErrorNotSilentEmpty_pinsValidationGap"
+    description: |-
+      Vitest + Testing Library + MemoryRouter. Mount <App /> at
+      '/search/abc-not-a-uuid'. Mock backend GET /api/search/abc-not-a-uuid
+      to return 400 with body {message: 'Invalid UUID'}. Assert the UI
+      surfaces an error indication (toast OR error banner OR redirect to
+      /search) AND not a silent empty-results state. **CURRENTLY FAILS**
+      because no error indication exists. Pins the contract; the fix
+      (validation guard in Search.tsx OR optional-param syntax in App.tsx)
+      must make this pass.
+  - path: "odd-platform-ui/src/components/Search/__tests__/SearchRouteUUIDValidation.test.tsx"
+    name: "deepLinkSearchWithValidUUID_fetchesAndRendersSessionState_pinsHappyPath"
+    description: |-
+      Mount <App /> at '/search/{valid-uuid}'. Mock backend
+      GET /api/search/{valid-uuid} to return 200 with fixture session
+      state. Assert <Search /> renders the catalog list with the seeded
+      filter state. Happy-path pin.
+  - path: "odd-platform-ui/src/components/Search/__tests__/SearchRouteUUIDValidation.test.tsx"
+    name: "deepLinkSearchWithMultipleNestedSegments_useSearchRouteParamsReturnsFirstSegmentOnly"
+    description: |-
+      Mount <App /> at '/search/abc-def/nested/garbage'. Assert
+      useSearchRouteParams().searchId === 'abc-def' (only the first
+      segment is captured by React Router 6's wildcard semantics).
+      Documents the wildcard-broader-than-necessary behaviour from
+      relationships sidecar `bugs_limitations_corner_cases.[5]`.
+evidence:
+  - "search.md:bugs_limitations_corner_cases.[0] verbatim: 'No validation that :searchId is a real (or even well-formed) UUID before mounting <Search/>. Any string in the segment routes to <Search/>; Search.tsx:44-48 then fires GET /api/search/{garbage} which returns 404; the redux thunk's handleResponseAsyncThunk (per redux/lib/handleResponseThunk pattern) typically surfaces the error as a toast OR silently — the user sees an empty Catalog (zero results) which is indistinguishable from no matches for an authentic search.' severity: MEDIUM"
+  - "search.md:tests_coverage_semantic.uncovered_behaviours.[3] verbatim: 'End-to-end: a user navigating to /search/<garbage-string> (not a real UUID) sees an empty-state / error, not a crash' criticality: MEDIUM, note: 'bugs[1] — no test asserts the failure mode. A 404 from GET /api/search/{garbage} may be silently swallowed by the redux thunk's error handler; the operator sees an empty results view, indistinguishable from zero matches.'"
+  - "search.md:bugs_limitations_corner_cases.[4]: 'The /* wildcard at App.tsx:61 (searchPath() + /*) is broader than necessary. The Search component tree has no nested routes — the wildcard could be /search/:searchId? (optional param) instead.'"
+  - "Grep against test files for searchPath OR Search.tsx in odd-platform-ui/src/.../__tests__/: 0 matches (verified 2026-05-26)"
+  - "Primary source: App.tsx:61 (the wildcard mount) + Search.tsx:27, 38, 44-48 (the orchestrator) + searchRoutes.ts:9 (no UUID-shape validation in generatePath)"
+cross_references:
+  - "TEST-GAP-948 (HTTP-tier coverage gap on SearchController — complementary; together they pin the contract at both UI and HTTP tiers)"
+  - "TEST-GAP-1007 (same route's Category F drift; complementary — TEST-GAP-1011 is the validation-gap, TEST-GAP-1007 is the naming-drift)"
+  - "F-001 (Search and Filtering) + F-008 (Search session lifecycle)"
+proposed_action: |-
+  Add the three-test Vitest file pinning UUID-validation contract. Pair
+  with the one-component-change fix in Search.tsx (validation guard +
+  bounce to fresh session on garbage UUID). Optionally tighten the route
+  declaration at App.tsx:61 from /* wildcard to /:searchId? optional
+  param. The combined fix closes both the validation gap and the
+  wildcard-broader-than-necessary smell.
+maintainer_curated: false

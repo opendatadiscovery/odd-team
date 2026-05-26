@@ -1,0 +1,176 @@
+---
+probe_id: P-156
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DataQualityRunsController__controller-class__DataQualityRunsController
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-022
+test_class: integration
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category B — name-vs-behaviour drift on getDataQualityTestsRuns):
+  Verify that `test_results` in the GET /api/dataqatests/runs response counts
+  TESTS (one per task_oddrn, keyed on latest-run status) rather than RUNS.
+
+  Specifically: when a single DQ test has 100 historical task-runs (99 SUCCESS,
+  1 most-recent FAILED), the dashboard endpoint returns:
+    test_results[category=Assertion Tests][status=FAILED].count == 1
+    test_results[category=Assertion Tests][status=SUCCESS].count == 0
+    test_results[category=Assertion Tests][status=*].count == 0 for others
+  NOT 99 in SUCCESS + 1 in FAILED. The count IS 'one per test whose latest run
+  has status X', NOT 'one per test-run instance with status X'.
+
+  This refutes the live documentation
+  https://docs.opendatadiscovery.org/features/data-quality/dashboard which says
+  'Test Results Breakdown — the count of test runs broken down by status
+  (passed / failed / skipped)' — verbatim 'test runs' but implementation
+  'tests'. LSN-019 class drift.
+
+  Failure mode (drift hypothesis confirmed): test_results.count == 1 for the
+  latest status only, 0 for the historical statuses. Action: file a doc
+  backlog item to change the dashboard doc wording from 'test runs' to
+  'tests by latest-run status', and a follow-up backlog item proposing the
+  alternative schema ('run-level histogram' vs 'test-level latest-status
+  histogram') if the test-level view is what operators actually want.
+
+  Failure mode (no drift / runs really are counted): the SQL would have to
+  join DATA_ENTITY_TASK_RUN (the full history table), not
+  DATA_ENTITY_TASK_LAST_RUN. If the assertion FAILS in this direction, the
+  static analysis is wrong — re-read ReactiveDataQualityRunsRepositoryImpl
+  line by line; the implication is the PK constraint at V0_0_45__last_runs_table.sql:9
+  was misread.
+---
+arrange:
+  - kind: docker-compose-up
+    services: [postgres, odd-platform-api]
+    env_overrides:
+      AUTH_TYPE: "DISABLED"
+  - kind: sql
+    description: "Seed: one data source + one dataset table + one DQ test job linked to the dataset"
+    query: |
+      INSERT INTO data_source (id, oddrn, name, namespace_id, active, created_at, updated_at)
+      VALUES (7000, '//probe-source/p156', 'p156_source', NULL, true, NOW(), NOW())
+      ON CONFLICT DO NOTHING;
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, entity_class_ids, status, hollow, manually_created, exclude_from_search, created_at, updated_at)
+      VALUES (7001, '//probe-source/p156/dataset', 'p156_dataset', 7000, 4, ARRAY[1], 1, false, false, false, NOW(), NOW())
+      ON CONFLICT DO NOTHING;
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, entity_class_ids, status, hollow, manually_created, exclude_from_search, specific_attributes, created_at, updated_at)
+      VALUES (7002, '//probe-source/p156/dq-test', 'p156_dq_test', 7000, 8, ARRAY[2], 1, false, false, false,
+              '{"DATA_QUALITY_TEST": {"expectation": {"category": "ASSERTION"}}}'::jsonb, NOW(), NOW())
+      ON CONFLICT DO NOTHING;
+      INSERT INTO data_quality_test_relations (data_quality_test_oddrn, dataset_oddrn)
+      VALUES ('//probe-source/p156/dq-test', '//probe-source/p156/dataset')
+      ON CONFLICT DO NOTHING;
+  - kind: sql
+    description: "Seed 100 historical task-run rows for the single DQ test — 99 SUCCESS, 1 most-recent FAILED to make the latest-run-status counter-intuitive vs the run-count histogram"
+    query: |
+      INSERT INTO data_entity_task_run (oddrn, task_oddrn, start_time, end_time, status, status_reason)
+      SELECT '//probe-source/p156/dq-test/run-' || i::text,
+             '//probe-source/p156/dq-test',
+             NOW() - (101 - i) * INTERVAL '1 hour',
+             NOW() - (101 - i) * INTERVAL '1 hour' + INTERVAL '5 minutes',
+             CASE WHEN i = 100 THEN 'FAILED' ELSE 'SUCCESS' END,
+             NULL
+      FROM generate_series(1, 100) AS i
+      ON CONFLICT DO NOTHING;
+  - kind: sql
+    description: "Populate the denormalised latest-run table with the most-recent run (i=100, FAILED)"
+    query: |
+      INSERT INTO data_entity_task_last_run (task_oddrn, last_task_run_oddrn, end_time, status)
+      VALUES ('//probe-source/p156/dq-test', '//probe-source/p156/dq-test/run-100',
+              NOW() - 1 * INTERVAL '1 hour' + INTERVAL '5 minutes', 'FAILED')
+      ON CONFLICT (task_oddrn) DO UPDATE
+        SET last_task_run_oddrn = excluded.last_task_run_oddrn,
+            end_time = excluded.end_time,
+            status = excluded.status;
+act:
+  - kind: rest
+    description: "GET the dashboard with no filters — expect one DQ test in the catalog, status histogram counts that test by its LATEST run status"
+    method: GET
+    path: /api/dataqatests/runs
+    capture_as: response
+observe:
+  - kind: extract
+    from: response
+    field: "(status_code)"
+    capture_as: http_status
+  - kind: extract
+    from: response
+    field: "$.testResults[?(@.category=='Assertion Tests')].results[?(@.status=='FAILED')].count"
+    capture_as: assertion_failed_count
+  - kind: extract
+    from: response
+    field: "$.testResults[?(@.category=='Assertion Tests')].results[?(@.status=='SUCCESS')].count"
+    capture_as: assertion_success_count
+  - kind: sql
+    description: "For comparison: count of TASK RUNS (the historical table) — to demonstrate the difference between the histogram the doc promises and the histogram the endpoint returns"
+    query: |
+      SELECT status, COUNT(*)::int AS cnt
+      FROM data_entity_task_run
+      WHERE task_oddrn = '//probe-source/p156/dq-test'
+      GROUP BY status
+      ORDER BY status
+    capture_as: task_run_history_counts
+assert:
+  - "http_status == 200 # the endpoint is reachable under DISABLED auth"
+  - "assertion_failed_count == 1 # LSN-019 class drift hypothesis: the single test contributes ONE row to FAILED (its latest-run status), NOT 1 of 100 runs"
+  - "assertion_success_count == 0 # the same test contributes ZERO to SUCCESS in the endpoint response, despite 99 of its runs being SUCCESS in history"
+  - "task_run_history_counts.contains({status: 'SUCCESS', cnt: 99}) AND task_run_history_counts.contains({status: 'FAILED', cnt: 1}) # the historical run distribution that the doc 'count of test runs' verbatim implies"
+  - "if (assertion_failed_count == 1 AND assertion_success_count == 99) then FAIL 'The endpoint actually counts runs, not tests-by-latest-status — the static analysis misread the SQL. Re-read ReactiveDataQualityRunsRepositoryImpl.java:91-105 and the V0_0_45 migration; the PK constraint on task_oddrn in DATA_ENTITY_TASK_LAST_RUN does not survive the join, possibly because the SQL falls back to DATA_ENTITY_TASK_RUN under some condition.'"
+  - "if (assertion_failed_count == 1 AND assertion_success_count == 0) then PASS 'LSN-019 class drift confirmed: dashboard counts tests by latest-run status, NOT runs. Operator-visible: a test that ran 100 times with 99 SUCCESS but 1 most-recent FAILED shows as 1 FAILED in the dashboard — the run history is invisible.'"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM data_entity_task_last_run WHERE task_oddrn = '//probe-source/p156/dq-test';
+      DELETE FROM data_entity_task_run WHERE task_oddrn = '//probe-source/p156/dq-test';
+      DELETE FROM data_quality_test_relations WHERE data_quality_test_oddrn = '//probe-source/p156/dq-test';
+      DELETE FROM data_entity WHERE id IN (7001, 7002);
+      DELETE FROM data_source WHERE id = 7000;
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DataQualityRunsController__controller-class__DataQualityRunsController
+    - odd-platform__ts__react-component__component__DataQualityFilters
+  retrospectives:
+    - LSN-019
+  features:
+    - F-022
+  drift_classes:
+    - tests-vs-runs-naming
+realism_caveats: |
+  The probe runs under DISABLED auth for setup simplicity — the auth posture
+  for this endpoint is the subject of a SEPARATE probe (P-157). The
+  arrange-phase SQL bypasses normal ingestion to seed the denormalised
+  last-run table directly; if a future maintainer changes ingestion to
+  populate the last-run table via a different mechanism (trigger, app-side
+  upsert, etc.), this seeding may become invalid. The probe assumes the
+  DATA_ENTITY_TASK_LAST_RUN table's task_oddrn PK constraint is enforced;
+  if a schema migration drops or weakens that constraint, the probe still
+  works (it explicitly inserts one row) but the test-vs-run semantics in the
+  endpoint would shift.
+
+  The probe does NOT test:
+  - The Table Health classification (separate probe candidate)
+  - The Monitored Tables count (covered by existing
+    ReactiveDataQualityRunsRepositoryTest.testGetMonitoredTables)
+  - Any filter combination (10 filter dimensions × 2^N combinations is
+    out of scope for a focused single-drift probe)
+  - The Category-F titleIds/namespaceIds drifts — those would route
+    through the same code path; the static analysis is the trace-answer
+    for those.
+
+  If the probe PASSES (assertions 1-3 match), update the
+  DataQualityRunsController sidecar's bugs_limitations_corner_cases[0]
+  confidence from STATIC-INFERRED to PROBE-VERIFIED, and route a DOC-NNN
+  follow-up to the dashboard doc page to clarify the wording.
+
+  If the probe FAILS (e.g. assertion_failed_count == 1 AND
+  assertion_success_count == 99 — historical run counts), the static
+  analysis missed something; re-read the JOOQ chain in
+  ReactiveDataQualityRunsRepositoryImpl.java:64-105 carefully. The most
+  likely error class: a misunderstood JOOQ COUNT() over the join — perhaps
+  the COUNT happens AFTER a join that produces one row per (test × run)
+  rather than after the join with DATA_ENTITY_TASK_LAST_RUN's PK.

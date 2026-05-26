@@ -1,0 +1,72 @@
+gap_id: TEST-GAP-945
+category: missing-security
+criticality: HIGH
+node_ids:
+  - 'odd-platform java RoleController controller-class:RoleController'
+  - 'odd-platform java PolicyController controller-class:PolicyController'
+  - 'odd-platform java IdentityController controller-class:IdentityController'
+surfaced_by:
+  - 'odd-platform__java__RoleController__controller-class__RoleController.md:bugs_limitations_corner_cases.[2]'
+  - 'odd-platform__java__PolicyController__controller-class__PolicyController.md:coherence_check.strengthens.[2]'
+  - 'odd-platform__java__IdentityController__controller-class__IdentityController.md:security.known_security_gaps.[2]'
+behaviour: |-
+  **THE 10-SIDECAR AUDIT-SILENCE PATTERN — RBAC mutation + identity-exposure
+  stack is forensically dark across THREE vertical layers × multiple controllers.**
+  Cross-batch confirmation now spans:
+  (1) IdentityController.java:1-34 (this batch) — no @Slf4j, no Logger, no log
+  call on /api/identity/whoami;
+  (2) PolicyController.java:1-64 (this batch) — no @Slf4j, no Logger, no
+  @ActivityLog, no log call on any of 6 ops;
+  (3) RoleController.java:1-52 (this batch) — no @Slf4j, no Logger, no log
+  call on any of 4 ops;
+  (4) PermissionController.java:1-27 (this batch) — no @Slf4j, no Logger;
+  (5-7) PolicyServiceImpl, RoleServiceImpl, ReactivePolicyRepositoryImpl,
+  ReactiveRoleRepositoryImpl (batches E, H, N, S — TEST-GAP-221/573 audit
+  silence cluster);
+  (8) ReactiveActivityRepositoryImpl (batch R) — schema-rooted: V0_0_48
+  data_entity_id NOT NULL FK structurally prevents recording RBAC mutations
+  (TEST-GAP-659);
+  (9-10) OwnerServiceImpl + AppToolbar UI (batches P, Q) — completing the
+  pattern at controller + UI surface ends.
+
+  No test enforces this silence today. A privileged caller (S2S API-key
+  holder injected as ADMIN globally per REFACTOR-108) invoking POST /api/roles
+  with {name: 'attacker-admin', policies: [<MANAGEMENT/ALL id>]} produces
+  ZERO application log lines — forensically undetectable. The fix is
+  schema-rooted (V0_0_48 NULLable data_entity_id + discriminator column OR
+  separate platform_event table) not annotation-rooted; a controller-tier
+  @Slf4j addition does not solve the activity-log structural defect but it
+  IS a partial mitigation that should be regression-pinned.
+test_class: security
+test_files_existing: []
+test_files_proposed:
+  - path: 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/audit/RbacMutationAuditTrailTest.java'
+    name: 'rbacControllers_postPutDelete_emitsApplicationLogLineWithCallerAndOpcode'
+  - path: 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/audit/RbacMutationAuditTrailTest.java'
+    name: 'identityController_whoami_emitsAuditLineUnderDisabledAdminFallback'
+  - path: 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/audit/RbacMutationAuditTrailTest.java'
+    name: 'integrationController_getIntegration_emitsAuditLineUnderDisabledAnonymousAccess'
+evidence:
+  - 'PolicyController.md says: "F-006 facet forensic_silence_on_rbac_mutations — CONTROLLER-TIER NINTH CORROBORATING SIDECAR: PolicyController.java:1-64 has NO @Slf4j, NO Logger field, NO log.* call, NO @ActivityLog. Six policy/role/owner-related HTTP operations ... ZERO of them emit any application-tier log line"'
+  - 'RoleController.md says: "Controller-tier audit silence — no @Slf4j, no Logger, no log lines on ANY of the four operations ... a privileged caller invoking POST /api/roles ... produces ZERO controller-tier application log lines"'
+  - 'IdentityController.md says: "No audit log on /api/identity/whoami invocation. The class carries @Slf4j (line 19) but emits NO log statement in the controller body or the IdentityServiceImpl body"'
+cross_references:
+  - 'TEST-GAP-221 (RoleServiceImpl mutation audit silence)'
+  - 'TEST-GAP-573 (Role-half repository audit silence)'
+  - 'TEST-GAP-659 (SCHEMA-ROOTED — V0_0_48 activity log cannot record RBAC mutations)'
+  - 'TEST-GAP-930 (IdentityController-specific audit silence — sibling on this batch)'
+  - 'REFACTOR-185 + F-006 audit-silence pattern'
+related_pillar_features:
+  - 'P-09:F-001 (Role-Based Access Control)'
+  - 'P-09:F-006'
+proposed_action: |-
+  Author RbacMutationAuditTrailTest as a SLF4J-appender capture harness
+  covering EVERY RBAC mutation endpoint plus the identity-exposure surface
+  plus the integration-wizard reachability surface. The test is RED today
+  (the production controllers emit zero lines). Fix path is incremental:
+  (a) controller-tier @Slf4j + log.info on entry/exit (partial mitigation —
+  insufficient for forensic reconstruction but documents the call);
+  (b) schema-rooted fix per TEST-GAP-659 (the load-bearing change). The test
+  serves as case-law that schema-rooted fixes are the right layer; per
+  LSN-018 Rule 6 supersedes any future "add @Slf4j and call it audit" patch.
+maintainer_curated: false

@@ -1,0 +1,127 @@
+---
+gap_id: TEST-GAP-1006
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform ts routes route:activity"
+  - "odd-platform ts react-component:Activity"
+surfaced_by:
+  - "odd-platform__ts__routes__route__activity.md:tests_coverage_semantic.uncovered_behaviours.[3]"
+  - "odd-platform__ts__routes__route__activity.md:bugs_limitations_corner_cases.[0]"
+  - "odd-platform__ts__routes__route__activity.md:security.known_security_gaps.[0]"
+  - "odd-platform__ts__react-component__component__Activity.md:tests_coverage_semantic.uncovered_behaviours.[2] (Visiting /activity as an authenticated user with no owner association under LOGIN_FORM/OAUTH2/LDAP renders the page and surfaces cross-owner activity rows — HIGH, security test class — batch ZL strengthen)"
+  - "odd-platform__ts__react-component__component__Activity.md:bugs_limitations_corner_cases.[1] (No permission gate at the route or the component; <Activity /> is mounted bare at App.tsx:65 — no WithPermissionsProvider, no owner-association guard, no role check)"
+related_pillar_features:
+  - "P-01:F-Activity"
+  - "P-09"
+pillars_affected: ["P-01", "P-09"]
+related_features: []
+feature_id: null
+test_class: missing-security
+strengthens:
+  - TEST-GAP-706   # ActivityController controller-tier exposure of cross-owner audit trail
+  - TEST-GAP-083   # /api/activity globally readable
+  - TEST-GAP-994   # CROSS-CUTTING META — WithPermissionsProvider non-blocking
+behaviour: |-
+  **CRITICAL — UI route mount of `/activity` at `components/App.tsx:65` has
+  NO `WithPermissionsProvider` wrapper.** The bare `<Route path={activityPath()}
+  element={<Activity />} />` declaration renders the platform-wide audit-trail
+  surface for every authenticated user under LOGIN_FORM/OAUTH2/LDAP, and for
+  every caller able to reach the application port under `auth.type=DISABLED`.
+
+  This is the UI-route-tier counterpart to TEST-GAP-706 (controller-tier
+  ActivityController no @PreAuthorize) and TEST-GAP-083 (endpoint-tier no
+  SecurityRules entry). The three together pin the chain end-to-end:
+
+  - Backend `ActivityController.getActivity` (TEST-GAP-706) — no @PreAuthorize,
+    no SECURITY_RULES match for `/api/activity` (verified ActivityController
+    sidecar primary source: SecurityConstants.java:95-356, zero matches).
+  - Backend default rule applies (TEST-GAP-083) — `pathMatchers('/**')
+    .authenticated()` under LOGIN_FORM/OAUTH2/LDAP; `.anyExchange()
+    .permitAll()` under DISABLED.
+  - **UI route mount** (THIS GAP) — App.tsx:65 mounts `<Activity />` without
+    `WithPermissionsProvider`, so the SPA shell loads and dispatches
+    `fetchActivityList` + `fetchActivityCounts` for every caller that reaches
+    the URL. Contrast App.tsx:75-87 (`lookupTablesPath()`) which IS wrapped.
+  - **Even if WithPermissionsProvider WERE added** (TEST-GAP-994 cross-cutting),
+    it does NOT block render — `WithPermissionsProvider.tsx:12-49` returns
+    children unconditionally; it only seeds `PermissionContext` so descendants
+    can gate UI actions. Adding the wrapper would NOT actually fix the gap.
+
+  Operator-visible consequence: under DISABLED, anonymous traffic that reaches
+  the application port can `GET /activity` in the browser, the SPA renders
+  `<Activity />`, and `fetchActivityList` returns the platform-wide audit
+  payload with `old_state`/`new_state` diffs of description text, tag
+  assignments, ownership changes, custom-metadata values, dataset-field
+  internal names, and business names (the full payload schema per
+  ActivityController sidecar `security.data_exposure`).
+
+  Compliance/security reviewers loading `/activity?type=ALL` (the default; the
+  `defaultActivityQuery` per common.ts:36-41) see EVERY recorded change across
+  EVERY owner. The `MY_OBJECTS` tab is the only owner-scoped branch
+  (`ActivityServiceImpl.fetchMyActivities` consults
+  `authIdentityProvider.fetchAssociatedOwner()`); `ALL` / `DOWNSTREAM` /
+  `UPSTREAM` bypass owner scoping entirely.
+
+  The doc page `https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed`
+  (WebFetched 2026-05-26, status 200) makes NO statement about visibility
+  scoping; an operator deploying ODD with RBAC expectations from the
+  `enable-security/authorization` doc has no signal that the global Activity
+  page is exempt.
+
+  **Batch ZL (2026-05-26) strengthen** — the Activity.tsx component sidecar
+  re-confirms the gap from the component-tier perspective: the operator
+  lands HERE first (the component is what they actually see). The
+  component-tier sidecar adds three doc-drift findings, all surfaced as
+  DOC-NNN candidates: (i) doc page makes no access-control statement, (ii)
+  doc page omits the four UI tabs (All/My Objects/Downstream/Upstream),
+  (iii) doc page does not specify the default 6-day window. These doc gaps
+  COMPOSE with this security gap — the operator reading the doc has no
+  signal that the surface is platform-wide visible, and no signal that the
+  default tab `type=ALL` bypasses owner scoping.
+test_files_existing: []
+test_files_proposed:
+  - path: "odd-platform-ui/src/components/__tests__/routes-permissions.posture.test.tsx"
+    name: "activityRoute_renders_to_any_authenticated_user_pinsNoRouteGuard"
+    description: |-
+      Integration test using MemoryRouter + minimum-privilege user fixture.
+      Mount `<App />` with a user that has zero Permissions, zero Owner
+      association. Navigate to `/activity`. Assert `<Activity />` mounts (page
+      header renders, ActivityResults renders). Pins the deliberate
+      no-route-guard posture; a future change that wraps the route in a
+      blocking gate must update this test deliberately. Pairs with
+      TEST-GAP-1006's parallel cases for `/data-modelling/relationships`
+      (TEST-GAP-1012), `/search` (existing TEST-GAP-948 scope), `/directory`
+      (existing TEST-GAP-843 scope).
+  - path: "odd-platform-api/src/test/java/.../ActivityControllerDisabledModeAnonymousReachTest.java"
+    name: "getActivity_authTypeDisabled_anonymousCallerReturnsCrossOwnerAuditFeed_pinsTheCriticalGap"
+    description: |-
+      @SpringBootTest with `auth.type=DISABLED` profile + WebTestClient.
+      Send `GET /api/activity` with NO Authorization header and NO session
+      cookie. Assert HTTP 200 + body is a non-empty `ActivityList` with
+      cross-owner events. Pins the CRITICAL gap: under DISABLED, the entire
+      audit-trail is anonymously reachable. Pair with the regression-pin
+      comment from TEST-GAP-706's proposed test
+      (`ActivityControllerCrossOwnerReadPostureTest`); together they cover
+      both auth modes.
+evidence:
+  - "activity.md:tests_coverage_semantic.uncovered_behaviours.[3] verbatim: 'Visiting /activity unauthenticated under auth.type=DISABLED renders <Activity /> and surfaces platform-wide audit-trail data.' criticality: HIGH"
+  - "activity.md:bugs_limitations_corner_cases.[0]: 'The route <Route path={activityPath()} element={<Activity />} /> at App.tsx:65 has NO WithPermissionsProvider wrapper.'"
+  - "activity.md:security.known_security_gaps.[0]: 'Route App.tsx:65 has NO WithPermissionsProvider wrapper — unlike lookupTablesPath() at App.tsx:75-87. Combined with the backend ActivityController having no @PreAuthorize, this means the platform-wide audit trail is visible to every authenticated user. Under auth.type=DISABLED it is visible to every caller able to reach the application port.' severity: HIGH"
+  - "Activity.md (batch ZL): bugs_limitations_corner_cases.[1] re-confirms the route mount has no permission gate; the component is the UI-visible entry point for the HIGH-severity security gap; operators land HERE first"
+  - "Activity.md (batch ZL): doc_drift_findings — the live doc page makes no access-control statement; surfaces as DOC-NNN candidate"
+  - "Grep against test files for 'activityPath' OR 'Activity' under odd-platform-ui/src/.../__tests__/: 0 matches (verified 2026-05-26)"
+  - "Primary-source verified: App.tsx:65 (bare <Route>, no wrapper) + App.tsx:75-87 (the gated lookup-tables sibling, for shape contrast) + WithPermissionsProvider.tsx:12-49 (non-blocking semantic) + ActivityController.java:18-57 (no @PreAuthorize) + SecurityConstants.java:95-356 (zero /activity matches per TEST-GAP-706)"
+cross_references:
+  - "concepts.yaml:entities[ActivityController].security_aggregate (REFACTOR-024 cross-owner read-collaborative posture family)"
+  - "TEST-GAP-706 (controller-tier same gap)"
+  - "TEST-GAP-083 (endpoint-tier same gap)"
+  - "TEST-GAP-994 (WithPermissionsProvider non-blocking cross-cutting)"
+  - "LSN-018 Rule 6: NO contradiction — STRENGTHENS three prior IDs at three distinct surfaces (UI route mount + controller annotation + SECURITY_RULES table); each surface needs its own regression-pin"
+proposed_action: |-
+  Add `routes-permissions.posture.test.tsx` MemoryRouter integration test asserting
+  /activity renders for a zero-permission user, AND a DISABLED-mode WebTestClient
+  test asserting anonymous GET /api/activity returns the cross-owner audit feed.
+  Together they pin both auth modes' deliberate read-collaborative posture.
+maintainer_curated: false
+strengthened_in: [2026-05-26-ZL]

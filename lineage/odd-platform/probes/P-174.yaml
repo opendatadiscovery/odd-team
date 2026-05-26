@@ -1,0 +1,202 @@
+---
+probe_id: P-174
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__components_shared_elements_AppToolbar__ui-shell-widget__AppToolbar
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: null  # no F-NNN yet enumerates the AppToolbar surface
+test_class: integration
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (cross-layer integration — Category B drift + Category D auth-mode
+  rendering):
+
+    (1) Under auth.type=DISABLED (the bundled default per application.yml:34),
+        the IdentityController.whoami fallback fires switchIfEmpty (line 27)
+        and returns dummyOwner with identity.username='admin' (lines 30-33).
+        The frontend AppToolbar.tsx:74 renders `owner?.name ?? identity?.username`
+        — since dummyOwner has owner=null and identity.username='admin', the
+        toolbar SHOULD render the literal string "admin" in the top-right
+        corner. HYPOTHESIS: an anonymous browser session loading the SPA
+        visibly sees "admin" rendered as the username.
+
+    (2) Under DISABLED, the DisabledAuthSecurityConfiguration.java:11-19 does
+        NOT register a Spring-Security logout chain (`.logout(Customizer.withDefaults())`
+        is only present in LoginFormSecurityConfiguration.java:59 and
+        LDAPSecurityConfiguration.java:146; OAUTH2 has a custom chain).
+        AppToolbar.tsx:35-37 does a full-page `window.location.href = '/logout'`
+        navigation. HYPOTHESIS: clicking the Logout button under DISABLED
+        results in a 404 (no backend handler for GET /logout).
+
+    (3) ToolbarTabs.tsx:34-82 renders 9 hardcoded tabs WITHOUT any
+        <WithFeature> wrapper, while sibling components (Message.tsx:59,
+        MainThreadMessage.tsx:36, DataEntityDetailsHeader.tsx:132) DO wrap
+        Data Collaboration UI in <WithFeature featureName={Feature.DATA_COLLABORATION}>.
+        Under default deployment, datacollaboration.enabled=false
+        (application.yml:173) means FeatureController.getActiveFeatures()
+        returns an empty items[] (FeatureResolverImpl.java:35 wraps the
+        boot-computed empty set). HYPOTHESIS: the Data Modelling tab IS
+        visible in the toolbar AND clicking it navigates to
+        /data-modelling/query-examples (the destination page may render
+        empty / non-functional because its inner widgets ARE gated by
+        <WithFeature>, but the tab entrypoint is not).
+
+  If hypotheses (1) (2) (3) all hold, the toolbar's surface under default
+  DISABLED deployment exhibits three operator-visible defects: it labels every
+  anonymous caller as "admin"; the Logout button is a 404 trap; and the tab
+  navigation leaks feature surfaces that are non-functional. Each defect is
+  separately a REFACTOR-185-related finding; together they are the UX
+  symptom of the broader REFACTOR-185 backend posture surfaced in the ZD
+  IdentityController + ZE FeatureController sidecars.
+
+  If hypothesis (1) FAILS — e.g. the toolbar shows '' or some other string —
+  the static analysis missed a redux-store wiring detail; re-read
+  profile.slice.ts + profile.selectors.ts.
+
+  If hypothesis (2) FAILS — e.g. /logout under DISABLED yields a 302 redirect
+  rather than 404 — a default Spring-Security wiring (e.g. the parent
+  WebSecurityConfigurerAdapter equivalent in WebFlux) registered a logout
+  handler that the static analysis missed; re-read the SecurityFilterChain
+  composition under DISABLED.
+
+  If hypothesis (3) FAILS — e.g. the Data Modelling tab is hidden under
+  datacollaboration.enabled=false — there is a hidden WithFeature wrapping
+  somewhere in the AppTabs component or its parent that the static analysis
+  missed; re-read AppTabs.tsx and ToolbarTabs.tsx.
+---
+arrange:
+  - kind: docker-compose-up
+    note: |
+      odd-minimal stack with auth.type=DISABLED (bundled default per
+      application.yml:34) and datacollaboration.enabled=false (default per
+      application.yml:173). No principal seeding required (DISABLED has no
+      principals).
+  - kind: env
+    note: |
+      Single anonymous browser session (no session cookie, no Authorization
+      header). The SPA loads at http://localhost:8080/ and the test
+      observes its renders end-to-end.
+act:
+  - kind: rest
+    description: backend whoami endpoint — establish the dummyOwner payload baseline
+    method: GET
+    path: /api/identity/whoami
+    auth_as: none
+    capture_as: whoami_payload
+  - kind: rest
+    description: backend features endpoint — establish that active-features is empty by default
+    method: GET
+    path: /api/features/active
+    auth_as: none
+    capture_as: features_payload
+  - kind: rest
+    description: backend logout endpoint — direct probe of the /logout handler under DISABLED
+    method: GET
+    path: /logout
+    auth_as: none
+    follow_redirects: false
+    capture_as: logout_response
+  - kind: dom-probe
+    description: |
+      Playwright navigates an anonymous browser to http://localhost:8080/
+      under DISABLED auth.type. Wait for the SPA to mount (i.e. for
+      fetchIdentity to resolve, signalled by the toolbar rendering its
+      user-cluster). Capture:
+        - text content of S.UserName (the styled <p> at line 74)
+        - visibility of each of the 9 toolbar tabs (Catalog / Directory /
+          Data Quality / Data Modelling / Master Data / Management /
+          Dictionary / Alerts / Activity)
+        - the visible label and clickability of the Data Modelling tab
+      Then click the user-cluster Box (lines 68-82) to open the dropdown.
+      Capture: presence of the Logout menu item and the Select-Language
+      menu item. Click the Logout menu item.
+      Capture: the resulting page URL, page HTTP status, and page body
+      contents (i.e. is it a 404? a Spring-Security login form? something
+      else?).
+      Then navigate back, click the Data Modelling tab.
+      Capture: resulting URL (expected /data-modelling/query-examples),
+      and the rendered page content (expected: empty / non-functional
+      surface because datacollaboration.enabled=false).
+    capture_as: ui_walk
+observe:
+  - kind: payload
+    of: whoami_payload
+    capture_as: whoami_body
+  - kind: payload
+    of: features_payload
+    capture_as: features_body
+  - kind: http-status
+    of: logout_response
+    capture_as: logout_status
+  - kind: payload
+    of: ui_walk
+    capture_as: ui_body
+assert:
+  # Hypothesis (1) — DISABLED-mode 'admin' rendering
+  - "whoami_body.identity.username == 'admin'  # backend baseline — dummyOwner fires"
+  - "whoami_body.owner == null OR whoami_body.owner is None  # dummyOwner has no owner"
+  - "ui_body.toolbar_username_text == 'admin'  # frontend visibly renders 'admin'"
+
+  # Hypothesis (2) — /logout under DISABLED returns 404
+  - "logout_status == 404  # DIRECT backend probe — no /logout handler under DISABLED"
+  - "ui_body.logout_click_resulted_in_404 == true  # full UX path — Logout button is a 404 trap"
+
+  # Hypothesis (3) — Data Modelling tab visible despite datacollaboration.enabled=false
+  - "features_body.items == [] OR len(features_body.items) == 0  # baseline — no active features"
+  - "ui_body.tab_visible.Catalog == true"
+  - "ui_body.tab_visible.Directory == true"
+  - "ui_body.tab_visible.DataQuality == true"
+  - "ui_body.tab_visible.DataModelling == true  # CORE HYPOTHESIS — Data Modelling tab is visible despite feature being disabled"
+  - "ui_body.tab_visible.MasterData == true"
+  - "ui_body.tab_visible.Management == true"
+  - "ui_body.tab_visible.Dictionary == true"
+  - "ui_body.tab_visible.Alerts == true"
+  - "ui_body.tab_visible.Activity == true"
+  - "ui_body.data_modelling_click_navigated_to == '/data-modelling/query-examples'  # tab entrypoint navigates to a feature-disabled destination"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__components_shared_elements_AppToolbar__ui-shell-widget__AppToolbar
+    - odd-platform__java__IdentityController__controller-class__IdentityController
+    - odd-platform__java__FeatureController__controller-class__FeatureController
+    - odd-platform__java__LoginFormSecurityConfiguration__config-class__LoginFormSecurityConfiguration
+  retrospectives: []
+  refactors: [REFACTOR-185]
+realism_caveats: |
+  This probe verifies the END-TO-END VISUAL OUTCOME of the AppToolbar surface
+  under the default DISABLED-mode deployment. It does NOT verify the
+  LOGIN_FORM / OAUTH2 / LDAP rendering paths — those are separate auth-mode
+  configurations and would require alternative docker-compose stacks. The
+  closest single-stack approximation would be LOGIN_FORM with a seeded admin
+  user; that is OUT OF SCOPE for this probe (covered by sibling probes in
+  the auth-mode sweep — e.g. P-169 for the Directory case, which targets
+  LOGIN_FORM minimum-privilege).
+
+  This probe verifies HYPOTHESIS (3) — Data Modelling tab visible despite
+  datacollaboration.enabled=false — but it does NOT verify the SYMMETRIC
+  hypothesis that ALL feature-gated tab entrypoints lack <WithFeature>
+  wrapping (i.e. that this is a systemic pattern, not just a Data
+  Modelling-specific oversight). The static analysis already confirms the
+  pattern (ToolbarTabs.tsx:34-82 has no WithFeature wrapping for ANY tab);
+  the probe pins the Data Modelling case as the highest-leverage concrete
+  example.
+
+  The DOM-probe portion is necessary; pure backend REST probes catch
+  hypotheses (1) and (2) at the API layer but not the frontend rendering
+  (which is the operator-visible surface). The integration is the value:
+  hypothesis (1) at the API layer is already established by the
+  IdentityController sidecar; the value of THIS probe is confirming the
+  frontend ACTUALLY renders 'admin' (no intervening filter strips it).
+
+  If hypothesis (2) shows logout_status != 404 (e.g. 200 with a stub page,
+  or 302 to /), the configuration somehow registered a default handler;
+  re-read the Spring-Security default-chain configuration to find it.
+
+  If hypothesis (1) shows ui_body.toolbar_username_text != 'admin', a
+  middleware or selector transformation is stripping/replacing the username;
+  re-read profile.slice.ts and the AppToolbar render. The likely candidate
+  is a WithPermissionsProvider or a redux middleware not yet inspected.

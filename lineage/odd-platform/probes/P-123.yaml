@@ -1,0 +1,91 @@
+---
+probe_id: P-123
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__IdentityController__controller-class__IdentityController.md
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: security
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category D — defence-in-depth): under LOGIN_FORM auth mode, an
+  authenticated user `alice` (LOGIN_FORM credentials `alice:password` per
+  application.yml) has a populated SecurityContext (UsernamePasswordAuthenticationToken),
+  so `authIdentityProvider.getCurrentUser()` returns `UserDto("alice", null)`
+  (AuthIdentityProviderImpl.java:24-35) — NON-empty. The `IdentityServiceImpl.whoami`
+  Mono therefore emits a populated `AssociatedOwner`, and the controller's
+  `switchIfEmpty(dummyOwner())` fallback does NOT fire. Hypothesis: under LOGIN_FORM,
+  the response username is the real LOGIN_FORM principal name AND `permissions` is
+  EITHER the full set (alice is admin because LoginFormSecurityConfiguration.java:81
+  hard-codes every user as ADMIN authority) OR scoped via PermissionService — but
+  the literal `"admin"` username + Arrays.asList(Permission.values()) hardcoded
+  dummyOwner path must NOT execute. A regression that broke the SecurityContext
+  propagation under LOGIN_FORM (e.g., a misordered ServerSecurityContextRepository
+  in a future SecurityConfiguration change) would silently downgrade EVERY
+  authenticated user to receiving the `dummyOwner` admin-with-all-permissions body,
+  with NO authentication-failure logging at the controller, NO 401, NO 403. This
+  probe is the regression-detection probe for the controller's defence-in-depth
+  assumption: "the switchIfEmpty fallback MUST be a development convenience under
+  DISABLED only, NEVER reachable under any of LOGIN_FORM / OAUTH2 / LDAP."
+---
+arrange:
+  - kind: docker-compose-up
+    config: |
+      auth.type: LOGIN_FORM
+      auth.login-form-credentials: "alice:password,bob:password"
+      auth.ingestion.filter.enabled: false
+  - kind: env
+    POSTGRES_USERNAME: odd
+    POSTGRES_PASSWORD: odd
+    POSTGRES_DB: odd
+act:
+  - kind: rest
+    method: POST
+    path: /login
+    body: "username=alice&password=password"
+    content_type: application/x-www-form-urlencoded
+    capture_session_cookie_as: alice_cookie
+  - kind: rest
+    method: GET
+    path: /api/identity/whoami
+    headers:
+      Cookie: "${alice_cookie}"
+    capture_as: alice_response
+  - kind: rest
+    method: GET
+    path: /api/identity/whoami
+    headers: {}  # anonymous probe under LOGIN_FORM should be redirected to /login (302), NOT receive dummyOwner
+    capture_as: anonymous_under_login_form_response
+assert:
+  - "alice_response.status == 200"
+  - "alice_response.body.identity.username == 'alice'  # NOT the hardcoded 'admin' from dummyOwner"
+  - "alice_response.body.identity.username != 'admin'  # explicit anti-regression assertion"
+  - "alice_response.body.owner == null OR alice_response.body.owner.name != 'admin'  # alice has no USER_OWNER_MAPPING row, but the controller still flowed the real identity"
+  - "anonymous_under_login_form_response.status == 302 OR anonymous_under_login_form_response.status == 401  # the SecurityWebFilterChain blocked the anonymous call BEFORE reaching IdentityController.whoami"
+  - "anonymous_under_login_form_response.body NOT contains 'admin'  # if the chain were bypassed, the dummy fallback's 'admin' username would leak; this regression assertion is the load-bearing one"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__IdentityController__controller-class__IdentityController
+    - odd-platform__java__LoginFormSecurityConfiguration__config-class__LoginFormSecurityConfiguration
+    - odd-platform__java__service__service__AuthIdentityProviderImpl
+  retrospectives: []
+  refactoring_scopes:
+    - REFACTOR-185
+realism_caveats: |
+  The probe only covers LOGIN_FORM. A complete defence-in-depth probe would parameterize
+  across all four auth modes (LOGIN_FORM / OAUTH2 / LDAP / DISABLED). The LOGIN_FORM
+  case is the highest-leverage starter because (a) the auth.login-form-credentials
+  bootstrap is hermetic — no IDP container needed; (b) every LOGIN_FORM user is hard-coded
+  ADMIN (LoginFormSecurityConfiguration.java:81), so the "real principal" comparison
+  is unambiguous — the username should be `alice`, never `admin`. The probe does NOT
+  cover: (a) what happens when the reactor Context propagation is partially broken
+  (e.g., a downstream service runs on a different scheduler that doesn't carry the
+  SecurityContext — Reactor 3.4 changed this behaviour); (b) the response when the
+  USER_OWNER_MAPPING row exists for alice and the owner field is non-null — that case
+  is the happy-path positive that probe P-122 omits and a future authenticated probe
+  should cover.

@@ -1,0 +1,23 @@
+# ADR-CANDIDATE-139 — `IngestionDataEntitiesFilter` is the SOLE defender of `POST /ingestion/entities`; ORTHOGONAL to the four UI auth modes
+
+## STRENGTHENS — batch ZF (2026-05-25)
+
+**One new class-level confirmation** — IngestionController-class-level enrichment provides the **CLASS-LEVEL CONSOLIDATION** previously visible only across multiple method-tier sidecars:
+
+- `odd-platform__java__IngestionController__controller-class__IngestionController.md:understanding` — "Combined with `SecurityConstants.WHITELIST_PATHS = {..., \"/ingestion/**\", ...}` … the controller's class-level security posture is: under default deployment, 4 of 5 endpoints accept unauthenticated POSTs from ANY caller able to reach the platform's port; under the most-hardened deployment (auth.type=OAUTH2 + auth.s2s.enabled=true + auth.ingestion.filter.enabled=true), 3 of 5 endpoints REMAIN unauthenticated because the filter path-matcher does not cover the nested paths"
+- `odd-platform__java__IngestionController__controller-class__IngestionController.md:coherence_check.strengthens.[get_list_unauthenticated_read]` — "**STRENGTHENS by CLASS-LEVEL CONSOLIDATION**. Previously the per-method sidecars established the per-endpoint auth posture. This class-level sidecar PROVES by enumeration: of the 5 handlers, ONLY `createDataSource` (1/5) is unconditionally authenticated; the other 4 are unauthenticated in 3 of 4 auth modes (DISABLED, OAUTH2, LDAP) by default — only `postDataEntityList` becomes authenticated when an operator OPTS IN via `auth.ingestion.filter.enabled=true`."
+- `odd-platform__java__IngestionController__controller-class__IngestionController.md:coherence_check.strengthens.[ingestion-filter-path-coverage-incomplete]` — "the explicit class-roll-up of the filter coverage matrix: `POST /ingestion/datasources` → covered by IngestionDataSourceFilter (unconditional); `POST /ingestion/entities` → covered by IngestionDataEntitiesFilter (conditional, default-off); `POST /ingestion/entities/datasets/stats` → COVERED BY NO FILTER … `POST /ingestion/metrics` → COVERED BY NO FILTER; `GET /ingestion/dataentitygroups/{deg_oddrn}/entities` → COVERED BY NO FILTER."
+
+The IngestionController-class-level enrichment establishes the **5 × 2 × 4 = 40-cell auth-matrix** as the canonical view of ingestion authorization. Previous per-method sidecars established the per-endpoint posture (5 sidecars × per-method coverage); the class-level view CONSOLIDATES the 5 endpoints into a single matrix and proves three claims:
+
+1. **The toggle name is misleading at the class level.** `auth.ingestion.filter.enabled` reads as "protect ingestion globally"; its actual scope is one endpoint (`POST /ingestion/entities`). The other 3 mutating endpoints (`/datasets/stats`, `/metrics`) + the 1 GET endpoint (`/dataentitygroups/{deg_oddrn}/entities`) remain unauthenticated even when an operator opts in.
+
+2. **The filter's exact-literal matcher is the root cause.** `IngestionDataEntitiesFilter.java:28` hard-codes `/ingestion/entities` POST as an exact-literal matcher; nested paths (`/ingestion/entities/datasets/stats`) and sibling paths (`/ingestion/metrics`) escape filter coverage entirely. The class-level view makes the matcher's narrow scope structurally visible.
+
+3. **The class-of-failure parallels LSN-001.** The IngestionController class-level evidence: `application.yml:48` ships `auth.ingestion.filter.enabled: false` with no warning, no operator-visible signal that 4 of 5 endpoints are reachable unauthenticated. This is the SAME CLASS-OF-FAILURE as the LSN-001 attachment-ephemeral-default — an insecure default shipped in the bundled YAML; operators following the install guide without realising they have an unprotected ingestion surface.
+
+The strengthening makes ADR-139 a class-level rather than method-level ADR. The pattern is no longer "this one filter defends this one endpoint"; it is "the platform's S2S ingestion surface is a 5-endpoint × 2-filter × 4-auth-mode matrix where the toggle name reads global but covers one cell." A future maintainer extending the ingestion API should be alerted: NEW ingestion endpoints DEFAULT to unauthenticated unless explicitly added to the filter's path matcher.
+
+**Co-surfaced gap** — `REFACTOR-635` NEW (batch ZF) captures the operator-actionable closure: either (a) widen the filter to `/ingestion/**` POST + GET (closes 4 of the 5 unauthenticated cells); or (b) document the matrix explicitly in the live `enable-security` page (operator-aware compensating control). The current docs ARE aware (per `docs.opendatadiscovery.org/configuration-and-deployment/enable-security` WebFetched 2026-05-25) but the bundled application.yml + the toggle name are not.
+
+---

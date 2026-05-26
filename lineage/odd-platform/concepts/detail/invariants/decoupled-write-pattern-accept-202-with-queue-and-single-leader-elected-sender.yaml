@@ -1,31 +1,179 @@
 name: Decoupled-write pattern — accept-202 with queue-and-single-leader-elected-sender
 canonical_in_docs: false
 canonical_candidate: true
-description: 'Outbound integrations that depend on an unreliable external service
-  (Slack) accept the inbound request, persist intent to Postgres in PENDING state,
-  return 202 Accepted immediately, and let a single-leader-elected background job
-  drain the queue with retries. The leader election uses a Postgres advisory lock
-  (configurable `datacollaboration.sender-message-advisory-lock-id`, default 120).
-  This preserves the Postgres-as-only-dependency posture while still decoupling caller
-  latency from external service availability. Single example in the catalog so far:
-  DataCollaborationMessageSenderJob for Slack messages.'
+pillar_affinity:
+- P-07
+- P-08
+description: |-
+  Outbound integrations that depend on an unreliable external service
+  (Slack) accept the inbound request, persist intent to Postgres in
+  PENDING state, return 202 Accepted immediately, and let a
+  single-leader-elected background job drain the queue with retries.
+  The leader election uses a Postgres advisory lock (configurable
+  `datacollaboration.sender-message-advisory-lock-id`, default 120).
+  This preserves the Postgres-as-only-dependency posture while still
+  decoupling caller latency from external service availability.
+
+  Originally surfaced from the OUTBOUND DataCollaborationMessageSenderJob
+  for Slack messages. Pattern documented at:
+  postMessageInSlack.implicit_adrs[3] (explicit 202+queue+sender
+  decomposition) + postMessageInSlack.implicit_adrs[4] (Postgres
+  advisory lock for single-sender ordering preserves
+  Postgres-as-only-dependency posture).
+
+  ## STRENGTHENED batch 2026-05-25-ZF — EventApiController INBOUND analog mirrors the same shape
+
+  Batch ZF's EventApiController class-level sidecar confirms the
+  EXACT SAME ARCHITECTURAL PATTERN on the INBOUND-WEBHOOK side: Slack
+  events delivered to POST /api/slack/events are accepted (returns
+  200 OK immediately per Slack's contract requirement), enqueued into
+  `message_provider_event` (state=PENDING) via
+  `DataCollaborationService.enqueueMessageEvent`, and processed
+  asynchronously by `DataCollaborationMessageEventProcessor` — which
+  uses a SEPARATE Postgres advisory lock
+  (`datacollaboration.receive-event-advisory-lock-id` default 110)
+  for leader election.
+
+  The mirror is intentional and complete:
+
+  **OUTBOUND (Slack message send)**:
+    - Inbound HTTP: POST /api/datacollaboration/providers/slack/messages
+    - Controller: DataCollaborationController.postMessageInSlack
+      returns 202 ACCEPTED with no Slack-side wait
+    - Queue table: `messages` (state=PENDING_SEND)
+    - Processor: DataCollaborationMessageSenderJob (single-leader)
+    - Advisory lock: datacollaboration.sender-message-advisory-lock-id = 120
+    - External call: Slack chat.postMessage (with retries up to
+      `datacollaboration.sending-messages-retry-count` default 3)
+
+  **INBOUND (Slack event receive)**:
+    - Inbound HTTP: POST /api/slack/events
+    - Controller: EventApiController.handleSlackEvent acks 200 OK
+      with Slack's expected challenge / ack contract immediately
+    - Queue table: `message_provider_event` (state=PENDING)
+    - Processor: DataCollaborationMessageEventProcessor (single-leader)
+    - Advisory lock: datacollaboration.receive-event-advisory-lock-id = 110
+    - Internal action: materialise event into child `message` row
+      with FK to parent message (only if parent is tracked)
+
+  EventApiController's implicit_adr.[0] verbatim: "Inbound Slack
+  events are persisted to a queue table (message_provider_event)
+  and materialised asynchronously by a leader-elected processor
+  thread rather than handled synchronously on the request path."
+  The decomposition is INTENTIONAL: ack-fast on the HTTP path AND
+  honour Slack's 3-second ack-or-retry contract; absorb processing
+  latency via the queue.
+
+  ## Cross-pillar pattern recognition
+
+  The pattern composes TWO Postgres-advisory-lock-elected
+  single-leader processors for the data-collaboration feature:
+  one for OUTBOUND, one for INBOUND. Both advisory lock IDs are
+  configurable via `DataCollaborationProperties` (lines 10-11)
+  AND validated at `@PostConstruct validate()` (lines 14-20)
+  against the constraint `>=0`. Operators can re-tune the lock IDs
+  if their deployment collides on the default global lock ID
+  space (e.g., setting both equal to the
+  `partition.advisory-lock-id` default 90 would serialise all
+  three jobs onto one leader connection — observable only via
+  pg_advisory_lock-table inspection per EventApiController
+  stress_findings.tunables.[0].q[1]).
+
+  The 202-vs-200 contract distinction is also operator-relevant:
+    - Outbound: returns 202 (explicit `HttpStatus.ACCEPTED` line 38
+      of DataCollaborationController) — async-with-promise semantics
+    - Inbound: returns 200 OK — Slack's webhook protocol REQUIRES
+      2xx ack within 3 seconds, and Slack treats 202 vs 200
+      identically (per Slack Events API docs); the controller
+      chooses 200 to match the standard receiver convention
+
+  ## The pattern's architectural commitment
+
+  Postgres-as-only-dependency: BOTH the outbound queue + sender
+  AND the inbound queue + processor live entirely in Postgres
+  (jOOQ + R2DBC for the queue table; pg_advisory_lock for leader
+  election; no Redis, no Kafka, no SQS). The pattern preserves
+  the platform's single-runtime-dependency commitment while
+  still decoupling caller latency from external service
+  availability AND enabling at-most-once-per-leader processing
+  semantics on the materialise side.
 axes_present:
 - controllers
+- jobs
+- config_prefixes
 nodes:
 - odd-platform java DataCollaborationController controller-method:postMessageInSlack
+- odd-platform java DataCollaborationController controller-class:DataCollaborationController
+- odd-platform java EventApiController controller-class:EventApiController
 contributors:
 - 'postMessageInSlack.implicit_adrs[3]: explicit 202+queue+sender decomposition'
 - 'postMessageInSlack.implicit_adrs[4]: Postgres advisory lock for single-sender ordering
   (preserves Postgres-as-only-dependency)'
+- |-
+  **BATCH ZF** DataCollaborationController.md (controller-class):
+  implicit_adrs.[4] (Outbound Slack delivery is decoupled from the
+  HTTP request — 202 + queue + leader-elected sender — same
+  architectural decision as in the per-method sidecar; recorded
+  here at the class level for completeness)
+- |-
+  **BATCH ZF** EventApiController.md (controller-class):
+  implicit_adrs.[0] (Inbound Slack events are persisted to a queue
+  table message_provider_event and materialised asynchronously
+  by a leader-elected processor thread rather than handled
+  synchronously on the request path) +
+  understanding §"thin reactive surface: reads raw JSON body,
+  delegates to SlackEventParser.parse, classifies into
+  CHALLENGE/FILTER/ERROR/PAYLOAD, and either echoes back the
+  challenge or calls DataCollaborationService.enqueueMessageEvent
+  which inserts a row into message_provider_event (state=PENDING)
+  for the asynchronous DataCollaborationMessageEventProcessor
+  thread to materialise into a child message row later"
 evidence:
 - postMessageInSlack.md:implicit_adrs.[3]
 - postMessageInSlack.md:implicit_adrs.[4]
-notes: 'Architecturally significant pattern not seen elsewhere in the catalog
+- |-
+  **BATCH ZF** DataCollaborationController.md:implicit_adrs.[4]
+  (outbound 202+queue+leader pattern restated at class level)
+- |-
+  **BATCH ZF** EventApiController.md:implicit_adrs.[0]
+  (INBOUND 200-ack+queue+leader pattern — the inbound mirror of
+  the outbound pattern; evidence: EventApiController.java:38-40 +
+  DataCollaborationServiceImpl.java:64-69 +
+  DataCollaborationMessageEventProcessor.java:34-76,147-149) +
+  dependencies_semantic.requires-config (cross-references
+  receive-event-advisory-lock-id=110 + sender-message-advisory-lock-id=120
+  + message-partition-period=30 + sending-messages-retry-count=3)
+related_features:
+- F-009 (Data Collaboration — outbound)
+- (none yet — inbound Slack-events-to-thread-reply ingest is
+  uncatalogued in the feature inventory)
+related_pillar_features:
+- P-07
+related_concepts:
+- 'invariant:202-queue-postgres-advisory-lock-single-sender-pattern (formerly-sibling — now MERGE candidate with this concept; the two yamls describe overlapping shape)'
+- 'invariant:webhook-no-hmac-no-signature-no-payload-origin-verification (sibling — the INBOUND security gap on this same path; batch Y outbound counterpart on WebhookNotificationSender)'
+- 'entitie:slack-collaboration-app (the cross-pillar entity this pattern serves)'
+triangulation_count: 3
+cross_batch: true
+cross_batch_refs:
+- batch (original) — postMessageInSlack method-tier (outbound 202)
+- batch-ZF — DataCollaborationController + EventApiController class-tier (both ends confirmed; INBOUND analog surfaced)
+notes: |-
+  Architecturally significant pattern not seen elsewhere in the
+  catalog so far. Surface as a canonicalisation candidate; the
+  maintainer may promote to ADR if future features (e.g., outbound
+  webhooks, email notifications) adopt the same shape.
 
-  so far. Surface as a canonicalisation candidate; the maintainer may
+  STRENGTHENED batch ZF — the EventApiController INBOUND mirror is
+  the most economical evidence to surface the pattern as an
+  architectural commitment rather than a per-feature decoration.
+  The two advisory-lock-IDs (sender=120, receive=110) are
+  documented in `DataCollaborationProperties`; the symmetry of
+  the two sub-systems is intentional.
 
-  promote to ADR if future features (e.g., outbound webhooks, email
-
-  notifications) adopt the same shape.
-
-  '
+  Potential MERGE candidate: this invariant overlaps with
+  `202-queue-postgres-advisory-lock-single-sender-pattern` (same
+  shape described from a slightly different angle). The
+  maintainer call is whether to consolidate the two yamls or
+  retain both for triangulation. Recommended: consolidate, keep
+  this name (more descriptive).

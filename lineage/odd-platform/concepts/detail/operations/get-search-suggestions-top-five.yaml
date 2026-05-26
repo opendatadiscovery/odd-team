@@ -1,0 +1,71 @@
+name: Get Search Suggestions (top-five FTS autocomplete)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+description: |-
+  NEW OPERATION, batch ZE — GET /api/search/suggestions?query=&
+  entityClassId=&manuallyCreated=. Returns Flux<DataEntityRef>
+  of UP TO 5 entity rows matching the FTS query, ordered by
+  ts_rank DESC. The toolbar autocomplete dropdown hot-path
+  (500ms debounced in SearchSuggestionsAutocomplete.tsx).
+
+  IMPLEMENTATION: SearchController.java:76-83 → SearchServiceImpl
+  .getQuerySuggestions:115-120 → ReactiveDataEntityRepositoryImpl
+  .getQuerySuggestions:470-513. CTE: SELECT DATA_ENTITY rows
+  matching ftsCondition + entity_class_id-array-contains +
+  manuallyCreated-equality, ORDER BY ts_rank DESC LIMIT 5. OUTER:
+  SELECT cte columns ORDER BY ts_rank DESC (no secondary key).
+
+  DISTINCT FROM `search` — this endpoint does NOT create a session
+  row, does NOT persist the query, does NOT participate in the
+  /api/search/{id}/* surface. It is the prefix-match autocomplete
+  fed by typing into the main-search bar.
+
+  EMPTY-QUERY GUARD — Flux.empty() short-circuit BEFORE any DB
+  call when StringUtils.isEmpty(query) (lines 474-476). Distinct
+  from the `search` op which persists empty-query rows.
+
+  ORDERING NON-DETERMINISM (LSN-019 class) — no tie-breaker on
+  ts_rank; equal-rank entities are storage/heap-ordered. Pinned
+  by P-134.
+
+  AUTH POSTURE: catalog-wide read (no owner predicate, no
+  EXCLUDE_FROM_SEARCH filter, no per-data-source permission
+  filter). Same `pathMatchers('/**').authenticated()` fall-through
+  as the rest of /api/search*. Under DISABLED: anonymous-reachable.
+
+  INPUT GAP: entityClassId is a SINGLE Integer — cannot OR-filter
+  across multi-class entities. manuallyCreated `false` branch
+  is unused by any UI consumer (only `true` is dispatched, from
+  AddDataEntityToGroupForm.tsx:82 — for ingestion-vs-manual
+  separation in DEG add-member). query inherits the tsquery
+  metacharacter handling (split-on-space + :* + & via
+  JooqFTSHelper.tsQuery) — special chars produce 500-class.
+
+  NO PAGINATE VARIANT — top-5 is the hard contract; truncation
+  at 5 means entities ranked 6+ are silently invisible.
+axes_present:
+  - controllers
+  - openapi_schemas
+  - repositories
+  - ui_components
+nodes:
+  - odd-platform java SearchController controller-class:SearchController
+contributors:
+  - 'SearchController.md:concepts.operations.[5] — getSearchSuggestions'
+  - 'SearchController.md:concepts.invariants.[7] — empty-query short-circuit'
+  - 'SearchController.md:bugs_limitations_corner_cases.[7,8,9] — non-determinism + entityClassId singular + manuallyCreated=false unused'
+evidence:
+  - SearchController.md:concepts.operations.[5]
+  - SearchController.md:bugs_limitations_corner_cases.[7-9]
+  - SearchController.md:stress_findings.orderings.[0]
+notes: |-
+  No canonical doc home — `/features/data-discovery/search-suggestions`
+  returns 404 (WebFetched 2026-05-25). Operators integrating
+  against the endpoint via OpenAPI client have no contract.
+  Pairs with entitie:data-entity-ref-autocomplete-suggestion
+  (the response-shape concept).
+related_features: []
+related_pillar_features:
+  - P-01

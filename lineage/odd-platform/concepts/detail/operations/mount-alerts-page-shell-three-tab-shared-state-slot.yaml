@@ -1,0 +1,187 @@
+name: |-
+  Mount Alerts page shell (three-tab nav with shared Redux state slot, tab-clear-then-fetch pattern)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-07
+  - P-09
+description: |-
+  NEW OPERATION, batch ZL (2026-05-26) — the UI-layer counterpart of
+  the existing `operation:list-alerts-three-visibility-scopes` (which
+  describes the backend three-endpoint surface). Alerts.tsx
+  (`components/Alerts/Alerts.tsx`) mounts a 33-line page-root that
+  composes three siblings: (a) a Material-UI `<Typography variant='h1'>`
+  with `t('Alerts')`; (b) `<AlertsTabs>` (the three-tab vertical
+  primary nav: All / My Objects / Dependents); (c) `<AlertsRoutes>`
+  (the nested `<Routes>` mapping `all|my|dependents` to a single
+  `<AlertsList>` instance pre-bound to the corresponding `fetch*`
+  thunk).
+
+  THE OPERATION ANATOMY:
+
+    Step 1 — Bootstrap totals on mount (Alerts.tsx:15-17):
+      Trigger: Alerts.tsx mount (any sub-route).
+      Code: useEffect with `[]` empty dependency array fires
+            `dispatch(fetchAlertsTotals())` once.
+      Backend chain: GET /api/alerts/totals →
+                     AlertController.getAlertTotals → AlertServiceImpl
+                     runs `Mono.zipDelayError(allCount, countByOwner,
+                     countDependent)` — three COUNT queries in parallel.
+      Effect: populates the `state.alerts.totals` slot used by
+              `<AlertsTabs>` to render the badges next to each tab
+              label ('All [325]', 'My Objects [12]', 'Dependents [3]').
+
+    Step 2 — Tab visibility derivation (AlertsTabs.tsx:30-37):
+      Trigger: Render time.
+      Code: Reads `getOwnership` selector (the user's
+            `profile.owner.id` from `fetchIdentity`); computes
+            `showMyAndDepends = !!ownership`.
+      Effect: 'My Objects' and 'Dependents' tabs are HIDDEN when the
+              user has no owner association — the only operator-
+              observable owner-relevant UX in the entire Alerts page
+              tree.
+
+    Step 3 — Tab navigation (AlertsTabs.tsx:39-46):
+      Trigger: Operator clicks a tab.
+      Code: handleTabChange dispatches `changeAlertsFilterAction`
+            (slice reducer at alerts.slice.ts:38-40 that CLEARS
+            `state.alerts.items = []`), then React Router navigates
+            to the corresponding sub-path.
+      Effect: Three observable phases — (a) items array cleared, list
+              empties; (b) URL changes; (c) AlertsList mounted-for-
+              new-tab dispatches its fetchAlerts thunk (page=1, size=30);
+              (d) backend returns 30 rows; (e) reducer's REPLACE
+              branch (alerts.slice.ts:30, `pageInfo.page == 1`) writes
+              the new items into the slot.
+      Critical design choice: the three-tab thunks (fetchAllAlertList,
+              fetchMyAlertList, fetchMyDependentsAlertList) all share
+              the SAME slot via the `updateAlerts` reducer
+              (alerts.slice.ts:42-49 — three `addCase(...updateAlerts)`
+              for three distinct thunk types). The explicit
+              `changeAlertsFilterAction` clear avoids flicker (rendering
+              old-tab items briefly while new-tab fetch is in flight).
+
+    Step 4 — Default sub-route (AlertsRoutes.tsx:18):
+      Trigger: User navigates to `/alerts` (no sub-tab segment).
+      Code: `<Route index element={<Navigate to='all' replace />}/>`.
+      Effect: Bare URL `/alerts` redirects to `/alerts/all`. Confirmed
+              redirect-convention case per the
+              `bare-base-url-behavior-divergence-redirect-vs-blank`
+              invariant.
+
+    Step 5 — InfiniteScroll pagination (AlertsList.tsx:73-91):
+      Trigger: User scrolls within the list, crossing 200px from bottom.
+      Code: react-infinite-scroll-component dispatches
+            fetchAlerts({page:N+1, size:30}). Reducer's APPEND branch
+            (alerts.slice.ts:30, `pageInfo.page > 1`) extends the
+            items array.
+      Effect: Pagination appends; the slot grows; DOM-virtualisation
+              ABSENT (every alert renders as a full AlertItem with
+              Collapse-wrapped history). At 3000+ alerts the
+              client-side DOM-render cost dominates the backend SQL
+              cost.
+
+    Step 6 — Per-alert Resolve/Reopen action (AlertItem.tsx:48-70,
+             159-166):
+      Trigger: User clicks Resolve (or Reopen — text flips based on
+               current alert.status).
+      Code: Click handler FIRST dispatches `fetchResourcePermissions`
+            (a permission probe for the alert's data-entity).
+            Conditional on resolved permission set containing
+            DATA_ENTITY_ALERT_RESOLVE, dispatches updateAlertStatus.
+            If permission absent, shows `t('No access!')` caption.
+      Effect: Two-step async chain — operator-visible delay between
+              click and outcome. Critically: the Resolve button is
+              RENDERED unconditionally (line 159-166), regardless of
+              the user's permission. The user can SEE the button,
+              click it, and only THEN learn they lack permission.
+              See `alerts-action-button-rendered-before-permission-check-ux-leak`.
+
+  AUTHORISATION POSTURE:
+    Alerts.tsx route at App.tsx:64 has NO `WithPermissionsProvider`
+    wrapper (compare LookupTables at App.tsx:75-87 which DOES wrap,
+    though the wrapper is context-only per
+    `withpermissionsprovider-context-seed-not-route-gate`). Any
+    authenticated user can navigate to /alerts/* under LOGIN_FORM/
+    OAUTH2/LDAP; ANY caller (anonymous) can navigate under DISABLED.
+    Backend AlertController has no @PreAuthorize either (per batch H
+    AlertController sidecar). The ONLY gate is the per-action
+    fetchResourcePermissions check at click-time on the Resolve
+    button. Result: read-collaborative posture is end-to-end.
+
+  CROSS-OPERATION RELATIONSHIPS:
+    - Operator-visible counterpart of the
+      `operation:list-alerts-three-visibility-scopes` (backend three-
+      endpoint surface). This operation is the UI half; the backend
+      operation is the data half.
+    - Pairs with `entitie:alert.yaml` (the canonical Alert entity).
+    - Pairs with `invariant:alerts-all-tab-name-vs-implementation-drift-open-only`
+      (Category B drift surfaced at the All tab).
+    - Pairs with `invariant:alerts-action-button-rendered-before-permission-check-ux-leak`
+      (Resolve button UX leak).
+    - Pairs with `invariant:alerts-tab-badge-totals-stale-mount-fetch-only`
+      (badges fetched once, never refreshed).
+    - Pairs with `invariant:bare-base-url-behavior-divergence-redirect-vs-blank`
+      (Alerts /alerts → /alerts/all redirect is one of the redirect-
+      convention cases).
+
+  CROSS-BATCH COHERENCE:
+    The 'shared Redux slot + explicit clear before tab-switch' pattern
+    is NOT seen at Search.tsx (Search uses a SERVER-side search
+    session UUID, not a shared client-side slot). Alerts.tsx's pattern
+    is older — it predates the search-facets infrastructure. The
+    redux/slices/alerts.slice.ts pattern is unique to Alerts among the
+    pillar roots enriched so far.
+related_features:
+  - F-007
+nodes:
+  - odd-platform ts react-component component:Alerts
+contributors:
+  - odd-platform ts react-component component:Alerts
+evidence:
+  - |-
+    Alerts.md:understanding — `Alerts` component is the page-root
+    for ODD's global Alerts surface mounted at `/alerts/*`
+    (App.tsx:64). Thin shell composing AlertsTabs + AlertsRoutes.
+  - |-
+    Alerts.md:concepts.invariants — 'All three tabs share
+    state.alerts.items — tab switch always clears items via
+    changeAlertsFilterAction'.
+  - |-
+    Alerts.md:implicit_adrs — three load-bearing decisions:
+    (1) Tab visibility derived from owner association at UI layer;
+    (2) Three list-fetch thunks share the SAME Redux slot via the
+    `updateAlerts` reducer; (3) Tab-switch performs an explicit
+    clear of items before the new fetch.
+  - |-
+    Alerts.md:downstream_side_effects — five side-effect classes
+    (external-call totals, external-call list-fetch per tab,
+    external-call infinite-scroll, external-call Resolve, page-
+    render, redirect-issue).
+  - |-
+    Alerts.md:upstream_callers — entry_point: ui_route:/alerts/*
+    via App.tsx:64 (route mount, lazy import at App.tsx:36).
+axes_present:
+  - ui_components
+  - ui_routes
+triangulation_count: 1
+cross_batch: false
+severity: null
+severity_dim: null
+mitigations_unimplemented: []
+notes: |-
+  NEW operation captured in batch ZL (2026-05-26). The page-root
+  composition pattern is shared across the SPA (Activity.tsx,
+  DataModelling.tsx, LookupTables.tsx all use similar shell+tab+
+  routed-children patterns), but Alerts.tsx is distinctive because
+  of the shared-Redux-slot + explicit-clear-on-tab-switch pattern.
+
+  Cross-batch follow-ups:
+    - The other pillar roots (Activity / DataModelling / LookupTables
+      / Management / DataQuality / Overview) should each have a
+      dedicated 'mount-X-page-shell' operation to make the UI-layer
+      taxonomy complete; today only this Alerts operation is
+      anchored.
+    - The 'three thunks share one slot' pattern is reusable; future
+      tab-based features that don't need per-tab isolation could
+      adopt the same shape and save Redux slot count.

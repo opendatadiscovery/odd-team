@@ -1,0 +1,202 @@
+name: |-
+  Lookup Table edit form submits CREATE shape on UPDATE — namespace_name silently discarded by Spring lenient binding (Category F DTO drift)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-03
+description: |-
+  NEW HIGH-severity Category F INVARIANT, batch ZL (2026-05-26) —
+  the LookupTableForm component
+  (`components/MasterData/LookupTableForm.tsx`) types its form data
+  as `LookupTableFormData` (the CREATE shape, which REQUIRES
+  `namespaceName` per the OpenAPI generated type at line 49).
+  On EDIT submit (line 60-66), the same shape is submitted to
+  `editLookupTable` — but the OpenAPI contract for UPDATE
+  (`LookupTableUpdateFormData`, components.yaml:3853-3862) defines
+  ONLY `name` + `description`. The `namespaceName` field is sent
+  on the wire on every edit but silently discarded by the server
+  (assuming Spring's default lenient JSON binding via Jackson with
+  `FAIL_ON_UNKNOWN_PROPERTIES = false`).
+
+  **Trace**:
+
+      // LookupTableForm.tsx:49 — form types data as LookupTableFormData
+      // (the CREATE shape with required namespaceName)
+      const {handleSubmit, ...} = useForm<LookupTableFormData>({
+        defaultValues: { name, description, namespaceName },
+      });
+
+      // LookupTableForm.tsx:60-66 — edit submit branch
+      const onSubmit = (data: LookupTableFormData) => {
+        const mutation = lookupTable
+          ? editLookupTable({
+              lookupTableUpdateFormData: data,  // ← wrong shape sent
+              lookupTableId: lookupTable.id,
+            })
+          : createLookupTable({lookupTableFormData: data});
+        mutation.unwrap().then(...);
+      };
+
+      // LookupTableForm.tsx:117-123 — UI hint: namespace disabled on edit
+      <Controller
+        control={control}
+        name="namespaceName"
+        render={({ field }) => (
+          <Input {...field} disabled={!!lookupTable} />  // ← cosmetic only
+        )}
+      />
+
+  The form-visual `disabled={!!lookupTable}` (line 120) HIDES the
+  problem from the user — they cannot edit the namespace field in
+  the UI. But the form state still carries `namespaceName` (it's
+  set in defaultValues at line 44 from `lookupTable.namespace.name`),
+  and the submit handler passes the ENTIRE form data — including
+  namespaceName — to the editLookupTable mutation. The generated
+  client serialises the request body as JSON; namespace_name ends
+  up on the wire.
+
+  **The live doc explicitly says namespace is NOT updatable** — per
+  WebFetch of
+  `https://docs.opendatadiscovery.org/features/master-data-management/lookup-tables`
+  2026-05-26 status 200:
+
+      "LOOKUP_TABLE_UPDATE — Renaming a lookup table or editing its
+      description"
+
+  (No mention of changing the namespace.) The OpenAPI schema confirms:
+  `LookupTableUpdateFormData` (components.yaml:3853-3862) defines
+  ONLY `name` + `description`.
+
+  **The available-but-named-correctly column** is the form's own
+  `namespaceName` field — it's there, it carries the right value,
+  it's sent on the wire, but it has no destination on the server.
+  The fix is to type the edit-form data separately as
+  `LookupTableUpdateFormData` and rebuild the form's controller
+  set accordingly.
+
+  **Operator-visible consequences** (three patterns):
+
+  (a) **Operator inspecting the network tab on edit submit sees
+      `namespace_name` in the request body** — they may believe
+      the field is being updated. The DB does NOT change; the
+      namespace remains the original. This is undocumented
+      silent-discard behaviour.
+
+  (b) **A future Spring upgrade enabling strict JSON binding
+      (`FAIL_ON_UNKNOWN_PROPERTIES = true`)** would flip the
+      bug from silent-discard to all-edits-fail. The form would
+      submit; the server would 400; the operator would see
+      'edit failed' with no hint why. This is the upgrade-time
+      bug class — code that depends on lenient defaults breaks
+      catastrophically when the defaults change.
+
+  (c) **A reverse-engineering client** parsing the OpenAPI spec
+      and generating a strict-binding client (e.g., openapi-
+      typescript with strict mode) would treat namespace_name
+      as an INVALID field — the client may reject the request
+      before it leaves the browser, OR the client may strip
+      the field. Either is a divergence from the current
+      odd-platform-ui generated client behaviour.
+
+  **The fix surfaces** (maintainer-triage):
+
+  1. **Type the edit-form data correctly** — use
+     `LookupTableUpdateFormData` (CREATE-shape MINUS
+     namespaceName) for the edit submit path. Requires
+     splitting the form into two useForm calls (one per shape)
+     OR using a discriminated union. ~30-50 lines of churn;
+     closes the bug at the source.
+
+  2. **Strip namespace_name in the submit handler** — quick
+     fix:
+       const updateData = {name: data.name, description: data.description};
+       editLookupTable({lookupTableUpdateFormData: updateData, ...})
+     ~5 lines; closes the bug but leaves the type-system loose.
+
+  3. **Set FAIL_ON_UNKNOWN_PROPERTIES = true at the Spring
+     layer** — Pro: surfaces all similar bugs catastrophically.
+     Con: catastrophic — every existing client sending
+     undocumented extras breaks. Out-of-UI-scope but worth
+     considering at the platform level.
+
+  vocabulary_status: codebase-anchored AND live-doc-confirmed
+  (the doc page explicitly enumerates renaming + description-
+  edit; does NOT mention namespace edit). The OpenAPI schema is
+  the AUTHORITATIVE source for the UPDATE shape; the UI submits
+  a wider shape. The bug is a UI bug, not a doc-vs-code drift.
+nodes:
+  - odd-platform ts react-component component:LookupTables
+contributors:
+  - odd-platform ts react-component component:LookupTables
+evidence:
+  - |-
+    LookupTables.md:bugs_limitations_corner_cases.[2] —
+    'Edit-form DTO drift: LookupTableForm.tsx:49 types form data
+    as LookupTableFormData (the CREATE shape with required
+    namespaceName). On edit (line 60-66), it submits the SAME
+    shape to editLookupTable({lookupTableUpdateFormData: data,
+    ...}), but the OpenAPI contract for UPDATE
+    (LookupTableUpdateFormData, components.yaml:3853-3862)
+    defines ONLY name + description.' Severity HIGH.
+  - |-
+    LookupTables.md:docs_link_semantic.doc_drift_findings.[0] —
+    'Doc page says "Renaming a lookup table or editing its
+    description" under LOOKUP_TABLE_UPDATE, implying the
+    namespace is NOT updateable — and the OpenAPI schema
+    confirms this. The UI form disables the namespace field on
+    edit (disabled={!!lookupTable}) AND sends it anyway in the
+    request body via lookupTableUpdateFormData: data — drift
+    between UX intent and wire reality.' Severity MEDIUM (doc).
+  - |-
+    LookupTables.md:tests_coverage_semantic.uncovered_behaviours —
+    'Editing an existing lookup table sends namespace_name in
+    the request body even though LookupTableUpdateFormData
+    schema rejects it.' test_class: integration; criticality:
+    HIGH. Probe P-191.
+  - |-
+    LookupTables.md:stress_findings.request_inputs.lookupTableUpdateFormData —
+    'TRANSLATES_SILENTLY — the parameter NAME says
+    lookupTableUpdateFormData implying the UPDATE schema, but
+    the SHAPE on the wire is the CREATE schema (namespace_name
+    included). Spring default JSON binding (Jackson
+    FAIL_ON_UNKNOWN_PROPERTIES = false) silently discards.'
+related_concepts:
+  - operation:mount-lookup-tables-list-with-search-session-bootstrap
+  - entitie:master-data-management-lookup-table-pillar-p-03-anchored
+  - entitie:datasource-form-dto-create-update-narrow-mutable-surface
+related_features:
+  - F-026
+axes_present:
+  - ui_components
+triangulation_count: 1
+cross_batch: false
+severity: HIGH
+severity_dim: correctness
+mitigations_unimplemented:
+  - |-
+    Fix surface 1 (preferred, type-safe) — split the form into
+    discriminated useForm calls keyed by mode (create vs edit).
+    ~30-50 lines; closes the bug at the source.
+  - |-
+    Fix surface 2 (quick, untyped) — strip namespace_name in
+    the submit handler. ~5 lines; closes the wire-level bug;
+    leaves the type system loose.
+  - |-
+    Fix surface 3 (platform-wide) — enable
+    FAIL_ON_UNKNOWN_PROPERTIES at the Spring layer. Surfaces
+    all similar bugs at once. Out-of-UI-scope.
+notes: |-
+  NEW invariant captured in batch ZL (2026-05-26) FINAL refresh.
+  This is the second instance of the 'edit-form sends CREATE
+  shape' class — the first was the DataSource update
+  REPLACE-not-MERGE behaviour
+  (`invariant:datasource-update-replace-not-merge-mapstruct-set-to-null`),
+  though that was a different shape (MapStruct nulling omitted
+  fields). The pattern: form-data type lies about its destination
+  shape.
+
+  Cross-batch follow-up: an audit of every form in odd-platform-ui
+  that has a single useForm call but is used for BOTH create
+  AND edit modes. Each is a candidate for the same shape-of-bug.
+  Grep for `useForm<.*FormData>` in odd-platform-ui/src should
+  enumerate candidates.

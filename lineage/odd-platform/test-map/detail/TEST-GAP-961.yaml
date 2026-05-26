@@ -1,0 +1,57 @@
+gap_id: TEST-GAP-961
+category: missing-integration
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java EventApiController controller-class:EventApiController"
+pillars_affected: [P-07]
+surfaced_by:
+  - "EventApiController__controller-class.md:tests_coverage_semantic.uncovered_behaviours.[0]"
+behaviour: |-
+  **CRITICAL — URL-verification CHALLENGE handshake (the ONLY contract Slack uses to register the callback) is fully UNTESTED. If it regresses, Slack rejects the event-subscription configuration AND the entire data-collaboration thread-reply ingest dies silently — failure is asymptomatic on the ODD side.**
+
+  Slack's Events API onboarding: when an operator configures `request_url: https://<ODD_PLATFORM_BASE_URL>/api/slack/events` in the Slack app config UI, Slack sends a one-time URL-verification POST:
+  ```
+  POST /api/slack/events
+  {"token":"...", "challenge":"<random-string>", "type":"url_verification"}
+  ```
+  Slack expects an HTTP 200 response with body `{"challenge":"<echoed-value>"}` within 3 seconds. If the response doesn't echo the challenge value, Slack marks the URL invalid and **refuses to send any further events to that endpoint until the operator re-verifies**.
+
+  **The current implementation** (`SlackEventParser.java:23-50`) classifies the body into `ParseResultType.CHALLENGE` and `EventApiController.java:25-57` echoes the value back. The path is correct as-shipped. But:
+  - Zero tests assert the CHALLENGE round-trip.
+  - A refactor of `SlackEventParser.parse` (e.g. moving the URL-verification branch, renaming the field-extraction key, switching to a different deserializer) ships silently.
+  - The regression failure mode is **asymptomatic on the ODD platform side**: the controller still returns 200, Discussions doesn't display anything new, no logs show anything wrong. The only signal is in the Slack app config UI, which most operators never check after initial setup.
+  - An operator re-installing the Slack app (e.g. after rotating the bot token, after a workspace migration) would discover the regression at the worst moment — production setup, with no test to catch it.
+
+  **Why CRITICAL**: this is the single point of failure for the entire P-07 Discussions sub-feature. A regression here doesn't break a feature — it **silently amputates the feature** with no operator-visible signal until they need to re-subscribe. Combined with the fact that the live `docs.opendatadiscovery.org/active-platform-features/data-collaboration` URL is 404 (per sidecar's WebFetch 2026-05-25), an operator with a regression has nowhere to look for diagnosis.
+
+  **Sidecar's own assessment** (uncovered_behaviours.[0] note): 'If this regresses, Slack rejects the event subscription and the entire data-collaboration thread-reply ingest is silently dead — the failure is asymptomatic on the ODD side; only Slack's app config UI shows the verification failure.'
+
+  **Distinguishes from existing IDs**: TEST-GAP-087 (MEDIUM) covers the disabled-feature 404 contract for the sibling DataCollaboration controller; this CRITICAL is for the ENABLED-feature CHALLENGE handshake on a different controller (EventApiController). No prior TEST-GAP covers the CHALLENGE round-trip.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/datacollaboration/EventApiControllerChallengeHandshakeTest.java"
+  name: "post_slackEvents_urlVerificationChallenge_returns200_withEchoedChallengeValue_pinsHandshakeContract"
+evidence:
+  - 'EventApiController.md says (tests_coverage_semantic.uncovered_behaviours.[0]): ''URL-verification CHALLENGE returns 200 with `{"challenge": "<echoed-value>"}` body — the only contract Slack uses to register the callback'' (criticality CRITICAL — sidecar-declared)'
+  - 'EventApiController.md says (uncovered_behaviours.[0].note): ''If this regresses, Slack rejects the event subscription and the entire data-collaboration thread-reply ingest is silently dead — the failure is asymptomatic on the ODD side; only Slack''''s app config UI shows the verification failure.'''
+  - "Reducer-side Grep `url_verification|CHALLENGE|ParseResultType.CHALLENGE|getChallenge` against `/home/raman/work/odd/odd-platform/odd-platform-api/src/test/`: 0 hits (verified 2026-05-25)"
+  - "Verified at primary source: SlackEventParser.java:23-50 (CHALLENGE classification branch); EventApiController.java:25-57 (echo-back logic); live Slack docs at `https://api.slack.com/events/url_verification` (the handshake contract)"
+cross_references:
+  - "TEST-GAP-959 (CRITICAL sister — no signature verification on inbound events)"
+  - "TEST-GAP-960 (CRITICAL sister — no idempotency on duplicate Slack delivery)"
+  - "TEST-GAP-087 (existing — DataCollaboration disabled-feature 404; STRENGTHENED by EventApi class-level anchor)"
+  - "DOC-GAP-NNN-candidate (live `active-platform-features/data-collaboration` is 404; operator with handshake regression has nowhere to diagnose)"
+  - "F-022 (Data Collaboration / Discussions sub-feature)"
+related_features: [F-022]
+related_pillar_features: ["P-07:F-NNN Data Collaboration (Discussions)"]
+proposed_action: |-
+  Add `EventApiControllerChallengeHandshakeTest`:
+
+  1. `post_slackEvents_urlVerificationChallenge_returns200_withEchoedChallengeValue` — WebTestClient `.post().uri("/api/slack/events").bodyValue(challengeBody).exchange().expectStatus().isOk().expectBody().jsonPath("$.challenge").isEqualTo("<random-value>")`. Use a fresh random value each run to ensure no caching artefact.
+  2. `post_slackEvents_urlVerificationChallenge_responseTimeUnder3Seconds_pinsSlackTimeoutContract` — measure elapsed; assert < 3000ms.
+  3. `post_slackEvents_urlVerificationChallenge_responseContentTypeApplicationJson_pinsResponseShape` — assert `Content-Type: application/json` (Slack's docs require JSON response).
+  4. Document each assertion with `// REGRESSION-PIN — Slack handshake contract. If this fails, the Discussions sub-feature is silently broken in production.`
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. Dedup query "EventApi Slack webhook signature verification" surfaced TEST-GAP-799 (outbound webhook HMAC) only — opposite direction. NO conflicts.
+batch: 2026-05-25-ZF
+feature_id: F-022

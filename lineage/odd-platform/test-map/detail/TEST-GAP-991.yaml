@@ -1,0 +1,62 @@
+gap_id: TEST-GAP-991
+category: missing-edge-case
+criticality: HIGH
+node_ids:
+  - "odd-platform java DatasetFieldController controller-class:DatasetFieldController"
+pillars_affected: [P-01, P-06]
+surfaced_by:
+  - "DatasetFieldController.md:bugs_limitations_corner_cases.[11] (deleteTermFromDatasetField removes only MANUAL term-links. The repository DELETE filters on IS_DESCRIPTION_LINK.isFalse() (TermRelationsRepositoryImpl.java:179). A term linked via BOTH the [[namespace/name]] marker in the description AND the explicit POST /terms has TWO dataset_field_to_term rows; DELETE returns 204 No Content but only deletes the manual row. The term remains visible in the linked-terms tab — severity HIGH)"
+  - "DatasetFieldController.md:tests_coverage_semantic.uncovered_behaviours.[13] (DELETE /api/datasetfields/{id}/terms/{term_id} when the term is ALSO description-linked leaves the description-link row in place — the term remains visible in the linked-terms tab — Stress Cat E cascade limit)"
+  - "DatasetFieldController.md:stress_findings.name_behavior_pairs.[2] (DRIFT_NAME_VS_BEHAVIOR: deleteTermFromDatasetField promises 'remove from terms list' but implementation removes only MANUAL term-links; description-derived links survive)"
+behaviour: |-
+  **`DELETE /api/datasetfields/{id}/terms/{term_id}` returns 204 No Content but the term may REMAIN VISIBLE in the linked-terms tab** — when the term is linked via BOTH (a) explicit POST /terms (manual link) AND (b) `[[namespace/name]]` marker in the description body (description-link), there are TWO `dataset_field_to_term` rows. The DELETE filters on `IS_DESCRIPTION_LINK.isFalse()` (`TermRelationsRepositoryImpl.java:179`) — removing ONLY the manual row. The description-link row survives.
+
+  **Operator-visible failure**:
+  - User clicks 'X' on a term tag in the UI.
+  - UI dispatches DELETE.
+  - Backend returns 204.
+  - UI removes the tag from local state (it was "deleted").
+  - User refreshes the page (or another user opens the field).
+  - The term list re-fetches from the backend.
+  - The description-link row is returned by the GET endpoint.
+  - The term REAPPEARS in the linked-terms tab.
+
+  Operator's mental model: "I deleted the term but the platform won't let me — it keeps coming back." The actual remedy (edit the description and remove the `[[ns/name]]` marker) is undocumented; the operator has no signal from the API or UI that the term is description-linked.
+
+  **Why HIGH**:
+  - **Operator-trust erosion**: "delete succeeded but term is still there" reads as platform malfunction. Repeated occurrences erode confidence in the platform's correctness.
+  - **Cross-pillar coupling (P-01 × P-06)**: dataset-field metadata (P-01) and term-linkage (P-06) intersect at the `dataset_field_to_term` table; the dual-source-of-truth model isn't surfaced at either pillar's doc.
+  - **The endpoint description is incomplete**: live docs read "Delete term from current dataset field terms list" — does NOT warn that this removes only manual links.
+  - **Cross-class effect**: a sibling `addDatasetFieldTerm` adds a manual row even if a description-link already exists (`onDuplicateKeyIgnore` short-circuits the manual insert); the asymmetry is: ADD creates one row OR no-ops; DELETE removes one row OR no-ops; but the description-link row is INVISIBLE to both operations from the term-tab perspective.
+  - **Probe P-155 pins this directly**.
+
+  Distinct from TEST-GAP-295 (term-linking side-channel through description) and TEST-GAP-288/290 (other term-linkage gaps) — those are about ADDING term links via description; this gap is about FAILING TO REMOVE them via the explicit DELETE endpoint.
+test_class: missing-edge-case
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DeleteTermFromDatasetFieldCascadeLimitTest.java"
+  name: "deleteTerm_termAlsoDescriptionLinked_returnsNoContentButTermSurvives_pinsCascadeLimit"
+evidence:
+  - "DatasetFieldController.md:bugs_limitations_corner_cases.[11] verbatim: 'deleteTermFromDatasetField removes only MANUAL term-links. The repository DELETE filters on IS_DESCRIPTION_LINK.isFalse() (TermRelationsRepositoryImpl.java:179). A term linked via BOTH the [[namespace/name]] marker in the description AND the explicit POST /terms has TWO dataset_field_to_term rows; DELETE returns 204 No Content but only deletes the manual row. The term remains visible in the linked-terms tab (because the description-link row survives). Remedy: edit the description body and remove the marker. The endpoint description (Delete term from current dataset field terms list) does not warn about this.' severity: HIGH"
+  - "DatasetFieldController.md:stress_findings.name_behavior_pairs.[2] verbatim drift: DRIFT_NAME_VS_BEHAVIOR; operator_visible_consequence: 'When a term is linked via BOTH manual-add AND a description-marker, DELETE returns 204 No Content but the term REMAINS visible in the linked-terms tab. Operator sees delete succeeded but term is still there.'"
+  - "Verified at primary source: TermRelationsRepositoryImpl.java:175-183 (the WHERE clause includes AND IS_DESCRIPTION_LINK.isFalse()) + TermServiceImpl.java:226-239"
+  - "Probe P-155 emits the canonical scenario"
+cross_references:
+  - "TEST-GAP-295 (sibling — term-link side-channel via description; the ADD half of this lifecycle gap)"
+  - "TEST-GAP-989 (sibling — same controller, BULK-REPLACE silent destruction; distinct class)"
+  - "P-155 (the probe skeleton emitted in the sidecar)"
+  - "concepts.yaml:invariants[dual-source-of-truth model: term-links may originate from manual ADD or description-marker auto-extraction; lifecycle endpoints must address both or document the limit]"
+  - "DOC-NNN candidate: update the OpenAPI description for DELETE /terms/{term_id} to read 'Delete a MANUAL term-link from the current dataset field. Term-links derived from description-body markers ([[ns/name]] syntax) are NOT removed by this endpoint — to remove a description-link, edit the description body.'"
+  - "REFACTOR-NNN candidate: either (a) cascade-delete description-links too OR (b) make the limitation visible at the API layer by returning HTTP 200 with a body indicating remaining link sources, e.g. {description_link_remains: true}"
+related_features: []
+related_pillar_features: ["P-01:F-004", "P-06:F-001"]
+proposed_action: |-
+  Add `DeleteTermFromDatasetFieldCascadeLimitTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Four test methods:
+  1. `deleteTerm_termAlsoDescriptionLinked_returnsNoContentButTermSurvives_pinsCascadeLimit` — seed field F + term T; POST /terms to manually link; PUT /description with body containing `[[ns/T]]` to also description-link (verify TWO rows in dataset_field_to_term); DELETE /terms/T; assert HTTP 204; GET field's term list; assert T STILL APPEARS (description-link row survives). PIN the silent cascade limit.
+  2. `deleteTerm_termOnlyManuallyLinked_termRemovedFromList_baselineNonRegression` — same setup but skip the description-link; DELETE; GET; assert T is gone. Baseline for the happy path.
+  3. `deleteTerm_termOnlyDescriptionLinked_noChange_pinsManualOnlySemantics` — seed field F + term T linked ONLY via description marker; DELETE /terms/T; assert HTTP 204 (idempotent no-op); GET; assert T still appears. PIN the no-effect-on-description-link contract.
+  4. `deleteTerm_followedByDescriptionEditRemovingMarker_termFullyRemoved_pinsRemedyPath` — execute test 1's setup; DELETE /terms/T (still appears); PUT /description with the `[[ns/T]]` marker removed; GET; assert T is now gone. PIN the documented-remedy path.
+
+  Pair with REFACTOR-NNN: choose (a) cascade-delete description-links OR (b) make the limit visible via 200 response with `description_link_remains: true`. Pair with DOC-NNN: update OpenAPI description + live docs.
+batch: 2026-05-25-ZG
+feature_id: null

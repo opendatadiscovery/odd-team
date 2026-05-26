@@ -1,0 +1,240 @@
+name: Additional Links — no rel='noopener noreferrer' AND no URL scheme validation
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-08
+  - P-09
+description: |-
+  NEW INVARIANT, batch ZE — TWO composed weaknesses on the
+  operator-configured `odd.links` catalogue:
+
+  (a) UI rendering at AppInfoMenu.tsx:60-66 sets
+      `target='_blank'` but does NOT set
+      `rel='noopener noreferrer'`. Any operator-configured URL can
+      use `window.opener` from the opened tab to navigate the
+      parent ODD Platform tab to a phishing page (reverse
+      tab-nabbing).
+
+  (b) Backend at AdditionalLinkProperties.java:8 does NOT validate
+      URL scheme — operator-supplied `javascript:alert(1)`,
+      `data:text/html,<script>...`, or `vbscript:...` URLs are
+      passed unsanitised through LinksController.java:31-33
+      (passthrough stream/map). React 17+ neutralises
+      `javascript:` in <a href> at runtime, but `data:text/html`
+      is admissible in many browsers and `vbscript:` is admissible
+      in IE-style legacy contexts.
+
+  THREAT MODEL — the operator-trust model assumes only the
+  operator edits odd.links. In a deployment where the operator
+  role is restricted (e.g. shared infrastructure team grants
+  config-edit permission to ODD-application owners), a
+  less-trusted role could weaponise (a) for tab-hijacking +
+  weaponise (b) for cross-site-scripting style payload delivery.
+  The combination is a phishing-vector amplifier rather than a
+  direct exploit; severity bounded by who controls operator
+  config.
+
+  Doc drift — the live
+  configuration-and-deployment/odd-platform page says
+  'opening in a new tab' (matches the target='_blank') and
+  'absolute URL' (matches the schema-omitted validation), but
+  silently assumes operators only set http(s) URLs and never
+  warns about the reverse-tabnabbing or URL-scheme vectors.
+
+  FIX ANCHORS:
+    (a) UI fix: AppInfoMenu.tsx:61 add `rel='noopener noreferrer'`
+        to the `<a target='_blank'>` element;
+    (b) Backend fix: add `@URL` or `@Pattern("^https?://")` to
+        AdditionalLinkProperties.Link.url field; OR validate at
+        @PostConstruct in AdditionalLinkConfiguration.
+
+  Severity: MEDIUM (operator-trust amplifier; bounded by who
+  controls operator config).
+
+  ## STRENGTHENED — batch ZJ (2026-05-26)
+
+  Batch ZJ adds the AppInfoMenu.tsx primary-source sidecar
+  (odd-platform__ts__components_shared_elements_AppToolbar_AppInfoMenu__ui-shell-widget__AppInfoMenu.md)
+  with a SIGNIFICANT scope-broadening: the rel-noopener gap is
+  NOT only on operator-configured links (the batch ZE finding) —
+  it is on ALL FIVE link sites rendered by the widget:
+
+    - 'AppInfoMenu.tsx:41' — the GitHub link (hardcoded
+      'opendatadiscovery/odd-platform')
+    - 'AppInfoMenu.tsx:61' — each operator-configured `odd.links`
+      entry (the batch ZE finding)
+    - 'AppInfoMenu.tsx:95' — the GitBook docs link (hardcoded
+      'docs.opendatadiscovery.org')
+    - 'AppInfoMenu.tsx:103' — the Slack invite link (hardcoded
+      'go.opendatadiscovery.org/slack')
+    - 'AppInfoMenu.tsx:112' — the Product Hunt feedback link
+      (hardcoded 'producthunt.com')
+
+  All FIVE use `<Link to={...} target='_blank'>` WITHOUT
+  `rel='noopener noreferrer'`. The four HARDCODED targets are
+  first-party-trusted today (docs.opendatadiscovery.org,
+  go.opendatadiscovery.org, github.com/opendatadiscovery,
+  producthunt.com) but inherit the same `window.opener` leak
+  as a defence-in-depth gap. A future XSS on any of those four
+  hosts would gain lateral movement into the ODD Platform tab
+  via `window.opener.navigate`.
+
+  **Operator-trust threat model EXTENDED**: the batch ZE finding
+  positioned this as an operator-config threat (operator weaponises
+  odd.links). The batch ZJ broadening positions it ALSO as a
+  third-party-XSS-amplifier — a future compromise of docs.opendatadiscovery.org
+  (community wiki contributors) or producthunt.com (third-party SaaS)
+  could pivot through the open `window.opener` reference.
+
+  Probe P-173 emitted (batch ZJ) — UI-side probe verifying
+  (a) tabnabbing-rel absence on all five link sites; (b) URL-scheme
+  sanitisation behaviour for javascript:/data:/vbscript: under
+  React's runtime sanitiser; (c) anonymous-DISABLED version
+  disclosure in rendered DOM; (d) keyboard-activation
+  inaccessibility (onMouseEnter only).
+
+  **A sibling accessibility gap surfaces at this widget** (NOT
+  security-class, but co-located): AppInfoMenu opens on
+  `onMouseEnter` ONLY (line 81). No `onClick`, no `onKeyDown`,
+  no `onFocus`. The ARIA attributes `aria-haspopup='true'` (line
+  80) + `aria-controls={menuId}` (line 79) CLAIM keyboard support
+  that does not exist. Captured separately as the
+  `app-info-menu-hover-only-aria-claims-keyboard-support-absent`
+  invariant (batch ZJ).
+
+  FIX ANCHOR ADJUSTMENT (batch ZJ scope expansion):
+    (a) UI fix: AppInfoMenu.tsx — add `rel='noopener noreferrer'`
+        to ALL FIVE `<Link target='_blank'>` sites (lines 41, 61,
+        95, 103, 112), not only line 61 as batch ZE originally
+        named.
+
+  ## STRENGTHENED — batch ZK (2026-05-26) — AdditionalLinkProperties binding-owner primary source
+
+  Batch ZK adds the AdditionalLinkProperties config-properties-class
+  primary-source sidecar (rev file-analyser/0.5.0) — the THIRD angle
+  on the same composed-weakness invariant. Prior angles:
+    - batch ZE: LinksController CONSUMER (the controller that serves
+      odd.links to /api/links — the response-layer angle)
+    - batch ZJ: AppInfoMenu UI RENDERER (the <Link target='_blank'>
+      site missing rel=noopener — the DOM-emission angle, scope
+      broadened to all 5 link sites at the widget)
+    - batch ZK: AdditionalLinkProperties BINDING-OWNER (this batch —
+      the `@ConfigurationProperties("odd")` record itself — the
+      source-of-truth where operator-supplied URLs first enter the
+      JVM)
+
+  The binding-owner angle confirms and DEEPENS finding (b) from the
+  binding side:
+
+  - **NO validation annotations on the inner Link record**:
+    AdditionalLinkProperties.java:8 is `record Link(String title, String
+    url)` — zero JSR-303 annotations (no `@URL`, no `@Pattern`, no
+    `@NotBlank`, no `@NotNull`, no `@Size`). The record-of-records
+    is the SOLE binding owner of `odd.links[].{title,url}`; defence
+    starts (or fails to start) here.
+  - **NO `@Validated` activator on the outer record**: even if a future
+    PR added JSR-303 constraints to Link's fields, they would not fire
+    without `@Validated` at the AdditionalLinkProperties class level.
+    Subtle gotcha for any future hardening PR.
+  - **Backend-side fix anchor refined**: the fix shape from batch ZE
+    ("add @URL or @Pattern at AdditionalLinkProperties.Link.url field")
+    is correct AND requires the `@Validated` activator added to the
+    outer class. Two-step fix, not one.
+
+  The `stress_findings.request_inputs.[url]` analysis (DRIFT_INPUT_NAME_VS_IMPLEMENTATION,
+  TRANSLATES_SILENTLY): the field name 'url' promises URL-shaped
+  validation; the implementation accepts ANY String. The 'silent'
+  aspect: no operator-facing surface (documentation, JSR-303 validation
+  error, application log) warns about scheme restrictions or invalid
+  URLs. Operator's typo (`wiki.internal` instead of
+  `https://wiki.internal`) renders as `<a href="wiki.internal">` which
+  the browser interprets as a relative path under the ODD host —
+  clicking hits `/wiki.internal` and 404s.
+
+  Five concrete failure-modes enumerated at the binding-owner angle:
+    (1) `javascript:` URL — React 17+ strips at render but click
+        handler may still fail / log console error
+    (2) `data:text/html,<script>alert(document.cookie)</script>` —
+        opens new tab rendering operator-supplied HTML
+    (3) Empty string `url=''` — renders as `<a href=''>` (clicking
+        reloads the ODD page)
+    (4) `null` — produces `<a>` with no href (non-clickable; visible
+        but inert)
+    (5) Operator typing `wiki.internal` instead of `https://wiki.internal` —
+        browser interprets as relative path
+
+  Triangulation count rises from 2 to 3.
+axes_present:
+  - controllers
+  - config_consumers
+  - ui_components
+  - ui_shell
+  - config_properties
+nodes:
+  - odd-platform java LinksController controller-class:LinksController
+  - odd-platform ts components/shared/elements/AppToolbar/AppInfoMenu ui-shell-widget:AppInfoMenu
+  - odd-platform java org.opendatadiscovery.oddplatform.config.properties config-properties-class:AdditionalLinkProperties
+contributors:
+  - 'LinksController.md:bugs_limitations_corner_cases.[0,2] — rel=noopener missing + URL scheme unvalidated'
+  - 'LinksController.md:docs_link_semantic.doc_drift_findings.[0,1] — doc claims opening-in-new-tab + absolute-URL but does not surface the gaps'
+  - 'LinksController.md:security.known_security_gaps.[1,2] — URL scheme + rel=noopener'
+  - |-
+    AppInfoMenu.md (batch ZJ ui-shell-widget primary source):
+      bugs_limitations_corner_cases.[0] MEDIUM (ALL FIVE link sites missing rel=noopener — broader than the F-035 facet's operator-configured-only scope);
+      security.known_security_gaps.[0] MEDIUM (5-site tabnabbing surface);
+      security.known_security_gaps.[1] MEDIUM (URL-scheme passthrough — javascript:/data:/vbscript:);
+      docs_link_semantic.doc_drift_findings.[0,1] (live doc silent on rel-missing AND URL-scheme validation);
+      stress_findings.probes_emitted P-173
+  - |-
+    AdditionalLinkProperties.md (batch ZK config-properties-class
+    binding-owner primary source — STRENGTHENS):
+      bugs_limitations_corner_cases.[0] MEDIUM (no JSR-303 validation —
+      title/url accept null, empty, malformed strings, any URL scheme);
+      bugs_limitations_corner_cases.[6] LOW (no @Validated activator on
+      outer class — would-be JSR-303 constraints would not fire);
+      stress_findings.request_inputs.[url] DRIFT_INPUT_NAME_VS_IMPLEMENTATION
+      TRANSLATES_SILENTLY (5 enumerated failure-modes);
+      security.known_security_gaps.[0] MEDIUM (no URL-scheme validation
+      at binding — defence-in-depth pushed entirely to UI layer);
+      security.known_security_gaps.[1] LOW (no @Validated activator);
+      security.known_security_gaps.[2] LOW (no @NotBlank on title —
+      invisible-but-clickable menu item plantable);
+      stress_findings.probes_emitted P-177 (backend-side URL-scheme
+      passthrough verification — complements P-173 UI side)
+evidence:
+  - LinksController.md:bugs_limitations_corner_cases.[0,2]
+  - LinksController.md:docs_link_semantic.doc_drift_findings.[0,1]
+  - LinksController.md:security.known_security_gaps.[1,2]
+  - 'AppInfoMenu.md:bugs_limitations_corner_cases.[0] (ALL FIVE link sites — github line 41, operator-config line 61, gitbook line 95, slack line 103, feedback line 112 — missing rel=noopener)'
+  - 'AppInfoMenu.md:security.known_security_gaps.[0] (5-site tabnabbing surface; hardcoded targets inherit the same window.opener leak as defence-in-depth gap)'
+  - 'AppInfoMenu.md:security.known_security_gaps.[1] (URL-scheme passthrough — javascript:/data:/vbscript: pass through AdditionalLinkProperties.Link.url; React 17+ neutralises javascript: but not data:)'
+  - 'AppInfoMenu.md:docs_link_semantic.doc_drift_findings.[0] (live doc silent on rel-noopener)'
+  - 'AppInfoMenu.md:docs_link_semantic.doc_drift_findings.[1] (live doc silent on URL-scheme validation)'
+  - '**batch ZK NEW** AdditionalLinkProperties.md:bugs_limitations_corner_cases.[0] — no JSR-303 on title/url; record accepts any String; binding-owner primary source'
+  - 'AdditionalLinkProperties.md:bugs_limitations_corner_cases.[6] — no @Validated activator on outer record; constraint additions would not fire without it'
+  - 'AdditionalLinkProperties.md:stress_findings.request_inputs.[url] — TRANSLATES_SILENTLY with 5 enumerated failure modes (javascript:/data:/empty/null/relative-path)'
+  - 'AdditionalLinkProperties.md:security.known_security_gaps.[0,1,2,3] — URL scheme passthrough at binding; no @Validated; no @NotBlank on title; namespace-overclaim latent foot-gun'
+  - 'AdditionalLinkProperties.md:stress_findings.probes_emitted.[P-177] (backend-side URL-scheme verification — complements P-173 UI angle)'
+related_features: []
+related_pillar_features:
+  - P-08
+  - P-09
+triangulation_count: 3
+cross_batch: true
+cross_batch_refs:
+  - batch-ZE (LinksController backend primary source — operator-configured links only — consumer angle)
+  - batch-ZJ (AppInfoMenu UI primary source — scope broadened to ALL FIVE link sites; defence-in-depth framing added — DOM-emission angle)
+  - batch-ZK (AdditionalLinkProperties config-properties-class binding-owner primary source; 5 enumerated failure modes; fix shape refined to two-step — outer @Validated + per-field constraints)
+notes: |-
+  Cross-references:
+    - F-035 (Operator-configured Additional Links feature flow —
+      the batch ZE feature surface)
+    - `app-info-menu-hover-only-aria-claims-keyboard-support-absent`
+      (NEW batch ZJ — sibling accessibility gap at the same widget)
+    - `additional-link-operator-configured` (the entity this
+      invariant attaches to)
+    - `partial-home-configurationproperties-pattern` (batch ZK NEW
+      cross-cutting connection — AdditionalLinkProperties is a third
+      instance of the partial-home pattern; @ConfigurationProperties("odd")
+      binds only `links`, leaving tenant-id/platform-base-url/etc. as
+      @Value-scattered reads)

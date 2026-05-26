@@ -1,0 +1,54 @@
+gap_id: TEST-GAP-1000
+category: missing-edge-case
+criticality: LOW
+node_ids:
+  - "odd-platform ts routes route:terms"
+pillars_affected: [P-06]
+surfaced_by:
+  - 'terms.md:bugs_limitations_corner_cases.[useTermsRouteParams returns termId: NaN when the URL has a non-numeric segment] severity LOW'
+  - 'terms.md:bugs_limitations_corner_cases.[useTermsRouteParams is reused outside the /terms/:termId/* subtree] severity LOW'
+  - 'terms.md:concepts.invariants.[The termId coercion in useTermsRouteParams swallows NaN]'
+  - 'terms.md:tests_coverage_semantic.uncovered_behaviours.[useTermsRouteParams returns { termId: NaN, termSearchId: undefined } when invoked outside a matching route]'
+behaviour: |-
+  **LOW — `useTermsRouteParams()` at termsRoutes.ts:60 calls `parseInt(termId, 10)` with NO `isNaN` / `Number.isFinite` guard and NO `Partial<>`-aware return shape.** Two failure modes:
+
+  (a) **Non-numeric URL segment**: URL `/terms/foo/overview` → `termId = 'foo'` (string from useParams) → `parseInt('foo', 10) = NaN` → hook returns `termId: NaN` typed as `Term['id']` (= `number`). Downstream `TermDetails.tsx:38` dispatches `fetchTermDetails({termId: NaN})` which serialises to `termId=NaN` in the URL; backend `TermController.getTermDetails` (per the controller sidecar) returns 404 because path-bind from "NaN" to a `Long` parameter fails. The UI shows the AppErrorPage (TermDetails.tsx:80-83) — a slightly less helpful failure than "invalid term id".
+
+  (b) **Hook reused outside `/terms/:termId/*` subtree**: TermSearch.tsx:26 calls `useTermsRouteParams` from `/termsearch/*` where React Router does NOT bind `:termId`. The destructure produces `termId = undefined`, `parseInt(undefined, 10) = NaN`, and the hook returns `{ termId: NaN, termSearchId: ... }`. TermSearch.tsx ignores the `termId` field, so the hook "works by accident". Its return shape is dishonest in this caller's context — a future TermSearch refactor that reads `termId` silently gets `NaN`.
+
+  **Same shape as TEST-GAP-422 (DataEntityDetails parseInt NaN) and TEST-GAP-849 (LineageGraphView NaN propagation) and TEST-GAP-997 (useIntegrationRouteParams type-assertion lie)** — a PROJECT-WIDE PATTERN of `useParams<T>() as T` casts + parseInt without guards. The four findings together pin the anti-pattern across the routes/ directory.
+
+  **No test pins either failure mode**: a regression that ADDS the `isNaN` guard (improving UX) ships green; a new TermSearch consumer that mistakenly reads `termId` ships green and emits a /api/terms/NaN request.
+test_class: missing-edge-case
+criticality_rationale: |-
+  Sidecar rates this LOW and held LOW: (a) the current symptom is "404 + AppErrorPage", not data corruption; (b) the cross-route reuse (TermSearch.tsx) ignores termId by convention; (c) ZERO current operator-discovery evidence; (d) defence-in-depth at the backend (TermController returns 404 for unparseable IDs) bounds the impact. Logged primarily for PROJECT-WIDE PATTERN coverage — paired with TEST-GAP-422 / TEST-GAP-849 / TEST-GAP-997 (route-param type-assertion drift family). NOT escalated for cross-pillar — sticks within P-06.
+test_files_existing: []
+test_files_proposed:
+  path: 'odd-platform-ui/src/routes/__tests__/termsRoutes.useTermsRouteParams.test.tsx'
+  name: 'useTermsRouteParams_nonNumericTermId_returnsNaNAsNumber'
+evidence:
+  - 'terms.md says (bugs_limitations_corner_cases.[NaN coercion]): useTermsRouteParams returns termId: NaN when the URL has a non-numeric segment. Line 60: parseInt(termId, 10). URL /terms/foo/overview → termId = foo → parseInt(foo, 10) = NaN. The hook does NOT check isNaN and returns NaN typed as Term[id] (= number) — a type-system lie. severity: LOW'
+  - 'terms.md says (bugs_limitations_corner_cases.[cross-route reuse]): useTermsRouteParams is reused outside the /terms/:termId/* subtree — TermSearch.tsx:26 calls it from the /termsearch/* subtree. In that subtree React Router does NOT bind :termId. The hook works by accident — its return shape is dishonest in this caller context. severity: LOW'
+  - 'terms.md says (concepts.invariants): The termId coercion in useTermsRouteParams swallows NaN. The hook itself has no guard, no isNaN check, no fallback. The backend (TermController.getTermDetails) responds 404; the UI surfaces the AppErrorPage at TermDetails.tsx:80-83.'
+  - 'Verified at primary source: termsRoutes.ts:60 (parseInt(termId, 10) with no guard) + TermDetails.tsx:25 (consumer) + TermDetails.tsx:38 (fetchTermDetails({termId})) + TermSearch.tsx:26 (cross-route reuse)'
+cross_references:
+  - 'TEST-GAP-422 (DataEntityDetails parseInt NaN propagation — sister-shape, same anti-pattern in dataEntitiesRoutes)'
+  - 'TEST-GAP-849 (LineageGraphView NaN propagation — sister-shape, project-wide pattern)'
+  - 'TEST-GAP-997 (useIntegrationRouteParams type-assertion lie — BATCH ZH sister)'
+  - 'F-001 (cross-cutting Data Entity Details — same anti-pattern surfaces in P-01)'
+proposed_action: |-
+  Add `termsRoutes.useTermsRouteParams.test.tsx`:
+
+  (a) `useTermsRouteParams_inMatchingRoute_returnsNumericTermId`: render the hook inside `<MemoryRouter initialEntries={['/terms/42/overview']}>` with route `<Route path='/terms/:termId/*' element={<TestHookConsumer />}>`; assert `termId === 42` (typeof number).
+
+  (b) `useTermsRouteParams_nonNumericSegment_returnsNaNTypedAsNumber`: render inside `<MemoryRouter initialEntries={['/terms/foo/overview']}>`; assert `termId` is `NaN` and `Number.isNaN(termId) === true`; documents the swallowing explicitly.
+
+  (c) `useTermsRouteParams_calledFromTermsearchSubtree_returnsNaNAndIgnoredByConsumer`: render inside `<MemoryRouter initialEntries={['/termsearch/uuid-abc']}>` (no `:termId` in path); assert `termId` is `NaN` (the cross-route reuse anti-pattern); assert `termSearchId === 'uuid-abc'`.
+
+  Add a comment at termsRoutes.ts:58 documenting: 'parseInt without isNaN guard returns NaN typed as Term[id] number. The hook assumes the caller is inside /terms/:termId/*. If you call this from another route or the URL has a non-numeric segment, expect NaN — currently propagates to fetchTermDetails as termId=NaN. Backend returns 404. See TEST-GAP-1000 + TEST-GAP-422 + TEST-GAP-849 + TEST-GAP-997 for the project-wide route-param anti-pattern.'
+related_features: [F-001]
+related_pillar_features: ['P-06:F-001']
+related_refactor_ids: []
+related_doc_gap_ids: []
+batch: 2026-05-26-ZH
+feature_id: F-001

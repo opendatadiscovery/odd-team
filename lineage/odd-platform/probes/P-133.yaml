@@ -1,0 +1,124 @@
+---
+probe_id: P-133
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__FeatureController__controller-class__FeatureController
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: security
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category D — DISABLED-mode anonymous reachability + the
+  PROVIDER-NULL-BLEED-LIMITED-RISK FACET of REFACTOR-185; plus Category B —
+  name-behavior drift `getActiveFeatures` vs boot-snapshot): Under
+  auth.type=DISABLED (the bundled default per application.yml:34), does an
+  anonymous curl caller actually receive 200 OK on GET /api/features/active
+  with a FeatureList body? Static inference says yes
+  (DisabledAuthSecurityConfiguration.java:13-18 short-circuits with
+  `.anyExchange().permitAll()`; FeatureController.java:12-21 has no
+  @PreAuthorize; FeatureResolverImpl.java:33-36 has no programmatic gate),
+  but REFACTOR-185's HIGH-severity blast-radius claim relies on this being
+  empirically verifiable. This probe ALSO pins the boot-immutability invariant
+  by toggling the feature flag mid-run and confirming the response does NOT
+  reflect the new value until restart — the operator-visible drift between
+  the endpoint name 'getActiveFeatures' (implies runtime-current) and the
+  implementation (boot-snapshot per FeatureResolverImpl.java:14, 16-31).
+---
+arrange:
+  - kind: docker-compose-up
+    env:
+      AUTH_TYPE: DISABLED
+      DATACOLLABORATION_ENABLED: "true"
+      NOTIFICATIONS_ENABLED: "false"
+  - kind: wait-for-readiness
+    endpoint: /actuator/health
+    timeout_seconds: 60
+act:
+  - kind: rest
+    method: GET
+    path: /api/features/active
+    headers: {}
+    follow_redirects: false
+    capture_as: response_disabled_anon
+  - kind: shell
+    command: |
+      # Boot-immutability probe: change env without restart.
+      # The bundled application.yml exposes management endpoints
+      # 'health, prometheus, env, info' (application.yml:228-231) but NOT
+      # 'refresh', so a /actuator/refresh roundtrip is not available out of
+      # the box. The realistic operator scenarios are:
+      #   - kubectl set env (re-pulls env, but k8s rolling-restart restarts the pod anyway)
+      #   - docker exec ... bash -c 'export DATACOLLABORATION_ENABLED=false'
+      #     (does NOT affect the running JVM)
+      # For the probe, an in-place export simulates an operator attempting
+      # the latter and SHOULD have no effect on the running JVM.
+      docker exec odd-platform-api bash -c 'export DATACOLLABORATION_ENABLED=false'
+  - kind: rest
+    method: GET
+    path: /api/features/active
+    headers: {}
+    follow_redirects: false
+    capture_as: response_after_env_change
+  - kind: docker-compose-restart
+    service: odd-platform-api
+    env:
+      AUTH_TYPE: DISABLED
+      DATACOLLABORATION_ENABLED: "false"
+      NOTIFICATIONS_ENABLED: "true"
+  - kind: wait-for-readiness
+    endpoint: /actuator/health
+    timeout_seconds: 60
+  - kind: rest
+    method: GET
+    path: /api/features/active
+    headers: {}
+    follow_redirects: false
+    capture_as: response_after_restart
+observe:
+  - kind: capture
+    name: status_phase1
+    expression: response_disabled_anon.status
+  - kind: capture
+    name: items_phase1
+    expression: response_disabled_anon.body.items
+  - kind: capture
+    name: items_phase2
+    expression: response_after_env_change.body.items
+  - kind: capture
+    name: items_phase3
+    expression: response_after_restart.body.items
+assert:
+  - "status_phase1 == 200  # the PROVIDER-NULL-BLEED-LIMITED-RISK reachability claim"
+  - "items_phase1 contains 'DATA_COLLABORATION'"
+  - "not items_phase1 contains 'ALERT_NOTIFICATIONS'"
+  - "items_phase2 == items_phase1  # the boot-snapshot DRIFT_NAME_VS_BEHAVIOR claim"
+  - "not items_phase3 contains 'DATA_COLLABORATION'"
+  - "items_phase3 contains 'ALERT_NOTIFICATIONS'"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__FeatureController__controller-class__FeatureController
+    - odd-platform__java__IdentityController__controller-class__IdentityController
+    - odd-platform__java__DisabledAuthSecurityConfiguration__config-key-consumer__auth_type@L10
+  retrospectives: []
+realism_caveats: |
+  Phase 2 is the load-bearing assertion for the boot-immutability drift
+  finding (stress_findings.name_behavior_pairs[0]). The exact runtime-mutation
+  mechanism (env-update without restart) depends on the deployment substrate.
+  For Spring Boot with @Value-injected fields in a @Component constructor,
+  the documented behavior is that values are bound ONCE at bean construction;
+  /actuator/refresh would NOT cause the FeatureResolverImpl bean to be
+  re-instantiated unless @RefreshScope is added. The probe should pass
+  trivially because the resolver has no @RefreshScope annotation
+  (FeatureResolverImpl.java:12 only declares @Component). If the maintainer
+  wishes to test a richer mutation path (e.g. Spring Cloud Config refresh,
+  JMX property override), the shell step must be specialized — and the
+  expected behavior STILL is that items_phase2 == items_phase1, because the
+  immutability is in the final field assignment, not in the property source.
+  Phase 3 verifies that a full restart DOES propagate the new value — a
+  control case proving the env-update mechanism itself works and isolating
+  the immutability defect to the in-process resolver.

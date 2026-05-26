@@ -1,0 +1,195 @@
+---
+probe_id: P-145
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DataCollaborationController__controller-class__DataCollaborationController
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-051
+test_class: security
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question: DataCollaborationController.redirect (`:41-49`) emits
+  `ResponseEntity.status(FOUND).headers(h -> h.setLocation(URI.create(providerUrl))).build()`
+  where `providerUrl` comes from Slack's chat.getPermalink API via
+  SlackAPIClientImpl.exchangeForUrl (`:83-95`) UNCONDITIONALLY. There is NO
+  validation of the URL host, scheme, structure, or content before it is
+  emitted as the Location header of a 302 response.
+
+  Hypothesis: this is a classic open-redirect-class surface. The trust
+  assumption is "Slack returns slack.com URLs"; the assumption is enforced
+  nowhere in the platform's code. If a (hypothetical) compromised Slack
+  workspace, a man-in-the-middle on the Slack API connection (under poorly-
+  configured TLS), or a future Slack API behaviour change ever returned a
+  non-slack.com URL, the platform becomes an open redirector trusted by
+  every authenticated UI user.
+
+  The probe arranges a WireMock for `chat.getPermalink` that returns three
+  classes of attacker-controlled URLs and asserts the controller emits the
+  302 Location header verbatim:
+
+  (1) **External HTTPS URL** — `https://evil.example.com/landing-page` — the
+      classic phishing-redirect scenario. The browser follows the redirect;
+      the user lands on a non-slack.com site. The UI's "Open in Slack" button
+      (`Message.tsx:60-66`) targets `_blank`, so the new tab has no
+      Referer-based defense.
+
+  (2) **Javascript URL** — `javascript:alert('XSS')` — a more pathological
+      case. URI.create accepts this syntactically; modern browsers block
+      javascript: in Location headers (per WHATWG fetch spec, javascript: URIs
+      in Location are disallowed since 2019), so the user-impact is bounded —
+      but the platform STILL emits the header.
+
+  (3) **Malformed URL** — `not a url at all` — URI.create THROWS
+      IllegalArgumentException for malformed input. The exception bubbles to
+      the WebFlux exception handler as 500 Internal Server Error. The user
+      sees a 5xx page; the platform reveals a stack trace in dev mode and a
+      generic 500 in prod.
+
+  Confirmed = the platform has zero URL-validation in this path. Mitigation
+  recommendation: add a host allowlist check (e.g.,
+  `URI.create(providerUrl).getHost().endsWith(".slack.com")`) before the
+  setLocation call.
+---
+arrange:
+  - kind: docker-compose-up
+    services: [postgres, odd-platform-api]
+    env:
+      DATACOLLABORATION_ENABLED: "true"
+      DATACOLLABORATION_SLACK_OAUTH_TOKEN: "xoxb-stub-for-probe"
+      AUTH_TYPE: "LOGIN_FORM"
+      AUTH_LOGIN_FORM_CREDENTIALS: "probe:probe"
+  - kind: wiremock-up
+    matcher: "POST https://slack.com/api/chat.getPermalink"
+    response_initial: |
+      placeholder — overridden per-act-step via wiremock-update
+  - kind: rest
+    method: POST
+    path: /login
+    body: { username: probe, password: probe }
+    capture_as: session_cookie
+  - kind: sql
+    query: |
+      INSERT INTO message (uuid, created_at, data_entity_id, state, provider,
+                           provider_channel_id, provider_channel_name,
+                           provider_message_id, owner_id, text)
+      VALUES ('11223344-5566-1778-99aa-bbccddeeff00'::uuid,
+              '2024-01-01 00:00:00.000+00:00'::timestamptz,
+              1, 1, 'SLACK', 'C001', 'alerts-team',
+              '1234567890.000200', null, 'probe seeded for open-redirect class')
+act:
+  # (1) External HTTPS URL — the classic phishing-redirect case
+  - kind: wiremock-update
+    matcher: "POST https://slack.com/api/chat.getPermalink"
+    response_updated: |
+      { "ok": true, "permalink": "https://evil.example.com/landing-page" }
+  - kind: rest
+    method: GET
+    path: /api/messages/11223344-5566-1778-99aa-bbccddeeff00/url
+    cookie: "{session_cookie}"
+    follow_redirects: false
+    capture_as: response_external_https
+  # (2) Javascript: URL — the historical XSS case
+  - kind: wiremock-update
+    matcher: "POST https://slack.com/api/chat.getPermalink"
+    response_updated: |
+      { "ok": true, "permalink": "javascript:alert('XSS')" }
+  - kind: rest
+    method: GET
+    path: /api/messages/11223344-5566-1778-99aa-bbccddeeff00/url
+    cookie: "{session_cookie}"
+    follow_redirects: false
+    capture_as: response_javascript_uri
+  # (3) Malformed URL — the URI.create-throws case
+  - kind: wiremock-update
+    matcher: "POST https://slack.com/api/chat.getPermalink"
+    response_updated: |
+      { "ok": true, "permalink": "not a url at all" }
+  - kind: rest
+    method: GET
+    path: /api/messages/11223344-5566-1778-99aa-bbccddeeff00/url
+    cookie: "{session_cookie}"
+    follow_redirects: false
+    capture_as: response_malformed_url
+  # (4) Confirm the happy path still works with a real slack.com URL
+  - kind: wiremock-update
+    matcher: "POST https://slack.com/api/chat.getPermalink"
+    response_updated: |
+      { "ok": true,
+        "permalink": "https://test-workspace.slack.com/archives/C001/p1234567890" }
+  - kind: rest
+    method: GET
+    path: /api/messages/11223344-5566-1778-99aa-bbccddeeff00/url
+    cookie: "{session_cookie}"
+    follow_redirects: false
+    capture_as: response_happy_path
+observe: []
+assert:
+  # (1) External HTTPS URL emits 302 with the attacker URL as Location header verbatim
+  - "response_external_https.status == 302"
+  - "response_external_https.headers.location == 'https://evil.example.com/landing-page'"
+  - "not response_external_https.headers.location.startswith('https://') or not '.slack.com' in response_external_https.headers.location"
+  # (2) Javascript: URI is emitted in Location header (browser-side blocking is out of scope)
+  - "response_javascript_uri.status == 302"
+  - "response_javascript_uri.headers.location.startswith('javascript:')"
+  # (3) Malformed URL causes URI.create to throw → 500 Internal Server Error
+  - "response_malformed_url.status == 500"
+  # (4) Happy path: real slack.com URL → 302 with the slack.com URL
+  - "response_happy_path.status == 302"
+  - "response_happy_path.headers.location.endswith('slack.com/archives/C001/p1234567890')"
+cleanup:
+  - kind: sql
+    query: "DELETE FROM message WHERE uuid = '11223344-5566-1778-99aa-bbccddeeff00'::uuid"
+  - kind: docker-compose-down
+    destroy_volumes: true
+  - kind: wiremock-down
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DataCollaborationController__controller-class__DataCollaborationController
+  retrospectives: []
+realism_caveats: |
+  The probe pins the load-bearing claim: the platform emits whatever URL
+  Slack returned verbatim, without host/scheme/structure validation.
+
+  The probe does NOT assert any operational exploit — it does NOT assume
+  Slack's API is compromised. The probe scenario is:
+  "IF the Slack API ever returned a non-slack.com URL for any reason
+  (compromise, MitM under poor TLS, API behaviour change, bug in
+  chat.getPermalink), THEN the platform's redirect endpoint becomes an
+  attacker-controlled redirector trusted by every authenticated UI user
+  via the 'Open in Slack' button on Message.tsx:60-66."
+
+  The current operational risk depends entirely on Slack's API integrity.
+  Slack has not publicly disclosed any incident where chat.getPermalink
+  returned a non-permalink URL. The hypothetical class is documented in
+  OWASP A01:2021 — Broken Access Control / Unvalidated Redirects.
+
+  The probe also does not exercise:
+  - HTTP-vs-HTTPS Slack URLs (chat.getPermalink should always return
+    https://; a non-https URL would be an additional smell).
+  - URL-encoded attack payloads (e.g., `https://evil.example.com/%2F%2E%2E`)
+    — the platform uses URI.create which decodes per RFC 3986; a follow-up
+    probe could exercise URI-decoding edge cases.
+  - The "redirect chain" case (a chain of multiple redirects on the
+    attacker's domain after the platform redirects to evil.example.com)
+    — that's a browser-side concern, not the platform's responsibility.
+
+  If the platform ever adds URL-validation to the redirect path (e.g., a
+  host allowlist check, or a structural URL parser before
+  ResponseEntity.setLocation), this probe MUST be re-run; the current
+  claim is correct only for commit 4ec2b20.
+
+  The mitigation is a small block of code along these lines:
+    URI loc = URI.create(providerUrl);
+    if (loc.getScheme() == null || !loc.getScheme().equals("https")
+        || loc.getHost() == null
+        || !(loc.getHost().endsWith(".slack.com")
+             || loc.getHost().equals("slack.com"))) {
+        return Mono.error(new IllegalStateException(
+            "Refusing to redirect to non-slack.com URL: " + providerUrl));
+    }
+  — but it requires a policy decision about which Slack-related hosts are
+  trusted (workspace subdomains follow `{workspace}.slack.com`, app
+  subdomains follow `app.slack.com`, edu workspaces follow
+  `{workspace}.enterprise.slack.com`).

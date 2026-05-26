@@ -1,0 +1,79 @@
+gap_id: TEST-GAP-951
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - 'odd-platform java RelationshipController controller-class:RelationshipController'
+surfaced_by:
+  - 'odd-platform__java__RelationshipController__controller-class__RelationshipController.md:tests_coverage_semantic.uncovered_behaviours.[6]'
+  - 'odd-platform__java__RelationshipController__controller-class__RelationshipController.md:bugs_limitations_corner_cases.[0]'
+  - 'odd-platform__java__RelationshipController__controller-class__RelationshipController.md:stress_findings.request_inputs.[4] (relationshipId path-param drift)'
+behaviour: |-
+  **TRANSLATES_SILENTLY — `relationshipId` path parameter on
+  GET /api/relationships/erd/{relationship_id} and
+  GET /api/relationships/graph/{relationship_id} promises the
+  `relationships`-table primary key but the SQL at
+  ReactiveRelationshipsRepositoryImpl.java:194 filters by
+  `relationshipsDataEntity.field(DATA_ENTITY.ID).eq(relationshipId)` —
+  the data_entity.id column, NOT relationships.id.** The list endpoint's
+  response maps `.id(item.dataEntityRelationship().getId())` at
+  RelationshipMapper.java:53 — the data_entity id. UI round-trip works
+  because the list and detail endpoints both speak data_entity.id under
+  the parameter name `relationship_id`. A third-party API consumer
+  reading the OpenAPI spec literally (where `relationship_id` plus the
+  operation summary 'Get erd relationship by id' reads as the
+  relationships-table id) and supplying the actual `relationships.id`
+  value gets 404 — or worse, a 200 for an UNRELATED relationship if the
+  data_entity.id and relationships.id values happen to collide (both
+  bigserial; collision is admissible across two independent counters).
+
+  LSN-020 class — input-name-vs-implementation drift. The fix candidate
+  is changing line 194 from
+  `relationshipsDataEntity.field(DATA_ENTITY.ID).eq(relationshipId)` to
+  `RELATIONSHIPS.ID.eq(relationshipId)` AND updating the list endpoint's
+  mapper at RelationshipMapper.java:53 to surface
+  `relationshipPojo().getId()` as the response `id` field. Both halves
+  needed for the rename — either half alone breaks the UI round-trip.
+test_class: integration
+test_files_existing: []
+test_files_proposed:
+  - path: 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/RelationshipControllerIdParamSemanticsTest.java'
+    name: 'getERDRelationshipById_relationshipsTableIdValue_returns404Today_returns200AfterFix'
+  - path: 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/RelationshipControllerIdParamSemanticsTest.java'
+    name: 'getERDRelationshipById_dataEntityIdValue_returns200Today_consistentAfterFix'
+  - path: 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/RelationshipControllerIdParamSemanticsTest.java'
+    name: 'getGraphRelationshipById_idAlignmentSymmetricWithERD'
+  - path: 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/RelationshipControllerIdParamSemanticsTest.java'
+    name: 'multipleRelationshipsPerDataEntity_detailEndpoint_handlesMultiRowGracefully'
+evidence:
+  - 'RelationshipController.md says: "the OpenAPI parameter relationship_id and Java parameter relationshipId promise the relationships-table primary key; the SQL at ReactiveRelationshipsRepositoryImpl.java:194 filters by relationshipsDataEntity.field(DATA_ENTITY.ID).eq(relationshipId) — the data_entity.id, NOT relationships.id"'
+  - 'RelationshipController.md says: "A third-party API consumer reading the OpenAPI spec literally and supplying the relationships.id value gets a 404; UI clients work because the list response returns data_entity.id as the id field, so list-then-detail is a self-consistent round-trip"'
+  - 'Source: RelationshipController.java:31, 39 + ReactiveRelationshipsRepositoryImpl.java:194 + RelationshipMapper.java:53 + V0_0_87__create_relation_tables.sql:1-10'
+  - 'P-128 referenced — probe for runtime confirmation'
+  - 'Grep against test files for RelationshipController or Relationship*Test in odd-platform-api/src/test: 0 matches (verified 2026-05-25)'
+cross_references:
+  - 'P-128 (relationshipId name vs SQL filter target probe)'
+  - 'TEST-GAP-912 (DataQuality Title filter — sibling LSN-020 instance)'
+  - 'LSN-020 case-law (input-name-vs-implementation drift class)'
+  - 'DOC-GAP-271 (sibling — undocumented filter parameter semantics on /api/dataqatests/runs)'
+related_refactor_ids: []
+related_doc_gap_ids: []
+related_pillar_features:
+  - 'P-02 Data Modelling'
+related_features: []
+proposed_action: |-
+  Author RelationshipControllerIdParamSemanticsTest as a @SpringBootTest +
+  WebTestClient harness with a seeded relationship row whose
+  data_entity.id ≠ relationships.id (e.g. data_entity.id=100,
+  relationships.id=42). Three cases:
+  (a) call with relationships.id=42 → assert current behaviour (404) AND
+  fail-loud after the fix lands (becomes 200);
+  (b) call with data_entity.id=100 → assert current behaviour (200) AND
+  must remain 200 after the maintainer migrates the contract;
+  (c) symmetric Graph variant.
+  Plus a fourth case for the schema-admits-multi-row sub-case
+  (V0_0_87 has no UNIQUE on relationships.data_entity_id): seed two
+  rows with the same data_entity_id and assert the detail endpoint
+  returns a single deterministic row OR fails cleanly (per the mono()
+  expected-one-row contract).
+maintainer_curated: false
+batch: 2026-05-25-ZE

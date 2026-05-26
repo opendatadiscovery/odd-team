@@ -1,0 +1,190 @@
+---
+probe_id: P-152
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__DataEntityRunController__controller-class__DataEntityRunController
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-022
+test_class: security
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category D — auth gate; cross-owner-read posture):
+  GET /api/dataentities/{data_entity_id}/runs is NOT listed in
+  SecurityConstants.SECURITY_RULES (SecurityConstants.java:98-355
+  enumerates write-side gates only — no entry for this endpoint).
+  The AuthorizationCustomizer's catch-all (.pathMatchers("/**").authenticated())
+  applies: any authenticated user can read any data entity's run
+  history, irrespective of data-entity ownership.
+
+  This is the SAME cross-owner-read posture observed at four DataQualityController
+  endpoints (REFACTOR-024 family — batch T sidecar). The runs-history
+  endpoint is a NEW invocation site of the same posture: a 5th DQ read
+  surface that ignores owner-scoping. Operator-visible consequence:
+  any logged-in user can enumerate the full run history (start time,
+  end time, status, status_reason text) for any DQ test or
+  data-transformer across the whole catalog, including entities whose
+  associated dataset they don't own.
+
+  status_reason is a free-form text field set by the test framework
+  (Great Expectations / dbt / custom — see test-results-import.md);
+  it commonly contains row-level diagnostics (column names, sample
+  values, failed-row counts). A non-owner user reading run history
+  effectively gets a data-quality-diagnostic leak channel.
+
+  Probe verifies the cross-owner-read behaviour in LOGIN_FORM and
+  OAUTH2 modes by:
+  (a) creating 2 users (alice = owner, bob = non-owner)
+  (b) ingesting a DQ test owned by alice
+  (c) confirming bob CAN read /api/dataentities/{id}/runs
+  (d) confirming unauthenticated callers CANNOT (catch-all
+      .authenticated())
+---
+arrange:
+  - kind: docker-compose-up
+    services: [postgres, odd-platform-api]
+    env_overrides:
+      AUTH_TYPE: "LOGIN_FORM"
+      AUTH_LOGIN_FORM_CREDENTIALS: "alice:alicepwd,bob:bobpwd"
+  - kind: sql
+    description: "Seed a DQ-test entity + ownership tied to alice"
+    query: |
+      INSERT INTO data_source (id, oddrn, name, namespace_id, collector_id, token_id, active, created_at, updated_at)
+      VALUES (6200, '//probe-source/p152/dq', 'p152_dq_source', 1, 1, 1, true, NOW(), NOW())
+      ON CONFLICT DO NOTHING;
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, entity_class_ids, status, hollow, manually_created, exclude_from_search, created_at, updated_at)
+      VALUES (6201, '//probe-source/p152/dq/test1', 'p152_dq_test', 6200, 9, ARRAY[4], 1, false, false, false, NOW(), NOW())
+      ON CONFLICT DO NOTHING;
+      INSERT INTO owner (id, name, created_at, updated_at)
+      VALUES (6210, 'alice_owner', NOW(), NOW())
+      ON CONFLICT DO NOTHING;
+      INSERT INTO ownership (data_entity_id, owner_id, title_id, created_at, updated_at)
+      VALUES (6201, 6210, 1, NOW(), NOW())
+      ON CONFLICT DO NOTHING;
+      INSERT INTO user_owner_mapping (oidc_username, owner_id, provider, created_at)
+      VALUES ('alice', 6210, 'login_form', NOW())
+      ON CONFLICT DO NOTHING;
+  - kind: sql
+    description: "Seed a run row with a status_reason payload representing test diagnostics"
+    query: |
+      INSERT INTO data_entity_task_run (oddrn, task_oddrn, name, start_time, end_time, status, status_reason, type)
+      VALUES
+        ('//probe-source/p152/run/failed', '//probe-source/p152/dq/test1', 'failed_run',
+         NOW() - INTERVAL '30 minutes', NOW() - INTERVAL '25 minutes', 'FAILED',
+         'expectation failed: column user_email matched regex on 23 of 100 rows. Sample failing values: alice@internal.example.com, bob@internal.example.com',
+         'DATA_QUALITY_TEST_RUN');
+act:
+  - kind: login
+    user: alice
+    password: alicepwd
+    capture_session_as: alice_session
+  - kind: login
+    user: bob
+    password: bobpwd
+    capture_session_as: bob_session
+  # T1: alice (owner) — expected 200, sees full run with status_reason
+  - kind: rest
+    description: "alice (owner) reads her own DQ test's run history"
+    method: GET
+    path: /api/dataentities/6201/runs?page=1&size=10
+    session: alice_session
+    capture_as: t1_alice_runs
+  # T2: bob (non-owner) — expected 200 if cross-owner-read posture holds; expected 403 if owner-scoped
+  - kind: rest
+    description: "bob (non-owner) attempts to read alice's DQ test runs — HYPOTHESIS: 200 + full diagnostic payload"
+    method: GET
+    path: /api/dataentities/6201/runs?page=1&size=10
+    session: bob_session
+    capture_as: t2_bob_runs
+  # T3: anonymous — expected 401/302
+  - kind: rest
+    description: "anonymous request — expected 401 or 302 (catch-all .authenticated())"
+    method: GET
+    path: /api/dataentities/6201/runs?page=1&size=10
+    capture_as: t3_anonymous
+observe:
+  - kind: extract
+    from: t1_alice_runs
+    field: "(status_code)"
+    capture_as: t1_status
+  - kind: extract
+    from: t1_alice_runs
+    field: "items[0].statusReason"
+    capture_as: t1_status_reason
+  - kind: extract
+    from: t2_bob_runs
+    field: "(status_code)"
+    capture_as: t2_status
+  - kind: extract
+    from: t2_bob_runs
+    field: "items[0].statusReason"
+    capture_as: t2_status_reason
+  - kind: extract
+    from: t3_anonymous
+    field: "(status_code)"
+    capture_as: t3_status
+assert:
+  # T1: alice succeeds
+  - "t1_status == 200"
+  - "'alice@internal.example.com' in t1_status_reason"
+  # T2: bob — HYPOTHESIS: cross-owner-read posture, bob sees alice's diagnostic
+  - "t2_status == 200 # cross-owner-read confirmed"
+  - "t2_status_reason == t1_status_reason # bob sees the SAME diagnostic alice sees"
+  - "if (t2_status in [403, 401]) then DOCUMENT_FINDING 'controller IS owner-scoped — refutes the cross-owner-read posture hypothesis for /runs (would be a positive surprise — investigate where the scope is enforced; possibly a downstream service filter the audit missed)'"
+  - "if (t2_status == 200 AND t2_status_reason != t1_status_reason) then DOCUMENT_FINDING 'cross-owner-read partial-redaction — bob sees the run row but the status_reason text is redacted; the audit missed an intentional redaction layer'"
+  # T3: anonymous blocked
+  - "t3_status in [401, 302]"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM data_entity_task_run WHERE oddrn LIKE '//probe-source/p152/%';
+      DELETE FROM ownership WHERE data_entity_id = 6201;
+      DELETE FROM user_owner_mapping WHERE oidc_username IN ('alice', 'bob');
+      DELETE FROM owner WHERE id = 6210;
+      DELETE FROM data_entity WHERE id = 6201;
+      DELETE FROM data_source WHERE id = 6200;
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DataEntityRunController__controller-class__DataEntityRunController
+    - odd-platform__java__DataQualityController__controller-class__DataQualityController
+  retrospectives: []
+  features:
+    - F-022
+  refactors:
+    - REFACTOR-024  # cross-owner-read family — runs-history is a NEW invocation site of the same posture
+  drift_classes:
+    - cross-owner-read-enumeration
+    - status-reason-diagnostic-leak
+    - rbac-write-only-no-read-gates
+realism_caveats: |
+  The probe runs under LOGIN_FORM auth-mode (the simplest reproducible
+  config). The same posture holds under OAUTH2 / LDAP because the
+  AuthorizationCustomizer used by all three modes shares the same
+  SECURITY_RULES table (SecurityConstants.java:98-355) — none of
+  which lists this endpoint.
+
+  status_reason content is set by the ingesting framework. Common
+  producers:
+  - Great Expectations: the failed-expectation diagnostic, frequently
+    includes failed-row samples
+  - dbt: the test-result row count + the table/column name
+  - custom: free-form
+  Whether the diagnostic actually contains PII depends on the
+  framework + the dataset. The probe seeds a worst-plausible-case
+  payload to surface the risk class; in real deployments the
+  surface area is per-framework.
+
+  If T2 returns 200 (confirms the hypothesis), route to REFACTOR-024
+  with: "5th read-surface site in the DQ family — /api/dataentities/{id}/runs.
+  Cross-owner-read posture extends from the four DataQualityController
+  GETs to the per-test run-history GET. Operator-visible: any
+  authenticated user enumerates the full DQ-test diagnostic stream
+  across the catalog, including status_reason text that frameworks
+  populate with failed-row samples / PII-bearing detail. Mitigation
+  options: (a) gate via a NEW DATA_ENTITY_READ_RUNS permission;
+  (b) filter status_reason for non-owners; (c) accept-and-document
+  the cross-owner-read posture as a stated design (matches the
+  read-collaborative-catalog ADR-CANDIDATE-003)."

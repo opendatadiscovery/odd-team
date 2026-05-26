@@ -1,0 +1,157 @@
+---
+probe_id: P-139
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__EventApiController__controller-class__EventApiController
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: performance
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category A — tunables + Category E — resource boundaries):
+  The controller is stateless and Mono-reactive (EventApiController.java:22-42),
+  but every accepted PAYLOAD event triggers two synchronous DB round-trips on
+  the request thread (a SELECT in SlackMessageProviderEventHandler.enqueueEvent
+  line 31 against message.provider_message_id, then an INSERT into
+  message_provider_event line 36-41). Slack's documented ack-window is 3
+  seconds — if the controller exceeds 3s, Slack retries the same event,
+  which (per P-138) creates duplicate rows.
+
+  The downstream processor (DataCollaborationMessageEventProcessor.java:34-76)
+  is single-leader (acquires `datacollaboration.receive-event-advisory-lock-id=110`
+  per DataCollaborationProperties.java:11 + application.yml:201) so adding
+  more API instances does NOT scale processing throughput — only ingest
+  throughput. Under sustained load, message_provider_event backlogs.
+
+  Hypothesis A (throughput): sustained POSTs at 60 events/sec to one
+  controller instance saturate DB INSERT and either (a) push individual
+  request latency above 3s causing Slack retries, or (b) hold steady but
+  the processor backlog grows monotonically because the leader-elected
+  single-threaded loop cannot keep up with multi-controller insert throughput.
+
+  Hypothesis B (lock collision): if `receive-event-advisory-lock-id` is
+  set equal to `sender-message-advisory-lock-id=120` (which an
+  operator could plausibly do by typo — the values are siblings in the
+  application.yml block at lines 201-202), the event-processor thread
+  and the sender thread serialise onto the same Postgres advisory lock,
+  halving downstream throughput silently.
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: env
+    DATACOLLABORATION_ENABLED: "true"
+    DATACOLLABORATION_SLACK_OAUTH_TOKEN: "xoxb-test-token-not-real"
+    AUTH_TYPE: "DISABLED"
+    DATACOLLABORATION_RECEIVE_EVENT_ADVISORY_LOCK_ID: "110"
+    DATACOLLABORATION_SENDER_MESSAGE_ADVISORY_LOCK_ID: "120"
+  - kind: sql
+    description: "Seed 200 distinct tracked parent messages — one per simulated thread."
+    query: |
+      INSERT INTO message (uuid, parent_message_uuid, data_entity_id, text,
+        created_at, sent_at, state, provider, provider_channel_id,
+        provider_channel_name, provider_message_id, owner_id)
+      SELECT
+        gen_random_uuid(), NULL, 1, 'P139 parent ' || i,
+        NOW() AT TIME ZONE 'utc', NOW() AT TIME ZONE 'utc',
+        2, 'SLACK', 'C0P139', 'probe-channel-139',
+        '1900000000.' || lpad(i::text, 6, '0'), NULL
+      FROM generate_series(1, 200) AS i;
+
+act:
+  - kind: load
+    tool: k6
+    description: "Sustained 60 events/sec for 60 seconds; each request targets a random thread_ts from the 200 seeded parents."
+    script: |
+      import http from 'k6/http';
+      export const options = { vus: 30, duration: '60s', rps: 60 };
+      export default function () {
+        const i = Math.floor(Math.random() * 200) + 1;
+        const thread = '1900000000.' + String(i).padStart(6, '0');
+        const ts = '1900000001.' + Math.random().toString().slice(2, 8);
+        const body = JSON.stringify({
+          type: 'event_callback',
+          event_id: 'Ev' + ts,
+          event_time: 1900000001,
+          event: {
+            type: 'message', user: 'U139', text: 'load-' + ts,
+            ts: ts, thread_ts: thread, channel: 'C0P139'
+          }
+        });
+        http.post('http://localhost:8080/api/slack/events', body,
+          { headers: { 'Content-Type': 'application/json' } });
+      }
+    capture_as: load_run
+
+observe:
+  - kind: metric
+    description: "Per-request latency distribution from k6."
+    metric: load_run.p50, load_run.p95, load_run.p99
+    capture_as: latency
+  - kind: sql
+    description: "Backlog of un-materialised events at end-of-load (after 5s settle)."
+    query: |
+      SELECT count(*) AS pending_backlog
+        FROM message_provider_event
+       WHERE state = 0  /* PENDING per MessageEventStateDto */
+    capture_as: pending_backlog
+    poll_for_seconds: 5
+  - kind: sql
+    description: "Total event rows ingested during the run."
+    query: |
+      SELECT count(*) AS total_ingested
+        FROM message_provider_event
+       WHERE created_at > NOW() - INTERVAL '90 seconds'
+    capture_as: total_ingested
+  - kind: pg
+    description: "Inspect held advisory locks at peak load."
+    query: |
+      SELECT objid, granted, pid, mode
+        FROM pg_locks
+       WHERE locktype = 'advisory'
+         AND objid IN (90, 110, 120)
+    capture_as: advisory_lock_state
+
+assert:
+  - "latency.p99 < 3000  # Slack ack window — failure here means Slack retries kick in"
+  - "total_ingested.row[0].total_ingested >= 3500  # 60 rps * 60s = 3600; allow 100 for cold-start"
+  - "pending_backlog.row[0].pending_backlog >= 0  # surface the backlog growth number — calibrate threshold from first run"
+  - "advisory_lock_state.rowcount >= 1  # the leader-elected lock id 110 should be held by the processor pid"
+
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM message_provider_event WHERE created_at > NOW() - INTERVAL '5 minutes';
+      DELETE FROM message WHERE provider_channel_id = 'C0P139';
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  related_sidecars:
+    - odd-platform__java__EventApiController__controller-class__EventApiController
+    - odd-platform__java__org_opendatadiscovery_oddplatform_datacollaboration_config__config-properties-class__DataCollaborationProperties
+  retrospectives: []
+
+realism_caveats: |
+  60 events/sec is a high-but-plausible Slack workspace burst (e.g. a
+  channel where many ODD-tracked data entities are being discussed
+  simultaneously after a CI release announcement). The probe does NOT
+  test multi-controller-instance scenarios (where two API replicas race
+  on the same INSERT) — that's a separate horizontal-scaling probe.
+  The probe also does NOT exhaustively test all advisory-lock-id
+  collision combinations (90 vs 110, 110 vs 120, 90 vs 110 vs 120) —
+  this probe only verifies the baseline at the documented defaults
+  (110 receive / 120 sender / 90 partition). The interesting follow-up
+  is: set `receive-event-advisory-lock-id=120` (colliding with sender)
+  and re-run; expected throughput should halve. Hypothesis B is
+  intentionally not asserted because changing the lock-id env var
+  requires a stack restart; recommend running the full probe twice
+  (baseline + collision) and comparing.
+
+  If `pending_backlog > 0` at end-of-run consistently, the maintainer-facing
+  takeaway is: under realistic Slack ingest bursts the
+  single-leader-elected processor cannot keep up; a documented capacity
+  caveat is owed, and the doc-link target is the same
+  https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform#enable-data-collaboration
+  page that publishes the manifest.

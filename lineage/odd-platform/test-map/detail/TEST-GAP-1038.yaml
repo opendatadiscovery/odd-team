@@ -1,0 +1,146 @@
+---
+gap_id: TEST-GAP-1038
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform ts react-component:LookupTables"
+pillars_affected: ["P-03", "P-09"]
+surfaced_by:
+  - "LookupTables.md:bugs_limitations_corner_cases.[4] verbatim: 'Counter leaks population size: the H1 row renders <NumberFormatted value={facets?.total} /> {t(lookup tables overall)} (line 60-62). facets.total comes from LookupDataSearchServiceImpl.countByState which counts ALL tables matching the (empty) query — there is no owner-filter, no namespace-scope, no per-permission filter applied. Any authenticated user (per the read-collaborative posture confirmed in the ReferenceDataController sidecar known_security_gaps[0]) sees the global lookup-table population size, even if backend RBAC would limit which individual rows they can act on.' severity: MEDIUM"
+  - "LookupTables.md:tests_coverage_semantic.uncovered_behaviours.[2] verbatim: 'Visiting /master-data/lookup-tables with zero of LOOKUP_TABLE_CREATE/_UPDATE/_DELETE renders the page (counter, search, list) but hides the Add-new button' test_class: security; criticality: HIGH"
+related_pillar_features:
+  - "P-03:F-Lookup-Tables"
+related_features: []
+feature_id: null
+test_class: security
+strengthens: []
+behaviour: |-
+  **MEDIUM — Catalog-cardinality info-leak on the global Lookup
+  Tables H1 counter.**
+
+  `LookupTables.tsx:60-62` renders the page H1:
+  ```jsx
+  <NumberFormatted value={facets?.total} />
+  {' '}{t('lookup tables overall')}
+  ```
+
+  `facets.total` is populated by
+  `LookupDataSearchServiceImpl.countByState` (line 62-68) which
+  counts ALL reference-data rows matching the current facet
+  state (initially empty / open query). There is NO owner-filter,
+  NO namespace-scope, NO per-permission filter applied on the
+  COUNT query — it returns the catalog-wide population size.
+
+  **Operator-visible consequence**: every authenticated user (in
+  the read-collaborative posture per the ReferenceDataController
+  sidecar batch H known_security_gaps[0]) sees the global lookup-
+  table count. A tenant with 1,247 lookup tables has that number
+  visible to every authenticated user — even users who:
+  - Cannot CREATE lookup tables (no LOOKUP_TABLE_CREATE)
+  - Cannot UPDATE existing tables (no LOOKUP_TABLE_UPDATE)
+  - Cannot DELETE tables (no LOOKUP_TABLE_DELETE)
+  - Cannot edit DEFINITION or DATA tiers (6 missing inner gates
+    per TEST-GAP-1001)
+
+  **The TRUE info-leak shape** is this: an external operator
+  conducting reconnaissance (e.g. one of multiple consultancies
+  given temporary platform access) cannot enumerate the rows
+  themselves (the list is paginated and the row contents may
+  require additional permissions), but they CAN observe the
+  COUNTER. Two such operators visiting the same tenant a week
+  apart can compare counters and infer "lookup tables were added/
+  deleted between visits — what changed?" — a catalog-cardinality
+  oracle.
+
+  **Why MEDIUM** (not HIGH):
+  - The information leak is bounded — a SINGLE NUMBER. The
+    table contents are NOT exposed via this surface.
+  - The read-collaborative posture is the documented intent
+    per ReferenceDataController sidecar; this is consistent
+    with the broader pillar's open-to-read design.
+  - The doc page at
+    `https://docs.opendatadiscovery.org/features/master-data-management/lookup-tables`
+    (WebFetched 2026-05-26 status 200) does not explicitly
+    document the count visibility, but the page's general
+    "every lookup table the user can read" phrasing implies
+    enumeration is possible.
+  - The structural fix is per-permission filtering on
+    countByState (gate on LOOKUP_TABLE_DATA_READ at minimum) —
+    a non-trivial backend refactor that touches the facet
+    aggregator.
+  - The MEDIUM rating reflects "info-leak is real and operator-
+    observable, but the leak surface is narrow and the
+    documented posture explains the openness".
+
+  **The COMPOUND with TEST-GAP-1001 + TEST-GAP-994** (route's
+  WithPermissionsProvider non-blocking + partial permission
+  enumeration): a user with ZERO of the 9 LOOKUP_TABLE_*
+  permissions visits /master-data/lookup-tables, sees the
+  counter, sees the search input, sees the list (paginated),
+  but cannot Add (button hidden), cannot Edit (action gated),
+  cannot Delete (action gated). The page is "look-but-don't-
+  touch" — but the LOOKING is the leak. The doc page does
+  not enumerate this posture.
+
+  **Test gap shape**:
+  1. **UI regression-pin (existence of counter)**: render
+     <LookupTables/> with a user fixture having ZERO
+     LOOKUP_TABLE_* permissions, assert the H1 counter STILL
+     renders with the catalog-wide count. PINS the current
+     posture; flips if the fix-path makes the counter
+     permission-gated.
+  2. **Backend regression-pin (countByState)**: GET
+     /api/referencedata/search/{id} with an empty query as a
+     user with zero LOOKUP_TABLE_* permissions; assert the
+     response includes `total` matching the catalog-wide
+     count. PINS the backend posture.
+test_files_existing: []
+test_files_proposed:
+  - path: "odd-platform-ui/src/components/LookupTables/__tests__/LookupTables.CounterLeak.test.tsx"
+    name: "h1Counter_rendersCatalogWideTotalEvenForZeroPermissionUser_pinsCurrentReadCollaborativePosture_BatchZL"
+    description: |-
+      Render <LookupTables/> with a Redux store mocked such that
+      globalPermissions is empty AND useGetReferenceDataSearch
+      returns total: 1247. Assert the H1 renders "1,247 lookup
+      tables overall". PINS the current behaviour; flips assertion
+      direction if the fix-path gates the counter on
+      LOOKUP_TABLE_DATA_READ.
+  - path: "odd-platform-api/src/test/java/.../LookupDataSearchServiceImplCountAccessTest.java"
+    name: "countByState_zeroPermissionUser_returnsCatalogWideCount_pinsCurrentBackendPosture_BatchZL"
+    description: |-
+      WebTestClient call to GET /api/referencedata/search/{id} as
+      a user with zero LOOKUP_TABLE_* permissions. Assert response
+      `total` equals the catalog-wide count (e.g. 1,247). PINS the
+      backend posture.
+evidence:
+  - "LookupTables.md (batch ZL) bugs_limitations_corner_cases.[4]: cited above; severity MEDIUM"
+  - "LookupTables.md (batch ZL) tests_coverage_semantic.uncovered_behaviours.[2]: HIGH security test class (the page-render-without-permission compound)"
+  - "Primary source verified: LookupTables.tsx:60-62 (H1 counter render) + LookupDataSearchServiceImpl.java:62-68 (countByState with no permission filter)"
+  - "Cross-reference verified: ReferenceDataController batch H sidecar known_security_gaps[0] (read-collaborative posture documented)"
+  - "WebFetch verified 2026-05-26 status 200: live doc page does not enumerate the counter's permission gate (because there isn't one)"
+  - "Glob verified: zero LookupTables*.test.* under odd-platform-ui/src (run 2026-05-26)"
+cross_references:
+  - "TEST-GAP-1001 (sibling — partial permission enumeration; compounds with this counter leak)"
+  - "TEST-GAP-994 (cross-cutting WithPermissionsProvider non-blocking; the route does not actually gate)"
+  - "TEST-GAP-518 (sibling — cross-owner facet-count enumeration on Search; same info-leak class on a different pillar)"
+  - "DOC-NNN candidate (batch ZL LookupTables): the read-collaborative posture and its counter-visibility need explicit doc-side disclosure"
+  - "F-Lookup-Tables (P-03 pillar-level feature flow)"
+proposed_action: |-
+  Decision branch. Either:
+  (a) Document the posture: add a "Visibility" section to the
+      Lookup Tables doc page disclosing that the catalog-wide
+      counter is visible to every authenticated user. Land the
+      two regression-pin tests above as PINS of the documented
+      posture. (Velocity path.)
+  (b) Gate the counter: add a per-permission filter to
+      countByState (e.g. require LOOKUP_TABLE_DATA_READ). Flip
+      the two regression-pin assertions to match the gated
+      posture. (Security-tightening path; non-trivial backend
+      refactor.)
+
+  Maintainer recommendation: path (a) for OSS velocity. The
+  info-leak is narrow, the posture is documented intent, and
+  the cost of (b) is a meaningful backend refactor with
+  uncertain operator value.
+maintainer_curated: false
+batch: 2026-05-26-ZL

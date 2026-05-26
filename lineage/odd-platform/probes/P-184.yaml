@@ -1,0 +1,216 @@
+---
+probe_id: P-184
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__auth__config-properties-class__ODDLDAPProperties.md
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: null  # ODDLDAPProperties.adminGroups + LDAPSecurityConfiguration.authoritiesMapper — P-09:F-001 LDAP-mode facet
+test_class: security
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category F — adminGroups substring-collision admin escalation):
+
+  ODDLDAPProperties declares `Group.adminGroups` as `Set<String>` (line 31).
+  The consumer at LDAPSecurityConfiguration.java:94-98 reads each LDAP-returned
+  authority and matches via `containsIgnoreCase(adminGroups, a.getAuthority())`
+  — which delegates to `OperationUtils.containsIgnoreCase` (a CASE-INSENSITIVE
+  SUBSTRING CONTAINMENT test, NOT set-equality).
+
+  Pin the hypothesis: with `auth.ldap.groups.admin-groups: ['ops']` (a 3-char
+  short token), an LDAP user who is ONLY a member of `cn=devops,...` (NOT
+  `cn=ops,...`) receives ADMIN authority on login — because 'ops' is a
+  substring of 'devops' (case-insensitive).
+
+  Operator expectation when reading the name `admin-groups: ['ops']`: ONLY
+  users in a group literally named 'ops' (or LDAP DN containing 'cn=ops') get
+  ADMIN. Implementation: any user in ANY group whose name CONTAINS 'ops' as
+  a substring gets ADMIN.
+
+  If confirmed: HIGH-severity finding. An operator who unwittingly uses a
+  short admin-group label has a misconfigured deployment that silently grants
+  ADMIN to users they didn't intend to promote.
+---
+arrange:
+  - kind: docker-compose-up
+    profile: odd-minimal
+    services: [odd-platform, odd-postgres, openldap]
+  - kind: docker-compose-service
+    name: openldap
+    description: |
+      Seed an OpenLDAP container with TWO groups and TWO users.
+
+      Groups:
+        - cn=ops,ou=groups,dc=example,dc=com   (the LITERAL admin group the
+                                                operator configured)
+        - cn=devops,ou=groups,dc=example,dc=com (a group NAME containing the
+                                                substring "ops" but
+                                                semantically a non-admin
+                                                team)
+
+      Users:
+        - uid=alice,ou=people,...   (member of cn=ops only — should be ADMIN)
+        - uid=bob,ou=people,...     (member of cn=devops only — should be USER
+                                     per operator's mental model; ADMIN per
+                                     the substring-match implementation)
+
+      Both users have a known plaintext password.
+    env:
+      LDAP_ORGANISATION: "Probe Org"
+      LDAP_DOMAIN: "example.com"
+      LDAP_ADMIN_PASSWORD: "probe-bind-2026"
+    ldif: |
+      dn: ou=people,dc=example,dc=com
+      objectClass: organizationalUnit
+      ou: people
+
+      dn: ou=groups,dc=example,dc=com
+      objectClass: organizationalUnit
+      ou: groups
+
+      dn: uid=alice,ou=people,dc=example,dc=com
+      objectClass: inetOrgPerson
+      uid: alice
+      sn: Alice
+      cn: Alice User
+      userPassword: alice-pass
+
+      dn: uid=bob,ou=people,dc=example,dc=com
+      objectClass: inetOrgPerson
+      uid: bob
+      sn: Bob
+      cn: Bob User
+      userPassword: bob-pass
+
+      dn: cn=ops,ou=groups,dc=example,dc=com
+      objectClass: groupOfNames
+      cn: ops
+      member: uid=alice,ou=people,dc=example,dc=com
+
+      dn: cn=devops,ou=groups,dc=example,dc=com
+      objectClass: groupOfNames
+      cn: devops
+      member: uid=bob,ou=people,dc=example,dc=com
+  - kind: env
+    description: "Configure the platform with auth.ldap.groups.admin-groups: ['ops'] — the short-token configuration."
+    vars:
+      AUTH_TYPE: LDAP
+      AUTH_LDAP_URL: "ldap://openldap:389"
+      AUTH_LDAP_USERNAME: "cn=admin,dc=example,dc=com"
+      AUTH_LDAP_PASSWORD: "probe-bind-2026"
+      AUTH_LDAP_USER_FILTER_SEARCH_BASE: "ou=people,dc=example,dc=com"
+      AUTH_LDAP_USER_FILTER_FILTER: "(uid={0})"
+      AUTH_LDAP_GROUPS_SEARCH_BASE: "ou=groups,dc=example,dc=com"
+      AUTH_LDAP_GROUPS_ADMIN_GROUPS: "ops"   # THE SHORT TOKEN — single entry, 3 chars
+  - kind: restart-service
+    service: odd-platform
+    wait_for_healthy: 60s
+act:
+  - kind: form-login
+    description: "Alice login (member of cn=ops; SHOULD be ADMIN under both mental model and substring-match)."
+    username: alice
+    password: alice-pass
+    capture_session_as: alice_session
+  - kind: rest
+    description: "Fetch Alice's authorities via /api/identity (or equivalent whoami endpoint)."
+    method: GET
+    path: /api/identity
+    headers:
+      Cookie: "${alice_session}"
+    capture_as: alice_identity
+  - kind: rest
+    description: "Probe an ADMIN-gated endpoint with Alice's session — expect 200."
+    method: POST
+    path: /api/namespaces
+    headers:
+      Cookie: "${alice_session}"
+      Content-Type: application/json
+    body: '{"name": "probe-alice-ns"}'
+    capture_as: alice_namespace_post
+  - kind: form-login
+    description: "Bob login (member of cn=devops only; under operator mental model: USER; under substring-match: ADMIN)."
+    username: bob
+    password: bob-pass
+    capture_session_as: bob_session
+  - kind: rest
+    description: "Fetch Bob's authorities."
+    method: GET
+    path: /api/identity
+    headers:
+      Cookie: "${bob_session}"
+    capture_as: bob_identity
+  - kind: rest
+    description: "Probe an ADMIN-gated endpoint with Bob's session — the LOAD-BEARING test."
+    method: POST
+    path: /api/namespaces
+    headers:
+      Cookie: "${bob_session}"
+      Content-Type: application/json
+    body: '{"name": "probe-bob-ns"}'
+    capture_as: bob_namespace_post
+observe:
+  - kind: derived
+    description: "Parse identities for authority claims."
+    expressions:
+      - "alice_is_admin: 'ADMIN' in alice_identity.body.authorities or alice_identity.body.role == 'ADMIN'"
+      - "bob_is_admin: 'ADMIN' in bob_identity.body.authorities or bob_identity.body.role == 'ADMIN'"
+      - "alice_can_create_namespace: alice_namespace_post.status_code in [200, 201]"
+      - "bob_can_create_namespace: bob_namespace_post.status_code in [200, 201]"
+assert:
+  # Alice is the control case — member of the LITERAL admin group; must be ADMIN.
+  - "alice_is_admin == True"
+  - "alice_can_create_namespace == True"
+  # Bob is the substring-collision case — member of cn=devops only.
+  # Under operator mental model (exact group-name match): bob_is_admin == False.
+  # Under substring-match implementation: bob_is_admin == True.
+  # The DRIFT HYPOTHESIS predicts substring-match wins:
+  - "bob_is_admin == True"                # the load-bearing drift confirmation
+  - "bob_can_create_namespace == True"    # operator-visible escalation
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__auth__config-properties-class__ODDLDAPProperties
+    - odd-platform__java__LDAPSecurityConfiguration__config-key-consumer__auth_type@L51
+  retrospectives: []
+realism_caveats: |
+  The load-bearing assertion is `bob_is_admin == True`. If this passes, the
+  substring-match drift is confirmed: an operator setting admin-groups to a
+  short token silently promotes any user in any group containing that
+  substring. The fix is mechanical (`adminGroups.stream().anyMatch(g ->
+  g.equalsIgnoreCase(authority))` — set-equality with case fold) but the
+  ergonomic trade-off (operators wanting to write `Admins` and match
+  `cn=Admins,ou=...`) needs an explicit decision (full-DN match vs CN-only
+  match vs exact-CN match).
+
+  The probe specifies `admin-groups: 'ops'` (3 chars). A real-world operator
+  would more likely use a longer token (`Admins`, `DataOps`, `Platform`) —
+  the collision risk is lower but non-zero. The probe deliberately picks
+  the worst-case short token to make the drift unambiguous; the principle
+  generalises.
+
+  Operator-visible escalation realism:
+    `POST /api/namespaces` is one of many ADMIN-gated endpoints. Confirming
+    Bob can create a namespace is sufficient — every ADMIN-gated endpoint
+    shares the same gate path (UserProviderRole.ADMIN authority). A
+    successful POST is the user-visible proof of escalation.
+
+  What this probe does NOT verify:
+    - Whether `containsIgnoreCase` matches against the FULL DN
+      (`cn=devops,ou=groups,dc=example,dc=com`) or against the bare CN
+      (`devops`) — that depends on what Spring Security's
+      DefaultLdapAuthoritiesPopulator returns as `authority.getAuthority()`.
+      The substring 'ops' is short enough to hit both. A longer-token
+      version of this probe could disambiguate.
+    - Whether the GROUP search base / filter correctly resolves Bob's
+      group membership — the probe assumes Spring LDAP's default group-
+      search works against the OpenLDAP `groupOfNames` schema. If group
+      resolution returns empty for either user, both would be USER and the
+      probe fails inconclusively. The arrange step must verify group
+      membership resolves correctly (a pre-assertion: `alice_is_admin ==
+      True` doubles as the group-resolution health check).
+    - Whether non-LDAP auth modes are affected — they are not (this is
+      LDAP-specific; OAUTH2 uses adminAttribute/adminPrincipals semantics
+      per ODDOAuth2Properties).

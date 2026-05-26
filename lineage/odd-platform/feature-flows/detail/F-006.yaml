@@ -884,6 +884,179 @@ batch_extensions:
     annotation lives on AlertNotificationMessageProcessor.process
     nor on any sender's send(). Static finding, no dynamic probe
     needed.
+- batch: ZH
+  entry_point_added: |-
+    route-module:routes/managementRoutes.ts — the URL-shape contract for
+    the Management catch-all admin surface. Declares the `roles` AND
+    `policies` sub-route slugs as two of nine ManagementRoutes literals
+    at lines 4-14 (line 10 `ROLES: 'roles'`, line 11 `POLICIES: 'policies'`).
+    `managementPath('roles')` → `/management/roles` is the UI surface
+    where RolesList mounts; `managementPath('policies')` →
+    `/management/policies` is where PolicyList mounts; and the policy-detail
+    route `/management/policies/:policyId` is mounted at ManagementRoutes.tsx
+    via `<Route path='policies/:policyId' element={<PolicyDetails />} />`
+    (per the route sidecar dependencies_semantic.requires-feature block).
+  contributing_nodes_added:
+  - odd-platform ts routes route:management
+  notes: |-
+    hop-0 (UI route module) PRIMARY-SOURCE resolved this batch via the
+    batch-ZH management route sidecar. F-006's RBAC pillar
+    (POLICY_CREATE/UPDATE/DELETE + ROLE_CREATE/UPDATE/DELETE permissions)
+    surfaces operationally at the Management UI's roles + policies +
+    policy-detail sub-routes — three of nine ManagementRoutes literals.
+    The route layer corroborates the F-006 audit-silence pattern at a
+    NINTH sidecar (controllers + repo + service + UI list + UI cross-batch
+    + role-controller + permission extractor + ... + now route module):
+
+    (a) **Management route surface mounted at App.tsx:62 has NO route-level
+    permission guard** (route sidecar security.known_security_gaps[0],
+    HIGH severity, probe P-162). The `/management/roles`, `/management/policies`,
+    `/management/policies/:id` sub-routes are open to READ for any
+    authenticated user. Inside the sub-route components, the inner
+    `<WithPermissionsProvider>` wraps with `[POLICY_CREATE, POLICY_UPDATE, POLICY_DELETE]`
+    (for policies) and `[ROLE_CREATE, ROLE_UPDATE, ROLE_DELETE]` (for
+    roles) — but these are CONTEXT publishers, NOT route gates
+    (WithPermissionsProvider.tsx:11-49 unconditionally renders children).
+    Any authenticated user — including a minimum-privilege user with zero
+    RBAC-management permissions — can navigate to /management/policies/:id
+    and SEE the policy JSON. The write affordances (Save, Delete) are
+    hidden by inner `<WithPermissions>` wrappers; the policy DEFINITION is
+    visible to all. The route-tier is the UI-LAYER manifestation of F-006's
+    central architectural concern (RBAC mutations forensically silent;
+    RBAC reads broadly visible).
+
+    (b) **Permission docs do not enumerate the UI route surface**. The
+    Authorization page enumerates Policies / Permissions / Roles / Owners /
+    User-owner association BUT does not mention `/management/policies` or
+    `/management/roles` URL or describe what readers see when they
+    deep-link to those URLs. The Cornerstone-3 doc-caveat finding from
+    the route sidecar doc_drift_findings extends to F-006's broader
+    audit-silence + permission-persistence story.
+
+    Coherence sweep STRENGTHENS=2:
+    - F-006 `forensic_silence_on_rbac_mutations` — extended to a NINTH
+      sidecar (the route module): no audit trail at the route declaration
+      layer for navigation to /management/roles or /management/policies.
+    - F-006 `permission_persistence_after_soft_delete` — the route layer
+      exposes the policy-detail URL to any authenticated user; a
+      soft-deleted policy reachable via direct ID URL still RENDERS its
+      content for any caller (the read-side of the persistence-after-soft-delete
+      surface).
+
+- batch: ZK
+  entry_point_added: |-
+    config-properties-class:ODDLDAPProperties — the
+    `@ConfigurationProperties("auth.ldap")` POJO that is the SOLE
+    authoritative description of the `auth.ldap.*` deployment-key
+    surface for the LDAP authentication mode. The LDAP mode is the
+    fourth of F-006's four-auth-mode quartet (DISABLED / LOGIN_FORM /
+    OAUTH2 / LDAP); this batch closes the LDAP-CONFIG-TIER primary
+    source on F-006's RBAC pillar by enriching the props record that
+    binds the URL + bind-credentials + DN-pattern + user-filter +
+    group-mapping + Active-Directory branch into the LDAPSecurityConfiguration
+    consumer.
+  contributing_nodes_added:
+  - odd-platform java org.opendatadiscovery.oddplatform.auth config-properties-class:ODDLDAPProperties
+  notes: |-
+    FOUR new drift facets surface at the LDAP config tier, all
+    primary-source at ODDLDAPProperties.java:9-50. The findings refine
+    F-006's `auth_mode_quartet_security_rules_enforcement_disabled_login_form_off_oauth2_ldap_on`
+    facet from batch S with LDAP-mode-specific config-tier hazards:
+
+    (1) **`admin-groups` IS A `Set<String>` WITH SUBSTRING-MATCH
+    SEMANTICS — SHORT TOKENS COLLIDE WITH UNINTENDED LDAP GROUPS
+    (HIGH severity — admin-escalation surface via operator typo)** —
+    ODDLDAPProperties.java:31 declares `private Set<String> adminGroups;`
+    consumed by `LDAPSecurityConfiguration.java:96` via
+    `OperationUtils.containsIgnoreCase(properties.getGroups().getAdminGroups(), a.getAuthority())`
+    — substring + case-insensitive match. The Properties class
+    does NOT restrict entries to DN-friendly substrings, does NOT
+    document the substring semantics in the field name, and does
+    NOT warn that short tokens (`'ops'`, `'admin'`) collide with
+    any LDAP group whose name CONTAINS that substring (`devops`,
+    `noops`, `appops`, `helpdesk-admin`, ...). An operator
+    configuring `admin-groups: ['ops']` inadvertently promotes
+    everyone in any group containing `ops` as a substring. The
+    F-006 RBAC pillar's "Administrator" role is granted to LDAP
+    users matching any admin-group substring; the LDAP-mode-specific
+    admin-escalation surface inherits the F-006 RBAC-mutation-audit-silence
+    pattern (no log line on first admin login, no LDAP-group-attribution
+    in the Activity Feed). NEW drift facet for F-006:
+    `ldap_admin_groups_substring_match_short_token_admin_escalation_collision`.
+
+    (2) **`password` IS A `String` WITH `@Data`-GENERATED PUBLIC
+    GETTER, NO `@ToString.Exclude`, NO `@JsonIgnore`, NO `@Sanitize`
+    (HIGH severity — credential exposure via custom serialisers
+    + Lombok-generated toString)** — ODDLDAPProperties.java:10,14
+    declares `@Data` (line 10) + `private String password;` (line 14).
+    Lombok generates a public getter + a `toString()` that includes
+    ALL fields including the password. Spring Boot 3.4.10's
+    `/actuator/env` default sanitisation masks the value as
+    `******`, but ANY code path that explicitly serialises the
+    bean (a bean-dump endpoint, a `log.info("properties = {}", properties)`,
+    an info-contributor, a custom `@RestControllerAdvice` dumping
+    config) emits the password verbatim. There is NO platform-side
+    defence-in-depth at the Properties class level. F-006 RBAC
+    pillar inherits the credential-exposure risk: the LDAP bind
+    password is the master credential the platform uses to look
+    up every LDAP user; its exposure is a full LDAP-directory
+    enumeration capability. NEW drift facet for F-006:
+    `ldap_password_string_lombok_data_toString_unmasked_no_jsonignore_no_sanitize_no_platform_defence_in_depth`.
+
+    (3) **`active-directory.enabled=true` IS ACCEPTED WITHOUT
+    `active-directory.domain` BEING SET (MEDIUM severity — silent
+    misconfiguration in AD-mode F-006 RBAC chain)** —
+    ODDLDAPProperties.java:35-38 declares the inner
+    `ActiveDirectory(boolean enabled, String domain)` record. The
+    `@PostConstruct validate()` method (lines 40-49) enforces only
+    two invariants (URL non-empty + dnPattern OR userFilter.filter
+    non-empty); it does NOT check `enabled=true → domain non-empty`.
+    The downstream consumer at `LDAPSecurityConfiguration.java:78`
+    constructs `new ActiveDirectoryLdapAuthenticationProvider(domain, url)`
+    with `domain=null`. Spring Security's
+    `ActiveDirectoryLdapAuthenticationProvider` accepts `null`
+    domain by falling back to non-AD-UPN bind semantics — the
+    operator-intended AD-bind is silently bypassed. The F-006
+    RBAC chain's principal-resolution path for AD-mode silently
+    degrades to LDAP-bind semantics; admin-group mapping may or
+    may not work depending on the AD directory's schema. NEW
+    drift facet for F-006:
+    `ldap_active_directory_enabled_no_domain_validation_silent_fallback_to_non_ad_upn_bind`.
+
+    (4) **EMPTY `adminGroups` LDAP DEPLOYMENT HAS ZERO PATH TO
+    ADMIN (MEDIUM severity — operator-trap on shipped default)** —
+    ODDLDAPProperties.java:18,28-32 declares `private Group groups;`
+    where `Group.adminGroups` may be null or empty. The consumer
+    at `LDAPSecurityConfiguration.java:91-93` returns a USER-only
+    authority for every authenticated LDAP user in that case. The
+    bundled `application.yml:50-65` ships the entire `ldap:` block
+    commented out — meaning an operator copying-and-uncommenting
+    who forgets `groups.admin-groups` has NO LDAP path to ADMIN.
+    The `validate()` method does NOT enforce non-empty
+    adminGroups when LDAP is enabled. The F-006 RBAC pillar's
+    "Administrator" role is unreachable via LDAP login under this
+    misconfiguration; operators see "LDAP login works but I can't
+    administer anything" without a fail-fast at boot. NEW drift
+    facet for F-006:
+    `ldap_empty_admin_groups_zero_path_to_admin_no_validate_no_fail_fast_no_doc_warning`.
+
+    Coherence sweep STRENGTHENS=2 (F-006 batch-S
+    `auth_mode_quartet_security_rules_enforcement_disabled_login_form_off_oauth2_ldap_on`
+    — extended with LDAP-mode-specific config-tier admin-group
+    semantics; F-006 batch-V/Y
+    `audit_silence_enum_rooted_activity_event_type_dto_term_namespace_owner_lifecycle`
+    — extended with LDAP-bind-password exposure as a credential
+    audit gap on the principal-resolution upstream tier).
+    SUPERSEDES=0. CONFLICTS=0. Cross-references: F-011 batch-O
+    GoogleUserHandler / GithubUserHandler / AzureLogoutSuccessHandler
+    / CognitoLogoutSuccessHandler covered the OAuth-handler-tier
+    provider-quirks-strategy; this batch closes the LDAP-config-tier
+    structural counterpart (the four findings above are the
+    LDAP-mode equivalents of OAuth-mode provider-quirks). REFACTOR-185
+    family (DISABLED-bypass cluster) is operationally orthogonal
+    — LDAP-mode misconfiguration is operator-trap rather than
+    bypass-class.
+
 rev3_reclassification:
   migrated_at: '2026-05-19T15:17:32.753499+00:00'
   from_rev2_feature_name: RBAC policy lifecycle — soft-delete with permission-grant persistence
@@ -964,6 +1137,7 @@ contributing_nodes:
 - odd-platform java OwnerAssociationRequestController controller-class:OwnerAssociationRequestController
 - odd-platform java DatasetFieldController controller-class:DatasetFieldController
 - odd-platform java notification.processor class:PostgresWALMessageProcessor  # batch Y — 10th-sidecar pattern extension to notification-delivery surface
+- odd-platform java org.opendatadiscovery.oddplatform.auth config-properties-class:ODDLDAPProperties  # batch ZK — LDAP config-tier primary source (auth-mode quartet closure on the LDAP half)
 chain:
 - hop: 1
   node: odd-platform java PolicyController controller-method:createPolicy

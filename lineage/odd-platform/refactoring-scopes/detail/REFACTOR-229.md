@@ -70,3 +70,45 @@ The poison-session attack vector is real and operator-actionable: a malicious ca
 **Severity unchanged at HIGH** — but the two-batch invocation-site catalogue widens the patch scope. The architectural fix (escape at `JooqFTSHelper.tsQuery`) is now the single load-bearing change point.
 
 ---
+
+
+## STRENGTHENS — Batch ZL (2026-05-26 — Search.tsx UI page-root adds the FOURTH invocation layer; the UI performs ZERO sanitisation of typed search-query text before dispatching to `JooqFTSHelper.tsQuery` → `to_tsquery(?)` → SQL-format-interpolation site)
+
+The Search.tsx UI page-root sidecar surfaces the FTS-injection / SQL-injection chain at the OUTERMOST layer — the UI that the operator types into. Search.tsx is the consumer that ROUTES typed text into the JooqFTSHelper.tsQuery code path; this confirms the UI does NO client-side sanitisation, NO max-length, NO metacharacter filter, NO `to_tsquery` validation. The injection sink is reachable from the operator's keyboard.
+
+**New surfaced_by entry**:
+
+- `odd-platform__ts__react-component__component__Search.md:bugs_limitations_corner_cases[8]` (HIGH) — "**FTS-injection: typed search-query text passes UNESCAPED through to `to_tsquery(?)` — REFACTOR-229 user-controlled query text — NO client-side sanitisation here.** MainSearchInput.tsx:43-44 builds `searchFormData = {query, pageSize:30, filters:{}}` and dispatches verbatim. Server-side `JooqFTSHelper.tsQuery` at `JooqFTSHelper.java:164-168` performs `plainQuery.split(' ').map(q -> q + ':*').join('&')` — NO escaping of tsquery metacharacters (`!`, `(`, `)`, `:`, `<->`, `&`, `|`, `'`, `\\`). A typed query of `foo ) | (bar` reaches `to_tsquery(?)` and Postgres raises `42601 syntax error in tsquery`. The session UUID is then **permanently poisoned**. ... **For the `highlightDataEntity` path the same untrusted text is INTERPOLATED into a raw SQL string via `.formatted(text, tsQuery)` — TRUE SQL injection per batch-ZE TRUE-SQL-injection finding at ReactiveDataEntityRepositoryImpl.java:798-806.** Probe P-188 emitted to confirm the session-poisoning end-to-end." — severity: HIGH
+
+- `odd-platform__ts__react-component__component__Search.md:security.known_security_gaps[1]` (HIGH) — "**FTS-injection / session-poisoning at the typed search-query field (REFACTOR-229 batch-ZE strengthening) + TRUE SQL injection at the highlight path.** ... **The UI provides ZERO mitigation** — no max-length, no metacharacter filter, no client-side `to_tsquery` validation. Search.tsx is the UI HALF of the REFACTOR-229 security finding; the architectural fix point is `JooqFTSHelper.tsQuery` (single source of truth on the server). **CRITICAL: per batch-ZE SearchController class invariants[7], the same `query` field reaches ReactiveDataEntityRepositoryImpl.getHighlightedResult at line 798-806 via `String.formatted(text, tsQuery)` — a true raw-SQL-interpolation site. This is exploitable SQL injection, not just DoS-by-syntax.** Probe P-188 emitted to pin the chain end-to-end."
+
+**What this strengthening adds**: the prior coverage spanned three invocation sites: (Batch H) `ReactiveDataEntityRepositoryImpl.getHighlightedResult` SQL-format injection; (Batch M) `ReactiveSearchFacetRepositoryImpl` facet aggregators `to_tsquery(?)` parser DoS; (Batch ZE) `SearchController.highlightDataEntity` HTTP entry point. Batch ZL adds the FOURTH layer — the UI:
+
+1. **The UI is the operator-keyboard surface** — Search.tsx mounts `<MainSearch placeholder={t('Search')} disableSuggestions/>` (line 80); MainSearchInput.tsx:42-48 dispatches the typed text VERBATIM through `updateDataEntitiesSearch` → `PUT /api/search/{searchId}` → backend persists `state.setQuery(query)` → JooqFTSHelper.tsQuery code path → injection sink.
+
+2. **ZERO client-side mitigation** — no max-length on `<MainSearchInput>`, no metacharacter filter, no `to_tsquery` validation. The typed text reaches the backend AS-IS.
+
+3. **The UI propagates the injection-eligible text to TWO sinks**:
+   - The `query` field of SearchFormData → JooqFTSHelper.tsQuery → to_tsquery(?) → parser DoS (Batch M's invocation site)
+   - The same query, persisted into search_facets.query_string, is later loaded by getHighlightedResult → String.formatted(text, tsQuery) → TRUE SQL injection (Batch H's invocation site)
+
+4. **The full attacker path is now traced end-to-end**:
+   - Step 1 (UI — THIS LAYER): attacker types `'); DROP TABLE policy; --` into the Catalog search bar
+   - Step 2 (UI dispatch): MainSearchInput.tsx:42-48 sends the typed text as SearchFormData.query
+   - Step 3 (Backend POST): SearchController.search persists the query into search_facets.query_string
+   - Step 4 (Sharing): the session UUID is returned + URL-bookmarkable (per REFACTOR-344 no user binding)
+   - Step 5 (Detonation): anyone (the attacker, a colleague, an external viewer) calls `/api/search/{uuid}/data_entities/{de_id}/highlights` → getHighlightedResult triggers the SQL injection
+   - Step 6 (Impact): POLICY table dropped; or `pg_sleep(10)` DoS; or `SELECT password FROM ...; --` exfiltration
+
+5. **Architectural fix expansion**: the fix scope expands again. Prior recommendation: parameterise via `DSL.field(sql, {0}, {1})` at the repository AND escape in `JooqFTSHelper.tsQuery`. Batch ZL adds: ADD UI-side validation as DEFENSE-IN-DEPTH — max-length (e.g., 256 chars), client-side metacharacter blacklist, or a client-side `validateTsQuery(text)` helper. The UI is the FIRST line of defense; absent UI-side mitigation, the entire pipeline relies on the single backend fix point.
+
+**Triangulation count after ZL**: 4 invocation sites (was 3 — batch H repository + batch M facet aggregators + batch ZE controller; ZL adds UI page-root). The architectural fix point (JooqFTSHelper.tsQuery + repository parameterisation) is unchanged — the helper is still the single source of truth for the backend.
+
+**Severity unchanged at HIGH** — the UI confirmation tightens the attack-path understanding without changing the canonical fix. The attacker path is now fully traced from keyboard to SQL execution.
+
+**Coherence check** (LSN-018):
+- STRENGTHENS: REFACTOR-344 (search_facets no user binding — the bearer-token-shape that combines with this injection to enable propagation); ADR-CANDIDATE-121 (search-session bearer-token at schema layer); ADR-CANDIDATE-052 (server-side search session — strengthened this batch with UI page-root surfaces).
+- SUPERSEDES: none.
+- CONFLICTS: none.
+
+---

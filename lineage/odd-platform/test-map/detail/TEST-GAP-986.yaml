@@ -1,0 +1,53 @@
+gap_id: TEST-GAP-986
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java DataQualityRunsController controller-class:DataQualityRunsController"
+pillars_affected: [P-04]
+surfaced_by:
+  - "DataQualityRunsController.md:concepts.invariants.[2] (test_results counts ONE row per test (its latest run) — NOT one row per historical run. DATA_ENTITY_TASK_LAST_RUN.task_oddrn is PRIMARY KEY; the count is therefore the number of TESTS whose latest run has status X, not the number of TEST RUNS with status X)"
+  - "DataQualityRunsController.md:implicit_adrs.[0] (The dashboard reads a denormalised 'latest run per test' table rather than aggregating over the full task-run history at query time)"
+  - "DataQualityRunsController.md:tests_coverage_semantic.uncovered_behaviours.[4] (the load-bearing 'count of tests by latest-run-status, not count of test runs' invariant has no test pinning it; a future schema change that switched DATA_ENTITY_TASK_LAST_RUN to multi-row per task (or fan-out reverted to DATA_ENTITY_TASK_RUN) would silently change the dashboard semantics)"
+behaviour: |-
+  **The load-bearing denormalisation invariant — `DATA_ENTITY_TASK_LAST_RUN.task_oddrn` is `PRIMARY KEY` (single row per test) — has NO test pinning it.** This is the schema invariant on which the dashboard's entire semantic rests:
+
+  - The dashboard joins `DATA_ENTITY_TASK_LAST_RUN` (`ReactiveDataQualityRunsRepositoryImpl.java:41, 76, 95, 117-141`) — the denormalised "latest run per test" table populated by the ingestion path (`V0_0_45__last_runs_table.sql:7-25`).
+  - `task_oddrn` is `PRIMARY KEY` (`V0_0_45__last_runs_table.sql:9`) — exactly one row per test.
+  - The denormalisation IS the design — it changes the dashboard's semantic from "count of test runs by status" to "count of tests by their latest-run-status" (the LSN-019 drift documented in TEST-GAP-984).
+
+  **Failure modes this gap enables**:
+
+  1. **Schema-change-without-code-change**: a future maintainer evolves `DATA_ENTITY_TASK_LAST_RUN` (e.g. drops the PK to allow multi-row history; adds a "version" column for soft-mutation) without updating `getLatestDataQualityRunsResults`. The COUNT in the dashboard silently inflates by the number of rows per task. No test catches it.
+
+  2. **Code-change-without-schema-change**: a future maintainer thinks "the doc says count of runs, the code should aggregate over `data_entity_task_run` directly" and refactors the join. The dashboard COUNT inflates 100x in deployments with long history. No test catches it.
+
+  3. **Migration backfill drift**: the `V0_0_45` migration back-fills via `DISTINCT ON (tr.task_oddrn) ORDER BY tr.task_oddrn, tr.end_time DESC ... ON CONFLICT DO UPDATE` (`V0_0_45__last_runs_table.sql:15-21`). A future migration that doesn't preserve the DISTINCT ON semantics would leave dual rows for some tasks. No test pins this.
+
+  4. **Ingestion-write drift**: the ingestion pipeline's `last_runs` upsert (`TaskRunIngestionRequestProcessor` per IngestionService sidecar) is the SOLE writer of `DATA_ENTITY_TASK_LAST_RUN`. A future ingestion refactor that lets two simultaneous writes succeed (race on the upsert) would corrupt the PK invariant on Postgres versions that don't enforce strict serialisability under READ COMMITTED.
+
+  The denormalisation is the DESIGN — a deliberate ADR (`implicit_adrs[0]`). Test coverage pinning it is the regression-pin that converts intentional design into deliberate-test-update on future changes.
+test_class: missing-integration
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/DataEntityTaskLastRunDenormalisationInvariantTest.java"
+  name: "lastRunsTable_singleRowPerTask_pinsDenormalisationInvariant"
+evidence:
+  - "DataQualityRunsController.md:concepts.invariants.[2] verbatim: 'test_results counts ONE row per test (its latest run) — NOT one row per historical run. DATA_ENTITY_TASK_LAST_RUN.task_oddrn is PRIMARY KEY (V0_0_45__last_runs_table.sql:9); the count is therefore the number of TESTS whose latest run has status X, not the number of TEST RUNS with status X'"
+  - "DataQualityRunsController.md:implicit_adrs.[0] verbatim: 'The dashboard reads a denormalised latest run per test table rather than aggregating over the full task-run history at query time... The denormalisation IS the decision — it changes the dashboard''s semantic from count of test runs by status to count of tests by their latest-run-status.' confidence: HIGH"
+  - "Verified at primary source: V0_0_45__last_runs_table.sql:7-25 (the CREATE TABLE + the back-fill) — specifically line 9 declares `task_oddrn` as PRIMARY KEY"
+cross_references:
+  - "TEST-GAP-984 (sibling — the LSN-019 drift this invariant load-bears; if this invariant breaks, TEST-GAP-984 inverts)"
+  - "TEST-GAP-983 (parent — controller HTTP-tier zero-coverage)"
+  - "REFACTOR-NNN candidate: explicit DB-tier integration test asserting the PRIMARY KEY remains; the constraint name + DDL shape pinned via INFORMATION_SCHEMA query"
+related_features: []
+related_pillar_features: ["P-04:F-002"]
+proposed_action: |-
+  Add `DataEntityTaskLastRunDenormalisationInvariantTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/`. Four test methods:
+  1. `lastRunsTable_singleRowPerTask_pinsDenormalisationInvariant` — issue `SELECT count(*), count(DISTINCT task_oddrn) FROM data_entity_task_run_last_run`; assert both equal. PIN the single-row-per-task invariant at the data layer.
+  2. `lastRunsTable_primaryKeyOnTaskOddrn_pinsSchemaConstraint` — query `INFORMATION_SCHEMA.table_constraints` for the table; assert a PRIMARY KEY exists with constraint name matching `data_entity_task_run_last_run_pkey` and the constrained column is `task_oddrn`. PIN the DDL constraint.
+  3. `lastRunsTable_concurrentUpsertSameTaskOddrn_resultsInOneRowOnly_pinsIngestionRaceSafety` — concurrent two upserts into the same task_oddrn; assert exactly one row exists after both commit. PIN the race-safety guarantee.
+  4. `testResults_dashboardCount_matchesLastRunRowCount_pinsLastRunsCardinalityInvariant` — seed 100 historical runs across 5 tests (so 100 rows in `data_entity_task_run` but only 5 in `data_entity_task_run_last_run`); GET dashboard; assert total testResults count = 5 (NOT 100). PIN the count-from-last-runs contract.
+
+  Pair with REFACTOR-NNN: add a Flyway migration test that runs `V0_0_45` against a populated `data_entity_task_run`; assert the back-fill produces exactly DISTINCT ON tasks.
+batch: 2026-05-25-ZG
+feature_id: null

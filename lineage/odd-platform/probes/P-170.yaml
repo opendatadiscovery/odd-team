@@ -1,0 +1,90 @@
+---
+probe_id: P-170
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__json__locales_translations__i18n-resource__en.md
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: integration
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question: the en.json resource is missing several translation keys that
+  the code references via t('...') — notably "Data Quality", "Data Modelling",
+  "Master Data", "Query Examples", "Add query example", "Save lookup table",
+  "Table name", "Enter business name", "Link query", "query examples overall",
+  "lookup table", "tab", "Delete query example", "Are you sure you want to
+  delete this query example?". The natural-keys i18next pattern means a missing
+  key falls back to the key STRING itself, so the English UI accidentally works.
+  But (a) what does each non-English locale actually render for these keys, and
+  (b) does the six-element fallbackLng chain (`['en','es','ch','fr','ua','hy']`
+  per i18n.ts:30) cause a French user to see Spanish or Chinese text before
+  English when a missing key is genuinely missing across multiple locales?
+  Hypothesis: French user navigating to /data-quality, /data-modelling, or
+  /master-data tabs sees the English label (not French) — confirming the
+  natural-keys fallback. Hypothesis (b): if a key is present in es.json or
+  ch.json but missing in fr.json (none observed in this audit, but a future
+  contributor could introduce this), French users see Spanish or Chinese text
+  before English in the fallback chain.
+---
+arrange:
+  - kind: docker-compose-up
+    spec: odd-platform-ui dev server (npm run start in odd-platform-ui)
+  - kind: dom-probe
+    description: |
+      Open browser headless, navigate to /?lng=fr to force French locale
+      via the SelectLanguage widget (which writes localStorage.i18nextLng = 'fr').
+act:
+  - kind: dom-probe
+    description: |
+      Read the rendered text of the toolbar tab labels on the global navigation:
+      [data-test=toolbar-tabs] > * > .tab-label
+    capture_as: french_tab_labels
+  - kind: dom-probe
+    description: |
+      Switch locale to 'es' via SelectLanguage; re-read the same tab labels.
+    capture_as: spanish_tab_labels
+  - kind: dom-probe
+    description: |
+      Switch locale to 'ch' via SelectLanguage; re-read the same tab labels.
+    capture_as: chinese_tab_labels
+observe:
+  - kind: dom-probe
+    description: enumerate which labels rendered the English-key fallback vs an actual translation
+    capture_as: per_locale_drift_report
+assert:
+  - "french_tab_labels['Data Quality'] == 'Data Quality'  # confirms missing-key → key-string fallback"
+  - "french_tab_labels['Data Modelling'] == 'Data Modelling'"
+  - "french_tab_labels['Master Data'] == 'Master Data'"
+  - "spanish_tab_labels['Data Quality'] == 'Data Quality'  # same drift across locales"
+  - "spanish_tab_labels['Data Modelling'] == 'Data Modelling'"
+  - "spanish_tab_labels['Master Data'] == 'Master Data'"
+  - "chinese_tab_labels['Data Quality'] == 'Data Quality'  # same drift, Chinese locale"
+  - "chinese_tab_labels['Data Modelling'] == 'Data Modelling'"
+  - "chinese_tab_labels['Master Data'] == 'Master Data'"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__json__locales_translations__i18n-resource__en
+    - odd-platform__ts__locales__ui-shell-bootstrap__i18n_ts
+    - odd-platform__ts__components_shared_elements_AppToolbar__ui-shell-widget__SelectLanguage
+  retrospectives:
+    - LSN-019
+    - LSN-020
+realism_caveats: |
+  This probe verifies the missing-key drift HYPOTHESIS using runtime
+  observation of the rendered DOM. It does NOT verify the inverse —
+  that no key REFERENCED in code is FAILING SILENTLY in production for
+  a user of a specific locale. A complete coverage test would enumerate
+  every t('...') call site, every locale, and assert the rendered value
+  matches the locale's intended translation (not the English key). That
+  is a CI-class probe, not a one-off integration test. If the assertions
+  PASS, the natural-keys fallback IS the de-facto contract, and the
+  doc / contributing guide must state it explicitly. If the assertions
+  FAIL (i.e. some locale renders a non-English string for a key absent
+  from en.json), there is a hidden translation in that locale that the
+  English-locale developer never sees, and a separate audit of locale
+  divergence is warranted.

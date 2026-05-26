@@ -1,0 +1,54 @@
+gap_id: TEST-GAP-980
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java DataEntityRunController controller-class:DataEntityRunController"
+pillars_affected: [P-04, P-09]
+surfaced_by:
+  - "DataEntityRunController.md:security.known_security_gaps.[1] (status_reason payload is operator-supplied (ingested verbatim from the test framework) and not redacted at the API boundary; combined with cross-owner-read, this is a diagnostic-text broadcast channel — frameworks like Great Expectations emit failed-row sample values which may contain PII — severity HIGH)"
+  - "DataEntityRunController.md:tests_coverage_semantic.uncovered_behaviours.[4] (Cross-owner-read posture — bob (non-owner) can read alice's DQ-test run history including status_reason text)"
+behaviour: |-
+  **`status_reason` PII broadcast across owner boundaries — any authenticated user on the platform can enumerate every Data Quality test's diagnostic stream regardless of which team owns the dataset.** The endpoint is NOT listed in `SecurityConstants.SECURITY_RULES` (verified by grep over SecurityConstants.java:98-355 returning zero matches for `/runs`); the path falls through to `AuthorizationCustomizer.java:29-30` `.pathMatchers("/**").authenticated()`. No owner predicate exists at the SQL layer (`ReactiveDataEntityTaskRunRepositoryImpl.java:161-191` — every WHERE clause is derived from request params, not principal-derived).
+
+  **What leaks**:
+  - **Test execution timeline**: the full history of when DQ tests run, succeed, fail across every dataset in the catalog — useful for enumerating which teams have failing pipelines, monitoring schedules, and operational cadence across owner boundaries.
+  - **`status_reason` free-form text**: this is the diagnostic field set by the test framework. Common content:
+    - **Great Expectations**: failed-row sample values (column names + actual cell values that violated the expectation — directly PII if the violated column is `email`, `phone_number`, `ssn`, `customer_address`).
+    - **dbt tests**: failing SQL query text + sample rows from the failure (same PII vector).
+    - **Custom frameworks**: free-form operator-supplied diagnostics that may include internal table/column names, query snippets, or pasted-in error logs containing customer IDs.
+
+  **Why CRITICAL not HIGH**:
+  - **PII regulatory exposure**: A GDPR-bound operator deploying ODD with a Great Expectations check that fails on PII-bearing columns will leak that PII to every authenticated user on the platform — including users whose own teams have no business with the failing dataset. This is a DPA-violation surface that the live data-quality doc does NOT flag.
+  - **Compound with TEST-GAP-979**: even if RUNNING-row 500-bug doesn't fire (operator catches the runs page during a non-RUNNING moment), the security leak persists across every successful page-load.
+  - **Cross-pillar amplification**: P-04 (Data Quality) × P-09 (Security) — a maintainer auditing P-04 alone misses the security half; a maintainer auditing P-09 alone misses the operationally-realistic failure mode.
+
+  No test pins this. A pure security-class test fixing the assertion ("bob can read alice's DQ run history with status_reason") locks the current posture; future hardening (add owner predicate at SQL OR add `@PreAuthorize` at controller OR add a redaction filter on `status_reason`) inverts the assertion deliberately.
+test_class: missing-security
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DataEntityRunCrossOwnerReadTest.java"
+  name: "getRuns_callerIsNotOwner_returns200WithStatusReasonTextVerbatim_pinsBroadcast"
+evidence:
+  - "DataEntityRunController.md:security.known_security_gaps.[1] verbatim: 'status_reason payload is operator-supplied (ingested verbatim from the test framework) and not redacted at the API boundary; combined with cross-owner-read, this is a diagnostic-text broadcast channel — frameworks like Great Expectations emit failed-row sample values which may contain PII' severity: HIGH"
+  - "DataEntityRunController.md:security.owner_scoping verbatim: 'BYPASSES — no owner-context check at any layer (controller / service / repository). Verified: ReactiveDataEntityTaskRunRepositoryImpl.getDataEntityRuns (lines 161-191) filters only on DATA_ENTITY.ID.eq(dataQualityTestId) and optionally STATUS.eq(...); there is no JOIN to ownership and no filter by the calling user's owners.'"
+  - "Verified at primary source: SecurityConstants.java:98-355 (grep `runs` returns 0 hits) + AuthorizationCustomizer.java:29-30 + ReactiveDataEntityTaskRunRepositoryImpl.java:161-191 (no ownership join) + components.yaml:974-976 (statusReason is free-form String on wire model)"
+  - "Probe P-152 emits the canonical bob-reads-alice scenario"
+cross_references:
+  - "TEST-GAP-461 (sibling — AlertNotificationMessage PII pass-through to notification channels — same PII broadcast class, different surface)"
+  - "TEST-GAP-871 (sibling — getDataEntityActivityList no per-entity authorization — activity-feed half of the read-collaborative posture)"
+  - "TEST-GAP-709 (sibling — DataQualityController read-collaborative pattern — sister 4-GET surface)"
+  - "TEST-GAP-987 (sibling — same posture on DataQualityRunsController catalog-wide aggregate)"
+  - "REFACTOR-024 (the canonical read-collaborative-catalog family; this is the 5th invocation site)"
+  - "P-152 (the probe skeleton emitted in the sidecar)"
+related_features: [F-022]
+related_pillar_features: ["P-04:F-001", "P-09:F-001"]
+proposed_action: |-
+  Add `DataEntityRunCrossOwnerReadTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Four test methods:
+  1. `getRuns_callerIsNotOwner_returns200WithStatusReasonTextVerbatim_pinsBroadcast` — seed alice (owner) creates a DQ-test; ingest a FAILED run with `status_reason = "Failed assertion: email=alice@example.com violated UNIQUE constraint"`; switch principal to bob (no ownership); GET `/api/dataentities/{id}/runs`; assert HTTP 200 + items[0].statusReason contains "alice@example.com" verbatim. PIN the broadcast.
+  2. `getRuns_callerHasNoOwnershipAnywhere_returns200WithFullExecutionTimeline_pinsEnumeration` — seed multiple datasets owned by alice + carol + david; switch principal to bob with no ownership; GET runs for EACH dataset; assert HTTP 200 each time. PIN the catalog-wide enumeration vector.
+  3. `getRuns_authTypeDISABLED_anonymousCaller_returns200WithStatusReasonAndPII_pinsWorstCase` — under DISABLED, no authentication; GET runs of any dataset; assert HTTP 200 with `status_reason` verbatim. PIN the worst-case anonymous PII leak.
+  4. `getRuns_callerIsDirectOwner_returns200_baselineNonRegressionAssertion` — alice as owner GETs her own DQ-test runs; assert HTTP 200. Baseline so that future hardening (when read is restricted) flips tests 1+2+3 but NOT this one.
+
+  Pair with REFACTOR-024 follow-up: introduce optional `DATA_ENTITY_VIEW_RUNS` permission + parent-DataEntity owner-scoping predicate at the SQL layer. Pair with DOC-NNN: surface the cross-owner read posture + PII broadcast caveat on the data-quality doc page (currently silent per the sidecar's doc_drift_findings).
+batch: 2026-05-25-ZG
+feature_id: F-022

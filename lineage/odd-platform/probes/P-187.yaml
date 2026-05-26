@@ -1,0 +1,96 @@
+---
+probe_id: P-187
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__Search.md
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-001
+test_class: security
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category D — auth gates at the Catalog page route): the
+  Search.tsx component at `/search/*` carries NO `<WithPermissionsProvider>`
+  at the route mount (App.tsx:61 mounts `<Search/>` bare, no permission wrap;
+  contrast App.tsx:75-88 lookupTablesPath which IS wrapped). The component
+  itself wraps only `<Results/>` in a permission-context PROVIDER (Search.tsx:
+  81-85) but that provider INJECTS context — it does NOT gate the render.
+  The downstream `<WithPermissions permissionTo={DATA_ENTITY_GROUP_CREATE}>`
+  at Results.tsx:125 gates only the conditional 'Add group' button.
+  Hypothesis: under `auth.type=DISABLED` the entire Catalog page (route +
+  the create-session POST + the result list + the facet sidebar) is
+  reachable by anonymous traffic on the platform's HTTP port. Under
+  LOGIN_FORM/OAUTH2/LDAP, ANY authenticated user — including a brand-new
+  zero-permission account — sees the full catalog. The session UUID minted
+  by the POST has NO user-binding column in `search_facets`
+  (REFACTOR-344 cross-link), so the bearer-token-shaped URL is shareable
+  cross-user. The probe pins (a) the unauthenticated DISABLED-mode reach;
+  (b) the zero-permission authenticated reach; (c) the cross-user UUID
+  bearer-token reach.
+---
+arrange:
+  - kind: docker-compose-up
+    profile: odd-minimal
+  - kind: sql
+    query: |
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, hollow)
+      VALUES (90001, '//probe-source/p-187/secret_pii', 'secret_pii', 1, 1, false)
+  - kind: sql
+    query: |
+      INSERT INTO search_entrypoint (data_entity_id, search_vector)
+      VALUES (90001, to_tsvector('english', 'secret_pii catalog probe'))
+  - kind: env
+    set:
+      AUTH_TYPE: DISABLED
+  - kind: docker-compose-restart
+    service: odd-platform-api
+act:
+  - kind: rest
+    method: POST
+    path: /api/search
+    body: '{"query":"secret_pii","pageSize":30,"filters":{}}'
+    auth: none
+    capture_as: anonymous_search_response
+  - kind: rest
+    method: GET
+    path: /api/search/${anonymous_search_response.searchId}/results?page=1&size=30
+    auth: none
+    capture_as: anonymous_results
+observe:
+  - kind: capture
+    target: anonymous_search_response.status
+    capture_as: anonymous_search_status
+  - kind: capture
+    target: anonymous_results.items
+    capture_as: anonymous_returned_items
+  - kind: capture
+    target: anonymous_search_response.searchId
+    capture_as: shared_uuid
+assert:
+  - "anonymous_search_status == 200  # DISABLED mode: anonymous reach confirmed"
+  - "len(anonymous_returned_items) >= 1  # the seeded secret_pii row reachable"
+  - "anonymous_returned_items[0].externalName == 'secret_pii'"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM search_entrypoint WHERE data_entity_id = 90001;
+      DELETE FROM data_entity WHERE id = 90001;
+      DELETE FROM search_facets WHERE id = '${shared_uuid}';
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__Search
+    - odd-platform__java__SearchController__controller-class__SearchController
+    - odd-platform__ts__routes__route__search
+  retrospectives:
+    - LSN-020
+realism_caveats: |
+  Probe pins (a) DISABLED-mode anonymous reach as a HIGH-severity confirmation.
+  Does NOT cover (b) cross-user UUID bearer-token reach (would require a second
+  authenticated user identity in the stack to test reuse of the first user's
+  UUID) or (c) the LOGIN_FORM/OAUTH2/LDAP zero-permission reach (would require
+  identity-provider stub fixtures). Follow-up probe should extend the auth
+  matrix; this probe pins the bottom of the auth-gate range (DISABLED) and
+  confirms the architectural assertion that the route has no permission wrap.

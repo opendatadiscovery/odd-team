@@ -1,0 +1,126 @@
+---
+gap_id: TEST-GAP-1010
+category: missing-edge-case
+criticality: MEDIUM
+node_ids:
+  - "odd-platform ts routes route:queryExamples"
+surfaced_by:
+  - "odd-platform__ts__routes__route__queryExamples.md:bugs_limitations_corner_cases.[0]"
+  - "odd-platform__ts__routes__route__queryExamples.md:bugs_limitations_corner_cases.[1]"
+  - "odd-platform__ts__routes__route__queryExamples.md:tests_coverage_semantic.uncovered_behaviours.[2]"
+  - "odd-platform__ts__routes__route__queryExamples.md:tests_coverage_semantic.uncovered_behaviours.[4]"
+related_pillar_features:
+  - "P-02"
+related_features: ["F-025"]
+feature_id: "F-025"
+test_class: missing-edge-case
+strengthens:
+  - TEST-GAP-849   # cross-component NaN propagation pattern (DataEntityDetails + Lineage)
+  - TEST-GAP-1000  # useTermsRouteParams parseInt NaN
+  - TEST-GAP-1009  # useDirectoryRouteParams parseInt NaN (4th instance)
+behaviour: |-
+  **MEDIUM — `queryExamplesRoutes.ts` has TWO compounded boundary defects:**
+
+  **(a) Falsy-id guard silently routes id=0 to the LIST URL** at line 31:
+  the builder uses `if (queryExampleId)` — a truthy check — so
+  `queryExamplesPath(0)` returns the LIST URL `/data-modelling/query-examples`,
+  NOT the details URL `/data-modelling/query-examples/0`. This is consistent
+  with JavaScript's `if (numericVar)` idiom but indistinguishable from
+  `queryExamplesPath()` (no-arg) and `queryExamplesPath(undefined)`. Postgres
+  bigserial currently never produces id=0 so the case is theoretical, BUT:
+  (i) a backend renumbering script that resets the sequence could produce
+  id=0 silently; (ii) a future migration to signed ints could produce id=0
+  from counter underflow; (iii) a unit test that uses `0` as a sentinel-id
+  would be silently miscompiled to the list URL; (iv) a future caller that
+  passes id from an arithmetic expression (e.g. `id - parent_id`) could
+  produce 0 and silently land on the list.
+
+  **(b) `useQueryExamplesRouteParams` propagates NaN silently** when the
+  URL segment is non-numeric. Line 22's `as QueryExamplesRouteParams` is a
+  type-system LIE — it claims `queryExampleId` is a non-undefined string
+  when the React Router segment may be missing OR may not be numeric. Then
+  line 25's `parseInt(queryExampleId, 10)` returns `NaN` for any non-numeric
+  input. The downstream `useGetQueryExampleDetails({ exampleId: NaN })` then
+  fires `GET /api/queryexample/NaN` — the backend returns 400/404, the UI
+  hangs on `AppLoadingPage` (per `QueryExampleDetailsContainer.tsx:97`)
+  until the error response arrives. No graceful fallback. **This is the
+  FIFTH instance of the project-wide parseInt-without-isNaN-guard pattern**
+  after TEST-GAP-422 (DataEntityDetails), TEST-GAP-849 (cross-component
+  meta), TEST-GAP-997 (Integrations), TEST-GAP-1000 (Terms), TEST-GAP-1009
+  (Directory — 4th instance). queryExamples is the 5th surface.
+
+  **The compound nature of (a)+(b)**: a future change might enable id=0
+  on the backend (e.g. a fixture or a renumbering); the builder silently
+  routes to LIST. The same id=0 string ('0') as a URL segment would
+  `parseInt('0', 10) === 0` (NOT NaN), so the hook returns
+  `queryExampleId: 0`. The downstream details container then asks
+  `useGetQueryExampleDetails({ exampleId: 0 })` → backend likely 404 (id=0
+  doesn't exist). User lands on AppLoadingPage indefinitely. The pair of
+  defects produces asymmetric behaviour: the BUILDER drops id=0 silently,
+  but the HOOK accepts it. The architecture says "id=0 is invalid" via the
+  builder but the hook doesn't enforce it.
+
+  **Same-file additional surface**: the `URLSearchParams` constant
+  exported from this file SHADOWS the global Web Platform
+  `URLSearchParams` class (the URL-search-params API used throughout the
+  SPA). A reader scanning the file may briefly believe `URLSearchParams`
+  refers to the platform API; only the type definition resolves the
+  ambiguity. Cosmetic naming clash, unconventional — not a bug but a
+  readability defect. Surface here as a same-file finding for completeness.
+
+  **The fix is single-file and three-line**: (i) replace
+  `if (queryExampleId)` at line 31 with
+  `if (queryExampleId !== undefined && queryExampleId !== 0)`
+  or `if (typeof queryExampleId === 'number' && queryExampleId > 0)`;
+  (ii) replace `parseInt(queryExampleId, 10)` at line 25 with a
+  shared `safeParseRouteParamId` helper (per the TEST-GAP-1009 long-term
+  recommendation); (iii) optionally rename `URLSearchParams` to
+  `QueryExamplesSearchParams` to break the platform-API shadow.
+test_files_existing: []
+test_files_proposed:
+  - path: "odd-platform-ui/src/routes/dataModelling/__tests__/queryExamplesRoutes.test.tsx"
+    name: "queryExamplesPath_idZero_returnsListURLNotDetailsURL_pinsFalsyGuardAsymmetry"
+    description: |-
+      Vitest unit test. Assert queryExamplesPath(0) === '/data-modelling/query-examples'.
+      Pins the falsy-guard asymmetry; a future fix that distinguishes
+      undefined from 0 must update this test deliberately (the test should
+      ALSO assert the new behaviour explicitly, e.g.
+      queryExamplesPath(0) === '/data-modelling/query-examples/0').
+  - path: "odd-platform-ui/src/routes/dataModelling/__tests__/queryExamplesRoutes.test.tsx"
+    name: "queryExamplesPath_idTruthy_returnsDetailsURL"
+    description: |-
+      Assert queryExamplesPath(42) === '/data-modelling/query-examples/42'.
+      Happy-path pin.
+  - path: "odd-platform-ui/src/routes/dataModelling/__tests__/queryExamplesRoutes.test.tsx"
+    name: "useQueryExamplesRouteParams_nonNumericSegment_returnsNaN"
+    description: |-
+      MemoryRouter initialEntries=['/data-modelling/query-examples/abc'] +
+      Route path='query-examples/:queryExampleId' element=<TestHookConsumer />.
+      Assert queryExampleId === NaN AND Number.isNaN(queryExampleId) === true.
+      Pins the swallowing behaviour. Same shape as TEST-GAP-1000's parallel
+      test for terms.
+  - path: "odd-platform-ui/src/routes/dataModelling/__tests__/queryExamplesRoutes.test.tsx"
+    name: "useQueryExamplesRouteParams_idIsZeroAsString_returnsZeroNumber"
+    description: |-
+      URL '/data-modelling/query-examples/0'. Assert queryExampleId === 0
+      (typeof number). Pins the asymmetric behaviour: the BUILDER drops
+      id=0 but the HOOK accepts it. Documents the compound defect from (a)+(b).
+evidence:
+  - "queryExamples.md:bugs_limitations_corner_cases.[0] verbatim: 'The truthy-id guard at line 31 silently routes id=0 to the LIST URL: queryExamplesPath(0) returns /data-modelling/query-examples, NOT /data-modelling/query-examples/0. This is consistent with JavaScript if (numericVar) idiom but indistinguishable from queryExamplesPath() (no-arg) and queryExamplesPath(undefined).' severity: LOW"
+  - "queryExamples.md:bugs_limitations_corner_cases.[1]: 'useQueryExamplesRouteParams propagates NaN silently when the URL segment is non-numeric: line 22 as QueryExamplesRouteParams is a type-system LIE.' severity: MEDIUM"
+  - "queryExamples.md:bugs_limitations_corner_cases.[3]: 'URLSearchParams shadows the global Web Platform URLSearchParams class.' severity: LOW"
+  - "queryExamples.md:tests_coverage_semantic.uncovered_behaviours.[2] criticality: LOW (id=0 falsy guard)"
+  - "queryExamples.md:tests_coverage_semantic.uncovered_behaviours.[4] criticality: MEDIUM (NaN propagation)"
+  - "Grep against test files for queryExamplesPath OR useQueryExamplesRouteParams in odd-platform-ui/src/.../__tests__/: 0 matches (verified 2026-05-26 at commit 4ec2b20)"
+  - "Primary source: queryExamplesRoutes.ts:19-38 (the hook + builder) + components/DataModelling/QueryExampleDetails/QueryExampleDetailsContainer.tsx:18-29 (the only consumer of the hook) + line 97 (AppLoadingPage on indefinite-load failure mode)"
+cross_references:
+  - "TEST-GAP-849 / TEST-GAP-422 / TEST-GAP-997 / TEST-GAP-1000 / TEST-GAP-1009 (the parseInt-NaN family — this is the 5th instance)"
+  - "TEST-GAP-1003 (META cross-cutting routes/ directory-wide gap)"
+  - "F-025 (Query Examples feature flow — operator-impact of indefinite-load UX)"
+  - "FALSY-GUARD pattern: a same-shape silent id=0 routing exists in any builder using `if (numericVar)` for positive-int args. queryExamplesPath is one of the canonical examples"
+proposed_action: |-
+  Author the four-test file (one ~80-line Vitest module) pinning the
+  falsy-guard + NaN-propagation contracts. Pair with the long-term fix
+  proposed in TEST-GAP-1009: the shared safeParseRouteParamId helper would
+  close BOTH defects at this file in a single refactor.
+maintainer_curated: false

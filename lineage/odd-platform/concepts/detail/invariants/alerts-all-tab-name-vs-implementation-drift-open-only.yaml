@@ -1,0 +1,185 @@
+name: |-
+  Alerts All tab name-vs-implementation drift — docs promise "open and resolved", SQL filters STATUS=OPEN only (Category B drift)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-07
+description: |-
+  NEW HIGH-severity Category B INVARIANT, batch ZL (2026-05-26) —
+  the live doc page at
+  `https://docs.opendatadiscovery.org/features/active-platform-features/alerting`
+  (WebFetched 2026-05-26 status 200) describes the global Alerts
+  page's All tab verbatim:
+
+      "All — Every open and resolved alert across the whole platform."
+
+  The UI tab label at `components/Alerts/AlertsTabs.tsx:22` is
+  `t('All')` (matching the doc copy semantically).
+
+  **The IMPLEMENTATION binds to a HARD-CODED status filter at the
+  SQL layer** — per ReactiveAlertRepositoryImpl.java:142-148:
+
+      // listAllWithStatusOpen (the All-tab backend method)
+      SELECT ... FROM alert
+      WHERE alert.STATUS = OPEN.getCode()
+      ORDER BY alert.LAST_CREATED_AT DESC, alert.ID DESC
+      LIMIT ? OFFSET ?
+
+  The `ALERT.STATUS.eq(OPEN.getCode())` predicate is present in
+  ALL THREE list endpoints — listAllWithStatusOpen (line 145),
+  listByOwner (line 166), listDependentObjectsAlerts (line 230).
+  Resolved + RESOLVED_AUTOMATICALLY alerts are INVISIBLE on every
+  global tab. The All tab returns ONLY open alerts; the docs
+  promise BOTH.
+
+  **The available-but-unused column is `ALERT.STATUS`** — a 3-value
+  state column (OPEN / RESOLVED / RESOLVED_AUTOMATICALLY) but the
+  list-API endpoints ignore the resolved values uniformly. There
+  is NO `status` query parameter on getAllAlerts /
+  getAssociatedUserAlerts / getDependentEntitiesAlerts
+  (AlertController.java:36-57). If the UI offered a status filter,
+  the implementation would have to be added — the column is the
+  same column that would back the filter.
+
+  **The asymmetry: resolved alerts DO appear on a single data
+  entity's Alerts tab** — `DataEntityController.getDataEntityAlerts`
+  routes to `getAlertsByDataEntityId` (ReactiveAlertRepositoryImpl.java:182-199)
+  which has NO status filter. So the data exists; the global
+  /alerts page just won't surface it.
+
+  **Operator-visible consequences** (three patterns):
+
+  (a) **Operator searching the global Alerts page for a recently-
+      resolved alert** cannot find it. They may assume the alert
+      was purged from the platform. They may open a support ticket
+      / re-investigate the underlying issue thinking the alert was
+      lost. Resolved alerts CAN still be viewed via the single-
+      entity Alerts tab — but the operator may not know to look
+      there.
+
+  (b) **Time-series audit operations** (e.g., 'show me everything
+      that happened in the last 30 days') see a SKEWED view —
+      open alerts persist across time but resolved alerts drop
+      off the global feed at the moment of resolution.
+
+  (c) **Tab badge counters** rendered via fetchAlertsTotals are
+      ALL counts of OPEN-status rows. A user resolving alerts
+      watches the count tick down; if all the resolved alerts
+      'disappear' from view they may correctly conclude the
+      count is open-only but cannot verify without leaving the
+      Alerts page tree.
+
+  **CLASS MEMBERSHIP — LSN-019 (Category B drift class)**: this
+  is the SAME class as `invariant:list-popular-data-entities`
+  (TagController.listMostPopular — name promises popularity,
+  binds to view_count) and other 'tab/method name vs SQL
+  predicate' drifts. The Alerts All-tab instance is the highest-
+  visibility example because the All tab is the DEFAULT landing
+  for /alerts; every operator hitting the Alerts feature
+  encounters the misleading scope first.
+
+  **Fix surfaces** (maintainer-triage):
+
+  1. **Add a status filter to the global Alerts page** —
+     UI affordance (a status multi-select or three radio-buttons
+     OPEN/RESOLVED/ALL) + backend change at three repository
+     methods (parameterise the STATUS filter; default to OPEN for
+     backward compatibility OR default to ALL with a docs note).
+     ~50 lines of code; closes the drift at the SOURCE.
+
+  2. **Document the open-only semantic on the doc page** —
+     prominent caveat: "The global Alerts page shows ONLY open
+     alerts. To view resolved alerts, navigate to a specific
+     data entity's Alerts tab." LOW-cost; doc-only fix.
+
+  3. **Rename the All tab to 'Open'** — most accurate; visually
+     ugly; requires 3-locale i18n key updates + Filters.tsx UI
+     update. Aligns labels with reality.
+
+  4. **Add an empty-state hint when search returns 0 rows** — e.g.,
+     "No open alerts. Resolved alerts are not listed here; search
+     the data entity directly to view its alert history." Wears
+     the constraint as a feature.
+
+  vocabulary_status: codebase-anchored AND live-doc-confirmed. The
+  live doc explicitly promises 'open and resolved' semantics; the
+  code implements 'open only'. The doc is operator-misleading; the
+  code is the authoritative source. Refresh candidate: extend the
+  doc page with the 'Open only' caveat.
+nodes:
+  - odd-platform ts react-component component:Alerts
+contributors:
+  - odd-platform ts react-component component:Alerts
+evidence:
+  - |-
+    Alerts.md:docs_link_semantic.doc_drift_findings.[0] — 'DRIFT:
+    docs says All tab shows "Every open and resolved alert across
+    the whole platform" but ReactiveAlertRepositoryImpl.java:142-145
+    hard-filters ALERT.STATUS.eq(OPEN.getCode()). The list NEVER
+    shows RESOLVED or RESOLVED_AUTOMATICALLY alerts in the global
+    tabs — only on a single data entity Alerts tab via
+    getAlertsByDataEntityId.'
+  - |-
+    Alerts.md:bugs_limitations_corner_cases.[all-tab-mismatch] —
+    'All-tab name vs behaviour mismatch: docs say "open and
+    resolved"; backend SQL filters STATUS=OPEN only.' Severity HIGH.
+  - |-
+    Alerts.md:stress_findings.name_behavior_pairs.AlertsTabs labels
+    — 'All tab promises full alert population per live docs; backend
+    getAllAlerts → listAll → listAllWithStatusOpen filters STATUS=OPEN
+    only. Resolved alerts are absent.' DRIFT_NAME_VS_BEHAVIOR.
+  - |-
+    Alerts.md:stress_findings.request_inputs.tab-route-segment —
+    'all promises the full alert population; backend
+    listAllWithStatusOpen returns OPEN only. The available-but-
+    unused column is ALERT.STATUS.'
+related_concepts:
+  - operation:list-alerts-three-visibility-scopes
+  - operation:mount-alerts-page-shell-three-tab-shared-state-slot
+  - invariant:second-securityconstants-bug-alerts-status-wrong-permission
+axes_present:
+  - ui_components
+  - ui_routes
+triangulation_count: 1
+cross_batch: false
+severity: HIGH
+severity_dim: correctness
+mitigations_unimplemented:
+  - |-
+    Fix surface 1 (preferred) — parameterise the STATUS filter
+    at the three repository methods + add a UI filter affordance
+    + add @Param on the controller methods. Closes the drift at
+    the source; surfaces resolved alerts on the global page.
+  - |-
+    Fix surface 2 (minimum-viable) — update the live doc page at
+    /features/active-platform-features/alerting with the 'Open
+    only' caveat. Loses the operator who never reads the docs,
+    but stops the misconception class from propagating.
+  - |-
+    Fix surface 3 — rename the All tab label to 'Open' across
+    the 6 locale bundles. Aligns labels with reality but is
+    visually unusual.
+  - |-
+    Fix surface 4 (UX patch) — empty-state copy refinement at
+    AlertsList's EmptyContentPlaceholder describing the open-
+    only semantic.
+notes: |-
+  NEW invariant captured in batch ZL (2026-05-26) FINAL refresh.
+  This is the Alerts.tsx primary-source confirmation of the
+  Category B drift class first surfaced in TagController batch
+  19 (the listMostPopular case). The Alerts All-tab instance is
+  worth dedicated billing because:
+    (a) The All tab is the DEFAULT landing of /alerts;
+    (b) The doc copy is EXPLICIT about 'open AND resolved';
+    (c) The drift affects security/compliance audit workflows
+        ('what happened last quarter') — these workflows mostly
+        DO need resolved-too.
+
+  Cross-batch coherence (LSN-018):
+    - The `second-securityconstants-bug-alerts-status-wrong-permission`
+      invariant is a SECOND drift on the same /alerts surface
+      (the status PUT is gated by DATASET_FIELD_ADD_TERM, not
+      DATA_ENTITY_ALERT_RESOLVE).
+    - Two drifts on one feature = a feature-level hot spot for
+      maintainer attention. Worth a Quality Bar audit of the
+      whole /alerts subtree.

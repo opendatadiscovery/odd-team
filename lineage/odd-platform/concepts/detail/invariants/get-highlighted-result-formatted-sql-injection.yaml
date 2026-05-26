@@ -1,0 +1,128 @@
+name: getHighlightedResult is a TRUE SQL-injection vector via String.formatted
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+  - P-09
+description: |-
+  NEW INVARIANT, batch ZE — ReactiveDataEntityRepositoryImpl.java:798-806
+  builds raw SQL via direct String.formatted interpolation:
+
+  ```
+  final String sql = "ts_headline('english', '%s', to_tsquery('%s'),
+    'HighlightAll=true')".formatted(text, tsQuery);
+  ```
+
+  BOTH `text` (catalog-supplied entity searchable string) AND
+  `tsQuery` (user-derived from persisted session query) are
+  interpolated WITHOUT parameterised binding.
+
+  Distinct from the existing
+  invariant:tsquery-operator-injection-via-persisted-state finding
+  (which surfaces the to_tsquery PARSER DoS via unbalanced parens).
+  THIS invariant is the SQL-injection class — the .formatted
+  interpolation lets a malicious query escape the
+  ts_headline argument into a raw SQL statement.
+
+  ATTACK CHAIN:
+    (1) POST /api/search with
+        query=`X', NULL); DELETE FROM users WHERE 't' = ('`
+    (2) The row persists (SearchServiceImpl.create writes the
+        raw user-typed query verbatim with no sanitisation);
+    (3) GET /api/search/{searchId}/data_entities/{deId}/highlights
+        invokes getHighlightedResult — the `.formatted()` substitutes
+        the crafted query into the SQL, escapes the to_tsquery
+        argument context, and executes arbitrary statements on
+        the READ connection.
+
+  Distinct attack surface to the catalog-supplied `text` — a
+  maliciously-named data entity (e.g. one ingested with an
+  external_name containing SQL fragments) could also detonate
+  through the same path; the entity-name vector is INGESTION-
+  AUTHORITY-AMPLIFIED (an attacker controlling a collector or
+  catalog ingestion source can mint hostile rows).
+
+  FIX ANCHOR — replace `.formatted()` with jOOQ parameterised
+  binding:
+  `field("ts_headline(?, ?, to_tsquery(?), 'HighlightAll=true')",
+   String.class, ...)` or use DSL.inline()-aware binding. The
+  same codebase uses jOOQ parameterised binding everywhere
+  else (verified in JooqFTSHelper.java:100-105 which uses
+  parameterised binding); the .formatted site is the lone
+  exception and a TRUE SQL-injection regression.
+
+  Cross-link: batch H is the canonical write-up of the bug;
+  this invariant is the controller-tier confirmation that
+  SearchController.highlightDataEntity is the HTTP entry point.
+  operation:highlight-data-entity-fts-headline is the surface
+  this invariant defeats.
+
+  Severity: HIGH (true SQL injection with the READ-connection
+  privilege envelope — typically DML-capable in ODD's
+  jOOQ-via-R2DBC stack).
+
+  ## STRENGTHENED — batch ZL (2026-05-26) — Search.tsx UI ENTRY POINT confirmed
+
+  Batch ZL adds the Search.tsx primary-source sidecar
+  (odd-platform__ts__react-component__component__Search.md)
+  confirming the entry point for the SQL injection chain at
+  the OPERATOR-FACING side. The Search.tsx UI is where user-
+  typed query text begins its journey to the
+  ReactiveDataEntityRepositoryImpl.getHighlightedResult sink.
+
+  Search.md:bugs_limitations_corner_cases.[8] — explicit
+  reference to the TRUE SQL injection: "For the
+  highlightDataEntity path the same untrusted text is
+  INTERPOLATED into a raw SQL string via .formatted(text,
+  tsQuery) — TRUE SQL injection per batch-ZE TRUE-SQL-injection
+  finding at ReactiveDataEntityRepositoryImpl.java:798-806."
+
+  Search.md:security.known_security_gaps explicitly notes the
+  chain: "per batch-ZE SearchController class invariants[7],
+  the same query field reaches ReactiveDataEntityRepositoryImpl.
+  getHighlightedResult at line 798-806 via String.formatted
+  (text, tsQuery) — a true raw-SQL-interpolation site. This is
+  exploitable SQL injection, not just DoS-by-syntax."
+
+  THE ATTACK CHAIN UPDATED — confirmed end-to-end:
+    (1) Operator types crafted query at Search.tsx's
+        <MainSearch> input — NO client-side sanitisation
+        (Search.tsx:80 + MainSearchInput.tsx:42-48);
+    (2) POST /api/search persists the raw query verbatim
+        (SearchServiceImpl.create);
+    (3) GET /api/search/{searchId}/data_entities/{deId}/highlights
+        invokes getHighlightedResult — .formatted substitutes
+        the crafted query into the SQL, escapes the
+        to_tsquery argument context, executes arbitrary
+        statements on the READ connection.
+
+  POST-BATCH-ZL: the UI entry point is now confirmed in addition
+  to the previously-confirmed (a) controller surface batch ZE
+  and (b) repository-layer batch H. The full attack chain is
+  triangulated at THREE layers (UI input + controller + sink).
+
+  Probe P-188 (Search.tsx batch ZL) emits the question:
+  end-to-end FTS-injection / session-poisoning chain with
+  metacharacter input.
+
+
+axes_present:
+  - controllers
+  - repositories
+  - openapi_schemas
+nodes:
+  - odd-platform ts react-component component:Search
+  - odd-platform java SearchController controller-class:SearchController
+contributors:
+  - 'SearchController.md:concepts.invariants.[9] — getHighlightedResult is .formatted direct interpolation'
+  - 'SearchController.md:bugs_limitations_corner_cases.[6] — TRUE SQL-injection vector'
+  - 'SearchController.md:security.known_security_gaps.[2]'
+evidence:
+  - SearchController.md:concepts.invariants.[9]
+  - SearchController.md:bugs_limitations_corner_cases.[6]
+  - SearchController.md:security.known_security_gaps.[2]
+  - SearchController.md:stress_findings.probes_emitted.[2] (P-136)
+related_features: []
+related_pillar_features:
+  - P-01
+  - P-09

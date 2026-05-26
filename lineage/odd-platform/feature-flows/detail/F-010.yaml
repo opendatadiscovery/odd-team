@@ -216,6 +216,167 @@ batch_extensions:
     housekeeping in this batch); the no-leader-election
     inconsistency is the canonical follow-up for an advisory-lock
     audit sprint.
+- batch: ZK
+  entry_point_added: |-
+    config-properties-class:HousekeepingTTLProperties + config-class:SchedulingConfiguration
+    — the CONFIG-TIER PRIMARY-SOURCE pair that anchors the housekeeping
+    subsystem's THREE-TTL-FIELDS-AND-NO-MORE invariant and the
+    @EnableScheduling + @EnableSchedulerLock + LockProvider Bean
+    triplet that makes the whole subsystem fire. Both sidecars were
+    cross-referenced by F-010 batch K but never enriched
+    as primary-source; batch ZK closes the config tier of F-010's chain.
+    The HousekeepingTTLProperties sidecar is the AUTHORITATIVE
+    enumeration of the THREE TTL fields (`resolvedAlertsDays`,
+    `searchFacetsDays`, `dataEntityDeleteDays`) — and the
+    AUTHORITATIVE PROOF that NO fourth `activityDays` /
+    `messageDays` / `tokenDays` / `sessionDays` field exists. The
+    SchedulingConfiguration sidecar is the authoritative source for
+    the single-thread-default + `.usingDbTime()` + `defaultLockAtMostFor="1h"`
+    triplet of architectural invariants that govern the entire
+    `@Scheduled` subsystem.
+  contributing_nodes_added:
+  - odd-platform java org.opendatadiscovery.oddplatform.housekeeping.config config-properties-class:HousekeepingTTLProperties
+  - odd-platform java org.opendatadiscovery.oddplatform.config config-class:SchedulingConfiguration
+  notes: |-
+    SIX new drift facets surface at the config tier, all primary-source
+    at HousekeepingTTLProperties.java:1-12 + application.yml:165-170 +
+    SchedulingConfiguration.java:1-26. The findings refine F-010's
+    existing 5-jobs + 14m/15m + opt-out posture with the load-bearing
+    UPSTREAM INFRASTRUCTURE constraints that the runtime jobs depend
+    on:
+
+    (1) **JAVA-SIDE DEFAULTS ARE ZERO — SAFETY FLOOR LIVES ONLY IN
+    application.yml (HIGH severity — LSN-001-shape silent data loss
+    on default override)** —
+    HousekeepingTTLProperties.java:9-11 declares `private int
+    resolvedAlertsDays;` / `private int searchFacetsDays;` /
+    `private int dataEntityDeleteDays;` with NO `= 30` initializer.
+    A deployment that overrides `application.yml` (--spring.config.location=,
+    Spring Cloud Config, Helm chart values that don't include the
+    housekeeping block, a profile-specific yml that doesn't re-supply
+    the keys) silently rebinds all three to `0`. The next housekeeping
+    cycle hard-deletes EVERYTHING: all RESOLVED alerts, all search-facet
+    rows, all soft-deleted data entities cascading through ~25 child
+    tables. This is the EXACT LSN-001 attachment-storage shape: a
+    permissive default in a non-code location ships silent
+    production-data-loss on operator misconfiguration. Live
+    /configuration-and-deployment/odd-platform docs say "Defaults to 30"
+    — true ONLY when the bundled application.yml is the resolved config;
+    the JAVA-SIDE DEFAULT IS 0 and the docs do not surface this. NEW
+    drift facet for F-010: `housekeeping_ttl_java_default_is_zero_safety_floor_only_in_application_yml_lsn_001_shape`.
+
+    (2) **NO `@Validated`, NO `@DefaultValue`, NO JSR-303 CONSTRAINTS
+    (HIGH severity — operator misconfiguration goes silent)** —
+    HousekeepingTTLProperties.java:1-12 has NO `@Validated` annotation
+    on the class, NO `@NotNull` / `@Min(1)` / `@Max(N)` on any of the
+    three fields, NO `@DefaultValue` annotation, NO `@PostConstruct
+    validate()` method (contrast: the SIBLING ODDLDAPProperties class
+    DOES carry `@PostConstruct validate()` for URL + search-method
+    invariants — the inconsistency is real). An operator-supplied
+    `housekeeping.ttl.resolved_alerts_days: -1` or `0` (intentional
+    or typo) silently binds and the next housekeeping cycle runs
+    with a cutoff of `now() + (-1 day)` or `now() - 0 days` — i.e.
+    immediate hard-delete OR a cutoff in the future (which would
+    paradoxically delete rows whose status_updated_at is "in the
+    future relative to now() + days"). No fail-fast at boot. NEW
+    drift facet for F-010:
+    `housekeeping_ttl_no_validated_no_min_no_max_no_postconstruct_validate_no_fail_fast`.
+
+    (3) **SCHEDULINGCONFIGURATION SHIPS WITH NO `TaskScheduler` BEAN
+    AND NO `spring.task.scheduling.pool.size` — SINGLE-THREAD-DEFAULT
+    EXECUTOR FOR ALL 4 `@Scheduled` JOBS (HIGH severity — F-010's
+    `shared_connection_slowest_job_blocks_cycle` was the
+    HousekeepingJobManager-internal observation; this is the
+    PLATFORM-WIDE analogue)** — SchedulingConfiguration.java:1-26
+    declares NO `TaskScheduler` `@Bean` and the codebase ships NO
+    `spring.task.scheduling.*` keys in `application.yml`. Spring Boot's
+    `TaskSchedulerBuilder` defaults to `ThreadPoolTaskScheduler` with
+    `poolSize = 1`. ALL FOUR `@Scheduled` methods in the codebase
+    (HousekeepingJobManager fixedRate=15m, DataEntityStatusSwitchJob
+    fixedRate=10m, PostgreSQLPartitionCreationJob cron=00:01-daily,
+    PostgreSQLSessionHousekeepingJobHandler fixedRate=1h) share THIS
+    ONE THREAD sequentially. A 14-minute housekeeping cycle blocks
+    the status-switch job from running on schedule; if housekeeping
+    runs past midnight, the daily partition-creation cron at 00:01
+    is QUEUED (Spring's default cron-misfire is queue-and-delay,
+    not skip — verified at P-183). This is the cross-batch coupling
+    that F-010's `shared_connection_slowest_job_blocks_cycle` facet
+    captured INSIDE the manager; the platform-wide multiplier is
+    ALL four `@Scheduled` jobs blocking each other on one thread.
+    NEW drift facet for F-010:
+    `scheduling_configuration_no_task_scheduler_bean_no_pool_size_override_single_thread_default_all_4_jobs_one_thread`.
+
+    (4) **`.usingDbTime()` IS THE LOAD-BEARING CLOCK-SKEW DEFENCE —
+    DEAD CODE TO REMOVE WOULD SILENTLY DEGRADE MULTI-REPLICA
+    CORRECTNESS (MEDIUM severity — load-bearing config call
+    undocumented)** — SchedulingConfiguration.java:22 explicitly
+    invokes `.usingDbTime()` on the JdbcTemplateLockProvider builder.
+    The ShedLock JdbcTemplateLockProvider default WITHOUT this call
+    uses JVM-side `Instant.now()` timestamps — two replicas with
+    drifted clocks would write inconsistent `lock_until` values and
+    the lock semantics would be vulnerable to clock skew. The
+    explicit invocation is the architectural decision to arbitrate
+    via PostgreSQL's `current_timestamp` rather than JVM clocks.
+    A refactor that swapped to Redis-LockProvider (for a multi-DB
+    deployment) or removed the `.usingDbTime()` call would silently
+    degrade F-010's multi-instance correctness guarantee — and NO
+    TEST asserts this invariant (grep against the test directory
+    for `usingDbTime` returns zero matches). NEW drift facet for
+    F-010:
+    `scheduling_using_db_time_load_bearing_clock_skew_defence_no_test_coverage`.
+
+    (5) **`defaultLockAtMostFor = "1h"` IS DEAD CODE — F-010's three
+    `@SchedulerLock`-protected jobs ALL set their own `lockAtMostFor`
+    (HousekeepingJobManager 14m, DataEntityStatusSwitchJob 9m,
+    PostgreSQLPartitionCreationJob 10m) (LOW severity — latent safety
+    floor without consumer)** — SchedulingConfiguration.java:14
+    declares `@EnableSchedulerLock(defaultLockAtMostFor = "1h")`. Every
+    `@SchedulerLock` annotation in the codebase explicitly sets its
+    own `lockAtMostFor` value, so the `1h` default applies to ZERO
+    methods currently. It exists as a latent safety ceiling for a
+    future `@SchedulerLock(name = "X")` that omits its timing —
+    bounded at 1h instead of ShedLock's library-default
+    `Long.MAX_VALUE` (lock until manual release). The architectural
+    intent is sound; the absence of a comment defending the choice
+    is the operator-discoverability gap. NEW drift facet for F-010:
+    `scheduling_default_lock_at_most_for_1h_dead_code_latent_safety_floor_no_consumer`.
+
+    (6) **CROSS-SIDECAR CONFIRMATION: F-010 batch-X
+    `postgresql_session_housekeeping_job_no_scheduler_lock` IS THE
+    SAME ASYMMETRY THE SchedulingConfiguration SIDECAR FLAGS
+    (STRENGTHENS the prior facet via primary-source at the config
+    tier)** — The session-housekeeping `@Scheduled` without
+    `@SchedulerLock` finding from batch-X is RE-CONFIRMED at the
+    SchedulingConfiguration sidecar's `concepts.entities` and
+    `bugs_limitations_corner_cases[1]`: "`PostgreSQLSessionHousekeepingJobHandler`
+    has `@Scheduled` but NO `@SchedulerLock` — the
+    `defaultLockAtMostFor = \"1h\"` default does NOT apply because
+    `defaultLockAtMostFor` is the default for `@SchedulerLock` that
+    OMITS its own `lockAtMostFor` — it is NOT an implicit lock for
+    bare `@Scheduled`." The implicit operator-mental-model
+    ("`@EnableSchedulerLock` protects all my scheduled jobs") is
+    explicitly refuted by the sidecar's stress findings
+    name_behavior_pairs — `@EnableSchedulerLock` enables the AOP
+    advisor but each method must OPT IN via `@SchedulerLock` to
+    participate. STRENGTHENS F-010 batch-X drift facet
+    `postgresql_session_housekeeping_job_no_scheduler_lock_multi_instance_race_load_n_times_inconsistent_with_5_jobs_pattern`
+    with primary-source confirmation at the config tier.
+
+    Coherence sweep STRENGTHENS=2 (F-010 batch-K
+    `shared_connection_slowest_job_blocks_cycle` — extended platform-wide
+    by the single-thread TaskScheduler default;  F-010 batch-X
+    `postgresql_session_housekeeping_job_no_scheduler_lock_multi_instance_race_load_n_times_inconsistent_with_5_jobs_pattern`
+    — re-confirmed via the SchedulingConfiguration name_behavior_pairs
+    drift annotation). SUPERSEDES=0. CONFLICTS=0. The HousekeepingTTLProperties
+    sidecar's `bugs_limitations_corner_cases[0]` (no `activity*Days`
+    field) cross-references F-010's existing
+    `cross_pillar_activity_retention_to_p_07` facet — re-confirms
+    from the config-tier angle (the field's absence is structurally
+    provable from the 3-field record itself). The Java-side-zero
+    finding cross-references F-019 (Owner Lifecycle) and F-020
+    (Collector Lifecycle) because BOTH features inherit the
+    LSN-001-shape pattern (silent default cascading through the
+    soft-delete-then-housekeeping chain).
 batch_origin: K
 created_in_batch: K
 feature_name: Scheduled housekeeping cycle — TTL purge + empty-partition drop (5
@@ -269,23 +430,29 @@ contributing_nodes:
 - odd-platform java ActivityEmptyPartitionsHousekeepingJob
 - odd-platform java MessageEmptyPartitionsHousekeepingJob
 - odd-platform java EmptyPartitionsHousekeepingJob
-- odd-platform java config-properties:HousekeepingTTLProperties
+- odd-platform java org.opendatadiscovery.oddplatform.housekeeping.config config-properties-class:HousekeepingTTLProperties  # batch ZK — config-tier primary source enriched
 - odd-platform java PGConnectionFactory
-- odd-platform java SchedulingConfiguration
+- odd-platform java org.opendatadiscovery.oddplatform.config config-class:SchedulingConfiguration  # batch ZK — config-class primary source enriched
 - odd-platform java repository reactive repository:ReactiveActivityRepositoryImpl
 - odd-platform java repository reactive repository:ReactiveCollectorRepositoryImpl
 - odd-platform java SessionConfiguration config-class:SessionConfiguration
 chain:
 - hop: 1
-  node: odd-platform java SchedulingConfiguration
-  sidecar: '(not separately enriched — context from HousekeepingJobManager sidecar dependencies_semantic)'
+  node: odd-platform java org.opendatadiscovery.oddplatform.config config-class:SchedulingConfiguration
+  sidecar: odd-platform__java__config__config-class__SchedulingConfiguration.md  # batch ZK — config-class primary-source enrichment
   multiplicity_per_trigger: 1
   evidence: |-
     SchedulingConfiguration.java:13-14 — `@EnableScheduling` +
     `@EnableSchedulerLock(defaultLockAtMostFor="1h")` configures the Spring
     task scheduler + the JdbcTemplateLockProvider against `spring.datasource.*`
-    (lines 18-25, `usingDbTime()` for clock-skew tolerance).
+    (lines 18-25, `usingDbTime()` for clock-skew tolerance). Batch ZK
+    primary-source enrichment adds: single-thread-default executor
+    (no TaskScheduler bean, no spring.task.scheduling.pool.size) means
+    ALL 4 @Scheduled jobs share ONE thread; `.usingDbTime()` is the
+    load-bearing clock-skew defence; `defaultLockAtMostFor="1h"` is
+    currently dead code (all three @SchedulerLock methods override it).
   unresolved: false
+  resolved_in_batch: ZK
 - hop: 2
   node: odd-platform java service service:HousekeepingJobManager
   sidecar: odd-platform__java__service__service__HousekeepingJobManager.md

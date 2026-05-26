@@ -1505,3 +1505,263 @@ Each failed ≥2 of the 3 wisdom-test questions — the absence/issue has no sta
 
 **Severity**: LOW | **Classification**: promote | **Pillars**: [P-04] | **Batch**: ZC
 **Full detail**: `lineage/odd-platform/implicit-adrs/detail/ADR-CANDIDATE-208.md`
+
+---
+artefact: implicit-adrs-batch-append
+batch_id: ZD
+generated_at: "2026-05-25T13:30:00Z"
+generated_at_commit: 4ec2b20
+prompt_version: "adr-archaeologist/0.2.0"
+sidecars_consumed: 5
+new_sidecar_files:
+  - understanding/odd-platform__java__IdentityController__controller-class__IdentityController.md
+  - understanding/odd-platform__java__PermissionController__controller-class__PermissionController.md
+  - understanding/odd-platform__java__RoleController__controller-class__RoleController.md
+  - understanding/odd-platform__java__PolicyController__controller-class__PolicyController.md
+  - understanding/odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+batch_ZD_summary: { added_adrs: 3, strengthened_adrs: 6, wisdom_test_passes: 3, wisdom_test_reclassifications: 14 }
+new_adr_ids: [ADR-CANDIDATE-209, ADR-CANDIDATE-210, ADR-CANDIDATE-211]
+strengthened_adr_ids: [ADR-CANDIDATE-001, ADR-CANDIDATE-002, ADR-CANDIDATE-003, ADR-CANDIDATE-029, ADR-CANDIDATE-051, ADR-CANDIDATE-189]
+new_adrs_by_severity: { HIGH: 2, MEDIUM: 1, LOW: 0 }
+coherence_check: { strengthens: 6, supersedes: 0, conflicts_surfaced: 0 }
+---
+
+# Implicit ADRs — batch ZD append (odd-platform — 2026-05-25)
+
+Directed RBAC + Integration class-level batch on `feature/ontology-finalize-2026-05-25`. Five new class-level sidecars enrich the **RBAC + Identity + Integration controller surface**: the four RBAC-related class-level sidecars (`PolicyController`, `RoleController`, `PermissionController`, `IdentityController`) and the Integration Wizard surface (`IntegrationController`). All five are class-level reads that PRIMARY-SOURCE architectural commitments which prior batches surfaced only at the controller-method scope.
+
+**Wisdom-test outcome on 5 sidecars**:
+- 3 new ADR candidates emit (PASS):
+  - **ADR-CANDIDATE-209** (HIGH, promote — IntegrationController-class) — **Integration Wizard registry is classpath-loaded, boot-constructed, read-only, plugin-extensible via `classpath*:META-INF/wizard/*.yaml`.** Four architectural commitments at the type-system level (read-only interface + multi-jar classpath glob + @Bean single construction + explicit fail-fast messaging). Defines the documentation-overlay deployment model.
+  - **ADR-CANDIDATE-210** (HIGH, unique-load-bearing — IdentityController-class) — **`IdentityController.whoami` returns a synthetic `dummyOwner` (literal "admin" + `Permission.values()`) on empty SecurityContext — defence-in-depth-via-permissive-fallback / dev-mode-fully-unlocked-by-design.** The centerpiece DISABLED-mode behaviour for the identity exposure surface. Three intent anchors: the deliberate `.switchIfEmpty(Mono.just(...))` shape, the dynamic `Permission.values()` enumeration, the universal absence of `@PreAuthorize`. ADR is the IDENTITY-LAYER FACET of ADR-CANDIDATE-029 (DISABLED-as-default).
+  - **ADR-CANDIDATE-211** (MEDIUM, promote — PermissionController-class) — **Permission read surface is intentionally SPLIT: contextual reads on `PermissionController`; non-contextual MANAGEMENT reads via the `Identity.permissions` payload from `IdentityServiceImpl.whoami`.** Three-layer mirror (enum `hasContext` / SPI two-method interface / response-delivery split). Sibling of ADR-CANDIDATE-051 (the discriminator).
+- 14 wisdom-test reclassifications to refactoring-scopes (no-audit-log / status-code-drift / `installed: false` constant / 204-on-missing / case-insensitive collision / boot-fail-fast / `platform_url` placeholder / DISABLED anonymous leak / read-side authorization gap / Cache-Control absence / dynamic Permission.values() expansion / auth-mode-probe / IllegalArgumentException → 500 / lost-update + orphan-binding races).
+- 6 existing ADR candidates strengthened by additional `surfaced_by` evidence: ADR-CANDIDATE-001 (controllers-as-delegates → 23-sidecar), ADR-CANDIDATE-002 (centralised SECURITY_RULES → 23-sidecar), ADR-CANDIDATE-003 (read-collaborative GET → 17-sidecar), ADR-CANDIDATE-029 (DISABLED-as-default → 2-sidecar with IDENTITY-LAYER FACET), ADR-CANDIDATE-051 (PolicyTypeDto.hasContext discriminator → 2-sidecar), ADR-CANDIDATE-189 (OpenAPI spec source-of-truth → controller-side 23-sidecar mirror confirmed).
+
+---
+
+## ADR-CANDIDATE-209 — Integration Wizard registry is classpath-loaded, boot-constructed, read-only, and plugin-extensible via `classpath*:META-INF/wizard/*.yaml`
+
+**Classification**: promote
+**Severity**: HIGH
+**Surfaced by**:
+- `odd-platform__java__IntegrationController__controller-class__IntegrationController.md:implicit_adrs.[0]` (read-only classpath registry; @Bean single construction)
+- `odd-platform__java__IntegrationController__controller-class__IntegrationController.md:implicit_adrs.[2]` (`classpath*:` multi-jar glob — load-bearing prefix)
+- `odd-platform__java__IntegrationController__controller-class__IntegrationController.md:implicit_adrs.[4]` (boot fail-fast on malformed YAML)
+- **Decision statement**: The Integration Wizard surface — `GET /api/integrations` + `GET /api/integrations/{integration_id}` — is backed by a read-only registry constructed once at application boot from a multi-jar classpath scan (`classpath*:META-INF/wizard/*.yaml`). Four architectural commitments: classpath-loaded (not DB-stored); boot-constructed (read-only interface); plugin-extensible via `classpath*:` multi-jar glob; fail-fast on malformed YAML.
+- **Wisdom test**: PASS. Deliberate structural design (4 type-system-level commitments cross-validate each other); structural impact (entire documentation-extension model); alternative implementations (DB-backed wizards, admin API) would be structural changes.
+- **Existing ADR**: none. Composes with ADR-CANDIDATE-018 (fail-fast at boot — 5th surface) and ADR-CANDIDATE-001 (thin-delegate controllers — IntegrationController is a 28-line proxy).
+- **Co-surfaced gaps**: REFACTOR-611 (`installed: false` dead constant), REFACTOR-612 (204 on unknown id), REFACTOR-613 (case-insensitive collision), REFACTOR-614 (boot fail-fast crashes platform), REFACTOR-615 (placeholder URL in copy-paste snippets), REFACTOR-616 (DISABLED anonymous leak of `platform_url`), REFACTOR-619 (wizard surface undocumented).
+- **Proposed action**: Promote to `adrs/drafts/integration-wizard-classpath-registry.md` (new ADR).
+
+**Full detail**: `detail/ADR-CANDIDATE-209.md`
+
+---
+
+## ADR-CANDIDATE-210 — `IdentityController.whoami` returns a synthetic `dummyOwner` (literal `admin` + `Permission.values()`) on empty SecurityContext — defence-in-depth-via-permissive-fallback / dev-mode-fully-unlocked-by-design
+
+**Classification**: unique-load-bearing
+**Severity**: HIGH
+**Surfaced by**:
+- `odd-platform__java__IdentityController__controller-class__IdentityController.md:implicit_adrs.[0]` (`.switchIfEmpty(Mono.just(...))` deliberate construction — IdentityController.java:27)
+- `odd-platform__java__IdentityController__controller-class__IdentityController.md:implicit_adrs.[1]` (universal absence of `@PreAuthorize` — whoami is the SOURCE of authorization)
+- `odd-platform__java__IdentityController__controller-class__IdentityController.md:implicit_adrs.[2]` (`Arrays.asList(Permission.values())` — dynamic blast-radius)
+- **Decision statement**: When SecurityContext is empty (load-bearing under `auth.type=DISABLED`), the controller returns 200 OK with a `dummyOwner` whose identity is literal `"admin"` and whose permissions are `Permission.values()` (ALL 70+ enum values, dynamically expanding as the Permission enum grows). The SPA mounts as admin, the toolbar shows "admin", every `WithPermissionsProvider`-gated UI control unlocks.
+- **Wisdom test**: PASS. Three intent anchors (the .switchIfEmpty Mono.just shape over Mono.error, the dynamic Permission.values() over a curated subset, the universal @PreAuthorize absence); structural impact (centerpiece DISABLED-mode behaviour); alternative (return 401, restrict to subset) would be a structural change to the operator-onboarding model.
+- **Existing ADR**: none directly. Composes with ADR-CANDIDATE-029 (DISABLED-as-default — this is the IDENTITY-LAYER FACET) and ADR-CANDIDATE-002 (centralised SECURITY_RULES — the absence-of-rule on whoami IS deliberate, not gap).
+- **Co-surfaced gaps**: REFACTOR-185 STRENGTHENED (DISABLED bypasses SECURITY_RULES — the request-routing FACET), REFACTOR-606 (Permission.values() dynamic expansion blast-radius), REFACTOR-607 (whoami auth-mode probe surface), REFACTOR-608 (no audit log on whoami), REFACTOR-062 STRENGTHENED (no Cache-Control: no-store on identity body).
+- **Proposed action**: Promote to `adrs/drafts/whoami-empty-context-permissive-fallback.md` (new ADR).
+
+**Full detail**: `detail/ADR-CANDIDATE-210.md`
+
+---
+
+## ADR-CANDIDATE-211 — Permission read surface is intentionally SPLIT: contextual reads on `PermissionController`; non-contextual MANAGEMENT reads via the `Identity.permissions` payload from `IdentityServiceImpl.whoami`
+
+**Classification**: promote
+**Severity**: MEDIUM
+**Surfaced by**:
+- `odd-platform__java__PermissionController__controller-class__PermissionController.md:implicit_adrs.[2]` (single-method controller class is the deliberate shape; the other half lives on Identity)
+- `odd-platform__java__PermissionController__controller-class__PermissionController.md:concepts.invariants.[file-naming-vs-surface mismatch]` (file is named PermissionController but owns ONLY the contextual half)
+- **Decision statement**: Permission read surface is partitioned by the resource type's contextual-vs-global character. Contextual reads (DATA_ENTITY/TERM/QUERY_EXAMPLE) flow through `PermissionController.getResourcePermissions`; non-contextual MANAGEMENT reads flow through `IdentityServiceImpl.whoami` → `Identity.permissions` → UI's `getGlobalPermissions` selector. The split is mirrored at three layers: enum (`PolicyTypeDto.hasContext`), SPI (`PermissionService` two-method interface), delivery (controller vs Identity payload).
+- **Wisdom test**: PASS (MEDIUM confidence on intentionality; HIGH on structural impact). Cross-layer consistency (enum / SPI / delivery) favours the ADR reading over the gap reading; the UI consumer chain is consistent with the split.
+- **Existing ADR**: composes with ADR-CANDIDATE-051 (`PolicyTypeDto.hasContext` is the LOAD-BEARING primitive enabling THIS split) and ADR-CANDIDATE-003 (both paths share the read-collaborative posture).
+- **Co-surfaced gaps**: REFACTOR-609 (PermissionController has no @Slf4j — silent privilege-enumeration), REFACTOR-610 (IllegalArgumentException → HTTP 500 not 400), REFACTOR-194 STRENGTHENED (LOOKUP_TABLE doc/code mismatch — same split-shaped drift).
+- **Proposed action**: Promote to `adrs/drafts/permission-read-surface-split.md` (new ADR).
+
+**Full detail**: `detail/ADR-CANDIDATE-211.md`
+
+---
+
+## Strengthened ADR candidates (this batch — see strengthen-batch-ZD detail files)
+
+- **ADR-CANDIDATE-001** strengthened to **23-sidecar** support (was 18 after batch X-TAGGING). Five new class-level confirmations: IdentityController, PermissionController, RoleController, PolicyController, IntegrationController. The strongest single pattern in the catalog continues to hold across every controller-class inspected. See `detail/ADR-CANDIDATE-001-strengthen-batch-ZD.md`.
+
+- **ADR-CANDIDATE-002** strengthened to **23-sidecar** support (was 18 after batch X-TAGGING). Five new class-level confirmations across positive-registration (Role + Policy mutations) AND negative-fall-through (Identity / Permission / Policy reads / Integration reads). See `detail/ADR-CANDIDATE-002-strengthen-batch-ZD.md`.
+
+- **ADR-CANDIDATE-003** strengthened to **17-sidecar** support (was 13 after batch M). Four new read-surfaces join the family: PermissionController class-level, PolicyController three read endpoints (the META-LAYER blast radius — RBAC management read surface itself), IntegrationController two read endpoints (NEW axis), IdentityController whoami (the META-read / SOURCE of authorization). See `detail/ADR-CANDIDATE-003-strengthen-batch-ZD.md`.
+
+- **ADR-CANDIDATE-029** strengthened to **2-sidecar** support (was 1). IdentityController-class enrichment is the IDENTITY-LAYER FACET — the centerpiece consequence of DISABLED-as-default. See `detail/ADR-CANDIDATE-029-strengthen-batch-ZD.md`.
+
+- **ADR-CANDIDATE-051** strengthened to **2-sidecar** support (was 1). PermissionController class-level confirmation of the enum-field discriminator. See `detail/ADR-CANDIDATE-051-strengthen-batch-ZD.md`.
+
+- **ADR-CANDIDATE-189** strengthened with **5 new controller-side mirror confirmations**. Controller-side 23-sidecar count cross-validates the spec-side primary source. See `detail/ADR-CANDIDATE-189-strengthen-batch-ZD.md`.
+
+## Refresh note — batch ZE (2026-05-25 — Discovery / Search / Links / Feature / Relationship / Title controller-class enrichment)
+
+Five new class-level sidecars enriched the read-surface bookend across the catalog: SearchController (7 endpoints — P-04 Data Discovery), TitleController (1 endpoint — P-05 Ownership directory), FeatureController (1 endpoint — P-06 Configuration), RelationshipController (3 endpoints — P-02 Data Modelling), LinksController (1 endpoint — P-06 Configuration / Operator-configured navigation). Per the Rule-0 wisdom test the batch is ADR-heavy on the architectural-framing side: **4 new ADR candidates** (ADR-CANDIDATE-212..215) + **6 existing ADRs STRENGTHENED**, plus parallel refactoring-scope work captured in `index-batch-ZE-append.md` under refactoring-scopes/.
+
+**Coherence (Rule 6)**: cross-registry grep confirmed all new ADR findings are SAME-polarity with concept aggregates — `concepts/index.yaml` already carries the read-collaborative posture as an invariant; `feature-flows/` already carries the search-session lifecycle. Zero CONTRADICTS. The architectural framing of ADR-CANDIDATE-212 (directory side-effect mutation) composes with the existing concept-merger entries on Title / Owner / Tag / Namespace dimensions; ADR-CANDIDATE-213 (boot-resolved immutable config) composes with the existing `*SecurityConfiguration` boot-time pattern; ADR-CANDIDATE-214 (links global surface) is a new framing absent from prior registries; ADR-CANDIDATE-215 (relationships catalog-global read) composes with the implicit lineage-surface ADR (not yet enumerated as its own ADR-CANDIDATE).
+
+**Batch-ZE leverage ranking** (new entries; `triangulation_count × severity_weight`, HIGH=4/MEDIUM=2):
+1. ADR-CANDIDATE-215 — Relationships catalog-global read (HIGH, with borderline_flag) — leverage 4 × 1 = 4
+2. ADR-CANDIDATE-213 — Boot-resolved immutable config (HIGH, 3 sidecars: FeatureController + LinksController + cross-link to *SecurityConfiguration) — leverage 4 × 3 = 12
+3. ADR-CANDIDATE-212 — Directory side-effect-only mutation (HIGH, Title canonical instance + sibling links to Tag / Owner / Namespace) — leverage 4 × 1 = 4
+4. ADR-CANDIDATE-214 — Links global surface (MEDIUM, Links-specific instance of read-collaborative posture) — leverage 2 × 1 = 2
+
+The orchestrator re-ranks the global `## Top 20 by leverage` head over the COMBINED set; **ADR-CANDIDATE-213 (leverage 12)** is the strongest batch-ZE entry and likely enters the global Top 20 — the boot-resolved immutable config pattern affects deployment-lifecycle decisions for the whole platform.
+
+<!-- NEW-HEADLINES-BELOW -->
+
+## ADR-CANDIDATE-212 — Directory dimension tables are mutated ONLY as a side-effect of feature-domain mutations; the read surface is exposed but the WRITE surface is intentionally absent (`Title` is the canonical instance)
+
+**Classification**: promote
+**Severity**: HIGH
+**Pillars affected**: [P-09 Security & Access Control, P-04 Data Discovery]
+
+**Discriminating context**: TitleController is the canonical instance — a single-endpoint READ-only controller (`GET /api/titles`) whose underlying directory is mutated EXCLUSIVELY via `TitleService.getOrCreate(name)` called from OwnershipServiceImpl's create/update path. `TitleApi` (`openapi.yaml:323-340`) exposes a single GET; no POST/PUT/DELETE. No `TITLE_CREATE` permission exists (grep confirmed). Soft-delete machinery PROVISIONED but UNREACHABLE (only test-fixture callers). The pattern propagates to Tag / Owner / Namespace with varying degrees of "purity" — Title is the purest instance (side-door only); others have admin endpoints alongside the side-door. The architectural choice is "directory growth induced by usage, never managed by admin."
+
+**Surfaced by** (1 sidecar — single PURE instance + sibling triangulation with REFACTOR-206 batch K service-layer anchor):
+- TitleController.md:implicit_adrs.[0] + concepts.operations.[1]
+
+**Full detail**: `detail/ADR-CANDIDATE-212.md`
+
+---
+
+## ADR-CANDIDATE-213 — Feature-flag and operator-configured-catalogue state is BOOT-RESOLVED and IMMUTABLE; runtime YAML / env mutations are silently ignored until process restart
+
+**Classification**: promote
+**Severity**: HIGH
+**Pillars affected**: [P-04 Data Discovery, P-06 Configuration & Deployment, P-09 Security & Access Control]
+
+**Discriminating context**: FeatureResolverImpl captures @Value-injected Booleans into `private final Set<Feature>` in the constructor (lines 16-31); the `final` modifier is the compile-time enforcement. LinksController stores `AdditionalLinkProperties` as a `private final` field bound from `@ConfigurationProperties("odd")`. The pattern repeats across every `*SecurityConfiguration` (LoginForm / OAuth / LDAP / Disabled) and every operator-config-shaped binding. The Feature enum is INTENTIONALLY NARROW (only 2 UI-affecting values from 8+ available toggles). The decision trades hot-reloadability for memory + per-call latency simplicity + deterministic startup-time validation. Drift consequence: operators reasonably expect `enabled: true → false` to take effect without restart, but it does not — DRIFT_NAME_VS_BEHAVIOR per FeatureController's stress_findings.name_behavior_pairs.
+
+**Surfaced by** (3 sidecars):
+- FeatureController.md:implicit_adrs.[0]+[1]
+- LinksController.md:implicit_adrs.[0]
+- cross-link: every *SecurityConfiguration class (same boot-time-immutable-binding pattern)
+
+**Full detail**: `detail/ADR-CANDIDATE-213.md`
+
+---
+
+## ADR-CANDIDATE-214 — The "additional links" surface is GLOBAL (visible to every authenticated user), NOT per-user / per-role; an operator cannot show different links to different roles via this feature
+
+**Classification**: promote
+**Severity**: MEDIUM
+**Pillars affected**: [P-04 Data Discovery, P-09 Security & Access Control]
+
+**Discriminating context**: `GET /api/links` returns the SAME LinkList payload to every caller regardless of role/owner/policy. The decision is enforced at three layers: controller (no @PreAuthorize, no Permission check, no exchange.getPrincipal() consultation), routing (no SECURITY_RULES entry; falls through to authenticated()), data (AdditionalLinkProperties.Link record has only `title` + `url` — no audience/role fields). The operator-facing implication: do NOT use odd.links to surface URLs that should be access-controlled; the underlying URLs must enforce their own ACL. The LINK-specific instance of the read-collaborative posture (ADR-CANDIDATE-003) on operator-controlled (not user-data-controlled) state.
+
+**Surfaced by** (1 sidecar):
+- LinksController.md:implicit_adrs.[1]
+
+**Full detail**: `detail/ADR-CANDIDATE-214.md`
+
+---
+
+## ADR-CANDIDATE-215 — Relationship list endpoint is a CATALOG-GLOBAL read surface, NOT an owner-scoped one — distinct from `/api/dataentities/my`; the intent is that relationships are PUBLIC METADATA across the catalog
+
+**Classification**: promote
+**Severity**: HIGH
+**Pillars affected**: [P-02 Data Modelling, P-04 Data Discovery, P-09 Security & Access Control]
+**Borderline_flag**: TRUE — the EXCLUDE_FROM_SEARCH asymmetry vs `/api/dataentities` is the live triage question
+
+**Discriminating context**: All three RelationshipController endpoints (list / ERD-by-id / GRAPH-by-id) reach every relationship in the catalog regardless of owner-scope, namespace policy, EXCLUDE_FROM_SEARCH posture, or HOLLOW status. The repository SQL at `ReactiveDataEntityRelationshipRepositoryImpl.java:66-75` contains NO OWNERSHIP JOIN, NO data_source_id filter, NO EXCLUDE_FROM_SEARCH predicate (even though the sibling /api/dataentities surface DOES apply the filter per batch-T REFACTOR-425). Symmetric to /api/lineage (per batch-J). Graph topology is intentionally always visible; the underlying entity reads remain access-controlled.
+
+The borderline_flag: deliberate catalog-as-public-metadata stance OR the EXCLUDE_FROM_SEARCH filter was forgotten on the relationships side? Maintainer triage required.
+
+**Surfaced by** (1 sidecar — RelationshipController class-level, with cross-link to lineage pattern):
+- RelationshipController.md:implicit_adrs.[1]
+
+**Full detail**: `detail/ADR-CANDIDATE-215.md`
+
+---
+
+## Refresh note — batch ZG (2026-05-25 — five new controller-class sidecars: DataEntityRunController + DataQualityRunsController + GenAIController + DataSetController + DatasetFieldController)
+
+Five new controller-class sidecars enriched. Per the Rule-0 wisdom test the batch is mixed — **7 new ADR candidates** (ADR-CANDIDATE-220..226), **5 existing ADR candidates STRENGTHENED** (ADR-001 thin-proxy / ADR-003 read-collaborative / ADR-005 GenAI-thin-proxy / ADR-060 programmatic activity emission / ADR-064 description-link coexistence), and **14 candidates reclassified to refactoring-scopes.md** (gap-shaped findings that failed the wisdom test).
+
+**5 ADR candidates STRENGTHENED**:
+- **ADR-CANDIDATE-001** (thin-proxy controllers) — 3 new surfaces: DataSetController (4 GETs, all one-liner `service.X.map(::ok)`), DatasetFieldController (7 endpoints across 4 services, every body `formDataMono.flatMap.map(::ok)`), DataEntityRunController (1 GET, one-liner). The 28→31-surface evidence base. The pattern now covers EVERY controller in batches V/W/X/Y/Z + ZD/ZE/ZF/ZG.
+- **ADR-CANDIDATE-003** (read-collaborative GET — intentional unscoped reads) — 4 new invocation sites: DataEntityRunController (`/api/dataentities/{id}/runs` — runs-history cross-owner); DataQualityRunsController (`/api/dataqatests/runs` — catalog-wide DQ dashboard cross-owner; ALREADY listed at REFACTOR-617's surface — strengthens the cross-batch case); DatasetFieldController GETs (`/api/datasetfields/{id}/enum_values` + `/metrics` — no SecurityRule, fall through); DataSetController GETs (4 GETs — `/structure`, `/structure/{v}`, `/structure/diff`, `/relationships`). The pattern is now confirmed at the COLUMN-LEVEL surface and the RUN-HISTORY surface — every read endpoint in the platform falls under this ADR.
+- **ADR-CANDIDATE-005** (GenAI thin-proxy) — the new `GenAIController__controller-class` sidecar (distinct node_id from the prior `org_opendatadiscovery_oddplatform_controller__controller__GenAIController` sidecar) re-confirms the thin-proxy stance with the same live-doc anchors (`/features/active-platform-features/genai` 2026-05-25 status 200). The decision is now anchored by BOTH the config-side sidecar (GenAIProperties) AND TWO controller-class sidecars.
+- **ADR-CANDIDATE-060** (programmatic activity-event emission at the service tier) — DatasetFieldController's description-edit chain emits TWO activity events for one user operation (`DATASET_FIELD_DESCRIPTION_UPDATED` at the inner-service line 28 + `DATASET_FIELD_TERM_ASSIGNMENT_UPDATED` at TermServiceImpl.java:243). The dual-event semantics is a NEW instance of programmatic emission applied to a composite mutation (description body + re-extracted term references).
+- **ADR-CANDIDATE-064 / -108** (description-link coexistence — `is_description_link` flag) — DatasetFieldController's `deleteTermFromDatasetField` excludes description-link rows via `IS_DESCRIPTION_LINK.isFalse()` at TermRelationsRepositoryImpl.java:179. The COLUMN-level surface now confirms the same convention as the entity-level surface; the convention is symmetric across both term-link tables (`data_entity_to_term` + `dataset_field_to_term`).
+
+**7 new ADR candidates** (full detail files emitted; headlines below for the orchestrator's awk-merge):
+
+## ADR-CANDIDATE-220 — Data Quality Dashboard reads a DENORMALISED `DATA_ENTITY_TASK_LAST_RUN` table (one row per test, `task_oddrn` PRIMARY KEY) — pre-compute "latest run per test" at write time rather than aggregating over `data_entity_task_run` at query time
+
+- **Classification**: promote
+- **Severity**: HIGH
+- **Pillars affected**: [P-04 Data Quality, P-10 Ingestion]
+- **Support**: 1 sidecar (DataQualityRunsController class-level); structural impact across every dashboard render + the ingestion-side write path
+- **Decision statement**: Pre-compute "latest run per test" at write time (denormalisation) via DATA_ENTITY_TASK_LAST_RUN (`task_oddrn` PRIMARY KEY → one row per test). The dashboard's `getLatestDataQualityRunsResults` joins this table directly (`ReactiveDataQualityRunsRepositoryImpl.java:76, 95`). The architectural choice is throughput-driven: the dashboard query fires on every UI filter change with no debounce; recomputing `DISTINCT ON (task_oddrn) ORDER BY end_time DESC` across DATA_ENTITY_TASK_RUN (which grows linearly with ingestion volume) would scale poorly. The denormalisation IS the decision; it changes the dashboard's semantic from "count of test runs by status" to "count of tests by their latest-run-status" (gap-side surfaced as REFACTOR-653; LSN-019 instance at the dashboard surface).
+- **Wisdom test**: PASS — schema-level intent anchor (migration V0_0_45 declares PK + back-fill semantics); structural for both the dashboard read path and the ingestion-side write path; the alternative (compute at query time) is a structural change.
+
+## ADR-CANDIDATE-221 — Data Quality Dashboard response is ALWAYS a 36-cell category×status matrix — closed enum + UNKNOWN catch-all + always-padded `count=0` for absent cells — the schema-shape is stable regardless of data
+
+- **Classification**: promote
+- **Severity**: MEDIUM
+- **Pillars affected**: [P-04 Data Quality]
+- **Support**: 1 sidecar
+- **Decision statement**: The DQ dashboard's `test_results` envelope ALWAYS contains 6 categories × 6 statuses = 36 cells, with `count=0` filled where absent. `DataQualityCategory.resolveByName` returns UNKNOWN for any input that doesn't match a declared name (`DataQualityCategory.java:29-31`); `DataQualityCategoryMapperImpl.addMissingStatuses` (lines 45-60) pads every status enum value with count=0 if absent. The intent is to externalise category-set evolution: adding a new category enum value automatically extends the response without a deployment.
+- **Wisdom test**: PASS — closed enum + catch-all + always-pad is a deliberate three-part contract; structural impact on the UI's ring/legend rendering (the UI relies on a stable 36-cell shape).
+
+## ADR-CANDIDATE-222 — Data Quality Dashboard's "Monitored Tables" ring is INTENTIONALLY scoped to TABLE-type data entities only — Views, Files, Topics, Streams are absent from BOTH "monitored" and "not-monitored" counts
+
+- **Classification**: promote
+- **Severity**: MEDIUM
+- **Pillars affected**: [P-04 Data Quality]
+- **Support**: 1 sidecar (live doc 2026-05-25 confirms the TABLE-only language)
+- **Decision statement**: The `getMonitoredTables` CTE filter `DATA_ENTITY.TYPE_ID.eq(DataEntityTypeDto.TABLE.getId())` (`ReactiveDataQualityRunsRepositoryImpl.java:179`) restricts the monitored-tables count to TABLE-type entities ONLY. Non-Table dataset sub-types (Views, Files, Topics, Streams) are NEITHER counted in monitored NOR in not-monitored — they are silently absent. The live dashboard doc page confirms the restriction verbatim ("The Monitored vs Unmonitored framing applies specifically to Table-type datasets").
+- **Wisdom test**: PASS — the live doc page explicitly states the intent; the SQL filter is a literal `TABLE.getId()` (not a parameter); the alternative (count every dataset type) is a structural change to the metric's meaning.
+
+## ADR-CANDIDATE-223 — Feature-flag-disabled endpoints return HTTP 400 BadUserRequestException — request-time service-tier gate — NOT HTTP 404 via `@ConditionalOnProperty` bean-non-registration; framing is "feature flag off", not "feature not deployed"
+
+- **Classification**: promote
+- **Severity**: MEDIUM
+- **Pillars affected**: [P-07 Active Platform Features, P-09 Configuration]
+- **Support**: 1 sidecar (GenAIController class-level), contrast with EventApiController sibling
+- **Decision statement**: GenAI's `enabled` gate is at the SERVICE layer (`GenAIServiceImpl.java:37-39` — `if (!genAIProperties.isEnabled()) return Mono.error(new BadUserRequestException("Gen AI is disabled"))`), surfaced as HTTP 400 via ControllerAdvice. The controller bean is ALWAYS registered (no `@ConditionalOnProperty` on the class), so `POST /api/genai/ask` is always REACHABLE. The opposite pattern is the sibling EventApiController which carries `@ConditionalOnDataCollaboration` and 404s when disabled. Both patterns are internally consistent; this ADR codifies that the platform uses 400-not-404 framing as the convention for feature-flag-off, framing the disabled state as "feature flag off" (operator-debuggable) rather than "feature not deployed" (route absent).
+- **Wisdom test**: PASS — deliberate framing choice; rationale stated by the typed exception ("Gen AI is disabled") and the structural symmetry-vs-asymmetry with the sibling controller; affects observability/debugging (operators see a 4xx with a clear message vs a 404).
+
+## ADR-CANDIDATE-224 — Per-column DATASET_FIELD permissions are PARENT-SCOPED via `DatasetFieldResourceExtractor` — every field-level permission resolves to the parent DataEntity's permission; there is NO field-level permission check
+
+- **Classification**: promote
+- **Severity**: HIGH
+- **Pillars affected**: [P-09 Security & Access Control, P-01 Data Discovery (column-level metadata)]
+- **Support**: 1 sidecar (DatasetFieldController class-level)
+- **Decision statement**: Authorization for the 7 DatasetField endpoints under `/api/datasetfields/{id}/...` runs through `DatasetFieldResourceExtractor` (`DatasetFieldResourceExtractor.java:21-27`), whose final step is `reactiveDatasetFieldRepository.getDataEntityIdByDatasetFieldId(id)` — the resolver returns the parent `data_entity.id`, NOT the `dataset_field.id`. The downstream `ReactiveAuthorizationManager` evaluates the permission against the PARENT DataEntity. There is NO field-level permission check; a user with permission on the parent has permission on every field. The structural anchor: six `SecurityRule` entries at `SecurityConstants.java:282-303` keyed on `AuthorizationManagerType.DATASET_FIELD` — the type name says "field" but the extractor resolves to the parent.
+- **Wisdom test**: PASS — deliberate structural decision (the extractor's resolution step encodes the intent); load-bearing for the entire column-metadata-editing surface; alternative (field-level permissions) is a structural change to the permission table + extractor + ReactiveAuthorizationManager.
+
+## ADR-CANDIDATE-225 — Description-edit on a dataset/dataset-field emits TWO activity events for a SINGLE user operation — one for the description body + one for re-extracted term mentions in the new text
+
+- **Classification**: promote
+- **Severity**: MEDIUM
+- **Pillars affected**: [P-07 Active Platform Features (Activity Feed), P-01 Data Discovery (description editing), P-06 Business Glossary (term-link coupling)]
+- **Support**: 1 sidecar (DatasetFieldController) + cross-link with the entity-side equivalent (DataEntityController description-edit)
+- **Decision statement**: A user's `PUT /api/datasetfields/{id}/description` (or the entity-level sibling) triggers TWO activity events: (a) `DATASET_FIELD_DESCRIPTION_UPDATED` (or `DATA_ENTITY_DESCRIPTION_UPDATED`) at the inner-service `@ActivityLog` annotation; (b) `DATASET_FIELD_TERM_ASSIGNMENT_UPDATED` (or `DATA_ENTITY_TERM_ASSIGNMENT_UPDATED`) at `TermServiceImpl.handleDatasetFieldDescriptionTerms` (line 243) when the new description body contains `[[namespace/name]]` term markers. The chain at `DatasetFieldServiceImpl.updateDescription` (lines 87-95) is `datasetFieldInternalInformationService.updateDescription(...).then(termService.handleDatasetFieldDescriptionTerms(...))`. The intent: the activity feed records BOTH the textual change AND the structural term-graph change as separate audit-able events.
+- **Wisdom test**: PASS — deliberate two-event emission (the `.then(...)` chain is the structural anchor); affects audit/observability (operators see two rows in the feed for one user click); alternative (single composite event) is a structural change to the activity-event taxonomy.
+
+## ADR-CANDIDATE-226 — `createEnumValue` is BULK-REPLACE-AS-STATE: the request body IS the desired enum-value set; omitted items are SOFT-DELETED; the operation name says "create" but the implementation reconciles
+
+- **Classification**: promote
+- **Severity**: MEDIUM
+- **Pillars affected**: [P-01 Data Discovery (column-level enum values), P-10 Ingestion (EXTERNAL-origin enum-value handling)]
+- **Support**: 1 sidecar (DatasetFieldController) + the EnumValueService primary source
+- **Decision statement**: `POST /api/datasetfields/{id}/enum_values` accepts a `BulkEnumValueFormData` body whose `items: [EnumValueFormData]` array IS the new state. `EnumValueServiceImpl.java:91-122` partitions items into id-present (bulkUpdate) and id-absent (bulkCreate); existing rows whose id is NOT in `idsToKeep` are SOFT-DELETED via `softDeleteExcept(datasetFieldId, idsToKeep)`. EXTERNAL-origin enum values follow a description-only-update path (the row identities are owned by the collector). The maintainer chose REPLACE-AS-STATE semantics (the body is the authoritative state) over MERGE-CREATE semantics (the body is an additive delta). The operationId `createEnumValue` understates this; the wire surface understates it. The gap-side consequence — partial-body submission silently deletes omitted items — is REFACTOR-661.
+- **Wisdom test**: PASS — deliberate semantic choice (the partition-then-softDeleteExcept algorithm encodes the intent); structural impact on the operator's mental model + every UI surface that calls this endpoint (the UI must preserve the full item list on every submit); alternative (additive PATCH semantics) is a structural change to the service contract.
+
+---

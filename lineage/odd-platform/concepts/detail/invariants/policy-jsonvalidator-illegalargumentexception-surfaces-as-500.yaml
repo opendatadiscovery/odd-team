@@ -1,0 +1,135 @@
+name: |-
+  PolicyJSONValidator throws IllegalArgumentException — surfaces as HTTP 500 not 400 (ControllerAdvice catch-all gap)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-09
+description: |-
+  **NEW INVARIANT, batch 2026-05-25-ZD** — when a caller submits
+  a `PolicyFormData` with a malformed policy JSON document to
+  `POST /api/policies` or `PUT /api/policies/{policy_id}`,
+  `PolicyJSONValidator.validate(...)` (PolicyJSONValidator.java:28-32)
+  throws `IllegalArgumentException` on a non-empty ValidationMessage
+  set. The exception flows up through the controller's reactive
+  pipeline into `ControllerAdvice.java:23-66`.
+
+  `ControllerAdvice` has NO `@ExceptionHandler(IllegalArgumentException.class)`.
+  The exception falls through to the catch-all
+  `@ExceptionHandler(Exception.class)` at line 61-66 — surfaces as:
+
+      HTTP 500 with body `{message: "Internal Server Error",
+                          code: "SYS001"}`
+
+  The validator's actual error message (which would name the
+  offending JSON path + the schema-validation reason) is LOST.
+
+  ## Compare to other 400-emitting business exceptions
+
+  ControllerAdvice handles five typed business exceptions:
+    - `BadUserRequestException` → 400 with code `USR001` + the
+      exception's message
+    - `NotFoundException` → 404 with code `USR002` + the message
+    - `UniqueConstraintException` → 400 with code `USR003` + the
+      message
+    - `CascadeDeleteException` → 400 with code `USR004` + the
+      message
+    - `WebExchangeBindException` → 400 with bound validation errors
+    - `GenAIException` → 500 with code `GAI001` (the GenAI-specific
+      surface)
+
+  `IllegalArgumentException` is conspicuously absent. The fix is
+  ONE-LINE: add `@ExceptionHandler(IllegalArgumentException.class)`
+  mapping to 400 with `USR001`.
+
+  ## Caller-visible consequence
+
+  A caller submitting a malformed policy document gets an
+  unhelpful 500:
+
+      HTTP/1.1 500 Internal Server Error
+      Content-Type: application/json
+      {"message": "Internal Server Error", "code": "SYS001"}
+
+  rather than the helpful 400 the framework was designed to emit
+  for caller-shaped input errors. The diagnostic clue (which JSON
+  field was invalid, which constraint failed) is in the server
+  log only.
+
+  ## Severity
+
+  MEDIUM. The 500 is a contract-violation surface — any caller
+  authoring policies programmatically (CI scripts, automation
+  tooling) treats 500 as a server fault to retry; the caller
+  retries the malformed payload; the server returns 500 again;
+  the diagnostic loop stalls.
+
+  The fix is trivial; the absence is an oversight (the validator
+  was written first; the ControllerAdvice was written separately;
+  no integration test exercises the malformed-payload path; the
+  gap shipped silently).
+
+  ## Two coherent fix paths
+
+  - **Code-A (smallest)**: Add
+    `@ExceptionHandler(IllegalArgumentException.class)` to
+    `ControllerAdvice.java` mapping to 400 with code `USR001` and
+    the exception message. One-line change. Aligns the validator's
+    error surface to the rest of the platform's typed-exception
+    pattern.
+
+  - **Code-B (more invasive)**: Change `PolicyJSONValidator` to
+    throw `BadUserRequestException` instead of
+    `IllegalArgumentException`. Pre-existing exception class
+    handled correctly. Requires updating any other caller of
+    PolicyJSONValidator (none — internal-only).
+
+  Path A is more conservative; Path B is more semantic. Either
+  closes the gap.
+
+  ## Live doc drift
+
+  The live `/authorization/policies` page (WebFetched 2026-05-25,
+  status 200) describes the policy JSON shape but does NOT warn
+  operators that:
+    - A malformed policy emits HTTP 500 (not 400)
+    - The validator's error message is suppressed
+
+  Operators authoring policies see a confusing server-error
+  response and have no recourse other than reading server logs.
+axes_present:
+- controllers
+- backend
+nodes:
+- odd-platform java PolicyController controller-class:PolicyController
+contributors:
+- 'PolicyController.md (batch ZD class-level sidecar):
+  dependencies_semantic.requires-feature.[ControllerAdvice] +
+  doc_drift_findings.[1] + tests_coverage_semantic.uncovered_behaviours
+  + coherence_check.strengthens.[error_class_misrepresented_validator_throws_illegalargument]'
+evidence:
+- 'PolicyJSONValidator.java:28-32 (throws IllegalArgumentException
+  on non-empty ValidationMessage set)'
+- 'PolicyServiceImpl.java:64, 73 (the validator is invoked on create
+  + update paths)'
+- 'ControllerAdvice.java:23-66 (no @ExceptionHandler(IllegalArgumentException.class);
+  the catch-all at line 61-66 maps Exception → 500 with body
+  `Internal Server Error` + code `SYS001`)'
+related_features:
+- F-001
+- F-006
+related_pillar_features:
+- P-09
+related_concepts:
+- 'operation:create-policy (the upstream operation that triggers
+  this code path)'
+- 'invariant:policy-service-update-lost-update-race-no-reactive-transactional
+  (the sister service-tier hygiene gap on the same controller)'
+notes: |-
+  NEW invariant captured in batch 2026-05-25-ZD. The fix is
+  one-line (path A) or two-line (path B). Smallest improvement
+  to the policy-authoring developer experience; surfaces in the
+  audit only because no test exercises the malformed-payload path.
+
+  DOC-NNN candidate: doc admonition on the /authorization/policies
+  page warning that policy-validation failures currently surface
+  as 500 — pairs with the fix-flip when (A) or (B) ships.

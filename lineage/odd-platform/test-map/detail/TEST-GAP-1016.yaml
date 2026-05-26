@@ -1,0 +1,138 @@
+gap_id: TEST-GAP-1016
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - 'odd-platform json locales/translations i18n-resource:en'
+  - 'odd-platform ts react-component:Activity'
+pillars_affected: [P-04, P-06]
+surfaced_by:
+  - 'en.md:tests_coverage_semantic.uncovered_behaviours.[4] (Activity Feed t(User) label is operator-honest — matches what the SQL filter does — HIGH; per LSN-020 / DOC-GAP-303: the label says User but the SQL binds USER_OWNER_MAPPING.OWNER_ID.in(userIds))'
+  - 'Activity.md:bugs_limitations_corner_cases.[0] (the User filter is operator-misleading at the UI layer; MultipleFilter dispatches fetchOwnersList — dropdown lists OWNERS not users; selecting owner stores its id in queryParams.userIds; backend binds USER_OWNER_MAPPING.OWNER_ID.in(userIds); operator-observable: users without an owner mapping cannot be selected; reassigning a mapping retroactively rewrites historical filter results; multiple users sharing an owner collapse — severity HIGH — batch ZL strengthen)'
+  - 'Activity.md:stress_findings.name_behavior_pairs.[0] (User filter promise vs. owner-via-mapping implementation; DRIFT_NAME_VS_BEHAVIOR; the available-but-unused column is ACTIVITY.CREATED_BY at lines 212, 221 — selected but never filtered)'
+  - 'Activity.md:stress_findings.request_inputs.[userIds] (TRANSLATES_SILENTLY drift; four operator-visible consequences enumerated: silent dropdown absence; retroactive rewrite of historical filter results; multi-user collapse; deleted-mapping silent empty)'
+  - 'Activity.md:tests_coverage_semantic.uncovered_behaviours.[3..4] (HIGH integration gaps for the User filter — autocomplete only shows owners; the UI cannot express the actual created_by filter the doc copy promises)'
+behaviour: |-
+  **The Activity Feed filter labelled `t('User')` is OPERATOR-MISLEADING
+  and uniform across all six locales — no locale corrects the label.**
+  The label appears at `Filters.tsx:58` and reads "User" in en.json
+  line 347. An operator clicking the filter expects "filter activity
+  by who PERFORMED the action". The implementation at
+  `ReactiveActivityRepositoryImpl.java:272-273` binds
+  `USER_OWNER_MAPPING.OWNER_ID.in(userIds)` — i.e. it filters by the
+  OWNER of the entity that the activity was on, NOT by the actor who
+  performed it.
+
+  Per LSN-020 (`retrospectives/LSN-020-activity-feed-user-filter-semantic-drift.md`)
+  this is a documented structural drift; the en.md sidecar's
+  bugs_limitations_corner_cases couples line 347 of this file to the
+  SQL behaviour. No test exists pinning either (a) the current
+  rendered text → SQL-behaviour mismatch (the regression-pin for
+  documentation accuracy) OR (b) the desired state where the label
+  reads "Entity Owner" and the SQL behaviour matches OR a separate
+  "Actor" filter is added with the actor-side SQL.
+
+  The drift is HIGH because (i) every activity-feed visit hits this
+  surface, (ii) the misleading label could lead an operator to
+  conclude that no activity occurred when in fact activity occurred
+  but performed by someone OUTSIDE the owner set, (iii) the cross-
+  locale uniform misleading-ness means a French operator gets the
+  same wrong mental model as the English operator. This is
+  documentation-driven harm, not data loss.
+
+  Probe P-171 (per en.md docs_link_semantic refs) verifies the
+  runtime drift but no unit test pins the relationship.
+
+  Batch ZL (2026-05-26) strengthens this with the Activity.tsx
+  component sidecar evidence: the misleading-label channel is
+  triangulated across en.json, the Filters child, the Activity
+  component itself, and the backend repository. The component
+  sidecar makes the four operator-observable consequences
+  explicit:
+  (a) Users WITHOUT an active user-owner mapping cannot be selected
+      at all — autocomplete sources via `fetchOwnersList` only
+      (`MultipleFilterAutocomplete.tsx:44-47`); a user-without-owner
+      is silently absent from the picker. The doc copy "performed
+      by selected users" cannot be satisfied for these users.
+  (b) Reassigning a user-owner mapping (the user changes which
+      owner they represent) RETROACTIVELY rewrites which historical
+      activity rows match the filter — the audit trail's "who did
+      this" answer for past events changes silently without any
+      event-log entry. Forensic integrity drift.
+  (c) Multiple users mapped to the same owner all collapse into
+      the same filter result — picking "owner-Alice-team" returns
+      rows for every user mapped to that owner. The label promises
+      single-user, the implementation delivers user-set-by-owner.
+  (d) Deleted-user-mapping silent empty: when
+      `USER_OWNER_MAPPING.DELETED_AT.isNull()` is enforced (line
+      274), filtering by a soft-deleted mapping's owner_id
+      returns empty even if the underlying actor still exists.
+
+  The available-but-unused column is `ACTIVITY.CREATED_BY` — read
+  in the LEFT JOIN at line 221, SELECTED at line 212, but NEVER
+  filtered. An actor-honest implementation would bind
+  `ACTIVITY.CREATED_BY.in(userIds)` on the username axis.
+
+  Probe P-190 (batch ZL) emitted to validate the four observable
+  consequences end-to-end on a real platform run.
+test_class: integration
+test_files_existing: []
+test_files_proposed:
+  - path: 'odd-platform-ui/src/components/Activity/Filters/__tests__/Filters.UserLabel.test.tsx'
+    name: 'user_filter_label_matches_or_warns_actor_vs_owner_semantic'
+  - path: 'odd-platform-ui/src/components/Activity/Filters/__tests__/Filters.UserDropdown.shows.owners.test.tsx'
+    name: 'user_dropdown_currently_lists_OWNERS_via_fetchOwnersList_pinsCategoryFDrift_BatchZL'
+  - path: 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveActivityRepositoryImplUserFilterTest.java'
+    name: 'userIds_filter_binds_owner_id_NOT_actor_id_currentBehaviourPin'
+  - path: 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveActivityRepositoryImplUserMappingRetroactiveTest.java'
+    name: 'reassigning_user_owner_mapping_retroactively_rewrites_historical_filter_results_pinsForensicDrift_BatchZL'
+evidence:
+  - 'en.md says (tests_coverage_semantic.uncovered_behaviours.[4]): "Activity Feed t(User) label is operator-honest (i.e. matches what the SQL filter does). integration; HIGH; Per LSN-020 / DOC-GAP-303: the label says User (suggesting filter by who performed the action); the SQL binds USER_OWNER_MAPPING.OWNER_ID.in(userIds) (filters by owner-of-entity via the user-owner-mapping). The label is misleading and uniform across all six locales (no locale corrects it). Probe P-171 verifies the runtime drift."'
+  - 'en.md couples line 347 ("User": "User") to Filters.tsx:58 (t(User) call site) and to ReactiveActivityRepositoryImpl.java:272-273 (SQL binding) — three-way evidence chain'
+  - 'Activity.md (batch ZL): UI-side autocomplete confirmed to bind to fetchOwnersList exclusively at MultipleFilter.tsx:32-34 + MultipleFilterAutocomplete.tsx:44-47 — the dropdown structurally cannot show users; users-without-owners are absent from the picker'
+  - 'Activity.md (batch ZL): the available-but-unused column ACTIVITY.CREATED_BY is read in the LEFT JOIN at ReactiveActivityRepositoryImpl.java:221 + SELECTED at line 212 but NEVER filtered — confirming the actor-side SQL is structurally feasible (no schema change needed) and the drift is purely a wiring decision'
+  - 'Activity.md (batch ZL): four operator-observable consequences enumerated under stress_findings.request_inputs.[userIds]'
+  - 'P-190 probe emitted (batch ZL — Activity.md) to verify the four operator-observable consequences on a real platform deployment'
+  - 'LSN-020 retrospective documents this drift class'
+  - 'Glob verified: zero Filters.test.* / Activity*.test.* under odd-platform-ui/src (run 2026-05-26)'
+cross_references:
+  - 'LSN-020 (Activity Feed t(User) label drift)'
+  - 'DOC-GAP-303 (companion documentation gap)'
+  - 'TEST-GAP-1014 (sibling — broader code↔en.json parity)'
+  - 'P-171 probe (runtime verification of the drift — original)'
+  - 'P-190 probe (batch ZL — verifies the four operator-observable consequences on a real platform deployment)'
+related_pillar_features:
+  - 'P-06:F-Activity-Feed'
+  - 'P-04:F-i18n locale bundle'
+related_features: []
+proposed_action: |-
+  Three-test wedge (extended in batch ZL):
+  (a) Filters.UserLabel.test.tsx (UI) — assert the rendered filter
+  label is the operator-honest text. RED today on the current
+  "User" rendering; GREEN after the en.json + es.json + ch.json +
+  fr.json + ua.json + hy.json values are renamed to "Entity Owner"
+  (or analogous in each locale). Pins the cross-locale uniform
+  correction.
+  (b) Filters.UserDropdown.shows.owners.test.tsx (UI integration) —
+  render Filters with mocked fetchOwnersList returning a known
+  owner set + mocked fetchUsersList returning a different known
+  user set; click the User filter; assert the dropdown options
+  match the OWNERS set (not the USERS set). Pins the current
+  Category-F drift; flips assertion direction after the wiring
+  is corrected.
+  (c) ReactiveActivityRepositoryImplUserFilterTest (backend) —
+  assert the SQL binding remains USER_OWNER_MAPPING.OWNER_ID
+  (regression pin on current behaviour, so renaming the label
+  does NOT silently flip the SQL semantics).
+  (d) ReactiveActivityRepositoryImplUserMappingRetroactiveTest
+  (backend) — insert an activity row with created_by='alice' at
+  time T1 when alice maps to owner-42; at time T2 reassign alice
+  to owner-43; filter by userIds=[42] and userIds=[43] — assert
+  the historical row appears under [43] (the new mapping),
+  pinning the retroactive-rewrite forensic drift.
+  Optional (e): add an "Actor" filter that binds to the ACTIVITY's
+  CREATED_BY column directly; pin its presence and SQL behaviour
+  separately. This is the documented-fix track if operators want
+  both axes.
+maintainer_curated: false
+batch: 2026-05-26-ZJ
+strengthened_in: [2026-05-26-ZL]

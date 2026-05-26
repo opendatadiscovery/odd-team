@@ -1,0 +1,91 @@
+---
+probe_id: P-163
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__routes__route__masterData
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-P-03-master-data-lookup-tables
+test_class: security
+verified_against_commit: 9ac6436e9bd36ba132d765076c6bbd5916fde729
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category D): the React route at `/master-data/lookup-tables`
+  is mounted under `<WithPermissionsProvider allowedPermissions={[LOOKUP_TABLE_CREATE,
+  LOOKUP_TABLE_UPDATE, LOOKUP_TABLE_DELETE]}>` in `App.tsx:75-88`. From STATIC reading of
+  `PermissionProvider.tsx:12-44` the Provider computes `isAllowedTo` but does NOT block
+  rendering — it passes the value via React context. Hypothesis: a logged-in user with
+  ZERO of the three listed permissions still sees the page chrome, the search input,
+  and the Lookup Tables list (subject to per-row backend RBAC); only the `+ Add new`
+  button is hidden by the inner `<WithPermissions permissionTo={LOOKUP_TABLE_CREATE}>`
+  wrapper at `LookupTables.tsx:72-82`. If the hypothesis holds, the route mount's
+  permissions are a no-op at the route level — misleading-as-documentation. If the
+  hypothesis fails (i.e. the page DOES block), then there is a side effect of
+  `WithPermissionsProvider` that the static read missed.
+---
+arrange:
+  - kind: docker-compose-up
+    services: [postgres, odd-platform]
+    env:
+      AUTH_TYPE: LOGIN_FORM
+  - kind: sql
+    query: |
+      -- Seed a user identity row with empty permissions
+      INSERT INTO owner (id, name)
+      VALUES (9100, 'p163-user') ON CONFLICT DO NOTHING;
+      -- Identity bound to the owner; no permissions granted at all (no policy assigned)
+  - kind: docker-cmd
+    cmd: |
+      # Optional: seed a single lookup table so the list page has something to render
+      curl -sS -X POST http://localhost:8080/api/referencedata/table \
+        -H 'Content-Type: application/json' \
+        -d '{"name":"p163_seed","namespaceName":"default"}' \
+        --cookie "$(cat .cookie-admin)"
+act:
+  - kind: dom-probe
+    browser: chromium
+    steps:
+      - go_to: http://localhost:8080/login
+      - fill: { selector: '#username', value: 'p163-user' }
+      - fill: { selector: '#password', value: 'p163-pass' }
+      - click: { selector: 'button[type=submit]' }
+      - wait_for_url: 'http://localhost:8080/'
+      - go_to: http://localhost:8080/master-data/lookup-tables
+      - wait_for_selector: 'h1'
+      - capture_dom: { selector: 'h1', capture_as: page_title }
+      - capture_dom: { selector: '#lookup-tables-search', capture_as: search_input_present }
+      - capture_dom: { selector: 'button:has-text("Add new")', capture_as: add_new_button_present, allow_missing: true }
+      - capture_dom_count: { selector: '[data-testid="lookup-tables-list-item"]', capture_as: row_count, allow_missing: true }
+observe:
+  - kind: http
+    request: GET /api/referencedata/search/{anyId}/results
+    capture_as: api_response_status
+assert:
+  - "page_title.text == 'Lookup Tables'  # page DOES render — route gate did not block (drift hypothesis)"
+  - "search_input_present.exists == true  # chrome is reachable"
+  - "add_new_button_present.exists == false  # the in-page WithPermissions gate hides the button correctly"
+  - "api_response_status.code in [200, 403]  # backend RBAC is the real gate; per-row visibility filtered there"
+  - "Also probe the bare URL: GET /master-data — assert that the response body is the React shell without any /master-data route content rendered (no <Routes> child match), and the toolbar's Master Data tab lights up but content area is empty."
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__routes__route__masterData
+    - odd-platform__java__ReferenceDataController__controller-class__ReferenceDataController
+  retrospectives:
+    - LSN-006
+realism_caveats: |
+  Probe validates the STATIC reading of WithPermissionsProvider's non-blocking behaviour
+  for a logged-in user with empty permissions. It does NOT cover: (a) the fully-unauthenticated
+  case (HTTP-layer auth filter should redirect to /login before React mounts — that is a
+  separate concern); (b) the auth.type=DISABLED case (where the HTTP filter passes everything
+  through and the route gate's no-op behaviour matters most); (c) partial permission sets
+  (one of three) — though the STATIC read of `isAllowedTo` (every() over the three) implies
+  the behaviour is identical to "zero of three" because the Provider doesn't gate-on-render
+  regardless of value. If the assertions PASS, the route-mount permission list is
+  documentation-only; a maintainer should either (i) make the Provider block when
+  `isAllowedTo===false`, OR (ii) move the permission list to a comment / remove it from the
+  call site to avoid misleading audit-trail readers. If assertions FAIL (page does NOT
+  render), the STATIC reading missed a side effect — re-read PermissionContext consumers and
+  any ErrorBoundary / Suspense behaviour upstream.

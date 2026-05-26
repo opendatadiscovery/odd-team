@@ -1,0 +1,165 @@
+name: |-
+  Logout link produces 404 under auth.type=DISABLED (no /logout handler registered)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-09
+description: |-
+  NEW MEDIUM-severity UX INVARIANT, batch ZJ (2026-05-26) — the
+  AppToolbar's user-menu Logout item is a HARDCODED full-page
+  redirect to `/logout` (`AppToolbar.tsx:35-37`,
+  `handleLogout = () => { window.location.href = '/logout'; }`).
+
+  Under `auth.type=DISABLED`, `DisabledAuthSecurityConfiguration.java`
+  has NO `.logout(...)` chain — the `/logout` path is NOT registered
+  as a Spring Security handler. Clicking Logout under DISABLED
+  produces a 404 page the user must back out of.
+
+  **The Logout button is shown to every user including DISABLED-
+  mode anonymous callers**. The UI surfaces no auth-mode-aware
+  rendering — under DISABLED the user sees a 'Logout' menu item
+  in the user-menu cluster just as a LOGIN_FORM/OAUTH2/LDAP user
+  would. The visible label promises functionality the backend
+  does not provide.
+
+  **Under LOGIN_FORM and LDAP**, `LoginFormSecurityConfiguration.java:59`
+  and `LDAPSecurityConfiguration.java:146` register
+  `.logout(Customizer.withDefaults())` which auto-binds the GET
+  `/logout` handler that clears the session and redirects to the
+  login form. The button functions as labelled.
+
+  **Under OAUTH2**, `OAuthSecurityConfiguration.java:100` registers
+  a custom `LogoutSuccessHandler` chaining to the IDP's
+  `end_session_endpoint` (Cognito / Google / Azure / ODD_IAM). The
+  button functions as labelled (with the cross-provider asymmetry
+  noted in the `logout-side-token-revocation-asymmetric-defence-
+  in-depth` invariant).
+
+  **Under DISABLED**, no `.logout(...)` chain is configured. The
+  `anyExchange().permitAll()` rule at
+  `DisabledAuthSecurityConfiguration.java:13-18` allows the
+  request through but no controller handles GET `/logout`. The
+  browser receives 404 (the platform's default 404 response).
+
+  **Severity is MEDIUM** — UX-confusing but security-neutral.
+  There is no session to log out from under DISABLED; the user's
+  identity is the anonymous `dummyOwner('admin')` rendered
+  uniformly to every network caller (per the REFACTOR-185
+  IDENTITY-LAYER FACET).
+
+  **The fix is small** but has two shapes:
+
+    (a) **Backend fix**: register a noop logout chain in
+        `DisabledAuthSecurityConfiguration.java:11-19` that
+        responds with a redirect to '/' or a clearly-labelled
+        'unauthenticated mode — no session to clear' page. Three
+        to five lines.
+
+    (b) **Frontend fix**: hide the Logout menu item under DISABLED
+        by gating on the identity selectors' state. The AppToolbar
+        already reads `identity` via `useAppSelector(getIdentity)`
+        (line 20); a 2-line condition + an additional `<Menu Item>`
+        suppression closes the surface.
+
+  Either fix removes the operator-confusing 404 click; option (b)
+  is preferred because it ALSO solves the related UX surprise of
+  rendering 'admin' as the username under DISABLED — the same
+  if-DISABLED-then branch could surface a permanent banner
+  ('You are in unauthenticated mode') as the
+  REFACTOR-185 invariant recommends.
+
+  **Cross-batch coherence**: this invariant is the UX-symptom
+  partner of REFACTOR-185 IDENTITY-LAYER FACET. The IDENTITY-LAYER
+  facet says 'whoami returns admin'; this invariant says 'and the
+  Logout button to clear that admin claim is non-functional'. The
+  user is rendered as admin, cannot log out, and has no
+  affordance explaining why.
+vocabulary_status: codebase-anchored
+axes_present:
+  - ui_shell
+  - controllers
+nodes:
+  - odd-platform ts components/shared/elements/AppToolbar ui-shell-widget:AppToolbar
+  - odd-platform java DisabledAuthSecurityConfiguration config-key-consumer:auth.type@L10
+contributors:
+  - |-
+    AppToolbar.md (batch ZJ ui-shell-widget primary source):
+      bugs_limitations_corner_cases.[3] MEDIUM (clicking Logout under auth.type=DISABLED yields 404 — no Spring-Security /logout handler registered; DisabledAuthSecurityConfiguration has NO .logout(...) call);
+      stress_findings.name_behavior_pairs[handleLogout — DRIFT_NAME_VS_BEHAVIOR — promises logout, implementation 404s under DISABLED];
+      stress_findings.probes_emitted P-174
+evidence:
+  - 'AppToolbar.md:bugs_limitations_corner_cases.[3] MEDIUM (Logout 404 under DISABLED; AppToolbar.tsx:35-37 + DisabledAuthSecurityConfiguration.java:11-19 + LoginFormSecurityConfiguration.java:59 + LDAPSecurityConfiguration.java:146 evidence trace)'
+  - 'AppToolbar.md:stress_findings.name_behavior_pairs.[handleLogout] DRIFT_NAME_VS_BEHAVIOR (promises logout; produces 404 under DISABLED)'
+  - 'AppToolbar.md:stress_findings.probes_emitted P-174 (runtime confirmation of Logout 404 under DISABLED)'
+  - 'AppToolbar.tsx:35-37 (handleLogout = () => { window.location.href = "/logout"; })'
+  - 'DisabledAuthSecurityConfiguration.java:11-19 (no .logout() chain configured)'
+  - 'LoginFormSecurityConfiguration.java:59 + LDAPSecurityConfiguration.java:146 (the ONLY places .logout is configured in any SecurityConfiguration)'
+security_aggregate:
+  overall: HIGH
+  auth_modes_relevant:
+    - DISABLED
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: 'N/A'
+    detail: |-
+      Not an authorization invariant — Logout under DISABLED is
+      structurally non-functional because there is no session to
+      log out from. The 404 is the wrong UX shape for the
+      'unauthenticated-mode' state, not a security gate.
+  owner_scoping:
+    verdict: 'N/A'
+    detail: ''
+  strengths:
+    - 'No session leak — the 404 surface does not expose any auth state to the caller (under DISABLED there IS no session)'
+  weaknesses:
+    - 'Operator-visible 404 on a primary auth affordance — undermines operator mental model of the auth state (MEDIUM)'
+    - 'Compounds the REFACTOR-185 IDENTITY-LAYER FACET — user is rendered as admin AND cannot log out AND has no affordance explaining why. Three pain points compose under DISABLED (MEDIUM)'
+  cross_file_inconsistencies: []
+  contributing_files:
+    - 'odd-platform__ts__components_shared_elements_AppToolbar__ui-shell-widget__AppToolbar.md'
+  evidence:
+    - 'AppToolbar.md:bugs_limitations_corner_cases.[3]'
+performance_aggregate:
+  overall: 'HIGH'
+  hot_paths: []
+  throughput_shape:
+    verdict: 'N/A'
+    detail: 'Not a performance concept.'
+  scaling_shape:
+    verdict: 'N/A'
+    detail: ''
+  strengths: []
+  weaknesses: []
+  cross_file_inconsistencies: []
+  contributing_files:
+    - 'odd-platform__ts__components_shared_elements_AppToolbar__ui-shell-widget__AppToolbar.md'
+  evidence: []
+triangulation_count: 1
+cross_batch: false
+cross_batch_refs:
+  - batch-ZJ (AppToolbar primary source)
+severity: MEDIUM
+severity_dim: ux
+related_features: []
+related_pillar_features:
+  - 'P-09:F-001'
+related_concepts:
+  - 'invariant:refactor-185-identity-layer-facet-batch-zd-whoami-admin-grant (the IDENTITY-LAYER facet this UX-symptom invariant compounds)'
+  - 'entitie:spa-app-toolbar-primary-auth-affordance-surface (the widget that hosts this surface)'
+  - 'invariant:logout-side-token-revocation-asymmetric-defence-in-depth (the LOGIN_FORM/OAUTH2/LDAP side of the same Logout button)'
+notes: |-
+  Coherence (Rule 6): grepped `concepts/detail/invariants/` for
+  "logout" + "DISABLED" — found
+  `invariant:logout-side-token-revocation-asymmetric-defence-in-depth`
+  (the LOGIN_FORM/OAUTH2/LDAP-side invariant; covers cross-provider
+  asymmetry for AUTHENTICATED logout). No existing concept covers
+  the DISABLED-mode 404 specifically. This invariant is the
+  DISABLED-side companion to the existing logout-side invariant.
+
+  Recommended mitigation: add a 2-line condition in AppToolbar.tsx
+  that hides the Logout menu item when identity.username === 'admin'
+  AND there is no user-owner mapping (i.e. DISABLED-mode dummyOwner
+  state). This is structurally similar to the
+  REFACTOR-185-IDENTITY-LAYER mitigation recommendation #6 (UI-side
+  defence-in-depth banner).
+maintainer_curated: false

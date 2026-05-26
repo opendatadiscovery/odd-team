@@ -1,0 +1,333 @@
+name: |-
+  Slack Events INBOUND webhook ships NO signing-secret verification — anyone can forge events to POST /api/slack/events (batch ZF)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-07
+  - P-09
+description: |-
+  **NEW HIGH-severity INVARIANT, batch 2026-05-25-ZF** — the
+  EventApiController endpoint (`POST /api/slack/events`) is the
+  INBOUND Slack Events API webhook receiver for the Data
+  Collaboration feature, AND it is the INBOUND ANALOG of the
+  OUTBOUND `webhook-no-hmac-no-signature-no-payload-origin-verification`
+  invariant (batch Y). The endpoint ships NO X-Slack-Signature
+  verification, NO Slack signing-secret check, NO HMAC-SHA256
+  computation, AND is path-whitelisted in EVERY auth mode — so
+  ANY internet caller able to reach the platform's port can forge
+  Slack events with arbitrary payload shape.
+
+  ## THE PRIMARY-SOURCE EVIDENCE — EventApiController batch ZF
+
+  EventApiController.java:22-27 (the entire handler body):
+    public Mono<ResponseEntity<SlackEventResponse>> handleSlackEvent(
+            @RequestBody final Mono<String> body,
+            final ServerWebExchange exchange) {
+      return body
+          .map(slackEventParser::parse)
+          .flatMap(this::route);
+    }
+
+  The signature evidence:
+    - `@RequestBody final Mono<String> body` — receives the raw
+      JSON body
+    - `final ServerWebExchange exchange` — has access to
+      `exchange.getRequest().getHeaders()` BUT THIS IS NEVER READ
+    - `SlackEventParser.parse(String rawJson)` — parser signature
+      takes ONLY the JSON; no headers, no timestamp, no signature
+
+  Grep of the entire codebase 2026-05-25:
+    - `X-Slack-Signature` — ZERO matches
+    - `signing.secret` / `signingSecret` — ZERO matches
+    - `HMAC.SHA256` / `Mac.getInstance("HmacSHA256")` — ZERO matches
+    - `MessageDigest.getInstance("HmacSHA256")` — ZERO matches
+    - `X-Slack-Request-Timestamp` — ZERO matches
+
+  The endpoint deserialises the JSON body and routes by `type`
+  field into CHALLENGE/FILTER/ERROR/PAYLOAD; for PAYLOAD it
+  enqueues a `message_provider_event` row. No verification of
+  payload origin happens anywhere in the chain.
+
+  ## CONTRAST WITH SLACK'S DOCUMENTED PROTOCOL
+
+  Slack's Events API protocol (`https://api.slack.com/authentication/verifying-requests-from-slack`)
+  requires receivers to:
+    (1) Read `X-Slack-Request-Timestamp` and `X-Slack-Signature`
+        headers
+    (2) Compute `v0={timestamp}:{raw body}`
+    (3) HMAC-SHA256(v0, signing-secret) → hex
+    (4) Compare to the value in `X-Slack-Signature` (constant-time)
+    (5) Reject if mismatch OR timestamp drift > 5 minutes
+
+  Slack provides the signing secret per app (separate from the
+  bot OAuth token); operators copy it from the Slack app config
+  into the receiver's config. The mechanism mirrors what GitHub
+  webhooks (X-Hub-Signature-256), Stripe webhooks (Stripe-Signature),
+  AlertManager (custom Authorization), and every other webhook
+  receiver implements as a defence against URL leakage.
+
+  ODD's EventApiController implements NONE of steps 1-5.
+
+  ## CONTRAST WITH THE LIVE DOCS
+
+  Live docs at `https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform#enable-data-collaboration`
+  (WebFetched 2026-05-25, status 200) publish the Slack app
+  manifest with `request_url: https://<ODD_PLATFORM_BASE_URL>/api/slack/events`
+  AND bot scopes `channels:history, channels:read, chat:write,
+  users:read, incoming-webhook` AND bot event subscription
+  `message.channels` — but contain NO MENTION of:
+    - signing-secret configuration property
+    - signature verification
+    - X-Slack-Signature handling
+    - operator-side mitigation for the unsigned-webhook stance
+
+  Quoted from EventApiController.md
+  docs_link_semantic.doc_drift_findings.[0]: "the docs publish a
+  deployment instruction that exposes a publicly-reachable
+  endpoint — but the docs are silent about (a) the absence of
+  Slack signing-secret signature verification in the code, (b)
+  the endpoint being whitelisted from authentication in all auth
+  modes (SecurityConstants.java:96 + LoginFormSecurityConfiguration.java:50),
+  and (c) Slack's at-least-once delivery model producing duplicate
+  downstream message_provider_event rows because the schema lacks
+  a uniqueness constraint on the Slack event_id."
+
+  ## THE COMPOUND ATTACK SURFACE
+
+  Three composable gaps surface at this endpoint:
+
+    (1) NO signature verification (this invariant)
+    (2) NO authentication gate in ANY auth mode (whitelisted in
+        SecurityConstants.WHITELIST_PATHS line 96; explicitly listed
+        in LoginFormSecurityConfiguration permittedPaths line 49-51;
+        catch-all in OAUTH2/LDAP/DISABLED)
+    (3) NO idempotency / event_id dedup on at-least-once delivery
+        (`message_provider_event` table V0_0_59__data_collaboration.sql:25-39
+        has no unique constraint on Slack event_id; the INSERT has
+        no ON CONFLICT — duplicate Slack deliveries insert N rows
+        which materialise into N child message rows)
+
+  An attacker who:
+    - Discovers the platform URL (e.g., shodan.io scan, leaked
+      from a deployment manifest, learned from Slack app config
+      if they have access to the workspace)
+    - POSTs a forged `event_callback` payload with `type=event_callback`,
+      `event.type=message`, `event.subtype=message_changed` (or
+      vanilla message), and a crafted `thread_ts` matching a
+      known tracked ODD-platform message UUID
+    - Repeats the POST N times to amplify
+
+  Successfully injects N rows into `message_provider_event` per
+  POST, each materialising into a child `message` row on the
+  parent ODD message. The downstream processor's
+  `SlackMessageProviderEventHandler` (`SlackMessageProviderEventHandler.java:25-43`)
+  performs no signature check at the consumer-side either — the
+  enqueue + materialise chain trusts the queue row entirely.
+
+  The `thread_ts` filter at parse-time (`SlackEventParser.java:65-74`)
+  only ENUMS the requirement that the message be a thread reply;
+  it does not gate by signature. An attacker who guesses or
+  observes any tracked thread_ts (visible in any Slack message URL
+  the ODD UI has rendered) can inject indefinitely.
+
+  ## THE OPERATOR REMEDIATION BURDEN
+
+  Pending a platform fix, operators must implement defence-in-depth
+  out-of-band:
+
+    - mTLS at HTTP gateway with Slack's IP allowlist
+      (https://api.slack.com/robots#ip_allowlisting — Slack publishes
+      egress CIDR ranges; operators allowlist these AND require
+      client cert for inbound)
+    - VPN / private network: requires ODD and Slack's egress in
+      the same network (impossible — Slack is multi-tenant SaaS)
+    - HTTP gateway with signing verification: deploy a sidecar
+      that validates X-Slack-Signature using the workspace's
+      signing-secret and forwards verified requests to ODD; reject
+      everything else
+
+  Each option requires operator investment + ongoing maintenance.
+  The live docs surface NONE of these options.
+
+  ## THE FIX SURFACE — what a small remediation looks like
+
+  A single change at EventApiController.handleSlackEvent that:
+    (a) Adds a new config property
+        `datacollaboration.slack-signing-secret` (REQUIRED when
+        datacollaboration.enabled=true; fail-fast at boot if unset
+        — mirror the existing slack-oauth-token pattern at
+        DataCollaborationConfiguration.java:23-25)
+    (b) Reads `X-Slack-Signature` + `X-Slack-Request-Timestamp`
+        from `exchange.getRequest().getHeaders()`
+    (c) Computes HMAC-SHA256(`v0:{timestamp}:{body}`,
+        signing-secret) → hex, compares constant-time to the
+        signature header
+    (d) Rejects with 401 Unauthorized if mismatch OR if timestamp
+        skew > 5 minutes
+
+  Estimated 30-50 lines of code (handler change + new property +
+  config validation). The operator-visible change is an additional
+  required config property when enabling Data Collaboration. The
+  doc-side cost is a documentation update naming the signing
+  convention.
+
+  ## SEVERITY HIGH
+
+  The platform's inbound-webhook surface has the same trust-model
+  gap that every other webhook protocol explicitly closes. The
+  load-bearing observation: combined with the missing RBAC + the
+  missing idempotency + the live docs publishing the request URL
+  as part of the operator-facing install instructions, the
+  endpoint is INSTRUCTED-TO-BE-PUBLIC by the docs but has NO
+  AUTHENTICATION OF ORIGIN. Operators following the install
+  guide land on a public unsigned webhook by design — same
+  class-of-failure as LSN-001 (silent insecure default shipped
+  in the install path).
+nodes:
+  - odd-platform java EventApiController controller-class:EventApiController
+  - odd-platform java DataCollaborationController controller-class:DataCollaborationController
+contributors:
+  - |-
+    **BATCH ZF PRIMARY SOURCE** EventApiController.md (controller-class):
+    bugs_limitations_corner_cases.[0] (NO Slack request signature
+    verification — HIGH severity) +
+    bugs_limitations_corner_cases.[1] (No authentication gate on the
+    endpoint, in any auth mode — HIGH severity) +
+    bugs_limitations_corner_cases.[2] (No idempotency / dedup on
+    Slack at-least-once delivery — HIGH severity) +
+    docs_link_semantic.doc_drift_findings.[0] (docs publish request_url
+    as deployment instruction but silent on signing) +
+    tests_coverage_semantic.uncovered_behaviours (endpoint accepts
+    forged POSTs from any internet caller — CRITICAL untested behaviour) +
+    stress_findings.auth_gates.[0] (DISABLED + LOGIN_FORM + OAUTH2 +
+    LDAP all accept unauthenticated traffic; gate lives nowhere) +
+    stress_findings.name_behavior_pairs.[0] (handleSlackEvent name
+    promises "Receive and process a Slack workspace event" but
+    receives ANY JSON shaped like a Slack event)
+evidence:
+  - |-
+    **BATCH ZF**
+    EventApiController.md:bugs_limitations_corner_cases.[0]
+    (NO Slack request signature verification — severity HIGH)
+    — evidence: EventApiController.java:22-27 (handler body — no
+    header reads) + SlackEventParser.java:22-23 (parser signature
+    takes ONLY rawJson, no headers / timestamp / signature) + grep
+    across codebase for X-Slack-Signature / signing.secret /
+    signingSecret / HMAC.SHA256 / verifySignature returns ZERO
+    matches
+  - |-
+    **BATCH ZF**
+    EventApiController.md:bugs_limitations_corner_cases.[1]
+    (No authentication gate, in any auth mode — severity HIGH)
+    — evidence: SecurityConstants.java:95-96 (/api/slack/events in
+    WHITELIST_PATHS) + AuthorizationCustomizer.java:22-23
+    (.permitAll for whitelist paths in OAUTH2/LDAP) +
+    LoginFormSecurityConfiguration.java:49-51 (LOGIN_FORM permittedPaths
+    explicitly contains /api/slack/events) +
+    DisabledAuthSecurityConfiguration.java:13-17 (.anyExchange().permitAll
+    in DISABLED)
+  - |-
+    **BATCH ZF**
+    EventApiController.md:bugs_limitations_corner_cases.[2]
+    (No idempotency / dedup on at-least-once delivery — severity HIGH)
+    — evidence: V0_0_59__data_collaboration.sql:25-39 (message_provider_event
+    table schema — no unique constraint on Slack event_id; only
+    PK on bigserial id and FK on parent_message_uuid+parent_message_created_at) +
+    ReactiveMessageRepositoryImpl.java:136-155 (plain INSERT no
+    ON CONFLICT) + DataCollaborationMessageEventProcessor.java:88-101
+    (CREATE handler — materialises one child message per event
+    row, no dedup)
+  - |-
+    **BATCH ZF** WebFetch 2026-05-25 of
+    /configuration-and-deployment/odd-platform#enable-data-collaboration
+    (status 200) — page publishes request_url + bot scopes +
+    feature properties; explicit "Not found" response when querying
+    for any of (signing-secret, signature verification,
+    X-Slack-Signature, X-Slack-Request-Timestamp). Doc silently
+    instructs operators into the insecure default.
+  - |-
+    Cross-references the OUTBOUND analog:
+    invariant:webhook-no-hmac-no-signature-no-payload-origin-verification
+    (the same class-of-failure on the outbound webhook channel;
+    BOTH directions of the platform's webhook surface ship without
+    signature verification)
+axes_present:
+  - controllers
+  - filters
+  - config_prefixes
+related_features:
+  - F-009 (Data Collaboration — inbound)
+related_pillar_features:
+  - P-07
+  - P-09
+related_concepts:
+  - 'invariant:webhook-no-hmac-no-signature-no-payload-origin-verification (the OUTBOUND analog — batch Y)'
+  - 'invariant:two-ingestion-filters-asymmetric-auth (cross-link — same WHITELIST_PATHS bypass pattern; /api/slack/events is whitelisted alongside /ingestion/**)'
+  - 'invariant:decoupled-write-pattern-accept-202-with-queue-and-single-leader-elected-sender (the architectural shape that makes the gap economically attractive to close at the single ack-fast handler)'
+  - 'invariant:entity-oddrn-trust-from-alertmanager-webhook (sister AlertManager webhook receiver — same trust-from-unverified-payload class)'
+triangulation_count: 1
+cross_batch: true
+cross_batch_refs:
+  - batch-ZF (EventApiController class-level — PRIMARY SOURCE for this invariant)
+  - batch-Y (WebhookNotificationSender outbound — sibling invariant on the OUTBOUND direction)
+severity: HIGH
+severity_dim: security
+mitigations_unimplemented:
+  - |-
+    Add a new config property datacollaboration.slack-signing-secret
+    (REQUIRED at boot when datacollaboration.enabled=true; fail-fast
+    empty-check pattern mirroring slack-oauth-token at
+    DataCollaborationConfiguration.java:23-25). In
+    EventApiController.handleSlackEvent, read
+    X-Slack-Signature + X-Slack-Request-Timestamp headers, compute
+    HMAC-SHA256(v0:{timestamp}:{body}, secret), compare constant-time,
+    reject 401 on mismatch OR timestamp skew > 5 minutes. Document
+    the signing convention on the live data-collaboration doc page.
+  - |-
+    Document the operator-side defence-in-depth options pending
+    the code fix: Slack IP allowlist (https://api.slack.com/robots#ip_allowlisting),
+    mTLS gateway, sidecar signature-verification relay. Each option
+    raises operator burden.
+  - |-
+    Add a unique constraint on (provider, provider_event_id) to
+    message_provider_event (sibling fix — closes the duplicate
+    delivery class). One ALTER TABLE migration. Allows the INSERT
+    to use ON CONFLICT DO NOTHING for idempotency.
+notes: |-
+  NEW HIGH-severity invariant captured in batch 2026-05-25-ZF from
+  EventApiController class-level primary-source evidence. The
+  finding is the single most consequential security gap of the
+  F-009 inbound-side surface.
+
+  Cross-cutting connections:
+    - **OUTBOUND analog**: pairs with
+      `webhook-no-hmac-no-signature-no-payload-origin-verification`
+      (batch Y) — the SAME class-of-failure on the outbound webhook
+      channel. The platform ships unsigned webhooks in BOTH
+      directions. A coordinated fix would close BOTH gaps with a
+      shared signing-secret config-property convention.
+    - **AlertManager analog**: pairs with
+      `entity-oddrn-trust-from-alertmanager-webhook` — the
+      AlertManager webhook receiver (`POST /ingestion/alert/alertmanager`)
+      has the SAME trust-from-unverified-payload shape; AlertManager
+      doesn't support signing, but the ODD platform also doesn't
+      enforce IP allowlist or any other origin check on that
+      endpoint either.
+    - **Auth-mode-orthogonal**: the WHITELIST_PATHS bypass for
+      /api/slack/events composes with the four-mode
+      `two-ingestion-filters-asymmetric-auth` story; the same
+      structural assumption — "this endpoint MUST be public for
+      external service delivery" — applies to BOTH ingestion AND
+      events, and BOTH need a signature-verification compensation
+      that the platform doesn't provide.
+
+  Three DOC-NNN candidates flow from this invariant:
+    (a) Document the absence on the live data-collaboration page
+        with operator-facing mitigation (Slack IP allowlist, mTLS,
+        gateway with signature verification) — pending code fix
+    (b) Document the new signing-secret config property once the
+        code fix ships
+    (c) Add a cross-cutting "Webhook security in ODD" page that
+        names BOTH directions (inbound Slack events + outbound
+        notifications) and the consistent signing-secret pattern
+        applied across them

@@ -1,0 +1,205 @@
+---
+probe_id: P-162
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__routes__route__management
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: null  # Management is a catch-all surface for multiple features
+                  # (Owners, Roles, Policies, Namespaces, Tags, Collectors, DataSources, Integrations, Associations);
+                  # this probe targets the cross-cutting auth-gate question, not a single feature
+test_class: security
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category D): the /management route surface in App.tsx:62
+  mounts <Management /> behind no <RestrictedRoute> and no WithPermissionsProvider
+  guard with a fallback. The outer WithPermissionsProvider inside Management.tsx
+  carries allowedPermissions=[OWNER_ASSOCIATION_MANAGE] but only provides a
+  permission CONTEXT to descendants (does not block rendering). Each per-tab
+  sub-route in ManagementRoutes.tsx (namespaces, datasources, collectors,
+  owners, tags, roles, policies, policies/:policyId) is wrapped in a
+  WithPermissionsProvider that — likewise — only provides context. The only
+  sub-route that actually blocks rendering is associations/* via
+  RestrictedRoute (redirect to ../namespaces if !hasAccessTo(OWNER_ASSOCIATION_MANAGE)).
+  The integrations/* sub-route has NO permission guard at all.
+
+  Hypothesis A (route surface): any authenticated user — regardless of role —
+  who deep-links to /management, /management/namespaces, /management/owners,
+  /management/roles, /management/policies, /management/policies/:id,
+  /management/collectors, /management/datasources, /management/tags,
+  /management/integrations, /management/integrations/:id sees the rendered
+  page (the list / detail / form views) loaded with backend data — only the
+  CREATE/UPDATE/DELETE buttons hide. The /management/associations/* route
+  is the ONLY exception (redirected to ../namespaces if the user lacks
+  OWNER_ASSOCIATION_MANAGE).
+
+  Hypothesis B (auth.type=DISABLED): with auth disabled (the dev default
+  per docs.opendatadiscovery.org/configuration-and-deployment/enable-security),
+  even an unauthenticated visitor reaches /management/* and sees the lists.
+
+  Hypothesis C (data is shown but writes are blocked): the actual access
+  control lives at the backend API (e.g. POST /api/namespaces requires
+  NAMESPACE_CREATE per the controller sidecars in batch-W). The UI shows the
+  list because GET endpoints (e.g. GET /api/namespaces) may not require any
+  Permission. The probe should verify what GET /api/namespaces, GET /api/owners,
+  GET /api/roles, GET /api/policies return for a LOGIN_FORM user with no
+  Management-tier permissions.
+
+  Failure-mode this probe pins: an operator believes "the Management page
+  is admin-only" because of the OWNER_ASSOCIATION_MANAGE provider at
+  Management.tsx:9-12; the truth is that ONLY the Associations tab is
+  admin-gated; every other tab is reachable, the data is fetched, and the
+  read-only view of (e.g.) the entire Policy + Role + Owner catalog is shown
+  to every authenticated user.
+---
+arrange:
+  - kind: docker-compose-up
+    notes: |
+      Boot odd-platform with auth.type=LOGIN_FORM (the most realistic non-disabled
+      mode). Seed three users: A=admin (ALL permission), B=read-only-policy-viewer
+      (no Management-tier permissions; just the default empty global permission set),
+      C=owner-association-manager (OWNER_ASSOCIATION_MANAGE only).
+  - kind: sql
+    query: |
+      -- seed a policy, a role, an owner, a namespace, a tag, a collector,
+      -- a data source so the lists are non-empty
+      INSERT INTO policy (id, name, policy_json, created_at) VALUES
+        (9001, 'p-stress-policy', '{}'::json, NOW()) ON CONFLICT DO NOTHING;
+      INSERT INTO role (id, name, created_at) VALUES
+        (9001, 'p-stress-role', NOW()) ON CONFLICT DO NOTHING;
+      INSERT INTO owner (id, name, created_at) VALUES
+        (9001, 'p-stress-owner', NOW()) ON CONFLICT DO NOTHING;
+      INSERT INTO namespace (id, name, created_at) VALUES
+        (9001, 'p-stress-namespace', NOW()) ON CONFLICT DO NOTHING;
+      INSERT INTO tag (id, name, created_at) VALUES
+        (9001, 'p-stress-tag', NOW()) ON CONFLICT DO NOTHING;
+      -- seed users A/B/C with associated identities + global permission rows
+      -- (exact schema depends on profile/identity tables; resolve at probe-runner
+      -- time against the live DB).
+
+act:
+  # As user B (no Management-tier permissions), open the SPA and dom-probe each
+  # /management sub-route. Capture the rendered page state + the network requests
+  # the SPA issues + the response payloads.
+  - kind: dom-probe
+    auth_as: user-B
+    navigate_to: /management
+    capture_as: B_management_root
+    observation:
+      - matches: redirect_target  # does the SPA redirect anywhere?
+      - matches: visible_tabs     # which tabs are visible in ManagementTabs?
+      - matches: selected_tab     # default-selected tab
+  - kind: dom-probe
+    auth_as: user-B
+    navigate_to: /management/namespaces
+    capture_as: B_namespaces
+    observation:
+      - matches: list_count       # number of rendered namespace rows
+      - matches: create_btn_visible
+      - matches: edit_btn_visible
+      - matches: delete_btn_visible
+      - capture_network: GET /api/namespaces*
+  - kind: dom-probe
+    auth_as: user-B
+    navigate_to: /management/owners
+    capture_as: B_owners
+    observation:
+      - matches: list_count
+      - matches: create_btn_visible
+      - capture_network: GET /api/owners*
+  - kind: dom-probe
+    auth_as: user-B
+    navigate_to: /management/roles
+    capture_as: B_roles
+    observation:
+      - matches: list_count
+      - capture_network: GET /api/roles*
+  - kind: dom-probe
+    auth_as: user-B
+    navigate_to: /management/policies
+    capture_as: B_policies
+    observation:
+      - matches: list_count
+      - capture_network: GET /api/policy*
+  - kind: dom-probe
+    auth_as: user-B
+    navigate_to: /management/policies/9001
+    capture_as: B_policy_detail
+    observation:
+      - matches: detail_visible
+      - capture_network: GET /api/policy/9001
+  - kind: dom-probe
+    auth_as: user-B
+    navigate_to: /management/integrations
+    capture_as: B_integrations
+    observation:
+      - matches: list_count
+  - kind: dom-probe
+    auth_as: user-B
+    navigate_to: /management/associations/new
+    capture_as: B_associations
+    observation:
+      - matches: redirect_target  # hypothesis: redirects to ../namespaces
+  - kind: dom-probe
+    auth_as: user-C  # OWNER_ASSOCIATION_MANAGE only
+    navigate_to: /management/associations/new
+    capture_as: C_associations
+    observation:
+      - matches: rendered           # hypothesis: rendered, not redirected
+      - matches: visible_tabs
+
+observe:
+  # observations captured inline above
+
+assert:
+  # Hypothesis A — user B sees lists on every tab except associations
+  - "B_management_root.selected_tab == 'namespaces'  # default redirect"
+  - "B_management_root.visible_tabs contains ['Namespaces','Datasources','Integrations','Collectors','Owners','Tags','Roles','Policies']"
+  - "'Associations' not in B_management_root.visible_tabs  # hideAssociations=true for B"
+  - "B_namespaces.list_count >= 1  # the seeded namespace is shown"
+  - "B_namespaces.create_btn_visible == False  # WithPermissions gate"
+  - "B_owners.list_count >= 1"
+  - "B_roles.list_count >= 1"
+  - "B_policies.list_count >= 1"
+  - "B_policy_detail.detail_visible == True"
+  - "B_integrations.rendered == True  # no permission gate on this route"
+  - "B_associations.redirect_target == '/management/namespaces'  # RestrictedRoute fallback"
+  # Hypothesis (user C — admin-only-for-associations) — sees Associations tab
+  # AND the rest of Management (no other tab is gated)
+  - "C_associations.rendered == True"
+  - "'Associations' in C_associations.visible_tabs"
+
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__routes__route__management
+    - odd-platform__java__NamespaceController__controller-class__NamespaceController
+    - odd-platform__java__OwnerController__controller-class__OwnerController
+    - odd-platform__java__RoleController__controller-class__RoleController
+    - odd-platform__java__PolicyController__controller-class__PolicyController
+    - odd-platform__java__TagController__controller-class__TagController
+  retrospectives: []  # no LSN yet — but if hypotheses A+B+C all hold, this is a
+                      # candidate for a new LSN: "Management section is half-gated
+                      # — operator mental model says admin-only, code says any auth
+                      # user reads everything; only Associations is admin-gated"
+
+realism_caveats: |
+  - The probe assumes the backend GET endpoints (GET /api/namespaces, GET /api/owners,
+    GET /api/roles, GET /api/policy, GET /api/tags, GET /api/collectors, GET /api/datasources)
+    require only an authenticated session and not a Management-tier Permission.
+    If a backend GET endpoint enforces e.g. NAMESPACE_CREATE for reads (unlikely
+    given that listMostPopular tags is anonymously readable, but not verified
+    here), then the list_count assertion fails NOT because of the UI route but
+    because of the backend. probe-runner should capture the HTTP status of each
+    GET to distinguish "UI rendered an empty list because the API returned 403"
+    from "UI rendered an empty list because the seed didn't take".
+  - auth.type=DISABLED (not exercised here) is a strict superset of what's
+    probed; if even LOGIN_FORM lets user B through, DISABLED definitely does.
+  - The probe does NOT verify what happens when a malicious user POSTs to
+    /api/namespaces with no NAMESPACE_CREATE — that's a separate probe scope
+    (the Java controller sidecars own it). This probe is strictly about the
+    UI route surface's claim to be admin-only.

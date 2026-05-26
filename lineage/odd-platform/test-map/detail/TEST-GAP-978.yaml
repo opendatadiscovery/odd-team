@@ -1,0 +1,47 @@
+gap_id: TEST-GAP-978
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - "odd-platform java DataEntityRunController controller-class:DataEntityRunController"
+pillars_affected: [P-04]
+surfaced_by:
+  - "DataEntityRunController.md:tests_coverage_semantic.uncovered_behaviours.[0] (Controller-level test — NO test exercising the controller's HTTP boundary; only the repository is covered)"
+behaviour: |-
+  **`DataEntityRunController` has ZERO HTTP-tier test coverage** — the controller is the entry point for the per-DQ-test / per-transformer `/history` UI tab (`TestRunsHistory.tsx:24-122`) plus the test-report-details first-10-runs preview (`TestReportDetailsHistory.tsx:30-32`) plus any third-party API consumer hitting `GET /api/dataentities/{data_entity_id}/runs`. The repository tier IS covered (`DataEntityRunRepositoryImplTest.java:34-93` exercises ordering, pagination, status filter at the SQL layer), but the controller HTTP boundary is unverified.
+
+  **Uncovered HTTP paths**:
+  - **404 path**: `dataEntityRepository.get(dataEntityId).switchIfEmpty(NotFoundException("Data entity", id))` (`DataEntityRunServiceImpl.java:32-34`) — never asserted at the wire.
+  - **400 path**: entity-class gate at `DataEntityRunServiceImpl.java:35-44` throws `BadUserRequestException("Data entity with id %d is not supposed to have runs due to its class")` when the entity is neither DATA_TRANSFORMER (id 2) nor DATA_QUALITY_TEST (id 4) — never asserted at the wire.
+  - **200-with-empty-list path**: a transformer / DQ-test with zero historical runs returns `DataEntityRunList{items:[], pageInfo:{total:0, hasNext:false}}` — never asserted at the wire.
+  - **Wire-enum unmarshal failure path** (P-151 hypothesis): a result set containing a RUNNING row triggers MapStruct's `Enum.valueOf()` `IllegalArgumentException` → HTTP 500 → page UNAVAILABLE during in-flight tests (see TEST-GAP-979 for the pinned version).
+  - **Mapper output shape**: every row's `statusReason` is rendered verbatim from `data_entity_task_run.status_reason` — the controller's content-negotiation, Jackson serialisation of `OffsetDateTime` fields, and the wire-enum mapping are all unverified.
+
+  A regression in: WebFlux routing, OpenAPI-generated `@RequestParam` deserialisation of the `status` query param, the `Mono.map(ResponseEntity::ok)` composition, content-negotiation, Jackson serialisation of the nested envelope — would silently break the `/history` UI tab with the build still green.
+test_class: missing-integration
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/DataEntityRunRepositoryImplTest.java (repository-tier ONLY — does NOT exercise the controller HTTP boundary)"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DataEntityRunControllerHttpTest.java"
+  name: "getRuns_happyPathAndContractGates_assertedAtHttpBoundary"
+evidence:
+  - "DataEntityRunController.md:tests_coverage_semantic.uncovered_behaviours.[0] verbatim: 'Controller-level test — there is NO test exercising the controller's HTTP boundary; only the repository is covered. The 404 path (data entity does not exist), 400 path (entity class is not transformer/quality-test), 200-with-empty-list path, and the cross-mapper failure case (RUNNING status row hitting DataEntityRunStatus enum) all need controller-level WebFlux tests'"
+  - "Verified at primary source: DataEntityRunController.java:13-28 (the entire 28-line class) + DataEntityRunServiceImpl.java:32-44 (the 404 + 400 gates) + DataEntityRunMapper.java:12-25 (the mapper that could fail on RUNNING status)"
+  - "Grep `DataEntityRunController` in test sources returns ZERO matches (verified 2026-05-25)"
+cross_references:
+  - "TEST-GAP-979 (sibling — RUNNING-enum-mapper failure path — the most operationally damaging sub-case of this HTTP-tier gap)"
+  - "TEST-GAP-980 (sibling — status_reason cross-owner PII broadcast — the security half of this surface)"
+  - "TEST-GAP-981 (sibling — page-size unbounded DoS — the resource-allocation half)"
+  - "F-022 (per-dataset DQ Test Reports tab — sibling read surface)"
+related_features: [F-022]
+related_pillar_features: ["P-04:F-001", "P-04:F-002"]
+proposed_action: |-
+  Add `DataEntityRunControllerHttpTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Five test methods:
+  1. `getRuns_validDQTestWithThreeCompletedRuns_returns200WithCorrectShapeAndOrdering` — seed a DQ-test entity + 3 completed runs across 3 statuses; GET via WebTestClient; assert HTTP 200 + items.size()=3 + ordering end_time DESC.
+  2. `getRuns_nonExistentDataEntityId_returns404_pinsNotFoundExceptionPath` — GET `/api/dataentities/99999/runs`; assert HTTP 404.
+  3. `getRuns_dataEntityWithWrongClass_returns400_pinsBadUserRequestExceptionPath` — seed a DATA_SET (class 1) entity; GET its `/runs`; assert HTTP 400 with the canonical message "Data entity with id %d is not supposed to have runs due to its class".
+  4. `getRuns_dataEntityWithZeroRuns_returns200WithEmptyList` — seed a DQ-test entity with no runs; GET; assert HTTP 200 + items=[] + pageInfo={total:0, hasNext:false}.
+  5. `getRuns_statusFilterSUCCESS_only5SuccessRowsReturnedFromMixed10Runs` — seed 10 runs (5 SUCCESS, 5 FAILED); GET with `?status=SUCCESS`; assert items.size()=5 + every item.status=SUCCESS.
+
+  Pair with TEST-GAP-979, 980, 981 — together this controller's HTTP surface is covered.
+batch: 2026-05-25-ZG
+feature_id: null

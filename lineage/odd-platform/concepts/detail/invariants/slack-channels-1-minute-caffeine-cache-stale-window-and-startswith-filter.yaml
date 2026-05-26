@@ -1,0 +1,259 @@
+name: |-
+  Slack channels autocomplete — 1-minute Caffeine cache staleness window + startsWith-not-contains filter (batch ZF)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-07
+description: |-
+  **NEW LOW-to-MEDIUM-severity INVARIANT, batch 2026-05-25-ZF** —
+  the `GET /api/datacollaboration/providers/slack/channels` endpoint
+  in DataCollaborationController is the channel-autocomplete data
+  source for the Discussions sub-feature's Slack channel picker.
+  Two composable behaviours produce a surprising UX:
+
+  (1) **1-minute Caffeine async-loading cache** fronts the Slack
+      `conversations.list` API at SlackMessageProviderClient
+      (`SlackMessageProviderClient.java:36-44`):
+        AsyncLoadingCache, expireAfterWrite=1 MINUTE,
+        maximumSize=1, keyed on a fixed sentinel string
+
+      A freshly-invited bot is INVISIBLE to the autocomplete for
+      up to 60 seconds; a freshly-removed bot is still VISIBLE
+      for up to 60 seconds. No cache-invalidation hook on
+      `member_joined_channel` / `member_left_channel` Slack
+      events (EventApiController does process those events but
+      does not invalidate the cache; the cache lives in
+      SlackMessageProviderClient, NOT in the event processor).
+
+  (2) **startsWith-not-contains channel-name filter** at
+      `SlackMessageProviderClient.java:50-55`:
+        slackChannel.name().startsWith(nameLike)
+
+      A user typing `platform` to find `#odd-platform-alerts`
+      gets ZERO results despite the channel existing in the
+      bot's joined set. The UI's debounced 500ms autocomplete
+      (`SlackChannelsAutocomplete.tsx:43-54`) drives this filter
+      on every keystroke; the only feedback the user gets is an
+      empty dropdown.
+
+  ## THE PRIMARY-SOURCE EVIDENCE
+
+  SlackMessageProviderClient.java:36-44 (the cache):
+    @PostConstruct
+    public void init() {
+      asyncLoadingCache = Caffeine.newBuilder()
+          .maximumSize(1)
+          .expireAfterWrite(1, MINUTES)
+          .buildAsync(this::loadChannelsAsync);
+    }
+
+  SlackMessageProviderClient.java:50-55 (the filter):
+    return slackAPIClient.getSlackChannels()
+        .map(channels -> channels.values().stream()
+            .filter(channel -> channel.name().startsWith(nameLike))
+            .map(channel -> channel.id())
+            .collect(...));
+
+  No `.contains(...)` call appears anywhere in the SlackMessageProviderClient
+  body (verified by reading the class end-to-end). The filter is
+  exact-prefix matching only.
+
+  ## CHANNEL CACHE MISS COST
+
+  When the cache expires, the next caller's request triggers a
+  paginated `conversations.list` walk at 200 channels/page
+  (`SlackAPIClientImpl.java:26, 30-47, 130-141`):
+    - For a workspace with 1000 channels: 5 Slack API round-trips
+      per cache miss
+    - For a workspace with 10K+ channels: 50+ round-trips per
+      cache miss
+    - The full Map<String, MessageChannelDto> materialises in
+      memory before being cached
+    - At 50-100 bytes per Map entry × 10K channels = 1-2 MB heap
+      allocation per cache miss
+
+  Cache miss happens every minute under sustained autocomplete
+  use. Concurrent first-callers after eviction all wait on the
+  same Caffeine CompletableFuture (no thundering herd by design),
+  but the cost per cache miss scales linearly with workspace
+  channel count.
+
+  ## CHANNEL FILTER PROTOCOL
+
+  The Slack `conversations.list` request itself
+  (`SlackAPIClientImpl.java:130-141`) applies:
+    - `excludeArchived(true)` — hide archived channels
+    - `types(PUBLIC_CHANNEL)` — public channels only
+    - then post-filter: `.filter(Conversation::isMember)` — only
+      channels the bot has been added to (`SlackAPIClientImpl.java:45`)
+
+  The bot therefore sees ONLY public channels it has been
+  EXPLICITLY added to. Private channels, DMs, and group DMs are
+  excluded entirely. Combined with the startsWith filter at the
+  client tier, the autocomplete's effective search space is:
+    (public channels the bot is in) WHERE (name starts with query)
+
+  Operators expecting an "ODD bot can search any channel" UX get
+  a surprise; operators expecting "fuzzy search" get a different
+  surprise.
+
+  ## CONTRAST WITH THE LIVE DOCS
+
+  Live api-reference page
+  (`https://docs.opendatadiscovery.org/developer-guides/api-reference/data-collaboration`,
+  WebFetched 2026-05-25, status 200) describes the endpoint as
+  "List Slack channels the bot can write to, optionally filtered
+  by `channel_name`. Used by the in-app channel autocomplete."
+
+  The doc does NOT specify:
+    - Whether the filter is `startsWith` / `contains` / `fuzzy`
+    - That a 1-minute cache TTL applies
+    - That only public bot-member channels are listed
+    - That archived channels are excluded
+    - The cache-miss cost on large workspaces
+
+  An integrator using the OpenAPI-generated client cannot infer
+  these behaviours from the documentation alone.
+
+  ## CONTRAST WITH SIBLING FEATURE — Slack invite reflection
+
+  The platform PROCESSES `member_joined_channel` events via
+  `EventApiController` + the SlackEventParser routing. The
+  parser's default behaviour is to FILTER (silently ack-200)
+  events that aren't thread-reply messages
+  (per the parser's filter chain at `SlackEventParser.java:38-43`).
+  There is no event-handler subscribing to `member_joined_channel`
+  that would invalidate the SlackMessageProviderClient cache.
+
+  The two halves of the system are decoupled by design (events
+  → message_provider_event for message-thread mirroring;
+  channel-list cache → autocomplete-only). A future enhancement
+  to wire member-change events to cache invalidation would close
+  the 60-second staleness window.
+
+  ## SEVERITY LOW-to-MEDIUM
+
+  Functional impact:
+    - UX: a user invites the bot to a new channel and waits up
+      to 60 seconds before the channel appears in the autocomplete
+    - UX: a user types the middle of a channel name and gets zero
+      results despite the channel existing
+    - Performance: 50+ Slack API round-trips per cache miss for
+      large workspaces; bounded by the 1-minute cache TTL
+    - No data-loss, no security gap (the cache is read-only;
+      channel listing is the only operation cached)
+nodes:
+  - odd-platform java DataCollaborationController controller-class:DataCollaborationController
+contributors:
+  - |-
+    **BATCH ZF PRIMARY SOURCE** DataCollaborationController.md
+    (controller-class):
+    understanding §"channel cache is 1-minute TTL Caffeine, size 1 —
+    SlackMessageProviderClient.java:36-44 builds an AsyncLoadingCache
+    with expireAfterWrite(1, MINUTES) and maximumSize(1) keyed on
+    a fixed sentinel string" +
+    understanding §"getSlackChannels uses channelName.startsWith(...)
+    filtering, NOT contains / fuzzy — SlackMessageProviderClient.java:50-55
+    invokes slackChannel.name().startsWith(nameLike); a user typing
+    the middle of a channel name into the autocomplete returns zero
+    results" +
+    concepts.invariants.[5] (getSlackChannels filters by startsWith,
+    not contains) +
+    concepts.invariants.[6] (1-minute Caffeine cache fronts the Slack
+    channel listing — fresh invites are invisible for up to 60
+    seconds) +
+    concepts.invariants.[7] (Slack conversations.list filter — bot
+    sees ONLY public channels it has been explicitly added to) +
+    bugs_limitations_corner_cases.[4] (Channel filter is startsWith,
+    not contains — MEDIUM severity) +
+    bugs_limitations_corner_cases.[5] (Caffeine cache staleness
+    window of up to 60 seconds — LOW severity) +
+    bugs_limitations_corner_cases.[6] (Channel cache holds the full
+    channel map; maximumSize(1) means a single cache entry holds a
+    Map of ALL bot-member channels) +
+    stress_findings.tunables.[0] (LIMIT_SIZE=200 paginated channel
+    listing — cursor pagination kicks in for workspaces > 200
+    channels)
+evidence:
+  - |-
+    **BATCH ZF** DataCollaborationController.md:understanding +
+    concepts.invariants.[5,6,7] +
+    bugs_limitations_corner_cases.[4,5,6] +
+    stress_findings.tunables.[0]
+  - |-
+    **BATCH ZF** Direct file evidence:
+    SlackMessageProviderClient.java:36-44 (Caffeine async-loading
+    cache builder — maximumSize(1), expireAfterWrite(1, MINUTES))
+    + SlackMessageProviderClient.java:50-55 (startsWith filter) +
+    SlackAPIClientImpl.java:26, 30-47, 130-141 (paginated channel
+    list, 200/page LIMIT_SIZE, .filter(Conversation::isMember))
+  - |-
+    **BATCH ZF** WebFetch 2026-05-25 of
+    /developer-guides/api-reference/data-collaboration (status 200)
+    — page describes "List Slack channels the bot can write to" but
+    does not specify filter shape / cache TTL / bot-member-only /
+    archived-excluded
+  - |-
+    **BATCH ZF** Probe P-143 (pinned to the cache-staleness probe;
+    referenced by stress_findings.tunables.[1].q[2] in
+    DataCollaborationController.md)
+axes_present:
+  - controllers
+  - services
+related_features:
+  - F-009 (Data Collaboration)
+related_pillar_features:
+  - P-07
+related_concepts:
+  - 'entitie:slack-collaboration-app (the cross-pillar entity)'
+  - 'invariant:decoupled-write-pattern-accept-202-with-queue-and-single-leader-elected-sender (architectural sibling — the read-side of the same feature uses caching where the write-side uses async queues)'
+triangulation_count: 1
+cross_batch: true
+cross_batch_refs:
+  - batch-ZF (DataCollaborationController.controller-class — PRIMARY SOURCE)
+severity: LOW
+severity_dim: ux
+mitigations_unimplemented:
+  - |-
+    Change the channel filter from `startsWith(nameLike)` to
+    `containsIgnoreCase(nameLike)` at SlackMessageProviderClient.java:52.
+    One-line change. Operator-visible improvement: typing any
+    substring of a channel name returns results. Slight perf cost
+    (linear scan still, but no significant change for typical
+    workspace sizes).
+  - |-
+    Wire member_joined_channel / member_left_channel Slack events
+    to invalidate the SlackMessageProviderClient cache. Requires
+    a new event-handler in the SlackMessageProviderEventHandler
+    chain that calls asyncLoadingCache.synchronous().invalidateAll().
+    Closes the 60-second staleness window.
+  - |-
+    Document the filter shape (startsWith vs contains) AND the
+    cache TTL (1-minute) AND the bot-must-be-member constraint
+    on the live api-reference page. Operator-facing signal to
+    set realistic UX expectations.
+  - |-
+    For large workspaces (10K+ channels), consider a smarter
+    cache structure: per-channel-name lookup index instead of
+    full-list scan. Optional; only kicks in at scale.
+notes: |-
+  NEW LOW-severity invariant captured in batch 2026-05-25-ZF.
+  The finding is a UX-shaped imperfection rather than a
+  correctness or security issue. Operators running large
+  Slack workspaces (1000+ channels) may notice the cache-miss
+  latency; operators running small workspaces may notice the
+  startsWith filter limitation. Neither is data-loss-shaped.
+
+  Cross-cutting connections:
+    - Pairs with the OUTBOUND `decoupled-write-pattern` (the
+      same feature uses the cache for read AND queues for
+      write — coherent architectural posture)
+    - The cache + filter pattern is the read-side complement
+      to the queue + leader-election pattern at write time;
+      both serve to decouple the platform from Slack API
+      latency / availability
+
+  One DOC-NNN candidate flows from this invariant:
+    Document the channel-filter shape (startsWith), the cache
+    TTL (1-minute), and the bot-must-be-member constraint on
+    the live data-collaboration api-reference page.

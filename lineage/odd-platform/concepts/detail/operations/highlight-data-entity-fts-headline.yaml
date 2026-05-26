@@ -1,0 +1,69 @@
+name: Highlight Data Entity (ts_headline FTS field-match render)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+description: |-
+  NEW OPERATION, batch ZE — GET /api/search/{search_id}/data_entities/{data_entity_id}/highlights.
+  Renders the data-entity's searchable fields with `<b>...</b>`-
+  marked match positions for the session's FTS query.
+
+  IMPLEMENTATION: SearchController.java:85-91 →
+  DataEntityHighlightServiceImpl.java:20-47. Zips three reactive
+  sources: (a) fetch search session by UUID → extract queryString
+  (UPDATE last_accessed_at side-effect); (b) fetch data entity
+  searchable fields; (c) fetch latest dataset version. Then
+  invokes ReactiveDataEntityRepositoryImpl.getHighlightedResult
+  (text, query) at line 798-806:
+
+  ```
+  final String sql = `ts_headline('english', '%s', to_tsquery('%s'),
+    'HighlightAll=true')`.formatted(text, tsQuery);
+  ```
+
+  Direct String.formatted interpolation — both `text` (catalog-
+  supplied entity searchable string) and `tsQuery` (user-derived
+  from persisted session query) are interpolated WITHOUT
+  parameterised binding. A TRUE SQL-injection vector (NOT just
+  DoS); cross-link batch H + the
+  get-headline-formatted-sql-injection invariant.
+
+  AUTH POSTURE: bearer-token-shaped — any authenticated user
+  holding any searchId UUID gets full HIGHLIGHT access to that
+  session's query against any reachable data_entity_id.
+
+  ATTACK CHAIN: (1) POST /api/search with crafted query
+  containing tsquery-metacharacters that detonate at to_tsquery
+  parse time AND raw-SQL-metacharacters that detonate at the
+  .formatted interpolation; (2) the row persists; (3) GET
+  /api/search/{searchId}/data_entities/{deId}/highlights fires
+  the SQL with the crafted query. Cross-link P-136.
+
+  DoS sub-case: a session with `query='foo )('` produces 42601
+  syntax error on every highlight call for that session until
+  housekeeping removes it 30 days later.
+axes_present:
+  - controllers
+  - openapi_schemas
+  - repositories
+nodes:
+  - odd-platform java SearchController controller-class:SearchController
+contributors:
+  - 'SearchController.md:concepts.operations.[6] — highlightDataEntity'
+  - 'SearchController.md:bugs_limitations_corner_cases.[6] — TRUE SQL-injection vector'
+  - 'SearchController.md:security.known_security_gaps.[2] — highlightDataEntity SQL injection'
+evidence:
+  - SearchController.md:concepts.operations.[6]
+  - SearchController.md:bugs_limitations_corner_cases.[6]
+  - SearchController.md:stress_findings.name_behavior_pairs.[5] (highlightDataEntity drift)
+notes: |-
+  This is the HTTP entry point for the canonical batch H
+  finding. Cross-link entitie:data-entity-search-highlight
+  (the response-shape) and
+  invariant:get-headline-formatted-sql-injection (the
+  load-bearing security write-up). Fix anchor: replace
+  `.formatted()` with jOOQ parameterised binding via
+  `field("ts_headline(...?...?)", ...)`.
+related_features: []
+related_pillar_features:
+  - P-01

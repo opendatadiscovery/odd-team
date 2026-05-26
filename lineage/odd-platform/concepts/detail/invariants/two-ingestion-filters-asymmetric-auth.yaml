@@ -84,16 +84,72 @@ description: |-
   AUTH-MODE-ORTHOGONAL facet of REFACTOR-185 enables direct
   unauthenticated reach to the 4 NO-FILTER endpoints.
 
+  ## STRENGTHENED batch 2026-05-25-ZF — IngestionController CLASS-LEVEL roll-up
+
+  Batch ZF adds the CLASS-LEVEL sidecar
+  (IngestionController.controller-class) that consolidates the seven
+  per-method observations into a single ROW-PER-ENDPOINT matrix the
+  per-method sidecars never expressed:
+
+  - **5-endpoint × 2-filter × 4-auth-mode = 40-cell matrix** — the
+    class-level sidecar enumerates ALL 5 controller methods crossed
+    with the two filter classes (IngestionDataSourceFilter,
+    IngestionDataEntitiesFilter) and the 4 auth modes (DISABLED,
+    LOGIN_FORM, OAUTH2, LDAP). 32 of 40 cells are unauthenticated.
+    The matrix is not documented anywhere in the repo (Grep
+    `auth.ingestion.filter.enabled` returns 6 source files + 3 docs
+    pages; NONE presents the full matrix).
+
+  - **Class-level identity-resolution bifurcation** — the controller's
+    5 methods use TWO different identity-resolution mechanisms:
+    `createDataSource` reads the WebSession (collector identity
+    bootstrapped by IngestionDataSourceFilter); the other 4 methods
+    extract identity from PAYLOAD ODDRNs or PATH variables. This
+    asymmetry is visible only at the class-level reading; per-method
+    sidecars saw only one half of the split.
+
+  - **LOGIN_FORM is STRICTER than OAUTH2/LDAP** for 3 of the 5
+    ingestion endpoints (the nested paths
+    /ingestion/entities/datasets/stats, /ingestion/metrics,
+    /ingestion/dataentitygroups/{deg_oddrn}/entities). LOGIN_FORM's
+    permittedPaths array (LoginFormSecurityConfiguration.java:50) lists
+    ONLY `/ingestion/entities` + `/ingestion/datasources` — the 3
+    nested paths fall through to `pathMatchers("/**").authenticated()`
+    line 57. OAUTH2 / LDAP use the WHITELIST_PATHS `/ingestion/**`
+    wildcard — ALL ingestion paths bypass auth. This 4-mode
+    disjointness is a NEW finding from the class-level matrix;
+    PROBE-NEEDED to verify at runtime (P-146).
+
+  - **NO @Slf4j usage at the controller layer** despite the @Slf4j
+    annotation at line 30 — zero auditability of ingestion events at
+    the controller layer. Strengthens the audit-silence story across
+    the ingestion path.
+
+  - **Response-code drift** — the 3 mutating handlers exhibit 3
+    different response-code shapes (postDataEntityList 200,
+    postDataSetStatsList 201, ingestMetrics 201) — drift cross-link to
+    `openapi-status-code-drift-batch-w-extension-to-7-controllers`.
+
+  - **Transaction-boundary disagreement** — `postDataEntityList` +
+    `createDataSource` are `@ReactiveTransactional` at the IMMEDIATE
+    service tier; `postDataSetStatsList` + `ingestMetrics` defer the
+    boundary to downstream service classes (DatasetFieldServiceImpl,
+    InternalIngestionMetricsServiceImpl). The split has no comment
+    explaining the choice.
+
   **Severity**: HIGH — operator-facing documentation drift on a
   security knob whose name claims more scope than it has; combined
   with the F-007 unauthenticated webhook path + the batch-Z three
   new S2S-uncovered endpoints, the seven-way asymmetry is invisible
-  in operator-facing docs at the point of endpoint discovery.
+  in operator-facing docs at the point of endpoint discovery. The
+  batch-ZF class-level matrix is the most economical artefact for a
+  maintainer to read end-to-end.
 axes_present:
   - controllers
   - filters
   - config_prefixes
 nodes:
+  - odd-platform java IngestionController controller-class:IngestionController
   - odd-platform java IngestionController controller-method:createDataSourceEntity
   - odd-platform java IngestionController controller-method:postDataEntityList
   - odd-platform java IngestionController controller-method:postDataSetStatsList
@@ -146,6 +202,24 @@ contributors:
     templated child path) +
     security.ingestion_filter_relevance NO — IngestionDataEntitiesFilter
     does NOT match this GET path even when auth.ingestion.filter.enabled=true
+  - |-
+    **BATCH ZF NEW** IngestionController.md (controller-class):
+    understanding §"4 of 5 endpoints unauthenticated under default
+    deployment; 3 of 5 endpoints REMAIN unauthenticated EVEN with
+    auth.ingestion.filter.enabled=true"; concepts.invariants.[4]
+    (NO programmatic authorization at controller layer; auth is
+    path-based via Spring SecurityWebFilterChain);
+    concepts.invariants.[5] (identity-resolution bifurcation:
+    createDataSource reads WebSession, other 4 methods identify via
+    payload-ODDRN or path-variable); concepts.invariants.[7]
+    (empty-payload-guard asymmetry across the 3 mutating handlers);
+    concepts.invariants.[8] (transaction-boundary disagreement);
+    coherence_check.strengthens.[1] (5-endpoint roll-up of filter
+    coverage matrix); bugs_limitations_corner_cases.[0,1]
+    (4-of-5-unauthenticated default + 3-of-5-remain-unauthenticated
+    even with toggle enabled); stress_findings.auth_gates.[0] (the
+    4-mode disjointness — LOGIN_FORM STRICTER than OAUTH2/LDAP on
+    the 3 nested paths; probe P-146)
 evidence:
   - createDataSourceEntity.md:implicit_adrs.[1] (intent_anchor = the TWO filter classes' different registration patterns)
   - createDataSourceEntity.md:concepts.invariants.[0] (filter unconditional)
@@ -165,6 +239,10 @@ evidence:
     **BATCH Z**: getDataEntitiesByDEGOddrn.md:concepts.invariants.[0] +
     security.ingestion_filter_relevance NO +
     security.known_security_gaps.[0] HIGH
+  - |-
+    **BATCH ZF**: IngestionController.md:understanding + concepts.invariants.[4,5,7,8]
+    + bugs_limitations_corner_cases.[0,1] + security.known_security_gaps.[0,1]
+    + stress_findings.auth_gates.[0] (probe P-146)
 notes: |-
   STRENGTHENED batch 2026-05-20-Z — the 4-endpoint observation is now
   a 7-endpoint observation. The four NO-FILTER endpoints (AlertManager
@@ -173,13 +251,20 @@ notes: |-
   separate code-side or network-side mitigation; none can be closed
   by operator configuration alone.
 
+  STRENGTHENED batch 2026-05-25-ZF — the IngestionController
+  class-level sidecar consolidates the 5-method ingestion surface
+  into a single matrix-shaped row-per-endpoint view that no per-method
+  sidecar surfaced alone. The class-level finding adds the LOGIN_FORM-
+  vs-OAUTH2/LDAP disjointness on the 3 nested paths — pinned by
+  probe P-146.
+
   Pairs with:
     - `entity-oddrn-trust-from-alertmanager-webhook` invariant — the
       third NO-FILTER endpoint
     - `collector-identity-via-websession-attribute-not-principal`
       invariant — explains WHY the IngestionDataSourceFilter must be
       unconditional (it sets the WebSession state the controller depends
-      on)
+      on) + STRENGTHENED by batch ZF class-level identity bifurcation
     - `upsert-by-oddrn-partial-merge-collector-driven-only-name-description`
       invariant — the merge semantics that the always-on filter enables
     - **BATCH Z NEW**: `s2s-read-side-unauthenticated-deg-membership-enumeration`
@@ -192,10 +277,26 @@ notes: |-
       (composition partner; same DQ stats endpoint surfaces both gaps)
     - **BATCH Z NEW**: REFACTOR-185 27-sidecar extension (the
       AUTH-MODE-ORTHOGONAL facet anchor)
+    - **BATCH ZF NEW**: `controllers-are-pass-through-delegates-with-http-wiring-on-generated-api-interfaces`
+      (the IngestionController.controller-class is the canonical
+      5-handler thin-delegate exemplar; combined with this invariant
+      it shows that thin-delegate AND multi-mode auth disjointness
+      compose into a single load-bearing class shape)
 
   Doc-side recommended action: extend
   `/configuration-and-deployment/enable-security/authentication/s2s`
   with an explicit "scope of ingestion-filter properties" subsection:
   enumerate the SEVEN ingestion endpoints and the FOUR different
-  auth postures. CORRECT the existing wording about UI-auth fallback
+  auth postures + the LOGIN_FORM-vs-OAUTH2/LDAP disjointness on the
+  3 nested paths. CORRECT the existing wording about UI-auth fallback
   (the namespace is whitelisted; UI auth does NOT apply).
+triangulation_count: 8
+cross_batch: true
+cross_batch_refs:
+  - batch-P (createDataSourceEntity — first 3-endpoint framing)
+  - batch-B (postDataEntityList — IngestionDataEntitiesFilter)
+  - batch-P (AlertManagerController#postAlerts — third no-filter endpoint)
+  - batch-Z (postDataSetStatsList + ingestMetrics + getDataEntitiesByDEGOddrn — 4-of-7 no-filter endpoints)
+  - batch-ZF (IngestionController.controller-class — 5×2×4 matrix consolidation, LOGIN_FORM strictness probe P-146)
+severity: HIGH
+severity_dim: security

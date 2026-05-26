@@ -1,25 +1,110 @@
 name: GenAI Assistant
 canonical_in_docs: true
 canonical_candidate: false
-description: Opt-in proxy from a single platform endpoint (`POST /api/genai/ask`)
+description: |-
+  Opt-in proxy from a single platform endpoint (`POST /api/genai/ask`)
   to an external AI service the operator runs. The platform does not embed an LLM.
   API-only today (no in-app UI affordance). Three-key configuration (`genai.enabled`
   request-time gate, `genai.url` + `genai.request_timeout` baked into genAiWebClient
   at startup) (GenAIController + GenAIProperties sidecars; main-concepts.md `## AI
   aspects` names this as 'GenAI assistant').
+
+  **STRENGTHENED batch ZK (2026-05-26)** — GenAIProperties REV-2
+  (file-analyser/0.4.0) re-enriches the prior reading with Stress Protocol
+  categories, Category F request-input analysis, upstream_callers,
+  downstream_side_effects, and probes P-178/P-179/P-180. The
+  DRIFT_NAME_VS_BEHAVIOR between `genai.request_timeout` (YAML key naming
+  'request timeout') and the underlying `HttpClient.responseTimeout(...)`
+  call is now formally pinned — the YAML key suggests how long to wait
+  while SENDING the request, but the implementation is the time to wait
+  for the REPLY after sending. Live doc page describes the behaviour
+  correctly as 'outbound response timeout'; the operator-facing YAML key
+  preserves the misleading promise.
 axes_present:
 - controllers
 - config_prefixes
 nodes:
 - odd-platform java org.opendatadiscovery.oddplatform.controller controller:GenAIController
 - odd-platform java org.opendatadiscovery.oddplatform.config.properties config-properties-class:GenAIProperties
+- odd-platform java GenAIController controller-class:GenAIController
 contributors:
 - 'GenAIController: entities[GenAIRequest, GenAIResponse, external genai service]'
-- 'GenAIProperties: entities[GenAIProperties (typed config POJO), genai.* YAML namespace,
-  genAiWebClient Spring bean]'
+- 'GenAIProperties (batch ZG — superseded by REV-2 batch ZK): entities[GenAIProperties
+  (typed config POJO), genai.* YAML namespace, genAiWebClient Spring bean]'
+- |-
+  GenAIProperties REV-2.md (batch ZK STRENGTHENS — supersedes batch-ZG
+  rev-1 sidecar):
+    Re-enriched at file-analyser/0.4.0 with Stress Protocol categories.
+    entities[GenAIProperties, the genai.* YAML namespace, the genAiWebClient
+    Spring bean];
+    operations[bind genai.enabled to boolean, bind genai.url to String,
+    bind genai.request_timeout to int];
+    invariants[enabled is request-time gate; url+requestTimeout are
+    startup-time inputs (baked into WebClient bean); feature disabled by
+    application.yml:18; primitive types silently default null/0 when YAML
+    keys are absent; no bean-validation annotations engaged];
+    bugs_limitations_corner_cases.[0] HIGH (silent misconfiguration when
+    genai.enabled=true is only key set), [1] HIGH (requestTimeout=0 silently
+    accepted — Duration.ofMinutes(0) is legal Reactor Netty input),
+    [2] MEDIUM (primitive int instead of Integer — silent unset),
+    [3] MEDIUM (no @Validated / @NotBlank / @URL anywhere on POJO),
+    [4] MEDIUM (field-name-vs-SDK-call DRIFT — request_timeout YAML
+    key wired into responseTimeout SDK call), [5] HIGH (no apiKey /
+    authToken / model / maxTokens fields — POJO cannot be used with
+    SaaS LLM directly; operator must front with their own shim),
+    [6] MEDIUM (no provider abstraction — endpoint path + request
+    schema hardcoded for an unauthenticated internal proxy);
+    stress_findings tunables enumerated per field (enabled / url /
+    requestTimeout) with N=0 / N=1 / N=MAX_INT / N=negative boundaries;
+    NEW probes P-180 (operator-visible failure mode when enabled=true +
+    url=null + requestTimeout=0), P-179 (Reactor Netty
+    responseTimeout(Duration.ZERO) / negative behaviour), P-178
+    (three-way relaxed binding for request_timeout ↔ requestTimeout ↔
+    GENAI_REQUEST_TIMEOUT)
+- |-
+  GenAIController (controller-class, batch ZG STRENGTHENS):
+    entities[GenAIRequest single-field-body unconstrained, GenAIResponse,
+    external AI service contract POST /query_data, genAiWebClient bean,
+    GenAIProperties typed config];
+    operations[receive-question-request, gate-on-enabled,
+    forward-question-verbatim-to-external-llm, unwrap-quoted-json-string-response,
+    return-response-body];
+    invariants[feature disabled-by-default; controller does NOT instantiate
+    WebClient (consumed as bean built once at startup); user-supplied free-text
+    body forwarded UNMODIFIED — no template / PII scrubbing / catalog
+    augmentation; response unwrapped twice (CharMatcher.trimFrom +
+    StringEscapeUtils.unescapeJava) assuming JSON-quoted-string response —
+    undocumented compatibility constraint];
+    bugs[HIGH no authorization beyond authenticated(); HIGH no request-body
+    validation (no @Size); HIGH no rate limit; HIGH no audit log of who
+    asked what; HIGH no PII redaction; MEDIUM response unwrap silently
+    brittle on structured JSON response; MEDIUM ServerWebExchange parameter
+    exposed but discarded (canonical fix-anchor for audit + rate-limit);
+    LOW no UI consumer — API-only today];
+    implicit_adrs[5 ADRs: thin-proxy design; enabled gate at SERVICE layer
+    (HTTP 400) not CONTROLLER bean (HTTP 404) — opposite EventApiController
+    pattern; no outbound auth; no retry; ReadTimeoutException gets custom
+    error message, all others collapsed to generic GenAIException]
 evidence:
 - GenAIController.md:concepts.entities.[GenAIRequest, GenAIResponse]
 - GenAIProperties.md:concepts.entities.[GenAIProperties, genai.* namespace, genAiWebClient]
+- GenAIController.md:concepts.invariants (5 invariants on the controller-class sidecar)
+- GenAIController.md:bugs_limitations_corner_cases.[0-9] (10 findings, 5 HIGH)
+- GenAIController.md:implicit_adrs.[0-4] (5 ADRs HIGH confidence)
+- GenAIController.md:security.known_security_gaps.[0-6] (7 gaps, doc-gap routing)
+- GenAIController.md:performance.known_performance_gaps.[0-4] (5 perf gaps)
+- GenAIController.md:probes_emitted P-158..P-161
+- |-
+  **batch ZK NEW** GenAIProperties REV-2.md:
+    concepts.entities + concepts.operations + concepts.invariants (re-enriched
+    at rev-2 schema; supersedes batch-ZG rev-1 reading);
+    bugs_limitations_corner_cases.[0-6] (silent misconfig, requestTimeout=0,
+    primitive int, no validation, name-vs-SDK drift, no apiKey/extension
+    point, no provider abstraction);
+    stress_findings.tunables.{enabled, url, requestTimeout};
+    stress_findings.name_behavior_pairs.[requestTimeout / genai.request_timeout]
+    DRIFT_NAME_VS_BEHAVIOR;
+    stress_findings.probes_emitted P-180/P-179/P-178
 security_aggregate:
   overall: LOW
   auth_modes_relevant:
@@ -76,6 +161,7 @@ security_aggregate:
   contributing_files:
   - GenAIController.md
   - GenAIProperties.md
+  - GenAIController-class.md
   evidence:
   - GenAIController.md:security.known_security_gaps.[0-6]
   - GenAIProperties.md:security.known_security_gaps.[0-3]
@@ -126,6 +212,7 @@ performance_aggregate:
   contributing_files:
   - GenAIController.md
   - GenAIProperties.md
+  - GenAIController-class.md
   evidence:
   - GenAIController.md:performance.known_performance_gaps.[0-5]
   - GenAIProperties.md:performance.known_performance_gaps.[0-3]

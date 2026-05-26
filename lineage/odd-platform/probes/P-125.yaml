@@ -1,0 +1,190 @@
+---
+probe_id: P-125
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__PermissionController__controller-class__PermissionController.md
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-001
+test_class: integration
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category F + Category B, batch-ZD PermissionController
+  controller-class interrogation): The OpenAPI spec at components.yaml:3381-3387
+  declares `PermissionResourceType` with four enum values: DATA_ENTITY, TERM,
+  QUERY_EXAMPLE, MANAGEMENT. The endpoint
+  `GET /api/resource/{permission_resource_type}/{resource_id}/permissions`
+  accepts the parameter as a typed enum. A strictly-spec-compliant client
+  built from the OpenAPI definition would believe all four values are valid.
+
+  Static trace shows the service-tier discriminator at PermissionServiceImpl.java:25-27
+  throws BadUserRequestException("Resource type MANAGEMENT does not have context")
+  whenever resourceType resolves to MANAGEMENT (because PolicyTypeDto.MANAGEMENT
+  has hasContext=false at PolicyTypeDto.java:12). ControllerAdvice.java:24-28
+  maps BadUserRequestException to HTTP 400 with code USR001.
+
+  Hypothesis (carried from static trace): calling
+  `GET /api/resource/MANAGEMENT/{anyId}/permissions` produces HTTP 400 with
+  body `{message: "Resource type MANAGEMENT does not have context", code: "USR001"}`.
+  The probe pins the empirical confirmation of this surface.
+
+  PASS = the response is exactly HTTP 400 USR001 with the documented message —
+  confirms the static trace + locks in the discriminator invariant. FAIL =
+  the response differs (e.g. 500 SYS001 from catch-all handler, or 404, or
+  200 with empty list) — surfaces a regression in either the discriminator
+  or the ControllerAdvice mapping.
+
+  Secondary capture (compound stress): the probe ALSO asserts the contextual
+  paths (DATA_ENTITY / TERM / QUERY_EXAMPLE) produce 200 with the expected
+  permission shape for a known seeded resource — pinning the happy-path
+  behaviour across all four enum values in one probe run.
+---
+arrange:
+  - kind: docker-compose-up
+    services: [postgres, odd-platform-api]
+  - kind: sql
+    query: |
+      -- Ensure the seeded Administrator policy + admin user exists (V0_0_56 seed).
+      -- Probe runs under auth.type=LOGIN_FORM so the static admin authority short-circuits to ALL perms.
+      -- (Alternative: auth.type=OAUTH2 with a real user + a seeded policy — out of scope for this probe.)
+      SELECT id, name FROM policy WHERE name = 'Administrator';
+      SELECT id, name FROM role WHERE name = 'Administrator';
+  - kind: sql
+    query: |
+      -- Create a probe data_entity for the contextual happy-path assertions.
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id)
+      VALUES (90125, '//probe-source/p125/de', 'p125_de', 1, 1)
+      ON CONFLICT (id) DO NOTHING;
+    description: "Probe-scoped seed for DATA_ENTITY happy path"
+  - kind: sql
+    query: |
+      INSERT INTO term (id, name, namespace_id, description)
+      VALUES (90125, 'p125-term', 1, 'p125 probe seed')
+      ON CONFLICT (id) DO NOTHING;
+    description: "Probe-scoped seed for TERM happy path"
+  - kind: sql
+    query: |
+      INSERT INTO query_example (id, definition, query)
+      VALUES (90125, 'p125 probe seed', 'SELECT 1')
+      ON CONFLICT (id) DO NOTHING;
+    description: "Probe-scoped seed for QUERY_EXAMPLE happy path"
+act:
+  - kind: rest
+    method: GET
+    path: /api/resource/MANAGEMENT/1/permissions
+    description: "The PRIMARY assertion target — Category F drift confirmation"
+    capture_as: management_response
+  - kind: rest
+    method: GET
+    path: /api/resource/DATA_ENTITY/90125/permissions
+    description: "Happy-path control — DATA_ENTITY contextual read"
+    capture_as: data_entity_response
+  - kind: rest
+    method: GET
+    path: /api/resource/TERM/90125/permissions
+    description: "Happy-path control — TERM contextual read"
+    capture_as: term_response
+  - kind: rest
+    method: GET
+    path: /api/resource/QUERY_EXAMPLE/90125/permissions
+    description: "Happy-path control — QUERY_EXAMPLE contextual read"
+    capture_as: query_example_response
+  - kind: rest
+    method: GET
+    path: /api/resource/DATA_ENTITY/99999999/permissions
+    description: "Missing-resource control — DATA_ENTITY 404 path"
+    capture_as: missing_de_response
+observe:
+  - kind: capture
+    name: management_status
+    value: "management_response.status"
+  - kind: capture
+    name: management_code
+    value: "management_response.body.code"
+  - kind: capture
+    name: management_message
+    value: "management_response.body.message"
+  - kind: capture
+    name: data_entity_status
+    value: "data_entity_response.status"
+  - kind: capture
+    name: data_entity_permissions
+    value: "data_entity_response.body"
+  - kind: capture
+    name: term_status
+    value: "term_response.status"
+  - kind: capture
+    name: term_permissions
+    value: "term_response.body"
+  - kind: capture
+    name: query_example_status
+    value: "query_example_response.status"
+  - kind: capture
+    name: query_example_permissions
+    value: "query_example_response.body"
+  - kind: capture
+    name: missing_de_status
+    value: "missing_de_response.status"
+  - kind: capture
+    name: missing_de_code
+    value: "missing_de_response.body.code"
+assert:
+  # PRIMARY assertion: MANAGEMENT-rejection produces the documented 400 USR001 shape
+  - "management_status == 400"
+  - "management_code == 'USR001'"
+  - "management_message == 'Resource type MANAGEMENT does not have context'"
+  # Happy-path: contextual reads produce 200 + non-empty Permission array under LOGIN_FORM (admin sees ALL for the resource type)
+  - "data_entity_status == 200"
+  - "data_entity_permissions.length >= 1  # admin sees at least one DATA_ENTITY_* permission via the ALL expansion"
+  - "term_status == 200"
+  - "term_permissions.length >= 1"
+  - "query_example_status == 200"
+  - "query_example_permissions.length >= 1"
+  # Missing-resource: DATA_ENTITY 404 surface is preserved
+  - "missing_de_status == 404"
+  - "missing_de_code == 'USR002'"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM data_entity WHERE id = 90125;
+      DELETE FROM term WHERE id = 90125;
+      DELETE FROM query_example WHERE id = 90125;
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__PermissionController__controller-class__PermissionController
+    - odd-platform__java__PermissionController__controller-method__getResourcePermissions
+    - odd-platform__java__service__service__PolicyServiceImpl
+  retrospectives:
+    - LSN-020   # Category F input-name vs implementation alignment — the MANAGEMENT case is the rev-5 Category F discriminator
+    - LSN-018   # batch-P phantom-node case-law — this probe is the empirical confirmation that PermissionController has exactly one real method
+  features:
+    - F-001    # Role-Based Access Control
+    - F-006
+  drift_classes:
+    - spec_enum_accepts_value_runtime_rejects
+    - controller_to_service_discriminator_split
+realism_caveats: |
+  Limitations:
+  (a) The probe runs under auth.type=LOGIN_FORM for simplicity — the static admin
+      authority short-circuits to ALL permissions on contextual types. To verify
+      the OAUTH2/LDAP behaviour (live policy evaluation), a separate probe with a
+      seeded user + non-admin role + custom policy is needed. The MANAGEMENT-rejection
+      assertion is auth-mode-independent (the discriminator runs BEFORE the auth-aware
+      extractor chain) so the rejection assertion is valid across all auth modes.
+  (b) The "permissions.length >= 1" assertion is a minimum-bar check, NOT a full
+      catalogue check. A FUTURE probe could pin the EXACT expected permission
+      set under admin for each resource type — but doing so couples to V0_0_56
+      seed contents and would break on any policy seed evolution. The minimum-bar
+      shape is more durable.
+  (c) The 99999999 missing-resource id may collide with a future seed; pick a
+      provably-unused id at probe-runner time.
+  (d) The probe DOES NOT verify the existence-asymmetry across TERM and QUERY_EXAMPLE
+      extractors (the static read showed TermPermissionExtractor.java:44-45 throws
+      via switchIfEmpty, but QueryExamplePermissionExtractor.java:37-48 does not
+      have an observable switchIfEmpty in the trace — a separate probe should pin
+      whether missing QUERY_EXAMPLE returns 404 or 200-empty). That asymmetry is
+      a separate stress-question lifted out of scope of this probe to keep the
+      MANAGEMENT-rejection assertion the primary signal.

@@ -1,0 +1,192 @@
+---
+probe_id: P-173
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__components_shared_elements_AppToolbar_AppInfoMenu__ui-shell-widget__AppInfoMenu.md
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-035
+test_class: security
+verified_against_commit: feature/ontology-finalize-2026-05-25
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress questions for the AppInfoMenu UI surface — the terminal page-render
+  site of F-035 (Operator-Configured Additional Links) AND the projectVersion
+  disclosure surface paired with AppInfoController.
+
+  This is the UI-side probe complementing the backend-only P-128 (LinksController).
+  P-128 verified BACKEND auth-gate / ordering / boot-binding. P-173 verifies
+  what gets RENDERED to a real browser:
+
+  (1) REVERSE-TABNABBING (Category B / security — F-035 facet
+      `reverse_tabnabbing_target_blank_without_rel_noopener_noreferrer`):
+      AppInfoMenu.tsx:60-66 renders `<Link target='_blank'>` (and lines 41, 95,
+      103, 112 for the hardcoded gitbook/slack/github/review links) WITHOUT
+      `rel='noopener noreferrer'`. Hypothesis: the rendered <a> element in the
+      DOM has `target="_blank"` and NO `rel` attribute, leaving `window.opener`
+      reachable to any operator-configured destination. Verify by inspecting
+      the rendered DOM of EACH link (the 4 hardcoded + the N operator-configured).
+
+  (2) URL-SCHEME PASSTHROUGH (Category F — F-035 facet
+      `url_scheme_not_validated_javascript_data_uris_passthrough`):
+      AdditionalLinkProperties.java:8 has no @URL constraint; LinksController
+      passes through verbatim; AppInfoMenu uses the operator-configured `link.url`
+      as `to={link.url}` of `<Link>` (line 61). Hypothesis:
+        (a) `javascript:alert(1)` — React 17+'s url sanitiser in react-router-dom
+            v6 + react-dom should neutralise into a no-op href (or strip).
+            Verify the rendered <a href> is sanitised AND verify clicking the
+            link does NOT execute the alert.
+        (b) `data:text/html,<script>alert(1)</script>` — React does NOT block
+            data: URIs in <a href>; the link will be clickable. Browser
+            handling varies — modern Chrome/Firefox refuse top-level data:
+            navigation since ~2018 but may still leak via target='_blank'.
+        (c) `vbscript:msgbox(1)` — only legacy IE-equivalent contexts care;
+            assert the link is at minimum NOT executed in modern Chromium.
+
+  (3) PROJECT VERSION ANONYMOUS DISCLOSURE (Category D — paired with AppInfoController
+      F-009 surface): the projectVersion is rendered inline at lines 47-48 as
+      `<Typography>{appInfo.projectVersion}</Typography>` followed by
+      `ODD Platform version`. Hypothesis under auth.type=DISABLED + the SPA
+      mounting at /: the AppToolbar renders without authentication; the
+      AppInfoMenu fires GET /api/appInfo unauthenticated (DISABLED → permitAll);
+      response includes projectVersion; the menu renders the version label to
+      an anonymous viewer. Verify by loading the SPA root URL with NO session
+      cookie and inspecting the toolbar's About menu DOM.
+
+  (4) HOVER-ONLY ACTIVATION (Category E / UX): the menu opens on `onMouseEnter`
+      (line 81), not on click. Hypothesis: touch-device users (no hover event)
+      cannot open the menu. The `aria-haspopup='true'` (line 80) plus the
+      `aria-controls={menuId}` suggest keyboard accessibility was intended but
+      the keyboard activation handler (onClick / onKeyDown) is absent.
+      Verify the menu is unreachable via keyboard tab+enter.
+
+  (5) STALE FRAGMENT — the menu uses `keepMounted` (line 90), which means the
+      AppInfoMenu's DOM stays mounted forever after first hover; subsequent
+      hover events do not re-fire useAppLinks / useAppInfo. Combined with
+      TanStack Query's default staleTime=0, the FIRST mount fires the requests,
+      and the requests are then cached in React Query. Verify that operator
+      config changes (after the FIRST mount) are NOT visible until full reload.
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: env
+    set:
+      AUTH_TYPE: "DISABLED"
+      ODD_LINKS_0_TITLE: "Internal Runbook"
+      ODD_LINKS_0_URL: "https://runbook.internal/odd"
+      ODD_LINKS_1_TITLE: "Phish Test"
+      ODD_LINKS_1_URL: "javascript:alert('xss')"
+      ODD_LINKS_2_TITLE: "Data URI"
+      ODD_LINKS_2_URL: "data:text/html,<script>alert('data')</script>"
+      ODD_LINKS_3_TITLE: "Tabnab Target"
+      ODD_LINKS_3_URL: "https://attacker.example/tabnab"
+  - kind: app-restart
+  - kind: playwright-launch
+    browser: chromium
+    headless: true
+act:
+  - kind: dom-probe
+    url: "http://localhost:8080/"
+    auth: none
+    steps:
+      - hover: '[aria-label="app info menu"]'
+      - wait_for: '#app-info-menu'
+      - capture_dom: '#app-info-menu'
+    capture_as: menu_dom_anon
+  - kind: dom-probe
+    url: "http://localhost:8080/"
+    auth: authenticated-no-roles
+    steps:
+      - hover: '[aria-label="app info menu"]'
+      - wait_for: '#app-info-menu'
+      - capture_dom: '#app-info-menu'
+      - capture_text: '#app-info-menu :text("ODD Platform version") + *'
+    capture_as: menu_dom_authn
+  - kind: dom-probe
+    url: "http://localhost:8080/"
+    auth: authenticated-no-roles
+    steps:
+      - tab_to: '[aria-label="app info menu"]'
+      - press_key: Enter
+      - wait_for: '#app-info-menu'
+        timeout_ms: 1000
+        capture_timeout: true
+    capture_as: keyboard_activation
+observe:
+  - kind: dom-attr
+    of: menu_dom_authn
+    css: 'a[href*="github.com"]'
+    attr: rel
+    capture_as: github_link_rel
+  - kind: dom-attr
+    of: menu_dom_authn
+    css: 'a[href*="runbook.internal"]'
+    attr: rel
+    capture_as: operator_link_rel
+  - kind: dom-attr
+    of: menu_dom_authn
+    css: 'a[href*="javascript"]'
+    attr: href
+    capture_as: js_url_href_sanitised
+  - kind: dom-attr
+    of: menu_dom_authn
+    css: 'a[href*="data:"]'
+    attr: href
+    capture_as: data_uri_href
+  - kind: dom-text
+    of: menu_dom_anon
+    css: ':text("ODD Platform version")'
+    capture_as: anon_sees_version_label
+  - kind: dom-text
+    of: menu_dom_anon
+    css: '#app-info-menu h4:first-of-type'
+    capture_as: anon_version_value
+  - kind: bool
+    of: keyboard_activation
+    capture_as: keyboard_opens_menu
+assert:
+  # (1) Tabnabbing — none of the rendered links carry rel="noopener noreferrer"
+  - "github_link_rel == null  # DRIFT — should be 'noopener noreferrer'"
+  - "operator_link_rel == null  # DRIFT — operator-configured URL has no rel guard"
+
+  # (2) URL-scheme passthrough
+  - "js_url_href_sanitised == null OR js_url_href_sanitised.startsWith('javascript:') == false  # React should strip"
+  - "data_uri_href != null  # data: passes through React's sanitiser"
+
+  # (3) Anonymous version disclosure under DISABLED
+  - "anon_sees_version_label != null  # the label IS rendered to anonymous viewers"
+  - "anon_version_value != null AND anon_version_value matches /\\d+\\.\\d+\\.\\d+/  # full project version exposed"
+
+  # (4) Keyboard inaccessibility
+  - "keyboard_opens_menu == false  # tab+enter does NOT open the menu (onMouseEnter only)"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__components_shared_elements_AppToolbar_AppInfoMenu__ui-shell-widget__AppInfoMenu
+    - odd-platform__java__LinksController__controller-class__LinksController
+    - odd-platform__java__AppInfoController__controller-class__AppInfoController
+  retrospectives: []
+related_probes:
+  - P-128  # backend-only probe for LinksController
+realism_caveats: |
+  This probe requires a Playwright/headless-browser harness which is currently
+  pending across the methodology (existing probes are SQL/REST only). Until the
+  Playwright harness lands, this probe sits in pending-stress-protocol state
+  with the hypotheses encoded; manual verification is possible by
+  opening the SPA root URL in Chrome DevTools and inspecting the rendered
+  <a> attributes of the AppInfoMenu's <ul>.
+
+  This probe does NOT cover:
+    - The Slack OAuth callback flow (separate from AppInfoMenu);
+    - The toolbar's account menu (handled in AppToolbar.tsx, not here);
+    - Cross-browser variance on data: URL handling (test only asserts the href
+      is REACHABLE, not that the BROWSER will execute it — Chrome refuses
+      top-level data: nav since 2018; Firefox is similar).
+
+  The OPERATOR-TRUST model — the assumption that only operators edit
+  `odd.links` — is the BOUNDARY of how seriously to take findings (1) and (2).
+  Under a deployment where operator-config editing is scoped to a less-trusted
+  role (config-server with multi-tenant config-edit ACL), both findings move
+  from MEDIUM to HIGH.

@@ -1,0 +1,141 @@
+name: Query Current User Identity (whoami)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-09
+description: |-
+  **NEW OPERATION, batch 2026-05-25-ZD** — the HTTP boundary operation
+  that answers the SPA's "who am I and what can I do?" question.
+  `GET /api/identity/whoami` is dispatched once on every SPA mount
+  (`App.tsx:48` useEffect with empty dep-array) and once per
+  successful Owner-association submission (`OwnerAssociationForm.tsx:128`).
+  The endpoint is the SOLE consumer-facing identity surface; the
+  response shape populates `profile.slice.ts:24-26` and feeds every
+  downstream selector (`getGlobalPermissions`, `getIdentity`, the
+  Owner-association flow predicates, the toolbar's user-menu render).
+
+  ## Path
+  `GET /api/identity/whoami` (openapi.yaml:115-128, operationId `whoami`)
+
+  ## Authorization
+
+  NO `@PreAuthorize` annotation on the controller (IdentityController.java:23-28).
+  NO programmatic permission check in the controller or the service.
+  By design (implicit_adrs.[1] in the batch-ZD sidecar): the whoami
+  endpoint is the SOURCE of authorization, not a gated operation. The
+  gate lives entirely in the SecurityWebFilterChain — anonymous calls
+  are rejected BEFORE reaching the controller under LOGIN_FORM / OAUTH2
+  / LDAP. Under DISABLED, no gate exists — the endpoint is anonymously
+  reachable AND returns a positive admin claim (see the IDENTITY-LAYER
+  FACET invariant).
+
+  ## Implementation chain
+
+  `IdentityController.whoami(exchange)` → `IdentityServiceImpl.whoami()`
+  → `Mono.zip(AuthIdentityProviderImpl.fetchAssociatedOwner,
+  OwnerAssociationRequestRepository.getLastRequestForUsername,
+  PermissionService.getNonContextualPermissionsForCurrentUser)` →
+  `.map(AssociatedOwnerMapperImpl.mapAssociatedOwnerWithPermissions)`
+  → `Mono<ResponseEntity<AssociatedOwner>>`.
+
+  On the happy path, the response carries:
+    - `identity.username` — the real principal name from
+      `ReactiveSecurityContextHolder.getContext()`
+    - `identity.permissions` — the union of policy-resolved
+      non-contextual MANAGEMENT-scope permissions
+    - `owner` — the user's mapped Owner (or null if unassociated)
+    - `associationRequest` — the user's pending owner-association
+      request (or null if no pending request)
+
+  On the empty-SecurityContext path (DISABLED mode), the
+  `switchIfEmpty(dummyOwner())` fallback at line 27 returns 200 OK
+  with hardcoded `identity.username = "admin"` and ALL 70+ Permission
+  enum values.
+
+  ## Performance characteristics
+
+  - One round-trip per SPA mount (App.tsx:46-51 useEffect empty
+    dep-array; fires once per full SPA load)
+  - 3 parallel DB queries via Mono.zip under authenticated modes
+  - 0 DB queries on the empty-SecurityContext path (the dummy
+    fallback fires BEFORE the service-chain DB reads)
+  - Stateless reactive — instances scale horizontally
+  - No caching: every whoami call issues fresh DB reads
+
+  ## Distinct from the service-tier operation
+
+  This is the HTTP-boundary operation. The service-tier
+  per-request identity-resolution chokepoint is the SEPARATE
+  operation:
+  `operation:resolve-current-principal-and-associated-owner`
+  (15 callsites via AuthIdentityProvider; service-tier scope).
+  THIS operation is the SOLE HTTP-tier consumer of that
+  chokepoint — the UI's principal-resolution surface — and
+  carries its own observable characteristics (the dummyOwner
+  fallback, the Cache-Control absence, the audit-log absence,
+  the no-rate-limit anonymous reach).
+
+  ## Audiences
+
+  - Every SPA user on every mount (1 call per app boot)
+  - Every successful Owner-association submission (refresh)
+  - Direct REST API consumers reading the OpenAPI spec
+  - Anonymous probes under DISABLED (auth-mode reconnaissance)
+axes_present:
+- controllers
+nodes:
+- odd-platform java IdentityController controller-class:IdentityController
+contributors:
+- 'IdentityController.md (batch ZD class-level sidecar): understanding +
+  concepts.operations + dependencies_semantic + upstream_callers'
+evidence:
+- 'IdentityController.java:17-34 (the 28-line controller class)'
+- 'IdentityServiceImpl.java:22-53 (the service-chain Mono.zip orchestration)'
+- 'openapi.yaml:115-128 (the operationId/path declaration)'
+- 'App.tsx:46-51 (the once-per-app-mount fetchIdentity dispatch)'
+- 'OwnerAssociationForm.tsx:128 (the refresh dispatch on submission success)'
+- 'AssociatedOwnerMapperImpl.java:25-45 (response-shape mapping)'
+related_features:
+- F-001
+- F-006
+related_pillar_features:
+- P-09
+related_concepts:
+- 'operation:resolve-current-principal-and-associated-owner (service-tier
+  identity chokepoint this operation consumes)'
+- 'invariant:refactor-185-identity-layer-facet-batch-zd-whoami-admin-grant
+  (the under-DISABLED admin-grant behaviour of this operation)'
+- 'entitie:permission-authorization (the Permission catalog the response
+  carries)'
+- 'invariant:identity-wire-has-no-provider-field-not-a-provider-null-cross-mode-bleed-surface
+  (the Identity DTO does NOT carry provider; the cross-mode bleed is
+  positive — provider is intentionally not surfaced)'
+notes: |-
+  NEW operation captured in batch 2026-05-25-ZD. This is the HTTP
+  boundary for the SPA's principal-resolution flow; pairs with
+  `operation:resolve-current-principal-and-associated-owner` which
+  is the service-tier chokepoint with 15 callsites.
+
+  Three load-bearing observability gaps surfaced by the batch-ZD
+  sidecar:
+    (1) No `Cache-Control: no-store` header — the identity-bearing
+        response is the canonical case for explicit no-store; bare
+        `ResponseEntity::ok` (line 26) emits none; under DISABLED
+        no Spring Security header injection fires either.
+    (2) No audit log on whoami invocation — `@Slf4j` is declared
+        (line 19) but the body emits no log statements; combined
+        with REFACTOR-185, an operator cannot detect anonymous
+        reconnaissance against the identity surface from logs alone.
+    (3) The `ServerWebExchange exchange` parameter is RECEIVED at
+        line 24 but UNUSED — the entire per-exchange handle
+        (headers, cookies, remote address) is right there in the
+        method signature, free for the taking, but discarded. This
+        is the available-but-unused mechanism for any future
+        instrumentation (Cache-Control injection, audit logging,
+        rate-limit annotation).
+
+  DOC-NNN candidate: the live `authentication`,
+  `disabled-authentication`, and `authorization` doc pages
+  (WebFetched 2026-05-25, status 200) are silent on this
+  endpoint's existence; the auth-flow walkthrough that operators
+  need (mount-time whoami + permission gating) is undocumented.

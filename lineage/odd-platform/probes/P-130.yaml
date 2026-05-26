@@ -1,0 +1,116 @@
+---
+probe_id: P-130
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__RelationshipController__controller-class__RelationshipController
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-XXX-data-modelling-relationships
+test_class: integration
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category F — input-name vs implementation alignment;
+  AND Category A — tunable boundary at page=0):
+  GET /api/relationships?page=0&size=30 — the controller forwards
+  page=0 unchecked (`RelationshipController.java:25`); the repository
+  applies `(page - 1) * size` as the JOOQ offset
+  (`ReactiveDataEntityRelationshipRepositoryImpl.java:79`). When page=0,
+  offset = -30 (negative). Postgres rejects a negative `OFFSET` clause
+  with `ERROR: OFFSET must not be negative`. Question: does this 500
+  the request, or is it intercepted earlier?
+
+  Additionally: page=null → NPE at the `(page - 1) * size` arithmetic
+  (Integer.intValue() unboxing on null). The OpenAPI spec at
+  `components.yaml/PageParam` declares it required, but the controller's
+  reactive binding may still permit null if the framework routes the
+  request through unset.
+
+  AND the SearchParam type is documented as `required: false`
+  (components.yaml:4235), so query=null is the routine case — verify
+  no NPE on null query path (the StringUtils.isBlank check at
+  `ReactiveDataEntityRelationshipRepositoryImpl.java:68` should handle
+  it, but pin the behaviour).
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: sql
+    query: |
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, entity_class_ids, namespace_id)
+      VALUES (90011, '//probe-source/relationships/rel-130', 'p_relationship_130', 1, 25, ARRAY[9], 1)
+  - kind: sql
+    query: |
+      INSERT INTO relationships (id, data_entity_id, source_dataset_oddrn, target_dataset_oddrn, relationship_type)
+      VALUES (70011, 90011, '//probe-source/datasets/src', '//probe-source/datasets/tgt', 'ERD')
+act:
+  # Boundary 1 — page=0 → offset = -30
+  - kind: rest
+    method: GET
+    path: /api/relationships?page=0&size=30&type=ALL
+    capture_as: response_page_zero
+  # Boundary 2 — page=1 (the documented first page)
+  - kind: rest
+    method: GET
+    path: /api/relationships?page=1&size=30&type=ALL
+    capture_as: response_page_one
+  # Boundary 3 — page=999999 (way past end)
+  - kind: rest
+    method: GET
+    path: /api/relationships?page=999999&size=30&type=ALL
+    capture_as: response_page_huge
+  # Boundary 4 — size=0
+  - kind: rest
+    method: GET
+    path: /api/relationships?page=1&size=0&type=ALL
+    capture_as: response_size_zero
+  # Boundary 5 — size=Integer.MAX_VALUE
+  - kind: rest
+    method: GET
+    path: /api/relationships?page=2&size=2147483647&type=ALL
+    capture_as: response_size_overflow
+  # Boundary 6 — query omitted
+  - kind: rest
+    method: GET
+    path: /api/relationships?page=1&size=30&type=ALL
+    capture_as: response_query_omitted
+observe: []
+assert:
+  # Hypothesis: page=0 returns 500 or 400 — no graceful empty page
+  - "response_page_zero.status == 400 or response_page_zero.status == 500"
+  # Hypothesis: page=1 returns 200
+  - "response_page_one.status == 200"
+  # Hypothesis: page=999999 returns 200 with empty items
+  - "response_page_huge.status == 200"
+  - "response_page_huge.body.items.length == 0"
+  # Hypothesis: size=0 — Postgres LIMIT 0 returns no rows
+  - "response_size_zero.status == 200"
+  - "response_size_zero.body.items.length == 0"
+  # Hypothesis: size=Integer.MAX_VALUE — page=2, offset = 1*MAX = OK; LIMIT
+  # huge probably accepted
+  - "response_size_overflow.status == 200"
+  # Hypothesis: query omitted — handled by StringUtils.isBlank guard, no NPE
+  - "response_query_omitted.status == 200"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM relationships WHERE data_entity_id = 90011
+  - kind: sql
+    query: |
+      DELETE FROM data_entity WHERE id = 90011
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__RelationshipController__controller-class__RelationshipController
+  retrospectives: []
+realism_caveats: |
+  The probe assumes docker-compose-up brings up an empty (or near-empty)
+  data_entity table; the page=999999 assertion requires that no relationship-class
+  entity has 30M rows ahead of it.
+
+  The page=0 boundary is the operator-visible bug class — a JS-style 0-indexed
+  caller (typical) hits a 500 / 400 instead of seeing the first page. The
+  contract surface is the OpenAPI spec; the spec's PageParam doesn't declare
+  a minimum: 1 constraint, so validation never fires at the controller layer.
+  This is a request-input validation gap (Category F-adjacent — input name
+  `page` promises 1-indexed semantics but the controller doesn't enforce it).

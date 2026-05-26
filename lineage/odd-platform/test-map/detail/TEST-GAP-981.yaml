@@ -1,0 +1,44 @@
+gap_id: TEST-GAP-981
+category: missing-performance
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DataEntityRunController controller-class:DataEntityRunController"
+pillars_affected: [P-04]
+surfaced_by:
+  - "DataEntityRunController.md:bugs_limitations_corner_cases.[0] (Page-size unbounded — OpenAPI SizeParam has no min/max constraint; controller's Integer size parameter is passed through verbatim to the SQL LIMIT)"
+  - "DataEntityRunController.md:tests_coverage_semantic.uncovered_behaviours.[5] (Page-size unbounded — OpenAPI SizeParam has no max constraint; UI ships size=100 (TestRunsHistory.tsx:27) and size=10; an attacker / curious operator can request size=1000000 and exhaust memory)"
+behaviour: |-
+  **`GET /api/dataentities/{id}/runs?size=10000000` is accepted verbatim — DoS surface via single-request memory exhaustion.** The OpenAPI `SizeParam` (`components.yaml:4222-4229`) declares int32 with NO `minimum`/`maximum` constraint; the controller's `Integer size` parameter is passed through verbatim to the SQL `LIMIT` (`ReactiveDataEntityTaskRunRepositoryImpl.java:180-181`); no bounds-check at controller / service / repository / mapper layers. A request with `size=10000000` will:
+
+  - Issue `SELECT ... FROM data_entity_task_run JOIN ... LIMIT 10000000` to PostgreSQL — the window-function-based paginate plan (count(*) over() + row_number() over(orderBy) per `JooqQueryHelper.java:73-83`) is O(N) on the materialised result set.
+  - Materialise up to 10M rows in the API tier through JOOQ result mapping + MapStruct conversion + Jackson serialisation.
+  - Hold one Postgres connection from the reactive pool for the duration.
+  - Block the response thread for serialisation of a multi-GB JSON payload.
+
+  Practical impact: a single curl request can wedge an API instance's reactive event loop for tens of seconds; sustained traffic from a buggy script or malicious user OOMs the API tier. The endpoint sits BEHIND `.authenticated()` only (no rate-limit, no per-user quota), making the DoS surface available to any authenticated user including under `auth.type=DISABLED` (anonymous).
+
+  No test asserts a server-side cap. The UI's well-behaved size=100 (TestRunsHistory.tsx:27) and size=10 (TestReportDetailsHistory.tsx:31) defaults DO NOT defend against direct API consumers or a future UI refactor that increases the cap.
+test_class: missing-performance
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DataEntityRunPageSizeBoundsTest.java"
+  name: "getRuns_sizeOneMillion_acceptedVerbatim_pinsUnboundedDoSSurface"
+evidence:
+  - "DataEntityRunController.md:bugs_limitations_corner_cases.[0] verbatim: 'Page-size unbounded — OpenAPI SizeParam has no min/max constraint (components.yaml:4222-4229); the controller''s Integer size parameter is passed through verbatim to the SQL LIMIT. A request with size=1000000 will attempt to materialise a million rows in memory through the JOOQ paginate window-function plan + jOOQ result mapping + MapStruct + Jackson serialisation. No bounds-check anywhere in the chain.' severity: MEDIUM"
+  - "Verified at primary source: DataEntityRunController.java:19-26 + ReactiveDataEntityTaskRunRepositoryImpl.java:180-181 + components.yaml:4222-4229 (the spec confirms no min/max)"
+cross_references:
+  - "TEST-GAP-978 (parent — the HTTP-tier zero-coverage gap)"
+  - "TEST-GAP-976 (sibling — GenAI rate-limit absence — same operational class)"
+  - "concepts.yaml:invariants[OpenAPI pagination params SHOULD declare server-side caps; absent caps create DoS surfaces]"
+  - "REFACTOR-NNN candidate: add `maximum: 1000` to `SizeParam` in components.yaml; OR enforce a server-side cap with HTTP 400 when exceeded; OR add per-user/IP rate limit"
+related_features: []
+related_pillar_features: ["P-04:F-001"]
+proposed_action: |-
+  Add `DataEntityRunPageSizeBoundsTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Three test methods:
+  1. `getRuns_sizeOneMillion_acceptedVerbatim_pinsUnboundedDoSSurface` — GET `?page=1&size=1000000` against a DQ-test entity (seed with 5 runs); assert HTTP 200 with items.size()=5 (because there are only 5 runs) + measure response latency. PIN the no-cap posture — the SQL accepts the LIMIT, returns what exists, no rejection.
+  2. `getRuns_sizeZero_observedBehaviour_pinsCurrentBoundaryBehaviour` — GET `?page=1&size=0`; capture observed behaviour (likely HTTP 200 with empty items OR 400 from JOOQ). PIN the lower-bound posture.
+  3. `getRuns_sizeNegative_observedBehaviour_pinsCurrentBoundaryBehaviour` — GET `?page=1&size=-1`; capture observed behaviour (likely 500 from JOOQ NegativeArraySizeException or similar). PIN the negative-size posture.
+
+  Pair with REFACTOR-NNN: add `maximum: 1000` to `SizeParam` definition in `components.yaml`; flip test 1 to assert HTTP 400 "size exceeds maximum 1000". Pair with DOC-NNN: document the per-endpoint max in the live data-quality / API reference.
+batch: 2026-05-25-ZG
+feature_id: null

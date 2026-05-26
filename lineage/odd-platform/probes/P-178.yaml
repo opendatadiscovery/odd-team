@@ -1,0 +1,142 @@
+---
+probe_id: P-178
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__config_properties__config-properties-class__GenAIProperties
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-039
+test_class: integration
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question Q-tunables-relaxed-binding on GenAIProperties:
+
+  Pin the three-way relaxed-binding contract for genai.* keys.
+  Spring Boot's relaxed binding accepts three input forms for
+  the same property:
+
+  (1) YAML snake_case:  genai.request_timeout: 2
+  (2) YAML camelCase:   genai.requestTimeout: 2
+  (3) Env-var:          GENAI_REQUEST_TIMEOUT=2
+
+  All three should bind to GenAIProperties.requestTimeout = 2.
+  This probe runs three boot scenarios (one per form) and
+  confirms the bean state after boot. The motivation is
+  defensive: a future field rename (e.g. requestTimeout →
+  timeoutMinutes) without updating the YAML/env docs would
+  silently leave the int at 0 (primitive default) — the
+  platform boots, the genAiWebClient is built with
+  Duration.ofMinutes(0), and every request times out
+  immediately. A test that pins the binding contract catches
+  this regression at the test layer.
+
+  Same applies to genai.enabled (env form: GENAI_ENABLED) and
+  genai.url (env form: GENAI_URL).
+
+  This is a SEVERITY:MEDIUM gap — no current test verifies the
+  binding contract; the GenAIProperties sidecar
+  tests_coverage_semantic.uncovered_behaviours lists it as
+  MEDIUM-priority.
+---
+arrange:
+  - kind: docker-compose-up
+    profile: odd-minimal
+    services: [odd-platform, odd-postgres]
+act:
+  - kind: scenario
+    name: "binding_via_snake_case_yaml"
+    description: "Set genai.* via application.yml snake_case keys."
+    config_overlay: |
+      genai:
+        enabled: true
+        url: http://localhost:5000
+        request_timeout: 2
+    steps:
+      - kind: rest
+        description: "Hit /actuator/env (if exposed) to read the resolved values, OR fire one /api/genai/ask and observe the error message that reports the timeout value."
+        method: POST
+        path: /api/genai/ask
+        body: |
+          {"body": "test"}
+        capture_as: snake_case_response
+  - kind: scenario
+    name: "binding_via_camel_case_yaml"
+    description: "Set genai.* via application.yml camelCase keys."
+    config_overlay: |
+      genai:
+        enabled: true
+        url: http://localhost:5000
+        requestTimeout: 2
+    steps:
+      - kind: rest
+        method: POST
+        path: /api/genai/ask
+        body: |
+          {"body": "test"}
+        capture_as: camel_case_response
+  - kind: scenario
+    name: "binding_via_env_var"
+    description: "Set genai.* via env vars (relaxed-binding upper-case form)."
+    env:
+      GENAI_ENABLED: "true"
+      GENAI_URL: "http://localhost:5000"
+      GENAI_REQUEST_TIMEOUT: "2"
+    steps:
+      - kind: rest
+        method: POST
+        path: /api/genai/ask
+        body: |
+          {"body": "test"}
+        capture_as: env_var_response
+observe:
+  - kind: derived
+    description: |
+      For each scenario, parse the error message returned by GenAIServiceImpl.java:48-51.
+      The message format is 'Gen AI request take longer that %s min'.formatted(requestTimeout).
+      If the binding worked, the message should contain '2 min'. If it failed to bind
+      (e.g. the YAML key didn't match), requestTimeout falls back to the Java primitive
+      default 0 and the message contains '0 min'.
+    expressions:
+      - "snake_case_timeout_value: extract_int_from_message(snake_case_response.body.text)"
+      - "camel_case_timeout_value: extract_int_from_message(camel_case_response.body.text)"
+      - "env_var_timeout_value: extract_int_from_message(env_var_response.body.text)"
+assert:
+  # All three binding forms produce the same effective requestTimeout value (2 min).
+  - "snake_case_timeout_value == 2"
+  - "camel_case_timeout_value == 2"
+  - "env_var_timeout_value == 2"
+  # Consistency: all three are equal.
+  - "snake_case_timeout_value == camel_case_timeout_value"
+  - "snake_case_timeout_value == env_var_timeout_value"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__config_properties__config-properties-class__GenAIProperties
+  retrospectives:
+    - LSN-002-minio-region-unset
+realism_caveats: |
+  What this probe pins:
+    - The Spring Boot relaxed-binding contract for genai.* is three-way active.
+    - Field-rename regressions are catchable at the integration test layer.
+
+  What this probe does NOT verify:
+    - Whether /actuator/env (if exposed) consistently reports the resolved
+      value across all three forms — a separate finding for the security
+      sidecar (env exposure of url).
+    - The lower-case env-var form (e.g. genai_request_timeout=2) — Spring
+      relaxed binding does support this on most platforms but it's
+      undocumented; the probe deliberately uses the canonical upper-case
+      form.
+    - The case where the YAML file supplies snake_case AND the env var
+      supplies a different value (env var wins per Spring property
+      precedence) — separate test.
+
+  Workaround for the 'extract_int_from_message' helper:
+    The probe-runner should implement a regex like
+    `r"longer that (\d+) min"` against the response body. If the
+    regex misses (i.e. the error format changed), the probe must
+    fail loudly — that's a typo fix that needs sidecar coverage too
+    (bugs_limitations_corner_cases mentions the 'longer that' typo).

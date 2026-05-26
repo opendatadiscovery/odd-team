@@ -1,0 +1,211 @@
+name: |-
+  Alerts Resolve/Reopen button rendered unconditionally — permission probe fires only AFTER click (UX leak)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-07
+  - P-09
+description: |-
+  NEW MEDIUM-severity UX INVARIANT, batch ZL (2026-05-26) — the
+  per-alert Resolve / Reopen button in `AlertItem.tsx:159-166` is
+  rendered UNCONDITIONALLY for every alert row, regardless of the
+  user's `DATA_ENTITY_ALERT_RESOLVE` permission. The actual
+  permission check fires ONLY ON CLICK — `AlertItem.tsx:48-70`
+  dispatches `fetchResourcePermissions` for the alert's data
+  entity, then conditionally fires `updateAlertStatus` only if
+  the resolved permission set contains DATA_ENTITY_ALERT_RESOLVE.
+  If absent, a `t('No access!')` caption appears at AlertItem.tsx:175.
+
+  **Trace** (verified from AlertItem.tsx primary source):
+
+      // AlertItem.tsx:159-166 — button rendered unconditionally
+      <Button
+        text={isOpen ? t('Resolve') : t('Reopen')}
+        buttonType="link-m"
+        onClick={handleResolveClick}
+        // ... NO conditional wrapping by <WithPermissions>;
+        // NO disabled prop bound to permission state.
+      />
+
+      // AlertItem.tsx:48-70 — handleResolveClick implementation
+      const handleResolveClick = () => {
+        setIsUpdating(true);
+        dispatch(fetchResourcePermissions({
+          resourceId: alert.dataEntity.id,
+        }))
+          .unwrap()
+          .then(perms => {
+            if (!perms.some(p => p.permission === DATA_ENTITY_ALERT_RESOLVE)) {
+              setDisableResolve(true);  // → shows 'No access!' caption
+              setIsUpdating(false);
+              return;
+            }
+            return dispatch(updateAlertStatus({
+              alertId: alert.id,
+              alertStatusFormData: {
+                status: isOpen ? RESOLVED : OPEN
+              }
+            }));
+          });
+      };
+
+  **Contrast with the correct pattern** (e.g., LookupTables.tsx:72-82
+  Add-new button):
+
+      <WithPermissions permissionTo={Permission.LOOKUP_TABLE_CREATE}>
+        <LookupTableForm ... />
+      </WithPermissions>
+      // WithPermissions returns null when permission absent;
+      // the button is NOT rendered at all — operator never sees
+      // an action they cannot perform.
+
+  **Operator-visible consequences** (three patterns):
+
+  (a) **Action discovery via click-then-deny is operator-hostile**.
+      A user clicks Resolve, waits for the network round-trip
+      (fetchResourcePermissions to the platform's permission
+      service), then sees a 'No access!' caption appear. They
+      may not realise the caption is the result of their click;
+      they may try again; they may file a support ticket
+      ('the Resolve button is broken').
+
+  (b) **Action visibility is a signal leak**. The button's
+      existence confirms the alert is OPEN and resolvable
+      (vs RESOLVED where the button label flips to 'Reopen').
+      An observer who cannot ACT on the alert can still
+      INFER its state from the button label. In typical
+      enterprise compliance contexts this is benign; in
+      strict-segregation environments (e.g., FedRAMP, PCI,
+      SOX) it is a 'must be invisible' criterion.
+
+  (c) **The two-step click delay (permission probe + then
+      mutation) makes the UI feel sluggish** to power users
+      who DO have the permission. Every Resolve action carries
+      an extra round-trip for the permission check — the
+      backend updateAlertStatus does NOT trust the UI's prior
+      check (correctly — defence in depth), but it also has
+      no @PreAuthorize (per the AlertController sidecar) so
+      the permission check at the UI layer is the ONLY check.
+
+  **The structural root cause**: the Resolve button is rendered
+  before the resource-permission set is known. The
+  fetchResourcePermissions call is per-resource (per-alert) and
+  the alerts list is loaded BEFORE the user's per-resource
+  permissions; pre-fetching all permissions for all alerts
+  would be expensive (N+1 permission probes). The
+  click-time-only check is the cheap path. The fix is to
+  resolve the per-resource permission AT LIST FETCH TIME for
+  every alert and cache it in the alerts.slice, so the button
+  can be wrapped in `<WithPermissions resourcePermission=...>`.
+
+  **Cross-batch class membership**: this is a NEW shape compared
+  to `partial-permission-gating-edit-button-gated-content-unconditional`
+  (which captures 'button gated, content unconditional'). This
+  invariant captures the inverse: 'button unconditional, action
+  permission-checked on click'. The class is 'late-binding
+  permission check' — a per-resource permission system pattern
+  where the action surface is rendered eagerly and the
+  permission is fetched only when the user attempts the action.
+  An LSN-NNN-class concept; worth a follow-up retrospective.
+
+  **Fix surfaces** (maintainer-triage):
+
+  1. **Resolve per-resource permissions at list-fetch time** —
+     the alerts.thunks.ts:38-44 fulfilment could populate a
+     per-alert `userCanResolve` boolean (extending the
+     `state.alerts` shape). The Resolve button then wraps in
+     `<WithPermissions>` and the click handler trusts the
+     pre-resolved state. Cost: N permission probes per page
+     of 30 alerts (bounded; cacheable across pagination).
+
+  2. **Resolve permissions LAZILY but disable the button until
+     resolved** — the per-row Resolve button disabled prop
+     bound to a per-alert permission-fetched flag. On first
+     render the button is disabled with a tooltip ('checking
+     permissions...'); permissions resolve in the background;
+     button enables OR shows 'No access' caption. Cost: more
+     state per alert; better UX than today's render-then-deny.
+
+  3. **Promote DATA_ENTITY_ALERT_RESOLVE to a global permission
+     (not per-resource)** — if the operator's role grants
+     RESOLVE across all alerts (typical for security/ops
+     stewards), the per-resource probe is unnecessary. Check
+     globalPermissions at render time; wrap the button in
+     WithPermissions. Cost: schema change; not all deployments
+     want global RESOLVE.
+
+  4. **Document the click-then-deny semantic** — a doc-only fix
+     for the audit-trail concern. The fix doesn't change the
+     UX but clarifies operator expectation.
+
+  vocabulary_status: codebase-anchored, NOT in docs. The live
+  Alerts doc page describes the Resolve action but does NOT
+  warn about the click-then-deny shape. Surface to doc-gap-finder.
+nodes:
+  - odd-platform ts react-component component:Alerts
+contributors:
+  - odd-platform ts react-component component:Alerts
+evidence:
+  - |-
+    Alerts.md:bugs_limitations_corner_cases.[resolve-uxleak] —
+    'Resolve / Reopen button is rendered for every alert without
+    first checking permission — the permission probe
+    (fetchResourcePermissions) only fires AFTER click
+    (AlertItem.tsx:48-70). UX leak: the action is visible to
+    users who cannot perform it; users only learn they have no
+    access by trying.' Severity MEDIUM.
+  - |-
+    Alerts.md:tests_coverage_semantic.uncovered_behaviours —
+    'Resolve button on an Alert dispatches updateAlertStatus
+    only after DATA_ENTITY_ALERT_RESOLVE permission resolves;
+    shows No access! caveat when it does not.' test_class:
+    security; criticality: HIGH.
+  - |-
+    Alerts.md:security.known_security_gaps.[resolve-leak] —
+    'Resolve / Reopen button is shown to users WITHOUT
+    DATA_ENTITY_ALERT_RESOLVE; the permission check fires only
+    on click. ... Lower-bound: UX leak. Upper-bound: signal-leak
+    (the button existence confirms the alert is OPEN and
+    resolvable).' Severity MEDIUM.
+related_concepts:
+  - operation:mount-alerts-page-shell-three-tab-shared-state-slot
+  - invariant:partial-permission-gating-edit-button-gated-content-unconditional
+  - invariant:withpermissionsprovider-context-seed-not-route-gate
+axes_present:
+  - ui_components
+triangulation_count: 1
+cross_batch: false
+severity: MEDIUM
+severity_dim: ux
+mitigations_unimplemented:
+  - |-
+    Fix surface 1 (preferred) — extend alerts.slice with per-
+    alert userCanResolve booleans populated at list-fetch time
+    via fetchResourcePermissions parallel-batched. ~30 lines;
+    closes the bug AND removes the click-time round-trip.
+  - |-
+    Fix surface 2 (lazy-resolve with disabled button) — show
+    button as disabled with tooltip until permission resolves
+    in the background. ~15 lines; moderate improvement.
+  - |-
+    Fix surface 3 (architectural) — promote RESOLVE to a global
+    permission. Requires SecurityConstants + role-definition
+    audit; out of UI scope.
+  - |-
+    Fix surface 4 (doc-only) — document the click-then-deny
+    shape on the live Alerts doc page. LOW-cost compliance fix.
+notes: |-
+  NEW invariant captured in batch ZL (2026-05-26) FINAL refresh.
+  This is a different shape from the partial-permission-gating
+  invariant (which captures 'edit button gated, content
+  unconditional' — the more common case). This invariant
+  captures 'button unconditional, action permission-checked on
+  click' — a class observed first at AlertItem.tsx but worth
+  auditing other per-row action surfaces (DataEntityActions,
+  TermActions, OwnerActions) for the same shape.
+
+  Cross-batch follow-up: the pattern 'late-binding permission
+  check' suggests an architectural anti-pattern that may exist
+  at multiple sites. A grep for `fetchResourcePermissions` in
+  odd-platform-ui would enumerate all instances; each is a
+  candidate for the same UX leak.

@@ -2362,3 +2362,362 @@ DataSourceController is now class+method complete. High-value fully-dark control
 - **High-value fully-dark controller surfaces remaining** (un-enriched method count, post-ZC): `ReferenceDataController` (16), `QueryExampleController` (12), `OwnerAssociationRequestController` (7 — class enriched), `DataQualityController` (5 methods un-enriched), `NamespaceController` (5 methods un-enriched), `DataQualityRunsController` (5).
 - **UI dark surfaces remaining** — the DataQuality batch demonstrated that UI-axis batches surface DIFFERENT classes of finding (route auth, latent UI crash, filter-name drift) than backend batches. Candidate UI batches: `LookupTables` (the gated counter-example to `/data-quality` — would close the auth-posture wisdom-test by showing both poles in one ontology view); the OwnerAssociations / DEGLineage / DatasetStructure jotai-using feature areas (each gets +1 verdict on ADR-CANDIDATE-207's pattern-evidence count).
 - **Cross-cutting REFACTOR sprint candidates**: (1) the **UI test-pillar activation** (TEST-GAP-927 META — the whole odd-platform-ui has 7 test files; activating React Testing Library on the 5 ZC sidecars would be a coherent introduction batch); (2) the **read-collaborative posture documentation** (ADR-003 now has 14 sidecars and 1st frontend-route-layer evidence — promote to a real `adrs/` ADR + document the posture in `docs/architecture` so DOC-GAP-263 is resolved by docs alone rather than per-feature); (3) the **autocomplete debounce + pagination** family (REFACTOR-597/598/602 — same `MultipleFilterItemAutocomplete` component, shared fix).
+
+---
+
+## Batch ZD — 2026-05-25 (RBAC + Integration controllers)
+
+**Sprint**: feature/ontology-finalize-2026-05-25 (sprint-close window — last day of the 2026-05-19 → 2026-05-25 ontology sprint).
+
+**Sidecars added** (5/5): IdentityController + PermissionController + RoleController + PolicyController + IntegrationController — every uncovered RBAC/integration controller class-level node closed in one batch.
+
+### Phase 1 — file-analyser results
+| Node | Wall clock | Headline finding |
+|---|---|---|
+| IdentityController | ~12 min | DISABLED mode returns `username=admin` + ALL 70+ Permission enum values to ANONYMOUS callers — IDENTITY-LAYER FACET of REFACTOR-185 (17th sidecar); P-122/123/124 probes emitted |
+| PermissionController | ~22 min | Class is the smallest in the package (single-method `getResourcePermissions`) — confirms batch-P PHANTOM (no getPolicyPermissions); MANAGEMENT enum spec-vs-runtime asymmetric rejection; P-125 emitted |
+| RoleController | ~30 min | F-006 audit-silence pattern → 7-sidecar; status-code drift on 2/4 endpoints (POST + PUT return 200 vs spec 201); ADMIN/non-ADMIN principal-fork content drift on GET /api/roles; P-127 emitted |
+| PolicyController | ~13 min | 9th corroborating sidecar in cross-batch RBAC audit-silence pattern; class-wide read-side auth gap on getPolicyDetails/getPolicyList/getPolicySchema; P-121 emitted |
+| IntegrationController | ~24 min | NO RBAC permission for /api/integrations + DISABLED-mode anonymous reachability + `installed:false` hardcoded dead-field + `platform_url` substitution leak; P-126 emitted |
+
+### Phase 2 — reducer deltas
+- **concept-merger**: +14 new concepts (3 operations / 2 entities / 9 invariants) + 3 extended (controllers-as-pass-through-delegates → 11-sidecar; no-audit-log-on-rbac-mutations → 8-tier; 200-vs-201-status-code-drift → 13-endpoint); 0 supersedes.
+- **adr-archaeologist**: +3 new ADR candidates (ADR-CANDIDATE-209 wizard registry HIGH, ADR-CANDIDATE-210 whoami dummyOwner HIGH IDENTITY-LAYER FACET of ADR-CANDIDATE-029, ADR-CANDIDATE-211 permission read-surface split MEDIUM) + 6 strengthened (-001 controllers-as-delegates → 23-sidecar; -002 SECURITY_RULES → 23-sidecar; -003 read-collaborative GET → 17-sidecar; -029 DISABLED-as-default; -051 PolicyTypeDto discriminator; -189 OpenAPI spec source-of-truth); +14 new scopes (REFACTOR-606..619: 4 HIGH / 7 MEDIUM / 3 LOW) + 7 strengthened (including REFACTOR-185 → **24-sidecar — strongest single triangulation in catalog**, REFACTOR-188 → 6-sidecar grid SCHEMA-ROOTED).
+- **doc-gap-finder**: +9 new DOC-GAPs (273-281; 0 HIGH / 7 MEDIUM / 2 LOW) + 7 strengthens (DOC-GAP-082 META → 35-sidecar across 9 tiers — complete anonymous-fingerprint kill chain anchored; DOC-GAP-083 META → 17-sidecar / 7 tiers / 6 pillars); **1 framing-reversal conflict surfaced** (DOC-GAP-187 prior batch-Q UI tier said "UI looks LOCKED-DOWN under DISABLED" — controller-class primary source REVERSES the direction: UI looks FULLY UNLOCKED admin under DISABLED; META composition intact, prose flagged for maintainer triage).
+- **test-coverage-mapper**: +18 new TEST-GAPs (928-945) — 5 CRITICAL (928/929/932/934/941) + 7 HIGH + 5 MEDIUM + 1 LOW; 12 strengthens; 6 double-jeopardy with doc-gaps.
+- **feature-flow-builder**: +1 new feature (F-033 Integration Wizard P-08:F-008) + 2 extended (F-006 +3 contributing nodes; F-011 +1); REFACTOR-185 cluster 21 → 24-sidecar; 31 drift facets added (11+8+12); no 4-cell matrix transitions.
+
+### Phase 3 — pipeline state
+- YAML safe-fix: `ok: 1538, fixed: 0` — no new YAML breakage this batch.
+- Rebuild indexes: concepts (464) / test-map (942) / feature-flows (33).
+- Coherence sweep: 90509 generic back-link-missing candidates (regex-noise baseline); per-reducer coherence reported 1 real conflict (DOC-GAP-187 framing-reversal, already triage-flagged).
+- Markdown-index appends merged (implicit-adrs + refactoring-scopes + doc-gaps).
+
+### Cumulative state after ZD
+- Direct enrichment: 169 → **174/395 (44.1%)**
+- Effective coverage: 324 → **333/395 (84.3%)**
+- Features discovered: 32 → **33**
+- Stress-verified pct: 87.4% → **88.8%**
+- All 11 pillars still anchored; 33rd feature minted from this batch's IntegrationController surface.
+
+### Headline architectural signals
+1. **REFACTOR-185 → 24-sidecar**: the DISABLED-mode bypass is now the strongest single triangulation in the catalog. Each ZD sidecar added a new facet (identity / permission / role / policy / integration / wizard / info-disclosure / open-read).
+2. **F-006 audit-silence → 11-sidecar at controller-class tier**: every RBAC mutation controller forensically confirmed silent at line:1-N. The pattern is SCHEMA-ROOTED (V0_0_48 NOT NULL FK on activity table).
+3. **REFACTOR-188 → 6-sidecar grid**: the full Policy × Role × controller × service × repository mutation grid is now triangulated at all 6 cells.
+4. **F-033 Integration Wizard minted**: new P-08:F-008 pillar feature anchored on IntegrationController; 12 drift facets enumerated.
+5. **Framing-reversal conflict (DOC-GAP-187)**: cross-batch dissonance correctly surfaced — batch-Q UI-tier framing inverted by ZD's IdentityController primary source.
+
+### Follow-ups
+- Pre-existing baseline: 90509 coherence-sweep generic back-link-missing candidates (regex-noise; non-blocking; pattern visible across previous batch sweeps too).
+- Markdown-index frontmatter drift: implicit-adrs / refactoring-scopes / doc-gaps index.md frontmatter total counts have been stale since batch H (only batches H/ABCDEFGH summary keys present). Rev-7.1 graph-search dedup queries detail/ directly so this drift does not affect reducer correctness; frontmatter remains a vanity counter. Out-of-scope for sprint close.
+- Pre-existing quarantined YAML: 5 entries (TEST-GAP-363/687 + 3 concept invariants) — present from before ZD; no new breakage from this batch.
+- 5 "sidecars referencing nodes NOT in substrate" + 5 "feature-flow chains referencing obsolete IDs" — pre-existing substrate-staleness, candidate for full re-scan after sprint close.
+
+
+---
+
+## Batch ZE — 2026-05-25 (Discovery + Search + Title + Feature + Relationship + Links controllers)
+
+**Sprint**: feature/ontology-finalize-2026-05-25 (sprint-close, 2nd batch).
+**Network state**: full outage at completion time — push deferred again (caught up on next successful push).
+
+**Sidecars added** (5/5): SearchController + TitleController + FeatureController + RelationshipController + LinksController.
+
+### Phase 1 — file-analyser results
+| Node | Headline finding |
+|---|---|
+| SearchController | **TRUE SQL injection** in highlightDataEntity at ReactiveDataEntityRepositoryImpl.java:798-806 via `String.formatted` direct interpolation; `hasNext:true` hardcoded contract bug at DataEntityServiceImpl.java:192; P-134/135/136 probes |
+| TitleController | Title is free-text catalogue auto-created by OwnershipServiceImpl with NO permission gate, NO normalisation; policies on `:owner:title` silently leak via case variants; P-129 |
+| FeatureController | `getActiveFeatures` is boot-immutable (cached in `private final Set<Feature>`); runtime YAML changes invisible until restart; PROVIDER-NULL-BLEED-LIMITED-RISK facet of REFACTOR-185; P-132/133 |
+| RelationshipController | Zero authz at any layer; `relationshipId` path-param binds to wrong table (data_entity.id vs relationships.id, spec drift); P-130/131 |
+| LinksController | Name reuse + URL-scheme + boot-time bind warnings absent; AppInfoMenu reverse-tabnabbing via target=_blank without rel=noopener; P-128 |
+
+### Phase 2 — reducer deltas
+- **concept-merger**: +21 new + 7 extended / 0 supersedes. STRENGTHENS controllers-as-pass-through-delegates → 16-sidecar; rbac-read-endpoints-no-securityrule → 12-surfaces; REFACTOR-185 → 4 LIMITED-RISK facets + 1 HIGH IDENTITY-LAYER.
+- **adr-archaeologist**: +4 new ADRs (-212/-213/-214/-215; 3 HIGH + 1 MEDIUM) + 6 strengthened; +13 new scopes (REFACTOR-620..632; 3 HIGH + 7 MEDIUM + 3 LOW) + 5 strengthened — REFACTOR-229 third-invocation site (FTS injection family).
+- **doc-gap-finder**: +8 new DOC-GAPs (282-289; 3 HIGH + 5 MEDIUM) + 8 strengthens. **Network DOWN — inherited URL verifications per LSN-018 stale-probe cadence** (11-day window). 4 Category-drift findings. 0 contradicts surfaced.
+- **test-coverage-mapper**: +12 new TEST-GAPs (946-957; 1 CRITICAL — TEST-GAP-946 HTTP-entry SQL-injection chain) + 3 strengthens.
+- **feature-flow-builder**: returned ANALYSIS in-chat without writing detail files (mis-applied "minimal resources" framing). **Orchestrator wrote 4 new F-NNN.yaml files directly** from the agent's analysis: F-034 Platform Feature-Flag Exposure (P-09:F-006), F-035 Operator-Configured Additional Links (P-08:F-009), F-036 Owner-Relationship Title Directory (P-08:F-010), F-037 ERD/Graph Relationships Listing (P-02:F-001 — FIRST P-02 feature). Also flagged 1 NAVIGATION-PILLAR coherence contradiction: navigation/domains/relationships.md:20 claims `Documentation: None` while two doc pages exist; surfaced as nav-update follow-up.
+
+### Phase 3 — pipeline state
+- YAML safe-fix: `ok: 1579, fixed: 0`.
+- Rebuild indexes: concepts 485 / test-map 954 / feature-flows 37 (added F-034..F-037).
+- Coherence sweep: 95588 generic regex-noise candidates (baseline).
+- 4 orchestrator-written feature-flow detail files required test_matrix + terminal_side_effect shape fixups (string → object) after first rebuild attempt.
+
+### Cumulative state after ZE
+- Direct enrichment: 174 → **179/395 (45.3%)**
+- Effective coverage: 333 → **338/395 (85.6%)**
+- Features discovered: 33 → **37** (+4 net new pillar-anchored features in one batch — most since batch V)
+- Stress-verified pct: 88.8% → **88.5%** (slight decrease — more probe-needed in this batch)
+- P-02 Data Modelling pillar GAINS its first feature (F-037). All 11 pillars now have ≥1 feature minted (P-02 was the last empty one until ZE).
+
+### Headline architectural signals
+1. **TRUE SQL injection at highlightDataEntity** — third invocation site for REFACTOR-229 family; first time confirmed as HTTP entry point (controller-method chain), not just repository-tier bug.
+2. **F-037 RelationshipController zero-authz** — every authenticated caller sees every relationship in the catalog including hidden + cross-tenant; asymmetric to /api/dataentities EXCLUDE_FROM_SEARCH posture; first P-02 feature.
+3. **F-034 boot-immutable cached feature flags** — runtime YAML mutation silent; same root pattern as F-009 (notification flags) and LSN-001 (attachment-default) — boot-time-only configuration capture across multiple feature surfaces.
+4. **F-036 Title directory silent policy leak** — typing 'Data Steward' / 'data steward' / 'DATA STEWARD' creates 3 DISTINCT directory rows; Policy `:owner:title == 'X'` matches only one variant; LSN-020 input-name-alignment class extended into auto-created vocabulary.
+5. **Network outage stress-tested LSN-018 inheritance** — doc-gap-finder degraded gracefully via stale-probe cadence inheritance from sibling sidecars (all URLs verified within 11-day window).
+
+### Follow-ups
+- Orchestrator-written feature-flow detail files: F-034..F-037. The feature-flow-builder agent returned analysis in chat without emitting files; the orchestrator materialised the 4 features directly from the agent's narrative. Maintainer review of these 4 files (against agent transcript in this log entry) at next session.
+- Coherence-conflict surfaced for navigation/domains/relationships.md:20 (stale `Documentation: None` claim while 2 doc pages exist). State-file: state/coherence-conflicts-batch-ZE.md NOT WRITTEN this batch (the agent suggested writing it but I prioritised getting through Phase 3 — log as follow-up).
+- 12 unfixable YAML quarantines surfaced this batch (up from 5 pre-ZE) — investigate next session whether the quarantine count grew due to ZE artifacts or due to a yaml_safe_fix.py false-positive widening.
+- Network outage during ZD + ZE push window — when network recovers, the next successful push will catch up commits d500330 (ZD batch) + 25e66b1 (ZD done) + 3dd0a63 (ZE in_progress) + (this ZE batch commit) + (next ZE done commit).
+
+
+---
+
+## Batch ZF — 2026-05-25 (Ingestion + Owner + MetadataField + DataCollaboration + EventApi)
+
+**Sprint**: feature/ontology-finalize-2026-05-25 (3rd batch).
+**Sidecars added** (5/5): IngestionController + OwnerController + MetadataFieldController + DataCollaborationController + EventApiController class-level — security goldmine batch.
+
+### Headlines
+1. **EventApiController** — Slack events endpoint UNAUTHENTICATED in all 4 auth modes + NO X-Slack-Signature verification + NO idempotency on at-least-once delivery. Forgeable, replayable, internet-reachable webhook. Operator-facing CRITICAL.
+2. **IngestionController class** — 4 of 5 endpoints unauthenticated in default deployment; even with `auth.ingestion.filter.enabled=true` 3 of 5 endpoints REMAIN unauthenticated due to filter exact-literal `/ingestion/entities` POST vs `/ingestion/**` in WHITELIST_PATHS.
+3. **DataCollaborationController** — redirect endpoint trusts Slack chat.getPermalink as 302 Location header (open-redirect class); returns 200/empty on missing messageId (message-existence oracle).
+4. **OwnerController** — GET /api/owners unauthenticated-read (no SecurityRule entry); OwnerService.getOrCreate BYPASSES OWNER_CREATE permission via 3 service-tier callsites (OwnerAssociationRequestServiceImpl + OwnershipServiceImpl + TermOwnershipServiceImpl).
+5. **MetadataFieldController** — PageInfo theatre (hasNext=false, total=size, no LIMIT) + cross-data-entity vocabulary leak (any authenticated user enumerates full custom-metadata schema).
+
+### Phase 2 reducer deltas
+- concept-merger: +4 NEW + 8 extended; 0 supersedes. Slack-events-no-signature-verification + open-redirect + slack-channels-cache + pageinfo-theatre concepts minted.
+- adr-archaeologist: +4 new ADRs (-216 Slack webhook unconditional whitelist BY DESIGN / -217 UUIDv1 message IDs / -218 PATH-anchored RBAC + getOrCreate side-channels / -219 metadata_field INTERNAL/EXTERNAL bifurcation) + 10 strengthened. +16 new REFACTORs (REFACTOR-633..648; 6 HIGH/7 MEDIUM/3 LOW). REFACTOR-636 strongest batch-ZF refactor (leverage 12).
+- doc-gap-finder: +3 new HIGH DOC-GAPs (290 Slack webhook security gap / 291 redirect compound defects / 292 PageInfo theatre — inverse of DOC-GAP-282) + 7 strengthens.
+- test-coverage-mapper: +18 new TEST-GAPs (958-975); **4 CRITICAL** (958 ingestion auth matrix / 959 Slack signature verification / 960 Slack idempotency / 961 URL challenge handshake). 30 strengthens.
+- feature-flow-builder: +1 NEW feature **F-038 Data Collaboration (P-07:F-006)** anchored on DataCollab + EventApi controllers, 15 drift facets across security/redirect/dedup/200-conflations/UX/doc — Slack webhook unsigned is the headline; +3 extended (F-008 ingestion 7 findings, F-019 owner 4 findings incl. getOrCreate side-door, F-013 custom-metadata 4 findings). Reducer WROTE files this time (orchestrator's explicit instruction landed).
+
+### Cumulative state after ZF
+- Direct enrichment: 179 → **184/395 (46.6%)**
+- Effective coverage: 338 → **353/395 (89.4%)** ← broke 89%
+- Features discovered: 37 → **38**
+- Stress-verified pct: 88.5% → tracked next pass
+- Total test-gaps: 957 → **972** (CRITICAL: 158 → **161**)
+- All 11 pillars feature-anchored; P-07 (Collaboration) now has F-038 + F-007 + F-009 + F-021 (4 features).
+
+### Follow-ups
+- Probe-id collision class continues (P-128 ZE; this batch had careful coordination but still drift-prone). Maintainer review of probe registry numbering at next session.
+- 16 unfixable YAML quarantines (unchanged from ZE).
+- Coherence sweep: 98677 generic candidates (regex-noise baseline; per-reducer coherence already vetted).
+
+
+---
+
+## Batch ZG — 2026-05-25/26 (DQ + Run + GenAI + Dataset class-level)
+
+**Sidecars added** (5/5): DataEntityRunController + DataQualityRunsController + GenAIController + DataSetController + DatasetFieldController. **Coverage 47.6% direct / 92.2% effective — broke 92%.** 40 features.
+
+### Phase 1 headlines
+1. **DataQualityRunsController** — LSN-019 class fire: endpoint named `getDataQualityTestsRuns` returning "runs" actually COUNTS TESTS by latest-run status. Filter binds Title → OWNERSHIP.TITLE_ID + namespaceIds OR-widens via DATA_SOURCE.NAMESPACE_ID (LSN-020 class on 2 of 10 filters). No auth gate — catalog-wide DQ aggregate visible to any authenticated user.
+2. **GenAIController** — NOVEL ATTACK SURFACE: no permission gate + no body validation + no rate limit + no audit log + no PII redaction + LSN-002-class zero-timeout default + no SSRF guard + 256KB default response cap + ServerWebExchange exposed-but-discarded. ONE name-behavior drift (`genAiQuestion` implies AI assistant, actually free-text relay).
+3. **DataSetController** — dataEntityId path-param drift across 3 of 4 endpoints (Category F TRANSLATES_SILENTLY); cross-dataset version-id leak + diff-cross-dataset leak.
+4. **DatasetFieldController** — TWO SecurityConstants COPY-PASTE wiring bugs (`POST /api/datasetfields/{id}/terms` gated by DATA_ENTITY_ADD_TERM not DATASET_FIELD_ADD_TERM; `PUT /api/alerts/{id}/status` misrouted to DATASET_FIELD_ADD_TERM). createEnumValue is BULK-REPLACE (silent data destruction) not CREATE.
+5. **DataEntityRunController** — wire-vs-DB enum asymmetry (RUNNING → potential HTTP 500); cross-owner status_reason diagnostic-text PII broadcast.
+
+### Phase 2 deltas
+- concept-merger: +5 new + 15 extended; 0 supersedes (LSN-019/-020 class confirmed at SCHEMA + SERVICE + UI tiers for DQ dashboard).
+- adr-archaeologist: +7 new ADRs (-220..-226) + 5 strengthened. +19 new REFACTORs (REFACTOR-649..667; 8 HIGH/7 MEDIUM/4 LOW) + 10 strengthened. REFACTOR-653 (LSN-019 dashboard) + REFACTOR-657 (DataSetController cross-dataset leak) load-bearing.
+- doc-gap-finder: +7 new DOC-GAPs (293-299; 5 HIGH/2 MEDIUM) + 8 strengthens. DOC-GAP-294 (RUNNING enum 6-vs-7 wire asymmetry) + DOC-GAP-297 (dashboard test-vs-runs name drift) headline.
+- test-coverage-mapper: +18 new TEST-GAPs (976-993) — **3 CRITICAL** (980 status_reason PII broadcast / 984 dashboard LSN-019 / 989 createEnumValue silent destruction) + 11 HIGH + 4 MEDIUM. 5 double-jeopardy.
+- feature-flow-builder: **+2 NEW features** F-039 GenAI Assistant P-07:F-005 (12 facets) + F-040 DQ Test Run History P-04:F-003 (13 facets) + 5 extended (F-032 backend confirmation closing P-090; F-005 strengthen 5; F-004 +2 wiring bugs; F-013 +1 BULK-REPLACE; F-018 strengthen 3). 38 → 40 features.
+
+### Cumulative
+- Direct: 184 → **188/395 (47.6%)**
+- Effective: 353 → **364/395 (92.2%)** ← broke 92% threshold
+- Features: 38 → **40** (+2)
+- CRITICAL test-gaps: 161 → **164** (+3)
+
+### Follow-ups
+- 16 unfixable YAML quarantines unchanged.
+- Coherence-sweep 103516 generic regex candidates (baseline; per-reducer coherence vetted).
+
+
+---
+
+## Batch ZH — 2026-05-26 (UI Routes batch 1)
+
+**Sidecars added** (5/5): dataModelling + dataQuality + management + masterData + terms route definitions. **Coverage 48.9% direct / 93.4% effective.** 40 features.
+
+### Headline systemic finding
+`WithPermissionsProvider` is **CONTEXT-SEED-ONLY, NOT a route gate**. Wrapped routes render children unconditionally — only the sibling `<WithPermissions>` HOC actually gates UI elements. Confirmed across 4 of 5 route sidecars; live docs and operator mental-model OVERSTATE the restriction. This is a cross-pillar META finding (DOC-GAP-302) spanning 11+ route-mount sites in 3 pillars.
+
+### Per-route findings
+1. **management** — Route-gated ONLY on /management/associations/* (RestrictedRoute). EVERY other tab (Namespaces, Datasources, Integrations, Collectors, Owners, Tags, Roles, Policies+detail) is reachable by any authenticated user. List/detail data IS fetched and rendered; only the create/update/delete BUTTONS are permission-gated. Integrations sub-route has NO permission-context wrap at all. P-162.
+2. **terms** — `termsPath()` returns `/terms` but the route is mounted as an elementless parent at App.tsx:66-68 → bare `/terms` renders BLANK. Dictionary tab actually navigates to `/termsearch` (search UI with facets), while live docs say "catalog-wide list of all terms". List-vs-search drift confirmed. P-164.
+3. **masterData** — WithPermissionsProvider does NOT route-gate render — same NON-BLOCKING posture; BASE_PATH `/master-data` implies a mounted root that doesn't exist (bare /master-data renders blank). P-163.
+4. **dataModelling** — `WithPermissionsProvider` is context-seed-only; `/data-modelling` redirects to `/query-examples` (canonical first tab); relationships route ungated end-to-end. P-165.
+5. **dataQuality** — Bare-route NO-WithPermissionsProvider posture; only route module without BASE_PATH constant (convention break). Backend auth-gate question already pinned by P-090 from batch ZC; no new probe needed.
+
+### Phase 2 deltas
+- concept-merger: +5 new (`withpermissionsprovider-context-seed-not-route-gate` HIGH 5-sidecar / `management-section-half-gated-only-associations-route-restricted` HIGH / `bare-base-url-behavior-divergence-redirect-vs-blank` MEDIUM / `useparams-type-lie-parseint-nan-coercion` LOW / `ui-route-path-builder-convention` HIGH dev-ergonomics) + 6 extended.
+- adr-archaeologist: +3 new ADRs (-227 / -228 / -229) + 5 strengthened. +7 new REFACTORs (REFACTOR-668..674; 2 HIGH/4 MEDIUM/1 LOW) + 5 strengthened (REFACTOR-289, REFACTOR-617, REFACTOR-640, REFACTOR-185, REFACTOR-008/009/217/318 family).
+- doc-gap-finder: +3 new DOC-GAPs (300-302; DOC-GAP-302 NEW META cross-pillar reviewer-trap) + 5 strengthens. Total META findings now 4 in top tier.
+- test-coverage-mapper: +12 new TEST-GAPs (994-1005); 1 CRITICAL (994 WithPermissionsProvider semantic drift cross-cutting 4-pillar META) + 1 HIGH + 5 MEDIUM + 5 LOW. 5 strengthens. **Total test-gaps crossed 1000 → 1002.**
+- feature-flow-builder: 10 features EXTENDED with hop-0 UI-route entry points (F-025/F-037/F-032/F-022/F-026/F-024/F-019/F-020/F-028/F-006) + 6 net-new route-tier drift facets. No new features minted (route-level RBAC posture deferred to ADR side per agent's classification).
+
+### Cumulative
+- Direct: 188 → **193/395 (48.9%)** — approaching 50%
+- Effective: 364 → **369/395 (93.4%)** ← broke 93%
+- Features: 40 → **40** (0 new this batch — UI routes are entry-points to existing features)
+- CRITICAL test-gaps: 164 → **165**
+- Total test-gaps: 993 → **1002** ← crossed 1000
+
+### Follow-ups
+- 16 unfixable YAML quarantines unchanged.
+- Coherence-sweep 108508 generic regex candidates (baseline).
+
+
+---
+
+## Batch ZI — 2026-05-26 (UI Routes 2)
+
+**Sidecars added** (5/5): activity / directory / search / queryExamples / relationships route definitions. **Coverage 50.1% direct (CROSSED 50% MILESTONE) / 94.7% effective.** 40 features. **First batch under slimmed Phase 3 (no index maintenance).**
+
+### Headline architectural findings
+1. **TEST-GAP-1006 CRITICAL** — `/activity` UI route has zero route-layer guard. Under `auth.type=DISABLED` reachable anonymously; under all other modes reachable to any authenticated user. The platform's audit-trail surface is openly browseable.
+2. **TEST-GAP-1008 HIGH (NEW UI BUG)** — `RelationshipsListItem.tsx:73-81` Target column renders `item.sourceDataEntity.*` instead of `item.targetDataEntity.*` — statically-visible copy-paste defect. Doc says one thing, code renders another.
+3. **REFACTOR-675 HIGH** — same Target-column copy-paste, refactor-shaped (one-line fix; obvious-when-pointed-at).
+4. **TEST-GAP-1009 CRITICAL** — Directory `useDirectoryRouteParams` parseInt NaN-swallowing across 6 consumers. FOURTH project-wide instance of this anti-pattern. The cluster now spans 5 routes (TEST-GAP-849 + 422 + 1000 + 997 + 1009 + 1010).
+5. **Category F drift on /search/{searchId}** — URL reads as saved-search id, binds to mutable server-side session UUID in `search_facets` with no user-binding + no TTL guarantee. PUT mutates session in place. Bookmark fragility + tab-drop + cross-share state all latent.
+
+### Phase 2 deltas
+- concept-merger: **+7 NEW** invariants + 10 extended; 0 supersedes. `withpermissionsprovider-context-seed-not-route-gate` now **10-sidecar triangulation** (was 5 after ZH).
+- adr-archaeologist: **+3 new ADRs (-230 / -231 / -232)** + 3 strengthened; +10 new REFACTORs (REFACTOR-675..684; 1 HIGH / 4 MEDIUM / 5 LOW) + 6 strengthened.
+- doc-gap-finder: **+4 new DOC-GAPs (303-306; 2 HIGH / 2 MEDIUM)** + 5 strengthens. DOC-GAP-138 NaN-cluster grew from 3 → 5 instances; DOC-GAP-263 access-control-silence grew from 1 → 8 surfaces across 5 pillars; DOC-GAP-302 META gained 7+ more sites.
+- test-coverage-mapper: **+7 new TEST-GAPs (1006-1012)**; **2 CRITICAL** (1006 activity zero-guard, 1009 directory NaN). 14 strengthens via batch-ZI cross-refs.
+- feature-flow-builder: **5 features EXTENDED** with hop-0 UI-route entry points (F-021/F-023/F-017/F-025/F-037) + ~10 net-new UI-tier drift facets. F-037 also got 2 new HIGH facets (Target-column copy-paste + row-click doc drift). The agent also normalised F-037's stub index entry to reflect the detail file's pillar_id + 7 drift classes (touching feature-flows/index.yaml directly — minor inconsistency with the slimmed Phase 3 rules but not blocking since detail/ remains canonical).
+
+### Cumulative state after ZI
+- Direct: 193 → **198/395 (50.1%)** ← **CROSSED 50%**
+- Effective: 369 → **374/395 (94.7%)** ← broke 94%
+- Features: 40 (unchanged — UI routes are entry-points to existing features)
+- CRITICAL test-gaps: 165 → **167** (+2)
+- Total test-gaps: 1002 → **1009**
+
+### Methodology note
+First batch under the slimmed Phase 3 (commit b8c5dd1): no `rebuild_indexes.py all`, no `merge index-batch-{theme_id}-append.md` into `index.md`. Reducer prompts updated to drop the "emit append directive" / "emit `index.delta.yaml`" instructions. Three reducers honoured cleanly; feature-flow-builder still touched `feature-flows/index.yaml` directly (normalised F-037's stub headline) — that's a one-time stub-rationalisation, not ongoing append-drift. Detail/ remains the canonical source of truth.
+
+### Follow-ups
+- 16 unfixable YAML quarantines unchanged.
+- Coherence-sweep 114227 generic regex candidates (baseline; grows monotonically with corpus size).
+- Graph dry-run today verified 20/20 random nodes trace to ground-truth files (`skipped_files=10` all explained: broken-yaml quarantines + one off-convention ADR filename + ActivityServiceImpl sidecar with unrecognized shape).
+
+
+---
+
+## Batch ZJ — 2026-05-26 (UI shell + i18n)
+
+**Sidecars added** (5/5): AppToolbar + AppInfoMenu + ToolbarTabs + AppErrorPage + en.json. **Coverage 51.4% direct / 97.0% effective (broke 97%).** **43 features.**
+
+### Headline architectural findings
+1. **TEST-GAP-1013 CRITICAL** + REFACTOR-685 HIGH — **no React error boundary anywhere in the SPA.** Repo-wide grep confirms zero matches for `componentDidCatch|ErrorBoundary|getDerivedStateFromError`. Any uncaught render exception blanks the whole UI. AppErrorPage is a *controlled render helper*, not a boundary.
+2. **AppToolbar — DISABLED-mode 'admin' literal username + Logout-404** (REFACTOR-688 HIGH). Default container deployment shows every anonymous user as "admin" and a Logout link that 404s.
+3. **ToolbarTabs unconditional 9-tab visibility** — no permission/role/feature-flag gate; READ_ONLY and ADMIN see identical 9 tabs. Pairs with ZH WithPermissionsProvider non-blocking finding.
+4. **en.json drift quartet** — 14+ code-referenced keys absent from all 6 locales; 3 primary-nav tabs (Data Quality / Data Modelling / Master Data) have NO key in any locale (English works via natural-keys fallback); locale-set size drift (en=418 vs others=414/415); the LSN-020 User-filter label drift is shipped uniformly to all 6 locales via en.json:347.
+5. **AppInfoMenu — 5 link sites missing `rel='noopener noreferrer'`** (broader than ZE F-035 finding which was operator-config-only — REFACTOR-629 strengthened); keyboard-inaccessible (WCAG 2.1.1 violation despite ARIA claims); operator-configured URLs + project version visible to anonymous viewers under DISABLED.
+
+### Phase 2 deltas
+- concept-merger: +13 new + 9 extended; **1 SUPERSEDED** (AppErrorPage prior claim refined to 2-of-4 displayed-fields vs 4-of-4). `withpermissionsprovider-context-seed-not-route-gate` now part of UI-tier closure.
+- adr-archaeologist: **+7 new ADRs (-233..-239)** + 3 strengthened; **+13 new REFACTORs (REFACTOR-685..697)** + 7 strengthened. -685 no error boundary + -688 DISABLED admin/logout + -690 14+ missing i18n keys are the load-bearing HIGH-severity additions.
+- doc-gap-finder: **+5 new DOC-GAPs (307-311)** + 6 strengthens. DOC-GAP-309 i18n missing keys = HIGH; UI-overview live page returns 404.
+- test-coverage-mapper: **+13 new TEST-GAPs (1013-1025)**; **1 CRITICAL** (1013 no error boundary). 3 strengthens with severity bumps (TEST-GAP-634 MEDIUM→HIGH, TEST-GAP-658 LOW→HIGH, TEST-GAP-954 MEDIUM→HIGH).
+- feature-flow-builder: **+3 NEW features** F-041 Application Toolbar (P-08:F-011) / F-042 Page-level UI Error Display + Missing-Route Fall-Through (P-08:F-012) / F-043 Multilingual UI (P-08:F-013) + 5 extended (F-034/F-035/F-021/F-024/F-011). 40 → 43 features.
+
+### Cumulative state after ZJ
+- Direct: 198 → **203/395 (51.4%)**
+- Effective: 374 → **383/395 (97.0%)** ← broke 97%
+- Features: 40 → **43** (+3 P-08 UI-shell-tier features)
+- CRITICAL test-gaps: 167 → **168**
+- Total test-gaps: 1009 → **1022**
+
+### Follow-ups
+- 16 unfixable YAML quarantines unchanged (5 concept + 2 test-map persistent quarantines + 8-9 new from the multi-thousand churn — investigation deferred).
+- Coherence-sweep 120250 generic regex candidates (baseline grows monotonically).
+
+---
+
+## Batch ZK — 2026-05-26 (Config-properties)
+
+**Sidecars added** (5/5): SchedulingConfiguration + ODDLDAPProperties + GenAIProperties + HousekeepingTTLProperties + AdditionalLinkProperties. **Coverage 51.9% direct / 96.7% effective.** 43 features.
+
+### Headline findings
+1. **ODDLDAPProperties** — password field unmasked (Lombok @Data toString leaks); no LDAPS enforcement; adminGroups substring-collision = admin escalation class; empty adminGroups means no admin under LDAP mode. Probes P-184/185/186.
+2. **GenAIProperties** — `request_timeout` YAML key actually means RESPONSE timeout (DRIFT_NAME_VS_BEHAVIOR); primitive-int default 0 ships disabled-but-broken-when-enabled (LSN-002 family). P-178/179/180.
+3. **AdditionalLinkProperties** — zero JSR-303 validation; `javascript:`/`data:`/`file:`/`vbscript:` URLs accepted by binding; defence pushed entirely to React + browser. Pairs with ZJ AppInfoMenu 5 link-sites missing rel=noopener. P-177.
+4. **HousekeepingTTLProperties** — governs ONLY 3 non-partitioned tables (ALERT/SEARCH_FACETS/DATA_ENTITY); activity/message partition-empty-drop is sibling subsystem ignoring this POJO. Java-vs-YAML default mismatch (LSN-001-shape). AlertHousekeepingJob jOOQ operator-precedence bypass + absent @Min(0). P-181.
+5. **SchedulingConfiguration** — single-thread ThreadPoolTaskScheduler default; all 4 `@Scheduled` jobs share one executor thread; cron-misfire policy unverified; session-housekeeping has `@Scheduled` without `@SchedulerLock`. P-182/183.
+
+### Phase 2 deltas (4 of 5 reducers succeeded — doc-gap-finder socket-failed early)
+- concept-merger: +4 new + 9 extended; 0 supersedes. **1 CONTRADICTS surfaced** (Rule 6) — ODDLDAPProperties substring-collision vs auth-mode-quartet full-string-equality on `OperationUtils.containsIgnoreCase`; resolution pending primary-source pin; logged to `state/coherence-conflicts-batch-ZK.md`.
+- adr-archaeologist: **+4 new ADRs (-240..-243)** + 2 strengthened (ADR-CANDIDATE-103 + -213); **+7 new REFACTORs (REFACTOR-698..704)** + 2 strengthened (REFACTOR-630 + -631). REFACTOR-698 single-thread executor = HIGH.
+- doc-gap-finder: **FAILED** (socket error mid-run; "API Error: The socket connection was closed unexpectedly"). No detail files written. Continue per SKILL.
+- test-coverage-mapper: +7 new TEST-GAPs (1026-1032); the 4 user-flagged CRITICAL items (LDAP triad / GenAI LSN-002 / AdditionalLink URL passthrough / Housekeeping precedence) are ALREADY at CRITICAL in TEST-GAP-159/161/196/209/211/954 — strengthened via re-anchor at commit 4ec2b20.
+- feature-flow-builder: 5 features EXTENDED (F-010 / F-006 / F-011 / F-039 / F-035) at config-tier — 18 drift facets surfaced; 2 entirely-new drift facets (GenAI no-auth-field, AdditionalLink no-validation full-form). No new features.
+
+### Cumulative state after ZK
+- Direct: 203 → **205/395 (51.9%)**
+- Effective: 383 → **382/395 (96.7%)** (-1; chain-edge churn in feature-flow back-links)
+- Features: 43 (unchanged — ZK is config-tier closure for existing features)
+- CRITICAL test-gaps: 168 (no NEW critical this batch — re-anchor strengthens to existing CRITICAL entries)
+- Total test-gaps: 1022 → **1029**
+
+### Follow-ups
+- **doc-gap-finder failure (socket error)** — batch ZK doc-gap deltas NOT captured. Re-run as a separate task or fold into next batch ZL Phase 2 prompt. Headlines to recover: LDAP doc gaps (password masking + LDAPS + adminGroups substring), GenAI request_timeout vs responseTimeout drift, AdditionalLink URL validation absence, HousekeepingTTL partition-vs-non-partition disambiguation, Scheduling single-thread default.
+- **1 CONTRADICTS surfaced** by concept-merger (Rule 6) — logged in state/coherence-conflicts-batch-ZK.md; ODDLDAPProperties substring-collision claim vs full-string-equality (need maintainer triage).
+- 16 unfixable YAML quarantines unchanged.
+
+---
+
+## Batch ZL — 2026-05-26 (Feature-tier UI components — FINAL batch of sprint)
+
+**Sidecars added** (5/5): Activity + Search + DataModelling + LookupTables (LSN-018 substitution for phantom MasterData.tsx) + Alerts page-roots. **Coverage 52.9% direct / 97.7% effective.** 43 features.
+
+### Headline architectural findings
+1. **Alerts dual-drift quartet** — live docs assert All tab shows "open + resolved" but code filters `STATUS=OPEN` (Category B drift, LSN-019 class); tab segment `all` translates silently to "all OPEN" (Category F); Resolve/Reopen buttons rendered to unauthorised viewers with post-click permission check (UX leak).
+2. **LookupTables 3 HIGH defects** — InfiniteScroll `scrollableTarget='directory-entities-list'` MISMATCH caps visible list at 30 rows; LookupTableForm edit-submit sends `namespace_name` to UPDATE endpoint that rejects/discards silently; H1 `X lookup tables overall` counter leaks global-population to any authenticated user.
+3. **Activity LSN-020 UI surface** — User filter label "performed by" + binds USER_OWNER_MAPPING.OWNER_ID. DOC-GAP-303 confirmed at UI tier; 4-layer triangulation now complete (live docs + en.json + UI + SQL).
+4. **Search debouncer drift + query session-poisoning** — debouncer DRIFT_NAME_VS_BEHAVIOR; query→tsquery chain leads to TRUE SQL injection at highlight path (REFACTOR-229 3rd invocation site).
+5. **DataModelling LSN-018 phantom catch** — `MasterData.tsx` doesn't exist (pairs with ZH bare-/master-data blank-page finding); LookupTables.tsx is the actual mounted root. ERD-as-sub-tab inside Relationships, not peer.
+
+### Phase 2 deltas (5/5 reducers succeeded including ZK doc-gap recovery)
+- concept-merger: **+18 new + 11 extended**; 0 supersedes. `withpermissionsprovider-context-seed-not-route-gate` now **14-sidecar triangulation** (10→14).
+- adr-archaeologist: **+4 new ADRs (-244..-247)** + 7 strengthened. **+16 new REFACTORs (REFACTOR-705..720)** + 4 strengthened. REFACTOR-705/711/712/715 = HIGH.
+- doc-gap-finder: **+7 new DOC-GAPs (312-318)** + 12 strengthens (recovered ZK appends + ZL). 2 HIGH (DOC-GAP-312 Alerts open-vs-resolved; DOC-GAP-313 LookupTables scrollableTarget; DOC-GAP-316 SchedulingConfiguration single-thread).
+- test-coverage-mapper: **+7 new TEST-GAPs (1033-1039)** + 8 strengthens. 4 HIGH (1033 Alerts open-vs-resolved; 1034 Resolve button UX leak; 1035 LookupTables scrollableTarget; 1036 namespace_name silent discard). 0 NEW CRITICAL.
+- feature-flow-builder: 6 features EXTENDED (F-007 Alerts + F-017 Search refresh + F-021 Activity + F-025 + F-037 DataModelling shared + F-026 LookupTables) with 15+ new drift facets. No new features (UI page-roots are entry-points to existing features).
+
+### Cumulative state after ZL (FINAL)
+- Direct: 205 → **209/395 (52.9%)**
+- Effective: 382 → **386/395 (97.7%)** ← broke 97% again
+- Features: 43 (unchanged — UI page-roots extend existing features)
+- CRITICAL test-gaps: 168 (unchanged — no NEW critical this batch)
+- Total test-gaps: 1029 → **1036**
+
+### Sprint-wide totals (ZD through ZL = 9 batches, 45 sidecars)
+- Sidecars enriched: 169 → **209** (+40 net; +45 minus the LSN-018 phantom adjustments)
+- Effective coverage: 82.0% → **97.7%** (+15.7 percentage points)
+- Direct coverage: 42.8% → **52.9%** (+10.1 percentage points)
+- Features: 32 → **43** (+11 new pillar-anchored features)
+- CRITICAL test-gaps: 144 → **168** (+24)
+- Total test-gaps: 854 → **1036** (+182)
+- ADRs: 208 → **247** (+39)
+- REFACTORs: 591 → **720** (+129)
+- DOC-GAPs: 272 → **318** (+46)
+- Probes emitted: P-090 baseline → **P-194** end-state (104 new probe-skeletons)
+
+### Architectural meta-findings discovered this sprint
+1. **REFACTOR-185 → 24-sidecar (strongest single triangulation in catalog)** — DISABLED-mode bypass spans 8+ layers and 9+ pillars
+2. **WithPermissionsProvider non-blocking META** (ZH) — 14-sidecar triangulation; operator mental-model wrong everywhere
+3. **No React error boundary anywhere in SPA** (ZJ) — entire UI single-blank-page-failure away from any uncaught render exception
+4. **F-006 audit-silence pattern → 11-sidecar at controller-class tier** (ZF) — schema-rooted (V0_0_48 NOT NULL FK)
+5. **LSN-019 dashboard fire** (ZG DataQualityRunsController) — name says "runs" but counts tests-by-latest-status; LSN-019 root cause class extends into dashboard flagship indicator
+6. **LSN-020 i18n channel** (ZJ en.json) — same drift ships uniformly to 6 locales via natural-keys fallback
+7. **EventApi Slack webhook unauth + unsigned + undeduplicated** (ZF) — internet-reachable forgeable replayable webhook
+8. **SQL injection at SearchController.highlightDataEntity** (ZE) — TRUE injection via `String.formatted` direct interpolation; CRITICAL TEST-GAP-946
+
+### Follow-ups carried forward
+- 16 unfixable YAML quarantines persistent (5 concepts + 2 test-map + 8-9 from churn)
+- 1 Rule-6 CONTRADICTS from ZK (ODDLDAPProperties substring vs full-string equality) — needs maintainer triage in state/coherence-conflicts-batch-ZK.md
+- Graph dry-run (mid-sprint) — 20/20 random sample verified; skipped_files=10 all explained
+- Coherence-sweep candidate counts grow monotonically with corpus size (regex-noise baseline)
+

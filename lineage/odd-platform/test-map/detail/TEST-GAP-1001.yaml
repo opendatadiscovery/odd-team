@@ -1,0 +1,77 @@
+gap_id: TEST-GAP-1001
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform ts routes route:masterData"
+pillars_affected: [P-03, P-09]
+surfaced_by:
+  - 'masterData.md:security.known_security_gaps.[1] severity MEDIUM (9-permission backend model partially represented at the route mount)'
+  - 'masterData.md:docs_link_semantic.doc_drift_findings.[3] (Doc page mentions 9 permissions but the route gate lists only the 3 table-level permissions)'
+behaviour: |-
+  **MEDIUM — `/master-data/lookup-tables` route at App.tsx:75-88 wraps in `<WithPermissionsProvider allowedPermissions={[LOOKUP_TABLE_CREATE, LOOKUP_TABLE_UPDATE, LOOKUP_TABLE_DELETE]}>` — naming only THREE of the NINE Lookup-Tables-related permissions.**
+
+  The backend (per PolicyPermissionDto.java:80-88) defines a 9-permission model across THREE surfaces:
+  - **Table tier**: `LOOKUP_TABLE_CREATE`, `LOOKUP_TABLE_UPDATE`, `LOOKUP_TABLE_DELETE` (the 3 named at the route).
+  - **Definition tier** (column schema): `LOOKUP_TABLE_DEFINITION_CREATE`, `LOOKUP_TABLE_DEFINITION_UPDATE`, `LOOKUP_TABLE_DEFINITION_DELETE`.
+  - **Data tier** (rows): `LOOKUP_TABLE_DATA_CREATE`, `LOOKUP_TABLE_DATA_UPDATE`, `LOOKUP_TABLE_DATA_DELETE`.
+
+  **Why this is an audit-trail drift, not just a cosmetic enumeration**:
+  - An auditor reading App.tsx:75-88 in isolation believes the route is gated on 3 permissions and concludes "the Lookup Tables UI is gated by table-tier RBAC".
+  - The actual surface gates 9 permissions, but the OTHER 6 (definition + data tiers) are enforced (a) backend-side at `SecurityConstants.SECURITY_RULES` per the ReferenceDataController sidecar, AND (b) component-side INSIDE `LookupTables.tsx` and its descendants via `<WithPermissions>` wrappers.
+  - The asymmetry is invisible from the route declaration. The doc page at `https://docs.opendatadiscovery.org/features/master-data-management/lookup-tables` (WebFetched 2026-05-26 status 200) DOES enumerate "9 permissions on three surfaces — table, definition (the column schema), and data (the rows)" — so the doc is correct, but the route's apparent gate list is a partial enumeration that misleads grep-the-codebase audits.
+
+  **Compounding effect with TEST-GAP-994** (WithPermissionsProvider does not block rendering): the route claims to gate on 3 permissions but actually gates on NONE (per TEST-GAP-994). A reviewer correctly reads "3 permissions" but believes those gate the route; in reality the wrapper is context-only AND the permission list is incomplete.
+
+  **No test pins either symptom**:
+  - A regression that ADDS the 6 missing permissions to the route's `allowedPermissions` list (improving the audit trail visibility) ships green.
+  - A regression that REMOVES the 3 currently-named permissions (silently zeroing the partial audit trail) also ships green.
+test_class: missing-security
+criticality_rationale: |-
+  Sidecar rates this MEDIUM and held MEDIUM: (a) backend RBAC catches every actual mutation regardless of route-level permission list; (b) the doc page correctly enumerates the 9-permission surface; (c) defect is auditor-misleading, not user-affecting. Bumped from sidecar-rated LOW per Rule 3 cross-pillar amplification (`pillars_affected: [P-03, P-09]` — Master Data + Auth-and-Access). NOT escalated to HIGH because the live impact is bounded by (a) backend enforcement, (b) doc-side accuracy, and (c) the partial enumeration is INTERNALLY consistent (the 3 named ARE the canonical table-tier set; the omission is the other 6 tiers, not a wrong subset of table-tier).
+test_files_existing: []
+test_files_proposed:
+  path: 'odd-platform-ui/src/components/App/__tests__/lookupTablesRoutePermissionEnumeration.test.tsx'
+  name: 'lookupTablesRoute_namesOnly3of9Permissions_pinsAuditDrift'
+evidence:
+  - 'masterData.md says (security.known_security_gaps.[1]): The 9-permission backend model (LOOKUP_TABLE_{,DEFINITION_,DATA_}{CREATE,UPDATE,DELETE}) is partially represented at the route mount (only the 3 table-level permissions). The 6 definition/data permissions appear neither here nor in any per-component gate that an audit can grep for — they are enforced backend-side via SecurityConstants. An auditor reading the route would not discover the full RBAC surface from this file. severity: MEDIUM'
+  - 'masterData.md says (docs_link_semantic.doc_drift_findings.[3]): Doc page mentions 9 permissions across three surfaces but the route gate (App.tsx:79-83) lists only the 3 table-level permissions; the 6 definition / data permissions are neither route-listed nor doc-cross-linked to per-component gates inside the table-detail view. severity: LOW (consistent with backend-enforced fine-grained RBAC, but the route-level set looks like a partial enumeration)'
+  - 'Verified at primary source: App.tsx:75-88 (3 permissions listed) + PolicyPermissionDto.java:80-88 (9 permissions defined)'
+  - 'WebFetch verified (2026-05-26 status 200): /features/master-data-management/lookup-tables enumerates "9 permissions on three surfaces — table, definition, and data"'
+cross_references:
+  - 'TEST-GAP-994 (cross-cutting WithPermissionsProvider does not block — this gap compounds with that one)'
+  - 'concepts.yaml:entities[LookupTable] + REFACTOR-024 family (read-collaborative posture across the same surface)'
+proposed_action: |-
+  Add `lookupTablesRoutePermissionEnumeration.test.tsx`:
+
+  (a) `lookupTablesRoute_allowedPermissions_pinsThe3OfTablePermissions`: parse `App.tsx` (or import the route declaration directly) and assert the `allowedPermissions` prop on the LookupTables-route `WithPermissionsProvider` is EXACTLY `[LOOKUP_TABLE_CREATE, LOOKUP_TABLE_UPDATE, LOOKUP_TABLE_DELETE]` — pins the current enumeration; a future addition (e.g. adding `LOOKUP_TABLE_DEFINITION_CREATE`) breaks the test deliberately to force an audit pass.
+
+  (b) `lookupTables_innerGatesCoverThe6DefinitionAndDataPermissions`: snapshot every `<WithPermissions>` inside `components/LookupTables/**/*.tsx`; assert the COMPLETE set of `permissionTo` values mentioned across the subtree covers all 6 of `LOOKUP_TABLE_DEFINITION_{CREATE,UPDATE,DELETE}` and `LOOKUP_TABLE_DATA_{CREATE,UPDATE,DELETE}` (or pins the current state if some are not yet UI-gated). Catches the regression "we removed an inner gate AND didn't notice it was the only gate for that permission".
+
+  Add a comment at App.tsx:79 documenting: 'allowedPermissions here is intentionally the TABLE TIER ONLY (3 of 9 LOOKUP_TABLE_* permissions per the backend). The other 6 (DEFINITION + DATA) are enforced backend-side via SECURITY_RULES and component-side via <WithPermissions> in LookupTables.tsx descendants. If you change this list, also update TEST-GAP-1001.test and verify the inner <WithPermissions> still cover the remaining 6.'
+related_features: []
+related_pillar_features: ['P-03:F-001', 'P-09:F-006']
+related_refactor_ids: []
+related_doc_gap_ids: []
+batch: 2026-05-26-ZH
+feature_id: null
+strengthened_in: [2026-05-26-ZL]
+strengthened_evidence: |-
+  Batch ZL (2026-05-26): the LookupTables.tsx component sidecar
+  (odd-platform__ts__react-component__component__LookupTables.md)
+  triangulates the partial-enumeration finding from the
+  component-tier perspective. The new sidecar's
+  tests_coverage_semantic.uncovered_behaviours.[2] (HIGH security
+  test class): 'Visiting /master-data/lookup-tables with zero of
+  LOOKUP_TABLE_CREATE/_UPDATE/_DELETE renders the page (counter,
+  search, list) but hides the Add-new button — WithPermissionsProvider
+  at the route layer is NOT a gate (LSN-018 substitution-class
+  finding); the operator-visible consequence is that the page
+  renders unconditionally and only the Add-new button is hidden.'
+  This confirms two distinct issues compounded at this surface:
+  (a) the route's allowedPermissions list enumerates ONLY the 3
+  table-tier permissions (the original TEST-GAP-1001 finding); and
+  (b) the wrapper does not actually gate render (TEST-GAP-994
+  cross-cutting), so even if the list were complete the page would
+  render anyway. The two together mean an auditor cannot derive the
+  RBAC posture from any single file. P-193 emitted in batch ZL to
+  verify the zero-permission render path.

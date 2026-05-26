@@ -1,0 +1,191 @@
+name: Feature-flag set is BOOT-RESOLVED and IMMUTABLE
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-07
+  - P-08
+description: |-
+  NEW INVARIANT, batch ZE — FeatureResolverImpl.java:14, 16-31
+  captures the @Value-injected `datacollaboration.enabled` and
+  `notifications.enabled` booleans into a `private final
+  Set<Feature>` in the constructor:
+
+  ```
+  if (BooleanUtils.isTrue(dataCollaborationEnabled))
+    activeFeatures.add(Feature.DATA_COLLABORATION);
+  if (BooleanUtils.isTrue(notificationsEnabled))
+    activeFeatures.add(Feature.ALERT_NOTIFICATIONS);
+  this.activeFeatures = activeFeatures;
+  ```
+
+  The `final` modifier on the field is a COMPILE-TIME GUARANTEE
+  of immutability — not an oversight. The
+  `resolveActiveFeatures()` method (lines 33-36) wraps the SAME
+  set in a fresh FeatureList per call; the underlying set is
+  never recomputed.
+
+  CONSEQUENCE — runtime mutation of the config keys via
+  /actuator/refresh, JVM system properties update, or
+  environment-variable change is NOT reflected. An operator who
+  toggles `datacollaboration.enabled: true` in YAML and runs
+  /actuator/refresh would reasonably expect GET /api/features/active
+  to return the new state immediately, but it returns the boot
+  snapshot until the process restarts. The endpoint name
+  'getActiveFeatures' / 'active features' implies a
+  runtime-current view; the implementation is a boot snapshot.
+  Category B DRIFT_NAME_VS_BEHAVIOR (from sidecar
+  stress_findings.name_behavior_pairs[0]).
+
+  COORDINATED ROLLOUT — for an HA deployment, two replicas with
+  different boot times against the same config converge IFF
+  their config sources are uniform. A canary instance with
+  `datacollaboration.enabled=true` while stable replicas have
+  it false will return INCONSISTENT FeatureLists across the
+  cluster during the rollout window — the load-balancer-shuffled
+  UI session sees flicker on every App-component remount.
+  Acceptable for the current OSS-single-instance baseline; would
+  matter for production HA.
+
+  DOC GAP — neither configuration-and-deployment/odd-platform
+  nor the candidate /active-platform-features/data-collaboration
+  (404) nor /active-platform-features/alerting (404) document
+  the boot-snapshot semantics. An operator following the
+  hot-reload mental model would be silently misled.
+
+  ## STRENGTHENED batch 2026-05-25-ZF — @ConditionalOnDataCollaboration confirms boot-time bean registration is the underlying mechanism
+
+  Batch ZF's DataCollaborationController + EventApiController
+  class-level sidecars confirm the same boot-resolution semantics
+  at a complementary surface: the `@ConditionalOnDataCollaboration`
+  class-level annotation (DataCollaborationController.java:21 +
+  EventApiController.java:15) reads the SAME `datacollaboration.enabled`
+  property at BEAN-REGISTRATION TIME via
+  `DataCollaborationFeatureCondition.matches`
+  (`DataCollaborationFeatureCondition.java:18-22`).
+
+  When `datacollaboration.enabled=false`:
+    - DataCollaborationController bean is NOT registered
+      → all 3 routes (getSlackChannels / postMessageInSlack /
+      redirect) return **404 Not Found**
+    - EventApiController bean is NOT registered
+      → POST /api/slack/events returns **404 Not Found**
+
+  When `datacollaboration.enabled=true`:
+    - Both controller beans are registered at boot
+    - The routes become live
+
+  An operator toggling `datacollaboration.enabled` at runtime via
+  /actuator/refresh does NOT trigger bean re-registration —
+  Spring's @Conditional evaluation runs ONCE during context
+  refresh, not on each request. So the 404-vs-active state of
+  ALL FOUR routes is also a boot snapshot.
+
+  This is the SAME architectural decision as FeatureController's
+  immutable activeFeatures set: feature-flag resolution is a
+  ONE-TIME boot computation. The two surfaces are coherent.
+  Combined:
+
+    (a) `GET /api/features/active` returns the boot snapshot of
+        which features are enabled
+    (b) The /api/datacollaboration/* + /api/slack/events routes
+        are 404 OR live based on the boot snapshot of the same
+        flag
+
+  An operator following the hot-reload mental model who toggles
+  `datacollaboration.enabled` would see consistent behaviour on
+  BOTH surfaces (both incorrect from the hot-reload perspective):
+  /features/active returns the boot snapshot AND the routes
+  remain 404 OR live per the boot snapshot. Reload requires a
+  process restart.
+
+  ## ARCHITECTURAL COMMITMENT CONFIRMED
+
+  The pattern is the platform's coherent stance: feature flags
+  are boot-time decisions, not request-time. This composes with:
+    - `@ConditionalOnDataCollaboration` for the data-collaboration
+      feature (DataCollab + EventApi controllers)
+    - `@ConditionalOnProperty` for other features (e.g., the S2S
+      filter, the ingestion entity filter)
+    - The FeatureResolverImpl boot-resolved set for the
+      operator-facing /features/active endpoint
+
+  All three mechanisms read the SAME property keys at the SAME
+  Spring lifecycle phase. The platform-wide invariant is:
+  enable/disable decisions are boot-time AND immutable until
+  process restart.
+
+  Severity: LOW (operator-surprise; not security; not data loss).
+  Pairs with entity:active-feature-flag (the snapshot consumer)
+  and operation:get-active-feature-list-boot-snapshot (the
+  endpoint that ships it).
+axes_present:
+  - controllers
+  - config_consumers
+nodes:
+  - odd-platform java FeatureController controller-class:FeatureController
+  - odd-platform java DataCollaborationController controller-class:DataCollaborationController
+  - odd-platform java EventApiController controller-class:EventApiController
+contributors:
+  - 'FeatureController.md:concepts.invariants.[2] — set computed once at boot'
+  - 'FeatureController.md:implicit_adrs.[0] — boot-resolved immutable'
+  - 'FeatureController.md:bugs_limitations_corner_cases.[1] — runtime mutation ignored'
+  - 'FeatureController.md:stress_findings.name_behavior_pairs.[0] — DRIFT_NAME_VS_BEHAVIOR'
+  - |-
+    **BATCH ZF** DataCollaborationController.md (controller-class):
+    understanding §"The whole controller is class-gated by
+    @ConditionalOnDataCollaboration (line 21): when
+    datacollaboration.enabled is false (the application.yml default
+    at line 205), the bean is not registered and all three routes
+    return 404 Not Found" +
+    concepts.invariants.[0] (Class-level @ConditionalOnDataCollaboration
+    gates ALL three endpoints) +
+    implicit_adrs.[0] (Discussions ships disabled-by-default,
+    opt-in via a single property — datacollaboration.enabled)
+  - |-
+    **BATCH ZF** EventApiController.md (controller-class):
+    understanding §"The endpoint is gated by
+    @ConditionalOnDataCollaboration (EventApiController.java:15) —
+    the controller bean is not registered when
+    datacollaboration.enabled=false
+    (DataCollaborationFeatureCondition.java:18-22), so the route
+    404s by default"
+evidence:
+  - FeatureController.md:concepts.invariants.[2]
+  - FeatureController.md:implicit_adrs.[0]
+  - FeatureController.md:bugs_limitations_corner_cases.[1]
+  - |-
+    **BATCH ZF** DataCollaborationController.md:understanding +
+    concepts.invariants.[0] + implicit_adrs.[0]
+  - |-
+    **BATCH ZF** EventApiController.md:understanding +
+    requires-feature.[0] (datacollaboration.enabled=true — controller
+    bean not registered when false)
+  - |-
+    **BATCH ZF** Direct file evidence:
+    DataCollaborationFeatureCondition.java:18-22 (matches() reads
+    FeatureResolver.DATA_COLLABORATION_ENABLED_PROPERTY via the
+    environment at bean-registration evaluation time) +
+    FeatureResolver.java:6 (DATA_COLLABORATION_ENABLED_PROPERTY =
+    "datacollaboration.enabled") + application.yml:205 (default
+    `false`)
+related_features: []
+related_pillar_features:
+  - P-07
+  - P-08
+triangulation_count: 3
+cross_batch: true
+cross_batch_refs:
+  - batch-ZE (FeatureController — PRIMARY SOURCE)
+  - batch-ZF (DataCollaborationController + EventApiController — @ConditionalOnDataCollaboration confirmation)
+notes: |-
+  STRENGTHENED batch 2026-05-25-ZF — the @ConditionalOnDataCollaboration
+  class-gates on DataCollaborationController + EventApiController
+  show the COMPLEMENTARY mechanism: feature-flag resolution affects
+  BOTH /features/active (the snapshot endpoint) AND the routes the
+  feature controls (404 OR live). The pattern is architecturally
+  uniform across the platform's feature surface.
+
+  The boot-snapshot stance is INTENTIONAL — operators expecting
+  hot-reload behavior would be silently misled. Doc-side closure
+  should name the boot-resolution semantics explicitly so operators
+  know to expect process restart.

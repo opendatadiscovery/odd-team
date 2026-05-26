@@ -1,0 +1,82 @@
+gap_id: TEST-GAP-958
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java IngestionController controller-class:IngestionController"
+pillars_affected: [P-09, P-10, P-11]
+surfaced_by:
+  - "IngestionController__controller-class.md:tests_coverage_semantic.uncovered_behaviours.[0]"
+  - "IngestionController__controller-class.md:tests_coverage_semantic.uncovered_behaviours.[1]"
+  - "IngestionController__controller-class.md:coherence_check.strengthens.[0]"
+behaviour: |-
+  **CRITICAL — class-level 4-of-5 unauthenticated-in-all-modes matrix: NO test exists that runs IngestionController under multiple `auth.type` modes to demonstrate the 5-endpoint × 2-filter × 4-auth-mode reachability matrix.**
+
+  The current test profile fixes `auth.type=DISABLED` + `auth.ingestion.filter.enabled=false` (BaseIngestionTest.java) — meaning EVERY existing ingestion test runs against the most-open posture. The production-recommended postures (OAUTH2/LDAP/LOGIN_FORM × filter-enabled true × s2s-enabled true) are completely untested at this controller's class surface.
+
+  **The matrix the test absence preserves**:
+  - 5 endpoints (`postDataEntityList`, `createDataSource`, `getDataEntitiesByDEGOddrn`, `postDataSetStatsList`, `ingestMetrics`)
+  - × 4 auth modes (DISABLED, OAUTH2, LDAP, LOGIN_FORM)
+  - × 2 filter toggle values (`auth.ingestion.filter.enabled` true/false)
+  - × 2 s2s toggle values (`auth.s2s.enabled` true/false)
+  = 80-cell reachability matrix, ZERO cells covered.
+
+  **What the matrix would reveal**:
+  - 4 of 5 endpoints reachable unauthenticated under default deployment (only `createDataSource` requires a collector token).
+  - 3 of 5 endpoints (`postDataSetStatsList`, `ingestMetrics`, `getDataEntitiesByDEGOddrn`) REMAIN unauthenticated even with operator opt-in (`auth.ingestion.filter.enabled=true`), because `IngestionDataEntitiesFilter.java:28` hard-codes `POST /ingestion/entities` as exact-literal — does NOT match the other 3 paths.
+  - `SecurityConstants.WHITELIST_PATHS = {.., "/ingestion/**", ..}` (SecurityConstants.java:95-96) exempts the entire ingestion namespace from UI auth.
+  - Under the most-hardened deployment (OAUTH2 + s2s.enabled=true + filter.enabled=true), still 3 of 5 endpoints unauthenticated.
+
+  **Operator-misleading consequence**: the property name `auth.ingestion.filter.enabled` reads as 'protect ingestion globally'. The truth is 'protect one endpoint exactly'. Without a class-level test matrix pinning the gap, operators believing they've hardened the surface are wrong. The live docs at `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security` flag the gap; the bundled defaults + the test suite both reinforce silence.
+
+  **Distinguishes from existing IDs**:
+  - TEST-GAP-815 (CRITICAL) — covers `getDataEntitiesByDEGOddrn` only, single-endpoint unauth reach.
+  - TEST-GAP-823 (CRITICAL) — covers `ingestMetrics` only.
+  - TEST-GAP-819 — covers `postDataSetStatsList` only.
+  - TEST-GAP-618 — covers `createDataSource` vs `postDataEntityList` asymmetric posture (2 endpoints).
+  - TEST-GAP-116 — covers default-off `auth.ingestion.filter.enabled` semantics on the filter alone.
+  - TEST-GAP-579 — covers IngestionDataEntitiesFilter class default-OFF posture.
+
+  This entry is the **CLASS-LEVEL META-ANCHOR**: instead of 5 single-endpoint reachability tests, a single parameterised test (5 endpoints × 4 modes × 2 toggles × 2 toggles = 80 cells) holds the matrix as the regression contract. A future refactor that widens the filter path-matcher OR removes `/ingestion/**` from WHITELIST_PATHS surfaces as a green/red mass-flip across this one file rather than five.
+test_files_existing:
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/BaseIngestionTest.java"
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/LineageIngestionTest.java"
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/MetadataIngestionTest.java"
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/LoadIngestionTest.java"
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/DatasetVersionDiffTest.java"
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/DatasetFieldIngestionTest.java"
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/MetricsIngestionTest.java"
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/ingestion/IngestionControllerAuthMatrixTest.java"
+  name: "ingestionController_authMatrix_pinsFiveEndpoints_x_fourAuthModes_x_twoFilterToggles_x_twoS2sToggles"
+evidence:
+  - 'IngestionController.md says (tests_coverage_semantic.uncovered_behaviours.[0]): ''401 / 403 auth-failure paths across the 5 endpoints — NO test asserts that any of the 5 endpoints rejects an unauthenticated caller under any of the 4 auth modes. The test profile defaults to `auth.type=DISABLED` + `auth.ingestion.filter.enabled=false`, so ALL tests run against the most-open auth posture; the production-recommended postures (OAUTH2/LDAP/LOGIN_FORM × filter-enabled true) are completely untested at this controller''''s surface'' (criticality CRITICAL)'
+  - 'IngestionController.md says (tests_coverage_semantic.uncovered_behaviours.[1]): ''Class-level 4-mode auth disjointness — NO test exercises the same controller under multiple `auth.type` modes to demonstrate that ingestion behaviour is mode-independent (which is the CURRENT BUG — the 4 of 5 endpoints SHOULD be mode-dependent but are uniformly open)'' (criticality HIGH)'
+  - "Reducer-side Grep `auth.type=OAUTH2|@TestPropertySource.*auth.type` against `/home/raman/work/odd/odd-platform/odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/`: 0 hits (verified 2026-05-25 — every test runs auth.type=DISABLED)"
+  - "Verified at primary source: IngestionController.java:31-103 (5 methods); IngestionDataEntitiesFilter.java:28 (exact-literal POST matcher); SecurityConstants.java:95-96 (WHITELIST_PATHS includes /ingestion/**); application.yml:32-34 (auth.type=DISABLED default), :46-48 (auth.ingestion.filter.enabled=false default), :40-41 (auth.s2s.enabled=false default)"
+cross_references:
+  - "TEST-GAP-815 (CRITICAL — getDataEntitiesByDEGOddrn single-endpoint unauth reach; this class-level entry is the umbrella)"
+  - "TEST-GAP-823 (CRITICAL — ingestMetrics single-endpoint unauth reach; covered by the umbrella)"
+  - "TEST-GAP-819 (HIGH — postDataSetStatsList single-endpoint unauth reach; covered by the umbrella)"
+  - "TEST-GAP-618 (HIGH — createDataSource-vs-postDataEntityList asymmetric posture)"
+  - "TEST-GAP-116 (HIGH — default-off auth.ingestion.filter.enabled flag semantics)"
+  - "TEST-GAP-579 (HIGH — IngestionDataEntitiesFilter default-OFF posture)"
+  - "REFACTOR-185 (DISABLED-mode bypass cluster — the class-level umbrella here)"
+  - "REFACTOR-073 (ingestion-filter path coverage incomplete cluster)"
+  - "F-008 (Batch Ingestion — primary feature)"
+  - "LSN-001 (default-data-class-loss class — extended to class-level posture)"
+  - 'concepts/detail/invariants/two-ingestion-filters-asymmetric-auth.yaml (class-level anchor)'
+  - 'concepts/detail/invariants/default-off-ingestion-auth.yaml (the bundled-default decision)'
+related_features: [F-008]
+related_pillar_features: ["P-09:Security & Access Control", "P-10:F-001 Batch Ingestion (S2S API)", "P-11:Platform API & Developer Surface"]
+proposed_action: |-
+  Add `IngestionControllerAuthMatrixTest` — single parameterised WebTestClient test exercising 80 cells:
+
+  1. `@Test @ParameterizedTest @MethodSource("authMatrix")` — args (endpoint, authType, filterEnabled, s2sEnabled).
+  2. Boot the WebTestClient with `@SpringBootTest(properties={"auth.type=" + authType, "auth.ingestion.filter.enabled=" + filterEnabled, "auth.s2s.enabled=" + s2sEnabled})`.
+  3. For each endpoint, assert the EXPECTED reachability (e.g. `postDataEntityList` under DISABLED+filter=false+s2s=false → 200; `createDataSource` under any combination without collector token → 500 not 401; `postDataSetStatsList` under any combination → 201).
+  4. PIN the CURRENT behaviour as the contract; any future refactor that adds a `GET` matcher to `IngestionDataEntitiesFilter`, or removes `/ingestion/**` from WHITELIST_PATHS, surfaces as a deliberate decision via this file.
+  5. Document each cell with a `// REGRESSION-PIN` comment quoting the SecurityConstants line and the filter line that produces the cell's behaviour.
+
+  Coherence note (LSN-018 Rule 6): NET-NEW class-level META-ANCHOR. STRENGTHENS the 5 single-endpoint TEST-GAPs (815, 823, 819, 618, 116, 579) by holding them as a single matrix. NO conflicts surfaced — primary-source verified at IngestionController.java:31-103 + IngestionDataEntitiesFilter.java:28 + SecurityConstants.java:95-96.
+batch: 2026-05-25-ZF
+feature_id: F-008

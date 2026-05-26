@@ -111,6 +111,165 @@ batch_extensions:
     `no_type_validation_against_metadata_field_type`, and the
     audit/feature-doc gap on Custom Metadata. NO contradictions
     surfaced. NO supersedes.
+- batch: ZF
+  entry_point_added: |-
+    controller-class:MetadataFieldController — the READ-SIDE catalogue
+    surface of the Custom Metadata feature (the FIELD DEFINITION
+    directory `/api/metadata/fields`). F-013's existing chain is
+    anchored on the WRITE side (PUT /api/dataentities/{id}/metadata/{field_id}
+    + the auto-create side-channel via `getOrCreateMetadataFields`).
+    This batch adds the SECOND PILLAR of the feature: the read endpoint
+    that powers the UI's MetadataCreateFormItem autocomplete. The
+    read side carries THREE independent load-bearing defects that
+    F-013's existing write-side chain did not surface.
+  contributing_nodes_added:
+  - odd-platform java MetadataFieldController controller-class:MetadataFieldController
+  notes: |-
+    FOUR new findings surface from the read-side controller-class
+    sidecar. The headline is that the catalogue READ has no per-row
+    authorization gate, no pagination despite the schema advertising
+    PageInfo, and no operator-facing documentation. Listed in
+    descending architectural leverage:
+
+    (1) **NO PER-PERMISSION AUTHORIZATION GATE ON GET /api/metadata/fields**
+    (HIGH severity, NEW FINDING) — SecurityConstants.SECURITY_RULES
+    has NO entry for `/api/metadata/fields` (verified by Grep against
+    SecurityConstants.java 2026-05-25 — the SECURITY_RULES at lines
+    202-211 register only the per-VALUE PUT/POST/DELETE write paths;
+    the read endpoint has NO rule). The endpoint falls through to
+    `pathMatchers("/**").authenticated()` in AuthorizationCustomizer.java:29-30
+    (and equivalent in LoginFormSecurityConfiguration.java:57). Under
+    `auth.type=DISABLED` the endpoint is unauthenticated
+    (DisabledAuthSecurityConfiguration:16 `anyExchange().permitAll`).
+    Any authenticated user — regardless of policy / role / owner scope —
+    can enumerate the entire custom-metadata field schema of the
+    deployment, including field names that operators may have intended
+    to expose only to specific data-entity owners. The Permissions
+    docs (WebFetched 2026-05-25 status 200) confirm there is NO
+    CUSTOM_METADATA_FIELD_READ permission — only the per-value
+    DATA_ENTITY_CUSTOM_METADATA_{CREATE,UPDATE,DELETE} are documented.
+    STRENGTHENS F-013's existing `metadata_field_globally_unscoped`
+    drift facet at the READ-tier (existing facet was anchored on the
+    write-side scope absence). NEW drift facet:
+    `get_metadata_fields_unauthenticated_read_no_custom_metadata_field_read_permission_in_catalog`.
+
+    (2) **PAGINATION IS THEATRE — page_info IS HARDCODED, NO LIMIT/OFFSET/ORDER BY AT SQL LAYER**
+    (MEDIUM severity, NEW FINDING) — the response shape
+    `MetadataFieldList = {items, page_info: {total, hasNext}}`
+    (components.yaml:2111-2120) advertises pagination via the embedded
+    PageInfo, but the SQL chain at
+    ReactiveMetadataFieldRepositoryImpl.java:44-56 has NO `.limit(...)`,
+    NO `.offset(...)`, NO `.orderBy(...)` call. The full filtered
+    INTERNAL catalogue is materialised in one Postgres-heap-order
+    response. The mapper at MetadataFieldMapperImpl.java:29-33
+    hardcodes `total = items.length` and `hasNext = false` —
+    constant-mocked values describing the response, NOT the catalogue.
+    A caller using `page_info` to drive pagination cannot detect
+    overflow; the contract is misleading. The OpenAPI page (when
+    published) shows pagination as a feature; the implementation
+    does not provide it. NEW drift facet:
+    `metadata_field_list_pagination_theatre_no_limit_offset_order_by_hardcoded_page_info`.
+
+    (3) **EXTERNAL-ORIGIN FIELDS NEVER VISIBLE ON THIS WIRE SURFACE**
+    (LOW severity, NEW FINDING via class-level enumeration) —
+    ReactiveMetadataFieldRepositoryImpl.listInternalMetadata line 46
+    pins `METADATA_FIELD.ORIGIN.eq(MetadataOrigin.INTERNAL.name())`.
+    EXTERNAL-origin fields (populated via collector ingestion through
+    `ingestData` at lines 73-109) are NEVER visible on the read
+    surface, regardless of the query string. The METADATA_FIELD table
+    is shared between INTERNAL (operator-curated via UI) and EXTERNAL
+    (collector-ingested) origins; the two namespaces are unique-indexed
+    differently (per F-013 batch R findings:
+    `ix_unique_internal_name` on name where origin='INTERNAL' vs
+    `ix_unique_external_name_type` on (type, name) where
+    origin <> 'INTERNAL'). A user creating a custom metadata field
+    via the UI cannot see EXTERNAL fields with the same name —
+    leading to the silent collision pattern documented in F-013 batch
+    R `metadata_field_asymmetric_uniqueness_internal_name_vs_external_name_type`.
+    The read endpoint is the operator-visible window that REINFORCES
+    the asymmetry (the UI dropdown shows only INTERNAL; the operator
+    has no idea EXTERNAL fields exist). STRENGTHENS F-013 batch R
+    asymmetric-uniqueness finding at the READ surface.
+
+    (4) **NO LIVE DOC PAGE DOCUMENTS THE CUSTOM METADATA FEATURE END-TO-END**
+    (HIGH severity, NEW DOC-GAP candidate) — WebFetched 2026-05-25:
+    `https://docs.opendatadiscovery.org/active-platform-features/metadata`
+    returned 404; `/active-platform-features/custom-metadata` 404;
+    `/active-platform-features` (lists Activity Feed / GenAI /
+    Alerting / Notifications — does NOT include custom metadata).
+    The only metadata-related page in the documentation index is
+    `https://docs.opendatadiscovery.org/features/data-discovery/metadata-stale.md`
+    which documents the staleness indicator only — explicitly silent
+    on the catalogue, on INTERNAL vs EXTERNAL origin, on the
+    autocomplete behaviour, and on the auto-create-on-miss semantics.
+    The Permissions page (WebFetched 200) lists only the three
+    per-value write permissions and is silent on the catalogue read.
+    An operator wiring custom-metadata policy cannot find any
+    documentation explaining the cross-data-entity exposure of field
+    names. STRENGTHENS F-013 batch R `metadata_field_doc_gap_feature_absent_from_data_discovery_page`
+    with class-level confirmation that the documentation absence
+    spans the WHOLE feature (read + write + auto-create + EXTERNAL
+    ingestion + uniqueness rules) — not just the Data Discovery
+    landing page. Filed as DOC-GAP-NNN candidate (concept-merger /
+    doc-gap-finder downstream).
+
+    Coherence: STRENGTHENS F-013 batches L (write-side) + R
+    (registry-tier SQL primary source). NO contradictions surfaced.
+    NO supersedes. Pre-emit Rule-6 cross-registry check: finding 1
+    (no-permission-gate) is NEW (no STRENGTHENS to existing concept
+    IDs); findings 2-4 STRENGTHEN existing F-013 facets at the
+    read-tier scope. The read-side controller-class enumeration
+    triangulates the feature from THREE tiers: write (batch L) +
+    SQL-registry (batch R) + read-catalogue (this batch).
+- batch: ZG
+  entry_point_added: |-
+    controller-class:DatasetFieldController — batch-ZG addition of a
+    SIBLING-CLASS auto-replace surface that closely parallels F-013's
+    silent-UPDATE-not-UPSERT class. `POST /api/datasetfields/{id}/enum_values`
+    is a BULK-REPLACE endpoint NAMED `createEnumValue` (singular CREATE
+    verb) that silently soft-deletes any existing enum value not present
+    in the request body. The data-shape is identical to F-013's pattern:
+    operator submits a partial body expecting CREATE / UPDATE; the
+    implementation silently destroys data. Cross-link extending F-013's
+    class to a SECOND named-as-create-implemented-as-replace surface.
+  contributing_nodes_added:
+  - odd-platform java DatasetFieldController controller-class:DatasetFieldController
+  notes: |-
+    ONE new drift facet — the SIBLING-CLASS surface confirms F-013's
+    silent-overwrite pattern is NOT unique to custom metadata; it
+    recurs at every "operator submits a list, system bulk-replaces"
+    endpoint without per-row delta tracking.
+
+    (1) **createEnumValue IS BULK-REPLACE — Stress Cat B NAME-VS-BEHAVIOR
+    DRIFT** (HIGH severity, NEW DRIFT FACET on F-013 family) — Per
+    DatasetFieldController batch-ZG sidecar bugs_limitations_corner_cases[8]
+    + EnumValueServiceImpl.java:91-122. The operationId `createEnumValue`
+    (singular CREATE) + the OpenAPI summary "Enum Value CRUD" (which
+    hints at multi-action but does not explicitly say bulk-replace) +
+    the BulkEnumValueFormData body name (which IS honest about the
+    bulk shape) compose into operator confusion: a user (or a
+    third-party API consumer) sending a partial body to "add one enum
+    value" silently soft-deletes the other live values on the field.
+    Items with `id != null` → bulkUpdate; items with `id == null` →
+    bulkCreate; existing rows whose `id` is NOT in `idsToKeep` →
+    `softDeleteExcept(datasetFieldId, idsToKeep)`. The body IS the
+    desired state. The DatasetFieldEnumsForm.tsx UI at lines 90-105
+    correctly sends the FULL `data.enums` array (every item) avoiding
+    the trap; a third-party API consumer or a future UI refactor that
+    sends only the changed item would corrupt the data. Probe P-154
+    (authored by the sidecar) pins. NEW drift facet for F-013 family:
+    `dataset_field_enum_values_bulk_replace_named_as_create_silent_soft_delete_on_partial_body`.
+
+    Coherence: STRENGTHENS=1 (F-013's `silent_200_on_missing_pair` +
+    `spec_says_upsert_impl_does_update` + `active_column_dropped_to_null_on_update`
+    cluster — all share the data-shape of "operator-submitted body that
+    silently destroys/overwrites state outside the submitted scope").
+    NO supersedes, NO conflicts. The cross-link is at the CLASS level:
+    F-013 owns silent-UPDATE-not-UPSERT on per-field metadata VALUES;
+    DatasetFieldController.createEnumValue extends to per-field enum
+    VALUE LISTS. The remediation pattern is identical: server-side
+    delta tracking + explicit POST semantics (or rename to BULK-REPLACE).
+
 discovered_from_entry_point: rest:PUT /api/dataentities/{id}/metadata/{field_id}
 contributing_nodes:
 - odd-platform java DataEntityController controller-method:upsertDataEntityMetadataFieldValue

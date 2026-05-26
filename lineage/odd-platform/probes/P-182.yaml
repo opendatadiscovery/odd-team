@@ -1,0 +1,156 @@
+---
+probe_id: P-182
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__config__config-class__SchedulingConfiguration.md
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: null  # SchedulingConfiguration is platform-internal infrastructure
+test_class: integration
+verified_against_commit: ede5d277
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question: SchedulingConfiguration declares a JdbcTemplateLockProvider
+  with `.usingDbTime()` (SchedulingConfiguration.java:22). The intent: in
+  multi-replica deployments, two JVMs with potentially-skewed clocks both
+  race to acquire the same `@SchedulerLock` name (e.g. "housekeepingJob");
+  the lock arbitration is decided by PostgreSQL's `current_timestamp`, NOT
+  by either JVM's `Instant.now()`. Verify TWO load-bearing claims:
+
+    Q1: When two JVMs simultaneously call into the LockProvider for the same
+        lock name, only ONE succeeds. The other receives Optional.empty()
+        from the underlying ShedLock contract and the @SchedulerLock-annotated
+        method returns immediately without executing the body.
+
+    Q2: The `lock_until` value written into the `shedlock` table is
+        approximately PG's `now() + lockAtMostFor`, NOT the acquiring JVM's
+        `Instant.now() + lockAtMostFor`. Specifically: if one JVM is artificially
+        skewed +1 hour ahead of wall-clock and acquires the lock with
+        lockAtMostFor=14m, the shedlock row's lock_until should be PG.now() + 14m
+        (within a few seconds), NOT 1 hour 14 minutes from now.
+
+  These two properties together are the multi-replica safety contract of the
+  entire scheduled-task subsystem. A regression here would silently allow
+  housekeeping (and the data-entity ~25-table cascade) to run on two replicas
+  simultaneously — producing race conditions on the DataEntityHousekeepingJob
+  cascade (the AlertHousekeepingJob and SearchFacetsHousekeepingJob DELETEs are
+  idempotent; the data-entity cascade is NOT, see HousekeepingJobManager sidecar).
+
+---
+arrange:
+  - kind: docker-compose-up
+    services: [postgres]
+  - kind: sql
+    query: |
+      CREATE TABLE IF NOT EXISTS shedlock (
+        name       VARCHAR(64)  NOT NULL,
+        lock_until TIMESTAMP    NOT NULL,
+        locked_at  TIMESTAMP    NOT NULL,
+        locked_by  VARCHAR(255) NOT NULL,
+        PRIMARY KEY (name)
+      );
+  - kind: spring-test-harness
+    notes: |
+      Build a minimal Spring Boot test harness that:
+        (1) imports SchedulingConfiguration as-is (the LockProvider Bean +
+            @EnableSchedulerLock).
+        (2) does NOT activate @EnableScheduling — we drive the LockProvider
+            DIRECTLY rather than via a scheduled job, so we control the
+            invocation timing precisely.
+        (3) exposes a test helper that calls
+              lockProvider.lock(new LockConfiguration(
+                Instant.now(),
+                "probeTestLock",
+                Duration.ofMinutes(14),  // lockAtMostFor
+                Duration.ofMinutes(14)   // lockAtLeastFor
+              ))
+            and returns the Optional<SimpleLock>.
+
+      Two test cases:
+
+      CASE A (Q1 — two-JVM lock race):
+        Spawn TWO instances of the harness in parallel (two ProcessBuilders,
+        each running the same SpringApplication on different RANDOM ports;
+        both pointing at the same Postgres). Both processes call the
+        test helper simultaneously (synchronised via a shared filesystem
+        latch). Capture each process's stdout: it logs either
+        "ACQUIRED lockName=probeTestLock" or "MISSED lockName=probeTestLock".
+
+      CASE B (Q2 — DB-time arbitration):
+        Spawn ONE harness instance with the JVM clock artificially advanced
+        +1 hour via -Dprobe.clock.offset=PT1H (the harness's date provider
+        respects this offset for any Instant.now() calls inside it). After
+        the harness acquires the lock, query
+          SELECT lock_until - now() AS remaining FROM shedlock
+          WHERE name = 'probeTestLock';
+        Capture the remaining-duration value.
+
+act:
+  - kind: process-spawn
+    case: A
+    parallelism: 2
+    capture_as: caseAOutputs
+    capture_target: "the two processes' stdout lines containing ACQUIRED or MISSED"
+  - kind: process-spawn
+    case: B
+    parallelism: 1
+    capture_as: caseBSpawn
+    capture_target: "the single harness's stdout confirming lock acquisition"
+  - kind: sql
+    query: |
+      SELECT EXTRACT(EPOCH FROM (lock_until - now())) AS remaining_seconds
+      FROM shedlock
+      WHERE name = 'probeTestLock';
+    capture_as: remainingSeconds
+observe:
+  - kind: derived
+    expression: |
+      acquired_count = sum(1 for line in caseAOutputs if "ACQUIRED" in line)
+      missed_count   = sum(1 for line in caseAOutputs if "MISSED" in line)
+    capture_as: lockArbitrationOutcome
+assert:
+  - "lockArbitrationOutcome.acquired_count == 1"  # exactly one replica wins
+  - "lockArbitrationOutcome.missed_count == 1"    # the other gets nothing
+  # Q2: lock_until is PG-time-derived, NOT JVM-time-derived.
+  # Expected ~14 minutes = 840 seconds remaining (give or take ~30s for
+  # the round-trip latency between the SELECT and the original UPSERT).
+  - "remainingSeconds <= 870"   # 14 min + 30s tolerance
+  - "remainingSeconds >= 810"   # 14 min - 30s tolerance
+  # If the lock had been written using JVM-time with +1h skew, remainingSeconds
+  # would be ~14m + 3600s = ~4440s. The assertion above (≤870) catches the
+  # silent regression.
+cleanup:
+  - kind: sql
+    query: "DELETE FROM shedlock WHERE name = 'probeTestLock';"
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__config__config-class__SchedulingConfiguration
+    - odd-platform__java__service__service__HousekeepingJobManager
+  retrospectives: []
+realism_caveats: |
+  This probe pins TWO load-bearing semantics: (Q1) atomic lock arbitration
+  across simultaneous-replica acquisition, and (Q2) the DB-time invariant
+  established by `.usingDbTime()` at SchedulingConfiguration.java:22. A
+  regression in either would defeat the multi-replica correctness claim that
+  the live docs make about housekeeping (WebFetch 2026-05-26: "guarded by a
+  ShedLock so only one platform instance runs it at a time in a multi-instance
+  deployment").
+
+  What this probe does NOT verify:
+    - Lock-release semantics (does the lock release cleanly after the
+      @SchedulerLock method returns? does it release on exception?).
+      Future probe scope.
+    - Lock-takeover after lockAtMostFor expiry (if replica A crashes mid-cycle,
+      can replica B acquire after 14 minutes? requires a 14+ minute test run).
+      Future probe scope.
+    - Spring's TaskScheduler default thread-pool size — that's P-181's scope.
+    - The asymmetric session-housekeeping non-lock (no @SchedulerLock on
+      PostgreSQLSessionHousekeepingJobHandler) — not yet probed; the bug is
+      observed statically in the SchedulingConfiguration sidecar's
+      bugs_limitations_corner_cases.
+
+  Probe inputs deliberately use a unique lock name ("probeTestLock") so the
+  probe does not interfere with any running housekeeping cycle if executed
+  against a Postgres shared with a deployed platform.

@@ -3721,3 +3721,623 @@ The 14 scopes split as: **2 HIGH** (the latent-crash + the LSN-020 Title drift),
 
 **Severity**: LOW (consolidated) | **Category**: code-hygiene / polish / multi-facet | **Pillar**: P-04 | **Batch**: ZC
 **Full detail**: `lineage/odd-platform/refactoring-scopes/detail/REFACTOR-605.md`
+
+---
+artefact: refactoring-scopes-batch-append
+batch_id: ZD
+generated_at: "2026-05-25T13:30:00Z"
+generated_at_commit: 4ec2b20
+prompt_version: "adr-archaeologist/0.2.0"
+sidecars_consumed: 5
+new_sidecar_files:
+  - understanding/odd-platform__java__IdentityController__controller-class__IdentityController.md
+  - understanding/odd-platform__java__PermissionController__controller-class__PermissionController.md
+  - understanding/odd-platform__java__RoleController__controller-class__RoleController.md
+  - understanding/odd-platform__java__PolicyController__controller-class__PolicyController.md
+  - understanding/odd-platform__java__IntegrationController__controller-class__IntegrationController.md
+batch_ZD_summary: { added_scopes: 14, strengthened_scopes: 7, sidecars_consumed: 5, wisdom_test_reclassifications: 14 }
+new_refactor_ids: [REFACTOR-606, REFACTOR-607, REFACTOR-608, REFACTOR-609, REFACTOR-610, REFACTOR-611, REFACTOR-612, REFACTOR-613, REFACTOR-614, REFACTOR-615, REFACTOR-616, REFACTOR-617, REFACTOR-618, REFACTOR-619]
+strengthened_refactor_ids: [REFACTOR-062, REFACTOR-185, REFACTOR-188, REFACTOR-266, REFACTOR-267, REFACTOR-269, REFACTOR-545]
+new_scopes_by_severity: { HIGH: 4, MEDIUM: 7, LOW: 3 }
+coherence_check: { strengthens: 7, supersedes: 0, conflicts_surfaced: 0 }
+---
+
+# Refactoring scopes — batch ZD append (odd-platform — 2026-05-25)
+
+Directed RBAC + Identity + Integration class-level batch on `feature/ontology-finalize-2026-05-25`. Five new class-level sidecars enrich the **RBAC + Identity + Integration controller surface**: four RBAC-related class-level sidecars (`PolicyController`, `RoleController`, `PermissionController`, `IdentityController`) and the Integration Wizard surface (`IntegrationController`).
+
+**Wisdom-test outcome on 5 sidecars**: 3 ADR candidates emit (PASS — see `implicit-adrs/index-batch-ZD-append.md`); **14 wisdom-test reclassifications land here**.
+
+**Cross-cutting findings (batch ZD)**:
+- **(a) DISABLED-mode blast radius**: REFACTOR-185 strengthened to **15-sidecar triangulation** (was 11 after batch F) — all four batch-ZD sidecars confirm at class level. The IdentityController-class enrichment adds the IDENTITY-LAYER FACET (anonymous callers BECOME admin at SPA level under DISABLED, per the dummyOwner construction); the IntegrationController-class enrichment adds the INFORMATION-DISCLOSURE FACET (`platform_url` leak).
+- **(b) RBAC mutation stack forensic silence**: REFACTOR-188 strengthened with Policy + Role controller-class confirmations. The full RBAC mutation stack is now confirmed forensically silent across BOTH halves (Policy + Role) × THREE vertical tiers (controller + service + repository) = SIX-SIDECAR vertical/horizontal grid. The fix is SCHEMA-ROOTED (V0_0_48 NOT NULL data_entity_id FK).
+- **(c) Non-admin pagination-ignored asymmetry**: REFACTOR-269 now confirmed at controller-tier for both Policy + Role list endpoints — silent contract asymmetry by user role.
+- **(d) PolicyController lost-update + orphan-binding races**: REFACTOR-266 + REFACTOR-267 promoted to controller-tier primary source — the HTTP-boundary observability is now confirmed for both races.
+- **(e) Status-code drift cluster**: REFACTOR-545 strengthened with Policy + Role class-level confirmations — every Create + Update in the RBAC management half (6 endpoints) returns 200 against spec's 201.
+- **(f) Identity-bearing response no-Cache-Control**: REFACTOR-062 strengthened to identity-surface as well as token-rotation — recurring cross-cutting pattern.
+
+**Suggested sprint groupings**:
+- **"GenAI hardening sprint"** — REFACTOR-606 (Permission.values() dynamic expansion checkpoint, ahead of GenAI's permission-model expansion).
+- **"Authorization audit batch"** — REFACTOR-607 (whoami auth-mode probe doc); REFACTOR-608 (whoami audit silence); REFACTOR-609 (PermissionController audit silence); REFACTOR-617 (PolicyController read-side authorization gap — META-LAYER confidentiality exposure).
+- **"ControllerAdvice exception-mapping batch"** — REFACTOR-610 (PermissionServiceImpl missing-extractor) + REFACTOR-618 (PolicyJSONValidator IllegalArgumentException) — one-line fix benefits both.
+- **"Integration Wizard UX completion sprint"** — REFACTOR-611 (`installed: false` dead constant), REFACTOR-612 (204-on-missing-id), REFACTOR-613 (case-insensitive collision), REFACTOR-614 (boot fail-fast), REFACTOR-615 (`platform_url` placeholder), REFACTOR-616 (DISABLED anonymous leak), REFACTOR-619 (doc-side completion) — six co-surfaced gaps + the integrating doc-side fix.
+- **"DISABLED-mode hardening / docs batch"** — REFACTOR-185, REFACTOR-068, REFACTOR-607, REFACTOR-616 — all DISABLED-mode anonymous-disclosure surfaces; doc-side fix.
+
+---
+
+## REFACTOR-606 — `IdentityController.dummyOwner` uses `Arrays.asList(Permission.values())` — every new Permission auto-enters the DISABLED admin grant without code review
+
+**Severity**: HIGH
+**Category**: dynamic-blast-radius / missing-curated-allowlist
+**Surfaced by**: IdentityController.md:bugs_limitations_corner_cases.[0] + concepts.invariants.[4]
+**Statement**: `IdentityController.java:32` (`Arrays.asList(Permission.values())`) dynamically expands the under-DISABLED admin grant whenever a new Permission enum value is added to `components.yaml:158-235`. No authoring checkpoint exists.
+**Existing-ADR**: ADR-CANDIDATE-210 (NEW this batch) anchors the maintainer's intent ("DISABLED-mode admin should always be maximally-permissive"); REFACTOR-606 is the missing-checkpoint gap.
+**Proposed remedy**: Unit test asserting Permission enum contents against snapshot — addition triggers test failure, forcing explicit review. Alternative: curated `DISABLED_MODE_ADMIN_PERMISSIONS` constant.
+**Severity rationale**: HIGH — compounds with REFACTOR-185; every new Permission widens blast radius monotonically.
+**Suggested grouping**: GenAI hardening sprint.
+**Full detail**: `detail/REFACTOR-606.md`
+
+---
+
+## REFACTOR-607 — `GET /api/identity/whoami` is the canonical auth-mode probe surface — anonymous response shape discriminates DISABLED/LOGIN_FORM/OAUTH2/LDAP; not documented as such
+
+**Severity**: MEDIUM
+**Category**: enumeration-vector / undocumented-probe-surface
+**Surfaced by**: IdentityController.md:docs_link_semantic.doc_drift_findings.[3] + security.data_exposure.[1]
+**Statement**: An anonymous GET to /api/identity/whoami returns a different response shape per auth.type — an attacker can determine the platform's auth mode with a single anonymous request.
+**Existing-ADR**: ADR-CANDIDATE-024 (AppInfoController introspection-by-design) anchors deliberate auth-mode exposure for `/api/appInfo`; whoami's parallel is UNINTENTIONAL.
+**Proposed remedy**: Doc-side enumeration on `/disabled-authentication` page; optional rate-limit code-side.
+**Severity rationale**: MEDIUM — third anonymous-discoverable auth-mode signal (with REFACTOR-068 + REFACTOR-185); doc-side fix is cheap.
+**Suggested grouping**: Authorization audit batch.
+**Full detail**: `detail/REFACTOR-607.md`
+
+---
+
+## REFACTOR-608 — `IdentityController.whoami` emits zero application log lines — anonymous probes of the identity surface invisible in application logs
+
+**Severity**: HIGH
+**Category**: missing-audit / observability
+**Surfaced by**: IdentityController.md:bugs_limitations_corner_cases.[2]
+**Statement**: `IdentityController.java:19` declares `@Slf4j` but emits no log calls; `IdentityServiceImpl.java:30-52` also silent. Under DISABLED + default deployment, every anonymous probe of the identity-exposure surface is invisible in logs.
+**Existing-ADR**: REFACTOR-097 (cross-cutting no audit logging infrastructure) is the codebase-wide root cause.
+**Proposed remedy**: `log.info("whoami invoked: principal={}, remoteAddr={}", principal, exchange.getRequest().getRemoteAddress())` from IdentityServiceImpl; under DISABLED log `principal=ANONYMOUS_DUMMY_FALLBACK`.
+**Severity rationale**: HIGH — combined with REFACTOR-185 + REFACTOR-606 + REFACTOR-607, the under-DISABLED admin grant is COMPLETELY undetectable from logs.
+**Suggested grouping**: Authorization audit batch.
+**Full detail**: `detail/REFACTOR-608.md`
+
+---
+
+## REFACTOR-609 — `PermissionController` has NO `@Slf4j` / Logger / `log.*` call — privilege-enumeration surface silent
+
+**Severity**: MEDIUM
+**Category**: missing-audit / observability
+**Surfaced by**: PermissionController.md:bugs_limitations_corner_cases.[3] + concepts.invariants.[no-observability]
+**Statement**: `PermissionController.java:1-27` has zero observability. Authenticated callers iterating resource ids to enumerate elevated permissions leave no controller-tier trace.
+**Existing-ADR**: REFACTOR-097 cross-cutting.
+**Proposed remedy**: Add `@Slf4j`; `log.debug` per invocation with `(principal, resourceType, resourceId, returnedPermissionCount)`.
+**Severity rationale**: MEDIUM — privilege-enumeration is bounded to caller's own permissions per ADR-CANDIDATE-003; forensic gap not escalation gap.
+**Suggested grouping**: Authorization audit batch.
+**Full detail**: `detail/REFACTOR-609.md`
+
+---
+
+## REFACTOR-610 — `PermissionServiceImpl.getExtractor` throws `IllegalArgumentException` on missing extractor → ControllerAdvice catch-all → HTTP 500 (not 400)
+
+**Severity**: MEDIUM
+**Category**: error-mapping
+**Surfaced by**: PermissionController.md:bugs_limitations_corner_cases.[7]
+**Statement**: PermissionServiceImpl.java:47-48 throws `IllegalArgumentException("No extractor for resource type %s")`; ControllerAdvice has no `@ExceptionHandler(IllegalArgumentException.class)`; catch-all surfaces 500 SYS001 instead of 400 with the specific extractor name.
+**Existing-ADR**: none. Same root cause as REFACTOR-618 (PolicyJSONValidator); one-line ControllerAdvice fix benefits both.
+**Proposed remedy**: Add `@ExceptionHandler(IllegalArgumentException.class)` mapping to 400 USR001 with the message verbatim.
+**Severity rationale**: MEDIUM — developer-experience degradation; one-line fix.
+**Suggested grouping**: ControllerAdvice exception-mapping batch (compose with REFACTOR-618).
+**Full detail**: `detail/REFACTOR-610.md`
+
+---
+
+## REFACTOR-611 — `IntegrationMapper` hardcodes `installed: false` on every Integration / IntegrationPreview response — structurally dead OpenAPI required field; UI "Integrated" badge never renders
+
+**Severity**: MEDIUM
+**Category**: dead-code / contract-violation
+**Surfaced by**: IntegrationController.md:bugs_limitations_corner_cases.[0]
+**Statement**: `IntegrationMapper.java:27, 30` (`@Mapping(target = "installed", constant = "false")`); `components.yaml:64-70` declares `installed` REQUIRED; `IntegrationPreviewItem.tsx:44-51` conditionally renders an 'Integrated' badge on `{installed && (...)}` — dead branch.
+**Existing-ADR**: none. The platform should EITHER mark `installed` optional OR detect actually-installed integrations.
+**Proposed remedy**: Two paths — (a) detect actually-installed integrations via `DataSourceRepository` / Collector list cross-reference; (b) mark `installed` optional in spec, remove UI dead branch.
+**Severity rationale**: MEDIUM — every Integration card shows the badge slot but never renders.
+**Suggested grouping**: Integration Wizard UX completion sprint.
+**Full detail**: `detail/REFACTOR-611.md`
+
+---
+
+## REFACTOR-612 — `GET /api/integrations/{integration_id}` returns 204 No Content (not 404) on unknown id; undocumented in the OpenAPI contract
+
+**Severity**: MEDIUM
+**Category**: status-code-semantics / contract-typo
+**Surfaced by**: IntegrationController.md:bugs_limitations_corner_cases.[1]
+**Statement**: `ResourceFilesIntegrationRegistry.java:15-17` `Mono.justOrEmpty(registry.get(id))` returns `Mono.empty` on miss; Spring WebFlux translates to 204; OpenAPI declares only 200 at openapi.yaml:75-81.
+**Existing-ADR**: none. Codebase-wide convention is `NotFoundException` → 404 USR002.
+**Proposed remedy**: Add `.switchIfEmpty(Mono.error(new NotFoundException(...)))` in IntegrationServiceImpl.get; update openapi.yaml to declare 404.
+**Severity rationale**: MEDIUM — affects SDK clients, invisible to UI.
+**Suggested grouping**: Integration Wizard UX completion sprint.
+**Full detail**: `detail/REFACTOR-612.md`
+
+---
+
+## REFACTOR-613 — Wizard registry case-insensitive id collision silently merges (last-load-wins) — operator-overlay merge semantics undocumented
+
+**Severity**: LOW
+**Category**: silent-merge / undocumented-behaviour
+**Surfaced by**: IntegrationController.md:bugs_limitations_corner_cases.[3]
+**Statement**: `IntegrationRegistryFactory.java:32-37` TreeMap with case-insensitive comparator + last-wins merge. Two YAMLs with `Snowflake` + `snowflake` ids silently collapse based on jar load order.
+**Existing-ADR**: ADR-CANDIDATE-209 anchors plugin-extensibility commitment; this is the load-order non-determinism price.
+**Proposed remedy**: WARN log on collision; alternatively throw IllegalStateException (strictly stronger fail-fast).
+**Severity rationale**: LOW — requires authoring case-divergent ids; observable only by the wizard author.
+**Suggested grouping**: Integration Wizard UX completion sprint.
+**Full detail**: `detail/REFACTOR-613.md`
+
+---
+
+## REFACTOR-614 — Wizard boot fail-fast on malformed YAML — single corrupt overlay manifest aborts platform startup with no skip-and-continue
+
+**Severity**: LOW
+**Category**: missing-graceful-degradation / boot-fragility
+**Surfaced by**: IntegrationController.md:bugs_limitations_corner_cases.[4]
+**Statement**: `IntegrationRegistryFactory.java:48-50, 56-60` rethrows IOException as IllegalStateException; single corrupt YAML aborts boot.
+**Existing-ADR**: ADR-CANDIDATE-209 anchors deliberate fail-fast commitment.
+**Proposed remedy**: Replace re-throw with WARN log + Optional.empty(); alternatively add `-Dodd.platform.wizard.tolerate-malformed=true` opt-in switch.
+**Severity rationale**: LOW — operator-induced; fail-fast is documented intent per ADR.
+**Suggested grouping**: Integration Wizard UX completion sprint.
+**Full detail**: `detail/REFACTOR-614.md`
+
+---
+
+## REFACTOR-615 — Default `odd.platform-base-url=http://your.odd.platform` placeholder rendered into copy-pasted wizard snippets on a default deployment
+
+**Severity**: LOW
+**Category**: buggy-default / placeholder-leak
+**Surfaced by**: IntegrationController.md:bugs_limitations_corner_cases.[2]
+**Statement**: `application.yml:209` commented; `StaticArgumentMappingContext.java:16` `@Value default` resolves to literal placeholder `http://your.odd.platform`; rendered into every `platform_url` static snippet.
+**Existing-ADR**: none.
+**Proposed remedy**: Boot WARN log when value matches placeholder; doc-side `odd.platform-base-url` setup guidance.
+**Severity rationale**: LOW — placeholder is recognisable.
+**Suggested grouping**: Integration Wizard UX completion sprint.
+**Full detail**: `detail/REFACTOR-615.md`
+
+---
+
+## REFACTOR-616 — Under `auth.type=DISABLED`, the wizard registry (including operator-configured `platform_url`) is anonymously readable; an internal hostname configuration leaks to any network caller
+
+**Severity**: MEDIUM
+**Category**: info-disclosure / DISABLED-mode-blast-radius
+**Surfaced by**: IntegrationController.md:bugs_limitations_corner_cases.[6]
+**Statement**: Under DISABLED, `GET /api/integrations` returns every wizard manifest including substituted `platform_url`; if operators set `odd.platform-base-url` to internal hostname, the URL leaks anonymously.
+**Existing-ADR**: ADR-CANDIDATE-029 anchors DISABLED-as-default trade-off; REFACTOR-616 is the specific wizard-surface consequence.
+**Proposed remedy**: Doc-side `disabled-authentication` page expansion; optional IntegrationFilter parallel to IngestionDataEntitiesFilter.
+**Severity rationale**: MEDIUM — anonymous-discoverable internal URL recovery for production deployments where the property is set.
+**Suggested grouping**: DISABLED-mode hardening / docs batch.
+**Full detail**: `detail/REFACTOR-616.md`
+
+---
+
+## REFACTOR-617 — `GET /api/policies/{id}` + `GET /api/policies` + `GET /api/policies/schema` have NO SECURITY_RULES entry — confidentiality exposure of the RBAC system's own configuration to any authenticated user
+
+**Severity**: HIGH
+**Category**: missing-auth / confidentiality-exposure / meta-layer-blast-radius
+**Surfaced by**: PolicyController.md:bugs_limitations_corner_cases.[3] + [7]
+**Statement**: Three Policy read endpoints have no SECURITY_RULES entry; any authenticated user can enumerate every policy by id and read MANAGEMENT/ALL statements — useful reconnaissance for credential-theft escalation.
+**Existing-ADR**: ADR-CANDIDATE-003 (read-collaborative GET) anchors the architectural posture; REFACTOR-617 is the META-LAYER instance — most sensitive read in the catalog.
+**Proposed remedy**: Maintainer triage between (a) keep posture + doc-side expansion of `/authorization/policies` page, OR (b) add `POLICY_READ` permission + register SECURITY_RULES.
+**Severity rationale**: HIGH — RBAC system's own configuration is the most-sensitive read; observable today; under DISABLED + REFACTOR-185, anonymous-reachable.
+**Suggested grouping**: Authorization audit batch.
+**Full detail**: `detail/REFACTOR-617.md`
+
+---
+
+## REFACTOR-618 — `PolicyJSONValidator` throws `IllegalArgumentException("Policy is not valid: ...")` on schema failure → ControllerAdvice catch-all → HTTP 500 (`Internal Server Error`) instead of HTTP 400 with the validator's actual error message
+
+**Severity**: HIGH
+**Category**: error-mapping
+**Surfaced by**: PolicyController.md:bugs_limitations_corner_cases.[2]
+**Statement**: `PolicyJSONValidator.java:28-32` throws IllegalArgumentException; ControllerAdvice catch-all surfaces 500 SYS001; operators see no diagnostic clue at HTTP layer.
+**Existing-ADR**: none. Same root cause as REFACTOR-610; one-line ControllerAdvice fix benefits both.
+**Proposed remedy**: Add `@ExceptionHandler(IllegalArgumentException.class)` mapping to 400 USR001 with message verbatim.
+**Severity rationale**: HIGH — degraded operator experience on policy authoring; operators must read logs to fix malformed input.
+**Suggested grouping**: ControllerAdvice exception-mapping batch (compose with REFACTOR-610).
+**Full detail**: `detail/REFACTOR-618.md`
+
+---
+
+## REFACTOR-619 — Integration Wizard surface — auth posture, default-empty state, case-insensitive contract, status-code semantics, `installed: false` constant, `platform_url` placeholder — undocumented across all live doc pages
+
+**Severity**: MEDIUM
+**Category**: doc-code-drift / missing-operator-guidance
+**Surfaced by**: IntegrationController.md:docs_link_semantic.doc_drift_findings.[0..4] (5 separate drift findings)
+**Statement**: Five separate doc-side gaps form an INTEGRATED gap at the wizard surface — auth posture, 204-on-missing, installed:false, platform_url placeholder, case-insensitive contract; operators cannot get any of this from docs alone.
+**Existing-ADR**: ADR-CANDIDATE-209 (NEW this batch) anchors architectural commitments; this scope is the doc-side completion.
+**Proposed remedy**: Coordinated DOC-NNN sprint updating four live pages.
+**Severity rationale**: MEDIUM — doc-side completion for shipped feature.
+**Suggested grouping**: Integration Wizard UX completion sprint / Integration Wizard doc completion.
+**Full detail**: `detail/REFACTOR-619.md`
+
+---
+
+## Strengthened refactoring scopes (this batch — see strengthen-batch-ZD detail files)
+
+- **REFACTOR-062** strengthened with IdentityController identity-bearing whoami response — cross-cutting no-cache-control-on-sensitive-response pattern recurring. See `detail/REFACTOR-062-strengthen-batch-ZD.md`.
+
+- **REFACTOR-185** strengthened to **15-sidecar triangulation** (was 11 after batch F). Four batch-ZD class-level confirmations: Policy + Role mutations bypassed under DISABLED; IdentityController IDENTITY-LAYER FACET (anonymous becomes admin); IntegrationController INFORMATION-DISCLOSURE FACET (platform_url leak). The strongest single triangulation in the catalog. See `detail/REFACTOR-185-strengthen-batch-ZD.md`.
+
+- **REFACTOR-188** strengthened with Policy + Role controller-class-level confirmations. The full RBAC mutation stack is confirmed forensically silent across BOTH halves × THREE vertical tiers = 6-sidecar grid. Fix is SCHEMA-ROOTED (V0_0_48 NOT NULL FK). See `detail/REFACTOR-188-strengthen-batch-ZD.md`.
+
+- **REFACTOR-266** promoted to controller-tier primary source — lost-update race on PUT /api/policies/{id} now confirmed at the HTTP boundary; asymmetry with sibling Role updates exposed. See `detail/REFACTOR-266-strengthen-batch-ZD.md`.
+
+- **REFACTOR-267** promoted to controller-tier confirmation — orphan-binding race on DELETE /api/policies/{id} observable at HTTP boundary; compounds with REFACTOR-617 (read-side access to soft-deleted policies). See `detail/REFACTOR-267-strengthen-batch-ZD.md`.
+
+- **REFACTOR-269** strengthened with Policy + Role controller-tier confirmations. Non-admin pagination-ignored asymmetry is a CLASS-WIDE convention in PolicyService + RoleService. See `detail/REFACTOR-269-strengthen-batch-ZD.md`.
+
+- **REFACTOR-545** strengthened with Policy + Role class-level enumeration of 200-vs-201 drift. Cluster table now spans 13+ controllers; every Create+Update in the RBAC management half (6 endpoints) returns 200 against spec's 201. See `detail/REFACTOR-545-strengthen-batch-ZD.md`.
+
+## Refresh note — batch ZE (2026-05-25 — Discovery / Search / Links / Feature / Relationship / Title controller-class enrichment)
+
+Five new class-level sidecars enriched the read-surface bookend (P-01 Data Discovery + P-02 Data Modelling + P-04 Data Catalog + P-05 Ownership + P-06 Configuration). Per the Rule-0 wisdom test the batch is GAP-heavy as expected for an endpoint-deepening pass on read-collaborative surfaces: **13 new refactoring scopes** (REFACTOR-620..632) + **5 existing scopes STRENGTHENED**. The architectural framings landed in parallel as 4 new ADR candidates (`index-batch-ZE-append.md` under implicit-adrs/).
+
+**Coherence (Rule 6)**: cross-registry grep confirmed all new findings are SAME-polarity with the other registries:
+- `concepts/index.yaml` already carries the read-collaborative posture as an invariant; REFACTOR-626 (no authz on /api/relationships) is the new endpoint-anchored instance.
+- `feature-flows/` carries the search-session lifecycle (F-010 housekeeping) — REFACTOR-620 (hasNext bug) and REFACTOR-621 (suggestions determinism) are co-located.
+- `test-map` carries gaps on Title CRUD; REFACTOR-624 (case-sensitivity policy-leak) adds the security-class hardening to that cluster.
+- Zero CONTRADICTS surfaced.
+
+**Pre-emit coherence check (LSN-018) on the headline findings**:
+- REFACTOR-620 (hasNext: true hardcoded) — SAME-polarity with REFACTOR-319 (Term listByTerm hasNext: false hardcoded); both call for the shared `Page.of(items, total, page, size)` factory fix.
+- REFACTOR-626 (no authz on relationships) — SAME-polarity with REFACTOR-554 (Tag no SECURITY_RULES), REFACTOR-617 (Policies no SECURITY_RULES); all cluster under the read-collaborative-posture-or-gap maintainer triage.
+- REFACTOR-627 (relationship_id Category F drift) — SAME-polarity with REFACTOR-496 (getPopularTagList ids parameter LSN-020 shape); both call for input-name-cleanup.
+
+**Batch-ZE leverage ranking** (new entries; `triangulation_count × severity_weight`, HIGH=4/MEDIUM=2/LOW=1):
+1. **REFACTOR-620** — SearchResults hasNext: true hardcoded (HIGH; canonical contract bug on the platform's most-trafficked READ endpoint; UI hides; non-UI consumers broken) — leverage 4 × 1 = 4 (+ sibling-cluster strengthening)
+2. **REFACTOR-626** — RelationshipController zero authorization gate (HIGH; cross-tenant + EXCLUDE_FROM_SEARCH bypass; compound with REFACTOR-185 DISABLED) — leverage 4 × 1 = 4 (+ HIGH severity rationale already noted)
+3. **REFACTOR-627** — relationship_id path-param Category F drift (HIGH; third-party API contract drift; UI masks the bug) — leverage 4 × 1 = 4
+4. **REFACTOR-628** — relationships.data_entity_id no UNIQUE constraint (MEDIUM; schema-fragility under single-row reader) — leverage 2 × 1 = 2
+5. **REFACTOR-624** — Title.name no normalization → silent-policy-leak (MEDIUM; compounds with REFACTOR-206 cluster) — leverage 2 × 1 = 2
+6. **REFACTOR-623** — TitleController size unbounded + page=0 boundary (MEDIUM; Title-specific REFACTOR-020 instance) — leverage 2 × 1 = 2
+7. **REFACTOR-629** — AppInfoMenu target=_blank no rel=noopener (MEDIUM; UI security hygiene) — leverage 2 × 1 = 2
+8. **REFACTOR-630** — odd.links no URL-scheme validation (MEDIUM; defense-in-depth) — leverage 2 × 1 = 2
+9. **REFACTOR-632** — RelationshipMapper silent GRAPH_RELATIONSHIP default (MEDIUM; elevated from sidecar LOW) — leverage 2 × 1 = 2
+10. **REFACTOR-625** — FeatureResolverImpl SpEL no default → boot fail (LOW; sibling SpEL-no-default cluster) — leverage 1 × 1 = 1
+11. **REFACTOR-631** — LinksController boot-time immutable undocumented (LOW; doc-disclosure for ADR-CANDIDATE-213 NEW) — leverage 1 × 1 = 1
+12. **REFACTOR-621** — getSearchSuggestions no tiebreaker (LOW; UX-shaped) — leverage 1 × 1 = 1
+13. **REFACTOR-622** — getSearchSuggestions.entityClassId singular (LOW; feature-gap) — leverage 1 × 1 = 1
+
+The orchestrator re-ranks the global `## Top 20 by leverage` head over the COMBINED set; **REFACTOR-620, REFACTOR-626, REFACTOR-627** (each leverage 4 at HIGH severity) are the likely batch-ZE entries to enter the global Top 20. The cluster of MEDIUM-severity findings (REFACTOR-623..632) represents the read-surface hardening backlog — coupling well with the existing REFACTOR-020 / REFACTOR-185 / REFACTOR-206 / REFACTOR-229 / REFACTOR-344 clusters.
+
+<!-- NEW-HEADLINES-BELOW -->
+
+## REFACTOR-620 — `GET /api/search/{search_id}/results` returns `hasNext: true` REGARDLESS of remaining rows — `DataEntityServiceImpl.findByState:192` hard-codes `true`; third-party API consumers using the OpenAPI contract loop forever fetching empty pages
+
+**Severity**: HIGH
+**Category**: contract-bug + name-vs-behavior-drift (Category B)
+
+**Discriminating context**: `DataEntityServiceImpl.findByState:192` constructs `new Page<>(dtos, total, true)` with `true` hard-coded. The UI compensates client-side at `dataentitiesSearch.thunks.ts:62-63` with `hasNext: page * size < pageInfo.total`. Third-party API consumers reading the OpenAPI `DataEntityList.pageInfo.hasNext` field expect a derived boolean — they pagination-loop indefinitely. Sibling-inverse: REFACTOR-319 (TermServiceImpl.listByTerm has hasNext hard-coded `false`); both call for a shared `Page.of(items, total, page, size)` factory fix.
+
+**Full detail**: `detail/REFACTOR-620.md`
+
+---
+
+## REFACTOR-621 — `getSearchSuggestions` top-5 has NO secondary ORDER BY tiebreaker — equal-`ts_rank` rows are returned in storage/heap order, non-deterministic across queries on the same dataset
+
+**Severity**: LOW
+**Category**: missing-ordering (LSN-019-class)
+
+**Discriminating context**: `ReactiveDataEntityRepositoryImpl.java:498-499, 509` — the CTE's `ORDER BY rank DESC LIMIT 5` and the OUTER select's `ORDER BY rank DESC` both lack a secondary key. With 6+ entities at equal `ts_rank` the top-5 is non-deterministic across queries on the same dataset. UX-visible: operator types `users`, sees autocomplete dropdown flicker across keystrokes. Contrast with `getSearchResults` (line 962-966) which adds `DATA_ENTITY.ID DESC` as the deterministic tiebreaker. One-line fix.
+
+**Full detail**: `detail/REFACTOR-621.md`
+
+---
+
+## REFACTOR-622 — `getSearchSuggestions.entityClassId` is a single Integer — cannot filter multi-class entities by multiple classes; OR-filtering requires multiple round-trips + client-side de-duplication
+
+**Severity**: LOW
+**Category**: feature-gap (over-narrow parameter shape)
+
+**Discriminating context**: `SearchController.java:78` declares `final Integer entityClassId`; the SQL at `ReactiveDataEntityRepositoryImpl.java:482-484` wraps the single value into a 1-element array. The underlying column `DATA_ENTITY.ENTITY_CLASS_IDS` is `INTEGER[]` (multi-class support exists), but the parameter shape doesn't allow OR-filtering. UI today only exercises the single-class case; the gap is API-consumer-visible.
+
+**Full detail**: `detail/REFACTOR-622.md`
+
+---
+
+## REFACTOR-623 — `GET /api/titles` `size` parameter is unbounded; `page=0` and negative inputs produce HTTP 500 — the Title directory's caller-controlled amplification + the page-zero boundary
+
+**Severity**: MEDIUM
+**Category**: missing-validation (pagination boundaries)
+
+**Discriminating context**: TitleController.java:18-22 has raw `Integer page, Integer size` with no `@Min`/`@Max`; OpenAPI PageParam/SizeParam have no minimum/maximum; the inherited `ReactiveAbstractCRUDRepository.list` at line 91 does `(page-1) * size` with no Math.max guard. Title-specific instance of the cross-cutting REFACTOR-020 pattern. Fix is platform-wide (PageParam/SizeParam OpenAPI components) rather than per-endpoint.
+
+**Full detail**: `detail/REFACTOR-623.md`
+
+---
+
+## REFACTOR-624 — `Title.name` has NO length / pattern / case-normalization constraint at schema or service; Policy conditions like `dataEntity:owner:title == 'Data Steward'` silently miss `'data steward'`, `'Data  Steward'`, etc. → silent policy-leak class
+
+**Severity**: MEDIUM
+**Category**: missing-normalization (silent-policy-leak)
+
+**Discriminating context**: `title.name varchar(128)` at `V0_0_3__add_ownership.sql:4` has no CHECK constraint; `TitleServiceImpl.getOrCreate(name)` writes verbatim with no trim/case-fold/dedup. The directory accumulates `'Data Steward'`, `'data steward'`, `'DATA STEWARD'`, `'Data  Steward'`, etc. as distinct rows. Policy conditions on `dataEntity:owner:title == 'X'` are case-sensitive at the evaluator. Compound with REFACTOR-206: silent-policy-leak class — operator's GRANT intent silently misses cased-variants. Two-side fix: schema normalisation + Policy evaluator case-insensitivity.
+
+**Full detail**: `detail/REFACTOR-624.md`
+
+---
+
+## REFACTOR-625 — `FeatureResolverImpl` SpEL bindings use `${datacollaboration.enabled}` / `${notifications.enabled}` WITHOUT a SpEL-level default; a minimal externalised config override that removes either key BRICKS application startup with opaque `BeanCreationException`
+
+**Severity**: LOW
+**Category**: missing-default (boot-failure-risk)
+
+**Discriminating context**: `FeatureResolver.java:6-10` declares the SpEL constants as bare `${key}` with no `:default` suffix; the bundled `application.yml` supplies the defaults at `:172-173, 200-205` so stock deployments are SAFE. An externalised-config-override flow that removes the keys bricks startup with `Could not resolve placeholder`. Sibling SpEL-no-default cluster: REFACTOR-036 (attachment.max-file-size), REFACTOR-069 (auth.type AppInfoController), REFACTOR-098 (auth.type security configs). Cross-cutting fix at REFACTOR-073 (boot-time security-posture validator) would address all.
+
+**Full detail**: `detail/REFACTOR-625.md`
+
+---
+
+## REFACTOR-626 — `/api/relationships/**` has ZERO authorization gate at any layer — cross-tenant + EXCLUDE_FROM_SEARCH bypass; every authenticated user (or anonymous under DISABLED) sees every relationship in the catalog
+
+**Severity**: HIGH
+**Category**: missing-auth (catalog-graph cross-tenant exposure)
+
+**Discriminating context**: All three RelationshipController endpoints reach every relationship in the catalog regardless of owner-scope, namespace policy, EXCLUDE_FROM_SEARCH posture, or HOLLOW status. Verified across four layers: no @PreAuthorize, no SECURITY_RULES entry, no service check, no repository OWNERSHIP JOIN. The EXCLUDE_FROM_SEARCH asymmetry vs `/api/dataentities` is operator-actionable: an operator's deployment marking entities EXCLUDE_FROM_SEARCH=true to hide them from search STILL surfaces them via relationship endpoints. Cross-link ADR-CANDIDATE-215 NEW for the architectural framing + borderline_flag triage.
+
+**Full detail**: `detail/REFACTOR-626.md`
+
+---
+
+## REFACTOR-627 — `GET /api/relationships/erd/{relationship_id}` and `/graph/{relationship_id}` path parameter NAME promises the `relationships` table primary key; the SQL filter uses `data_entity.id` — Category F TRANSLATES_SILENTLY; third-party API consumers get 404
+
+**Severity**: HIGH
+**Category**: input-name-vs-implementation-drift (Category F)
+
+**Discriminating context**: `RelationshipController.java:31, 39` accept `relationshipId` path parameter; the SQL at `ReactiveRelationshipsRepositoryImpl.java:194` filters by `relationshipsDataEntity.field(DATA_ENTITY.ID).eq(relationshipId)` — the data_entity.id, NOT relationships.id. The list endpoint maps `.id(item.dataEntityRelationship().getId())` so UI round-trip works. Third-party API consumers reading the OpenAPI spec literally and supplying actual `relationships.id` values get 404. The `RELATIONSHIPS.ID` column IS available; the fix is renaming the parameter OR migrating both the SQL filter + list-mapper. Sibling LSN-020-class: REFACTOR-496.
+
+**Full detail**: `detail/REFACTOR-627.md`
+
+---
+
+## REFACTOR-628 — `relationships.data_entity_id` has NO UNIQUE constraint; the schema admits one relationship-class data_entity owning MULTIPLE `relationships` rows; the detail endpoint's `mono()` expects ONE — JOOQ-driver-specific behaviour on multi-match
+
+**Severity**: MEDIUM
+**Category**: schema-fragility (multi-row admissibility under single-row reader)
+
+**Discriminating context**: `V0_0_87__create_relation_tables.sql:1-10` declares `data_entity_id bigint` with only an FK constraint, no UNIQUE. `ReactiveRelationshipsRepositoryImpl.java:194-197` uses `mono(query)` expecting one row; on multi-match the behaviour is JOOQ-driver-specific (TooManyResultsException or silent first-row). No collector currently produces multi-row per the ingestion matrix, but a collector regression or manual SQL UPSERT could trigger it. Preferred fix: `UNIQUE (data_entity_id, relationship_type)` — admits one-ERD-plus-one-GRAPH-per-pair and makes the `mono()` contract-correct.
+
+**Full detail**: `detail/REFACTOR-628.md`
+
+---
+
+## REFACTOR-629 — `AppInfoMenu` renders operator-configured `odd.links` with `target='_blank'` but WITHOUT `rel='noopener noreferrer'` — every operator-configured URL can `window.opener` the ODD Platform tab to a phishing page (reverse tabnabbing)
+
+**Severity**: MEDIUM
+**Category**: missing-security-attribute (UI; reverse-tabnabbing)
+
+**Discriminating context**: `AppInfoMenu.tsx:60-66` renders each `odd.links` entry as `<Link to={link.url} target='_blank'>{link.title}</Link>` with no `rel` attribute. A compromised internal-wiki page (or a deliberately-configured malicious URL) can use `window.opener.location = 'phishing-site'` to silently redirect the ODD Platform tab. Modern browsers (Chrome 88+ / Firefox 79+) apply `noopener` by default — but only for raw `<a>` elements; `react-router-dom <Link>` may not propagate the semantic. One-line UI fix + ESLint `react/jsx-no-target-blank` rule activation.
+
+**Full detail**: `detail/REFACTOR-629.md`
+
+---
+
+## REFACTOR-630 — Neither the backend nor the UI validates URL scheme on `odd.links[].url` — an operator can configure `javascript:` or `data:text/html,...` URLs; React 17+ neutralises `javascript:` at runtime but `data:` URLs pass through
+
+**Severity**: MEDIUM
+**Category**: missing-validation (UI; URL-scheme allowlist)
+
+**Discriminating context**: `AdditionalLinkProperties.Link(String title, String url)` has no `@URL`/`@Pattern`/`@Validated` constraints; `LinksController.getLinks` passes URLs through verbatim. React 17+ and modern-browser top-level-navigation restrictions soften the realistic threat for `javascript:` URLs, but `data:text/html` URLs work for new-tab navigation and can mimic the ODD Platform UI for phishing. Defense-in-depth: backend `@URL(protocol="http")` annotation + UI scheme allowlist.
+
+**Full detail**: `detail/REFACTOR-630.md`
+
+---
+
+## REFACTOR-631 — `GET /api/links` is bound at BOOT and IMMUTABLE; runtime YAML / env changes to `odd.links` are silently ignored until process restart — undocumented in the live `odd-platform` configuration page
+
+**Severity**: LOW
+**Category**: missing-doc (boot-immutability)
+
+**Discriminating context**: `AdditionalLinkProperties` is `@ConfigurationProperties("odd")` bound at boot; `LinksController.linkProperties` is a `final` field. Hot-reload via `/actuator/refresh` is not supported (not @RefreshScope-annotated; refresh endpoint not exposed by default). The live `https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform` page does NOT explain the boot-immutability — operators reasonably expect YAML edits to take effect. Links-specific doc-disclosure instance of ADR-CANDIDATE-213 NEW platform-wide pattern.
+
+**Full detail**: `detail/REFACTOR-631.md`
+
+---
+
+## REFACTOR-632 — `RelationshipMapper` silently defaults to `GRAPH_RELATIONSHIP` for ANY `relationship_type` value that's not exactly `'ERD'`; the schema's `relationship_type varchar(256)` has no CHECK constraint — corrupted ingestion is admissible and silently mis-typed
+
+**Severity**: MEDIUM (elevated from sidecar LOW)
+**Category**: missing-validation + silent-default-bias
+
+**Discriminating context**: `RelationshipMapper.java:60-62` ternary classifies any row with `relationship_type != 'ERD'` as `GRAPH_RELATIONSHIP`. The "otherwise" branch absorbs null, lowercase variants, typos, future-schema-types, and corrupted-ingestion values. Schema `relationship_type varchar(256)` (per `V0_0_87__create_relation_tables.sql:7`) has no CHECK constraint. Two-step fix: schema CHECK + mapper fail-loud on unknown values. Today bounded by 1:1-collector-convention, but the silent-default-bias class is the gap.
+
+**Full detail**: `detail/REFACTOR-632.md`
+
+---
+
+## Refresh note — batch ZG (2026-05-25 — five new controller-class sidecars: DataEntityRunController + DataQualityRunsController + GenAIController + DataSetController + DatasetFieldController)
+
+Five new controller-class sidecars. Per the Rule-0 wisdom test: **19 new refactoring scopes** (REFACTOR-649..667), **10 existing scopes STRENGTHENED**. Zero coherence conflicts surfaced.
+
+**10 existing scopes STRENGTHENED**:
+
+- **REFACTOR-020** (unbounded `PageParam` / `SizeParam` across the platform) — DataEntityRunController's `size` param confirms; the 19th paginated surface in the catalogue. The repo test (`DataEntityRunRepositoryImplTest`) covers the in-range path; size=10M reaches the SQL unvalidated.
+- **REFACTOR-024** (cross-owner read-collaborative posture family) — FOUR new invocation sites this batch:
+  - DataEntityRunController per-entity run-history (`/api/dataentities/{id}/runs`) — 5th batch surface
+  - DataQualityRunsController catalog-wide DQ dashboard (`/api/dataqatests/runs`) — extends the AGGREGATE layer with quality posture
+  - DatasetFieldController GETs (`/enum_values` + `/metrics`) — extends to the COLUMN-GRAIN surface
+  - DataSetController 4 GETs (`/structure`, `/structure/{v}`, `/structure/diff`, `/relationships`) — extends to the dataset-structure read surface (column names, types, descriptions, lookup-table definitions, relationships are all cross-owner)
+- **REFACTOR-001/-002/-003/-004/-007/-014/-016/-019/-023** (GenAI family) — re-strengthened with the new GenAIController-controller-class sidecar (distinct node_id from the prior `org_opendatadiscovery_oddplatform_controller__controller__GenAIController` sidecar; deeper file-analyser/0.4.0 evidence + 2026-05-25 live-doc re-verification at `https://docs.opendatadiscovery.org/features/active-platform-features/genai`).
+- **REFACTOR-482** (TWO SecurityConstants wiring bugs at 295-299) — DatasetFieldController class-level sidecar reconfirms BOTH bugs:
+  - Bug A — `POST /api/datasetfields/{id}/terms` gated by `DATA_ENTITY_ADD_TERM` instead of `DATASET_FIELD_ADD_TERM` (the documented gate per live `/configuration-and-deployment/enable-security/authorization/permissions` 2026-05-25)
+  - Bug B — `PUT /api/alerts/{alert_id}/status` gated by `DATASET_FIELD_ADD_TERM` (copy-paste bug from the immediately-preceding dataset-field block)
+- **REFACTOR-439** (dataset_field verbatim XSS-class storage — F-004 family) — DatasetFieldController class-level sidecar reconfirms: `PUT /description` accepts verbatim Markdown/HTML/`<script>` payloads; ReactiveDatasetFieldRepositoryImpl.updateDescription does only empty-to-null normalisation. Defence-in-depth at the Markdown.tsx UI render layer (P-009) but cross-tab coverage unverified.
+- **REFACTOR-545** (spec/code 201-vs-200 drift cluster) — DatasetFieldController adds THREE new endpoint-level instances: PUT description, PUT name, PUT tags all return 200 while OpenAPI declares 201. Cluster size grows from 9+ to 12+ endpoint-level instances.
+- **REFACTOR-546 / REFACTOR-490** (LSN-019 family — name-vs-behaviour drift) — REFACTOR-653 NEW is the DQ-dashboard instance; co-related but on a different surface (the dashboard reads denormalised state per ADR-CANDIDATE-220 NEW; the doc says "count of test runs" but the SQL counts tests).
+- **REFACTOR-593** (titleIds → OWNERSHIP.TITLE_ID drift on DQ dashboard) — DataQualityRunsController controller-class sidecar reconfirms at the controller layer (the original sidecar was at the UI-filters surface; this batch adds the backend layer's confirmation; the LSN-020 class is now anchored at BOTH sides).
+- **REFACTOR-594** (namespaceIds OR widening on DQ dashboard) — same shape: controller-class sidecar reconfirms at the controller layer.
+- **REFACTOR-600** (DQ dashboard doc incomplete on multiple axes) — DataQualityRunsController controller-class sidecar adds the controller-level evidence for the TABLE-only restriction (ADR-CANDIDATE-222 NEW captures the architectural intent; REFACTOR-600 catalogues the doc-side gaps).
+
+**Coherence (Rule 6)**: cross-registry grep + Read confirmed all 19 new findings are SAME-polarity with the other registries — `feature-flows` F-022 already carries the per-entity test-report mention; `concepts/index.yaml` already lists `DATA_ENTITY_TASK_LAST_RUN` as a denormalised table; `test-map` already carries TEST-GAP entries for the un-tested DQ-dashboard SQL. Zero SUPERSEDES; zero CONTRADICTS. Twelve STRENGTHENS recorded against the existing entries above.
+
+**Batch-ZG leverage ranking** (new entries; `triangulation_count × severity_weight`, CRITICAL=8/HIGH=4/MEDIUM=2/LOW=1):
+
+| Rank | ID | Title (truncated) | Severity | Triangulation count | Score |
+|---|---|---|---|---|---|
+| 1 | REFACTOR-657 | Cross-dataset version_id leak via dataEntityId-ignored SQL | HIGH | 2 (controller + repo) | 8 |
+| 2 | REFACTOR-653 | DQ dashboard counts TESTS not RUNS (LSN-019 instance) | HIGH | 2 (doc + SQL) | 8 |
+| 3 | REFACTOR-661 | createEnumValue BULK-REPLACE silent data-loss on partial body | HIGH | 2 (service + UI defends) | 8 |
+| 4 | REFACTOR-663 | createEnumValue concurrency last-write-wins | HIGH | 2 (service + tx isolation) | 8 |
+| 5 | REFACTOR-664 | deleteTermFromDatasetField removes only manual links | HIGH | 2 (repo filter + UI surface) | 8 |
+| 6 | REFACTOR-649 | DataEntityRun wire-vs-DB enum asymmetry (mid-flight 500) | HIGH | 2 (DB enum + wire enum + mapper) | 8 |
+| 7 | REFACTOR-652 | DataEntityRun cross-owner status_reason free-form PII | HIGH | 1 (unique blast-shape) | 4 |
+| 8 | REFACTOR-650 | DataEntityRun NULL end_time NULLS-FIRST surprise | MEDIUM | 1 | 2 |
+| 9 | REFACTOR-656 | GenAI no max-in-memory-size codec default misuse | MEDIUM | 1 | 2 |
+| 10 | REFACTOR-658 | DataSetController diff endpoint 500-not-404 | MEDIUM | 1 | 2 |
+| 11 | REFACTOR-662 | createEnumValue replay-safe-for-state-not-audit | MEDIUM | 1 | 2 |
+| 12 | REFACTOR-667 | DQ dashboard JSONB no functional index | MEDIUM | 1 | 2 |
+| 13 | REFACTOR-654 | DQ dashboard Table Health SKIPPED ambiguity | LOW | 1 | 1 |
+| 14 | REFACTOR-655 | DQ dashboard combined owner+title AND-semantics | LOW | 1 | 1 |
+| 15 | REFACTOR-651 | DataEntityRun display-key vs sort-key drift | LOW | 1 | 1 |
+| 16 | REFACTOR-659 | DataSetController "Latest"=max(version) not max(created_at) | LOW | 1 | 1 |
+| 17 | REFACTOR-660 | DataSetController diff in-memory full-field load | LOW | 1 | 1 |
+| 18 | REFACTOR-666 | DatasetField per-request DB extractor round-trip no cache | LOW | 1 | 1 |
+| 19 | REFACTOR-665 | DatasetField description-edit dual events undocumented | LOW | 1 | 1 |
+
+The 19 new "## REFACTOR-NNN — headline" blocks are below the marker line for the orchestrator's awk-merge.
+
+---
+
+## REFACTOR-649 — DataEntityRunController returns HTTP 500 mid-flight: the runs-history endpoint mapper fails on any result-set row whose status is `RUNNING` because the wire enum `DataEntityRunStatus` has 6 values but the DB column `data_entity_task_run.status` accepts 7 (the `IngestionTaskRunStatus` enum)
+
+**Severity**: HIGH
+**Category**: wire-enum-asymmetry
+
+The DB column accepts SUCCESS|FAILED|SKIPPED|BROKEN|ABORTED|RUNNING|UNKNOWN (`IngestionTaskRun.java:28-36`); the wire enum declares SUCCESS|FAILED|SKIPPED|BROKEN|ABORTED|UNKNOWN (missing RUNNING, `components.yaml:1407-1415`). The mapper at `DatasetEntityRunMapper.java:13-14` flat-maps the String column to the wire enum target; MapStruct's String-to-enum conversion uses `Enum.valueOf()` which THROWS `IllegalArgumentException` on unknown literals. Hypothesis (P-151): the runs-history endpoint returns HTTP 500 whenever a RUNNING row is in the result set — i.e. EXACTLY when the operator wants to see the in-flight test on the page.
+
+## REFACTOR-650 — DataEntityRunController's runs-history list orders by `end_time DESC` with NO `NULLS FIRST/LAST` directive — Postgres default for DESC is NULLS FIRST → RUNNING rows (with end_time=NULL) appear at the TOP of the list, undated-looking with no visual signal
+
+**Severity**: MEDIUM
+**Category**: ordering-NULLS-FIRST-surprise
+
+The JOOQ paginate emits `ORDER BY end_time DESC` (`ReactiveDataEntityTaskRunRepositoryImpl.java:176-182`, `JooqQueryHelper.java:55-90`) with no NULLS directive. The UI labels each row by `startTime` (`TestRunItem.tsx:30`) with an empty Duration column when endTime is null — operator sees an undated-looking row at the top with no signal that it represents an in-flight test.
+
+## REFACTOR-651 — DataEntityRunController's UI sort key (`start_time`, leftmost rendered column) ≠ backend sort key (`end_time`); the two are correlated for typical fast runs but diverge for long-running tests (a run STARTED yesterday but ENDED today may appear ABOVE a run STARTED + ENDED earlier today)
+
+**Severity**: LOW
+**Category**: display-vs-sort-key-drift
+
+`TestRunsHistory.tsx:75-77` renders `startTime` in the leftmost column; backend SQL orders by `end_time` (`ReactiveDataEntityTaskRunRepositoryImpl.java:178`). For typical completed runs the two are correlated; for long-running tests the divergence is operator-visible.
+
+## REFACTOR-652 — DataEntityRunController's runs-history endpoint cross-owner-broadcasts `status_reason` — a free-form diagnostic text field commonly carrying Great Expectations / dbt / custom framework failed-row sample values (PII-bearing) — any authenticated user reads any data entity's run history including this text
+
+**Severity**: HIGH
+**Category**: cross-owner-pii
+
+REFACTOR-024 family extension to a NEW data shape. The runs-history payload includes `items[].statusReason` — a free-form string set by the test framework. Frameworks like Great Expectations emit failed-row sample values; dbt emits row counts; custom frameworks emit anything. Combined with cross-owner read posture (REFACTOR-024 confirmed at this surface in batch ZG), the field is a PII-broadcast channel.
+
+## REFACTOR-653 — Data Quality Dashboard's "Test Results Breakdown" ring counts TESTS keyed on latest-run-status, NOT test runs — contrary to the live doc's verbatim "count of test runs broken down by status" wording (LSN-019 class instance at the DQ-dashboard surface)
+
+**Severity**: HIGH
+**Category**: count-tests-vs-runs (LSN-019)
+
+`getLatestDataQualityRunsResults` joins `DATA_ENTITY_TASK_LAST_RUN` (PK on `task_oddrn`, one row per test per ADR-CANDIDATE-220 NEW). A test with 100 historical runs (99 SUCCESS, 1 latest FAILED) contributes 1 to FAILED — not 99/1. The dashboard cannot distinguish "one transient failure on a stable test" from "a test that fails every run". The doc says "count of test runs"; the implementation delivers "count of tests by latest-run status." Operator-visible mismatch.
+
+## REFACTOR-654 — Data Quality Dashboard's "Table Health" classification has a subtle SKIPPED ambiguity — a dataset with all-SUCCESS-but-one-SKIPPED latest runs classifies as WARNING (correct per CTE algebra) but operators may expect SKIPPED to be benign; the doc page does not disclose the rules
+
+**Severity**: LOW
+**Category**: operator-surprise-classification-rules
+
+HEALTHY CTE: `NOT EXISTS last_run WHERE STATUS != SUCCESS`. ERROR CTE: `EXISTS last_run WHERE STATUS in (BROKEN, FAILED) AND NOT in healthy`. WARNING CTE: fallthrough. A dataset with 10 tests where 9 latest-runs are SUCCESS and 1 is SKIPPED classifies WARNING (not HEALTHY because SKIPPED != SUCCESS; not ERROR because no BROKEN/FAILED). The doc page does not explain the rules.
+
+## REFACTOR-655 — Data Quality Dashboard filter combinations using BOTH `ownerIds` AND `titleIds` enforce same-ownership-row AND constraint — operator-surprising AND semantics across two distinct dimensions
+
+**Severity**: LOW
+**Category**: operator-surprise-AND-semantics
+
+`ReactiveDataQualityRunsRepositoryImpl.java:297-302` joins ONE `OWNERSHIP` row that must satisfy `OWNER_ID.in(ownerIds) AND TITLE_ID.in(titleIds)`. An operator selecting 'Owner: Alice' AND 'Title: Data Steward' sees ONLY datasets where Alice is specifically the Data Steward — NOT datasets where Alice is the owner under a different title, NOR datasets where someone else is the Data Steward. The SQL is consistent; the surface labels are operator-misleading.
+
+## REFACTOR-656 — GenAI's `genAiWebClient` builder does NOT call `.codecs(c -> c.defaultCodecs().maxInMemorySize(...))` — uses Spring WebFlux default 256KB; long-form LLM responses > 256KB fail with `DataBufferLimitException`; the application-wide `spring.codec.max-in-memory-size: 20MB` is NOT inherited
+
+**Severity**: MEDIUM
+**Category**: codec-default-misuse
+
+`WebClientConfiguration.java:26-29` builds the client without codec configuration. The app-wide YAML value (`application.yml:14-15`) applies only to default-Spring-codecs; per-WebClient builders must explicitly inherit. LSN-002-class regional analogue: an unset SDK builder parameter that ships silent misbehaviour rather than fail-fast at startup.
+
+## REFACTOR-657 — DataSetController's `dataEntityId` path parameter is documentation-only: the SQL filters by `versionId` only; an authenticated user can request `/api/datasets/X/structure/V` with V belonging to dataset Y and get Y's structure back (cross-dataset structure leak)
+
+**Severity**: HIGH
+**Category**: cross-dataset-leak
+
+`DatasetController.getDataSetStructureByVersionId` (line 28-30) consumes `dataEntityId` but drops it; only `versionId` reaches `ReactiveDatasetVersionRepositoryImpl.getDatasetVersion` which filters by `DATASET_VERSION.ID.eq(datasetVersionId)`. The diff endpoint has the same shape: `getDatasetVersionWithFields(List.of(firstVersionId, secondVersionId))` ignores dataEntityId entirely; SQL filters `DATASET_VERSION.ID.in(...)` only. Cross-dataset enumeration of dataset_version IDs (sequential bigserial) reveals every dataset's column-level structure (fields, types, tags, terms, lookup-table definitions). The available-but-unused column is `DATASET_VERSION.DATASET_ODDRN` — a one-line predicate (`AND DATASET_VERSION.DATASET_ODDRN = (SELECT ODDRN FROM DATA_ENTITY WHERE ID = :datasetId)`) closes the leak.
+
+## REFACTOR-658 — DataSetController's diff endpoint returns HTTP 500 for non-existent `version_ids` (`size != 2` falls through to bare `RuntimeException`) — operator cannot distinguish "wrong id" from "platform broken" from the status code
+
+**Severity**: MEDIUM
+**Category**: error-mapping-500-not-404
+
+`DatasetVersionServiceImpl.buildDataSetVersionDiffList` throws bare `RuntimeException('Query returned %s rows for diff request')` (lines 69-71) when one or both ids are missing. ControllerAdvice catch-all maps to 500. Identical-version_ids gets a clean 400 via `BadUserRequestException` (line 60); non-existent gets a 500. Asymmetric and operator-misleading.
+
+## REFACTOR-659 — DataSetController's "Latest" endpoint computes `max(DATASET_VERSION.VERSION)` not `max(created_at)`; correct under normal ingestion (`version` monotonic per `DatasetStructureIngestionRequestProcessor.incrementDatasetVersion`) but diverges after manual SQL fixup / replay / backfill
+
+**Severity**: LOW
+**Category**: latest-by-version-not-time
+
+`ReactiveDatasetVersionRepositoryImpl.getLatestDatasetVersion` (lines 160-217) selects the row matching `version = (SELECT max(version) FROM ...)`. The `created_at` column exists but is not referenced. After manual DB fixup or replay, the highest-version row may have an older `created_at` than another row; the endpoint returns the version-max row. Operator copying `/api/datasets/{id}/structure` with the expectation 'most-recently-ingested' is not exactly what the code returns under those conditions.
+
+## REFACTOR-660 — DataSetController's diff endpoint loads 2 versions' full field lists in-memory for recursive parent-oddrn change detection (`DatasetVersionServiceImpl.getParentOddrnChangedPojos:156-180`); no streaming, no pagination, no row-count guard; very-wide schemas (10K+ fields) materialise everything
+
+**Severity**: LOW
+**Category**: memory-bound-diff-no-streaming
+
+The recursive change-detection allocates `versionToFieldsMap`, `firstVersionFields`, `secondVersionFields`, `versionDiffFields` per call — 4 maps over the union of both versions' fields. For very-wide datasets (hundreds-of-thousands of nested fields), this is a memory-bound operation.
+
+## REFACTOR-661 — DatasetFieldController's `createEnumValue` is BULK-REPLACE-AS-STATE (per ADR-CANDIDATE-226 NEW): a partial body silently soft-deletes the omitted live enum values; a third-party API consumer or a future UI refactor sending only the changed item will corrupt the data
+
+**Severity**: HIGH
+**Category**: replace-as-state silent-data-loss
+
+`EnumValueServiceImpl.java:91-122` partitions input by `id != null`, then `softDeleteExcept(datasetFieldId, idsToKeep)` removes every existing row whose id is NOT in the request. Submitting `{"items": [{"value": "NEW"}]}` (one item, no ids) against a field with 3 existing items soft-deletes the other 2. The DatasetFieldEnumsForm at `DatasetFieldEnumsForm.tsx:90-105` correctly sends the FULL `data.enums` array — the UI is the operative defence; the wire contract has no warning. ADR-CANDIDATE-226 NEW captures the architectural intent; THIS REFACTOR captures the operator-facing data-loss hazard the intent creates.
+
+## REFACTOR-662 — DatasetFieldController's `createEnumValue` is replay-safe-for-state but NOT for audit-trail: identical bodies twice produce the same visible state but DIFFERENT row identities (the second call's softDeleteExcept removes the first call's rows; bulkCreate makes new ones); auditors using row ids lose the chain
+
+**Severity**: MEDIUM
+**Category**: audit-trail-replay-churn
+
+`EnumValueServiceImpl.java:91-122` always runs `softDeleteExcept` then `bulkCreate` on INTERNAL-origin rows. Identical resubmits churn row ids; each call emits its own `DATASET_FIELD_VALUES_UPDATED` activity event. Operators inspecting the activity feed see two events with no state diff; auditors using `enum_value.id` to correlate events lose the chain across the resubmit.
+
+## REFACTOR-663 — DatasetFieldController's `createEnumValue` has NO concurrency control — two concurrent POSTs against the same `datasetFieldId` produce silent last-write-wins; both READ-COMMITTED transactions softDeleteExcept-then-bulkCreate; whichever commits LAST wipes the other's writes
+
+**Severity**: HIGH
+**Category**: data-loss-on-concurrent-write
+
+`EnumValueServiceImpl.java:39-82` runs inside `@ReactiveTransactional` at READ-COMMITTED isolation. Two concurrent submits: T1 reads state, softDeleteExcept its idsToKeep, bulkCreates its body, commits → T2 reads pre-T2 state (which includes T1's writes by now), softDeleteExcept ITS idsToKeep (which doesn't include T1's new ids), bulkCreates ITS body, commits → T1's writes are GONE. No optimistic-lock version, no advisory lock at `dataset_field_id`, no SERIALIZABLE isolation. Two operators editing the same field's enum values concurrently silently lose one set. Cross-link REFACTOR-586 (data_source no optimistic lock) and REFACTOR-210 (data-entity status concurrent PUTs) — same shape on a third resource type.
+
+## REFACTOR-664 — DatasetFieldController's `deleteTermFromDatasetField` removes only MANUAL term-links (`IS_DESCRIPTION_LINK.isFalse()` filter at `TermRelationsRepositoryImpl.java:179`); a term linked via BOTH the `[[ns/name]]` description marker AND the explicit POST /terms has TWO rows; DELETE returns 204 but the description-link row survives → term remains visible in the linked-terms tab
+
+**Severity**: HIGH
+**Category**: cascade-incomplete operator-surprise
+
+The DELETE filter is deliberate (ADR-CANDIDATE-064/108 — description-link coexistence); the architectural intent is sound. The gap is operator-surprise: the endpoint description ('Delete term from current dataset field terms list') does not warn that the deletion may be PARTIAL when the term is also referenced in the description body. Remedy is for the operator to edit the description and remove the marker — but the operator must KNOW to do this. The endpoint should warn (response body or error message) when the deletion is partial.
+
+## REFACTOR-665 — DatasetFieldController's description-edit dual activity-event semantics (one `DATASET_FIELD_DESCRIPTION_UPDATED` + one `DATASET_FIELD_TERM_ASSIGNMENT_UPDATED`) is NOT documented at the live activity-feed page — operators reading the feed see two rows with same actor + timestamp and may infer two distinct user actions
+
+**Severity**: LOW
+**Category**: dual-event-undocumented
+
+ADR-CANDIDATE-225 NEW captures the architectural intent (the dual emission is deliberate); this REFACTOR captures the doc-side gap. The live page (`/features/active-platform-features/activity-feed#event-types`) lists both event types but does not state that ONE description-edit emits BOTH events when the new text contains term markers.
+
+## REFACTOR-666 — DatasetFieldController's per-request DB round-trip via `DatasetFieldResourceExtractor.extractResourceId` runs the 3-table join (`dataset_field → dataset_structure → dataset_version → data_entity`) BEFORE every authorized request; no cache; for high-edit-frequency users (data-curators bulk-editing column metadata) this is one extra round-trip per request beyond the operation itself
+
+**Severity**: LOW
+**Category**: per-request-DB-round-trip-no-cache
+
+ADR-CANDIDATE-224 NEW captures the architectural intent (parent-scoped authorization is the deliberate model); this REFACTOR captures the perf-side gap. A short-TTL cache keyed on `dataset_field_id → parent data_entity_id` would close the gap without changing the model.
+
+## REFACTOR-667 — Data Quality Dashboard's JSONB path extract `specific_attributes->'DATA_QUALITY_TEST'->'expectation'->>'category'` is recomputed at every query — no functional index visible in the migration history; for a catalog with hundreds of thousands of data entities the index absence means each dashboard query does a Seq Scan + per-row JSONB extract
+
+**Severity**: MEDIUM
+**Category**: jsonb-no-functional-index
+
+`ReactiveDataQualityRunsRepositoryImpl.java:46-47` extracts the category JSONB path; `grep -i 'CREATE INDEX.*specific_attributes' <odd-platform>/odd-platform-api/src/main/resources/db/migration/` returned no DQ-category-specific index (2026-05-25 audit). A `CREATE INDEX ... ON data_entity ((specific_attributes->'DATA_QUALITY_TEST'->'expectation'->>'category'))` would convert this to an index scan. Compounds with the no-debounce UI surface — every filter change re-runs the seq scan.
+
+---

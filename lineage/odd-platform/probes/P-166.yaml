@@ -1,0 +1,106 @@
+---
+probe_id: P-166
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__routes__route__activity.md
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: security
+verified_against_commit: ede5d277
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category D — auth gate on the /activity route): the React
+  Router declaration `<Route path={activityPath()} element={<Activity />} />`
+  at App.tsx:65 has NO `WithPermissionsProvider` wrapper (unlike the
+  `lookupTablesPath()` route at App.tsx:75-87 which gates render on three
+  LOOKUP_TABLE_* permissions). The Activity surface is rendered for every
+  authenticated user regardless of role / owner / permission. Under
+  `auth.type=DISABLED` (per DisabledAuthSecurityConfiguration.java —
+  `.anyExchange().permitAll()`), the route is reachable by ANY caller able
+  to reach the application port — the SPA bundle ships, the page renders,
+  the GET /api/activity calls fire. Hypothesis: visiting `/activity`
+  unauthenticated under auth.type=DISABLED renders the page and returns
+  activity rows; visiting authenticated as a READ_ONLY-equivalent role
+  under LOGIN_FORM/OAUTH2/LDAP also renders the page (no role check exists
+  anywhere in the chain). This is the global-audit-trail visibility class.
+---
+arrange:
+  - kind: docker-compose-up
+    profile: odd-minimal
+  - kind: env
+    set:
+      AUTH_TYPE: DISABLED
+  - kind: sql
+    query: |
+      INSERT INTO activity (id, data_entity_id, event_type, created_at, created_by, old_state, new_state)
+      VALUES
+        (90001, 1, 'DESCRIPTION_UPDATED', NOW() - INTERVAL '1 hour', 'system', '{}', '{"description":"probe"}'),
+        (90002, 1, 'TAGS_ASSOCIATION_UPDATED', NOW() - INTERVAL '30 minute', 'system', '{}', '{"tags":["probe"]}')
+act:
+  - kind: dom-probe
+    description: |
+      Headless browser visits / (unauthenticated) — captures whether the SPA
+      bundle is served, then visits /activity directly. Capture: (a) network
+      response status for the bundle GET, (b) DOM after route mount —
+      whether <Activity /> rendered (look for the Filters panel + ActivityTabs
+      strip), (c) the network call GET /api/activity?type=ALL&size=30&... and
+      its HTTP status + response body length.
+    target: ${SUT_BASE_URL}/activity
+    capture_as: dom_under_disabled
+  - kind: env
+    set:
+      AUTH_TYPE: LOGIN_FORM
+  - kind: rest
+    description: |
+      Log in as a freshly created user with NO role assignment and NO owner
+      association. Visit /activity. Same DOM + network captures.
+    method: POST
+    path: /api/auth/login
+    body: { username: "probe-noowner", password: "probe-noowner" }
+    capture_as: login_response_noowner
+  - kind: dom-probe
+    target: ${SUT_BASE_URL}/activity
+    cookies_from: login_response_noowner
+    capture_as: dom_login_noowner
+observe:
+  - kind: capture
+    from: dom_under_disabled
+    extract: rendered_components, api_activity_status, api_activity_row_count
+    capture_as: disabled_observation
+  - kind: capture
+    from: dom_login_noowner
+    extract: rendered_components, api_activity_status, api_activity_row_count
+    capture_as: login_noowner_observation
+assert:
+  # Hypothesis 1: DISABLED renders the page + returns rows to unauthenticated caller
+  - "disabled_observation.rendered_components.includes('Filters')"
+  - "disabled_observation.rendered_components.includes('ActivityTabs')"
+  - "disabled_observation.api_activity_status == 200"
+  - "disabled_observation.api_activity_row_count >= 2  # both seed rows visible"
+  # Hypothesis 2: LOGIN_FORM with no-role user also renders + returns rows
+  - "login_noowner_observation.rendered_components.includes('Filters')"
+  - "login_noowner_observation.rendered_components.includes('ActivityTabs')"
+  - "login_noowner_observation.api_activity_status == 200"
+  - "login_noowner_observation.api_activity_row_count >= 2"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__routes__route__activity
+    - odd-platform__java__ActivityController__controller-method__getActivity
+  retrospectives:
+    - LSN-020
+realism_caveats: |
+  The probe pins the "no gate at the route layer" hypothesis. PASS means the
+  Activity feed is a platform-wide audit-trail visible to every authenticated
+  user (and to every caller at all under DISABLED) — a deliberate or accidental
+  design choice that should be either documented as such OR gated. FAIL means
+  either: (a) a SecurityConstants rule blocks /api/activity that the file
+  walker missed; (b) the SPA bundle itself is auth-gated such that unauthenticated
+  callers cannot fetch the JS; (c) Spring Security default-authenticated kicks in
+  on /activity even under DISABLED (unlikely given DisabledAuthSecurityConfiguration's
+  `.anyExchange().permitAll()`, but verify). The probe DOES NOT test the
+  Category F LSN-020 drift on the User filter — that is covered by the existing
+  ActivityController.getActivity sidecar's probe queue.

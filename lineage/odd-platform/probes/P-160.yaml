@@ -1,0 +1,156 @@
+---
+probe_id: P-160
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__GenAIController__controller-class__GenAIController
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: security
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category D — authorization gate on a cost-bearing endpoint):
+  GenAIController has no @PreAuthorize, no programmatic permissionService check,
+  no Permission entry for GenAI usage in PolicyPermissionDto. The path
+  /api/genai/ask is NOT in SecurityConstants.WHITELIST_PATHS and NOT in
+  SecurityConstants.SECURITY_RULES, so under OAUTH2/LDAP it falls through to
+  AuthorizationCustomizer.java:29 `pathMatchers("/**").authenticated()`; under
+  LOGIN_FORM the path is NOT in LoginFormSecurityConfiguration.java:49-51
+  `permittedPaths` so it falls through to line 57 `pathMatchers("/**").authenticated()`.
+
+  Hypothesis: a least-privilege authenticated user (no admin role, no GenAI-
+  specific permission, the default Role granted at user creation) successfully
+  calls POST /api/genai/ask under LOGIN_FORM mode AND reaches the external
+  service via the genAiWebClient. The operator-visible consequence is that
+  every authenticated user — including read-only viewers — can drive cost on
+  the operator's external AI account, with no in-platform record of who asked
+  what (the @Slf4j on GenAIServiceImpl has no log.* call on the request path).
+
+  This probe demonstrates the security gap concretely: same payload, same
+  endpoint, called by an admin user (returns HTTP 200 with the external
+  response) and by a low-privilege viewer user (returns HTTP 200 with the
+  external response — i.e. the authorization model treats them identically).
+---
+arrange:
+  - kind: docker-compose-up
+    note: |
+      odd-minimal stack with auth.type=LOGIN_FORM, genai.enabled=true, genai.url
+      pointing at a WireMock instance the probe controls, genai.request_timeout=2.
+  - kind: env
+    AUTH_TYPE: "LOGIN_FORM"
+    AUTH_LOGIN_FORM_CREDENTIALS: "admin:adminpw,viewer:viewerpw"
+    GENAI_ENABLED: "true"
+    GENAI_URL: "http://wiremock-genai:8080"
+    GENAI_REQUEST_TIMEOUT: "2"
+  - kind: wiremock-up
+    description: "WireMock standing in for the external AI service; accepts POST /query_data and returns a JSON-quoted string."
+    container_name: "wiremock-genai"
+    stubs:
+      - method: POST
+        path: /query_data
+        response:
+          status: 200
+          content_type: application/json
+          body: '"PROBE-160-EXTERNAL-RESPONSE"'
+
+  - kind: sql
+    description: "Ensure the 'viewer' user gets the default least-privilege role (no admin, no GenAI permission). The LoginForm config grants `grantedAuthorityExtractor.getAuthorities(true)` to every user at registration; this probe verifies that even a user with NO bespoke policy override can still hit /api/genai/ask."
+    query: |
+      -- No SQL needed for LOGIN_FORM; users are loaded from properties.
+      -- This step is a no-op placeholder asserting we accept the default-role configuration.
+      SELECT 1 AS noop;
+
+act:
+  - kind: rest
+    description: "Admin user calls /api/genai/ask."
+    method: POST
+    path: /api/genai/ask
+    basic_auth:
+      username: admin
+      password: adminpw
+    headers:
+      Content-Type: "application/json"
+    body: |
+      {"body": "PROBE-160-QUESTION-ADMIN"}
+    capture_as: admin_response
+
+  - kind: rest
+    description: "Viewer (least-privilege authenticated) user calls /api/genai/ask."
+    method: POST
+    path: /api/genai/ask
+    basic_auth:
+      username: viewer
+      password: viewerpw
+    headers:
+      Content-Type: "application/json"
+    body: |
+      {"body": "PROBE-160-QUESTION-VIEWER"}
+    capture_as: viewer_response
+
+  - kind: rest
+    description: "Anonymous (unauthenticated) caller — control case under LOGIN_FORM mode."
+    method: POST
+    path: /api/genai/ask
+    headers:
+      Content-Type: "application/json"
+    body: |
+      {"body": "PROBE-160-QUESTION-ANON"}
+    capture_as: anon_response
+
+observe:
+  - kind: wiremock-request-log
+    description: "How many times did WireMock receive POST /query_data, with which question values?"
+    capture_as: wiremock_log
+
+  - kind: container-logs
+    container_name: "odd-platform"
+    grep: "PROBE-160-QUESTION"
+    capture_as: platform_logs_grep
+    description: "Was the question text written to the platform's logs anywhere? (Verifying the no-audit-log finding — should be 0 matches.)"
+
+assert:
+  - "admin_response.status == 200  # admin can call"
+  - "admin_response.body.body == 'PROBE-160-EXTERNAL-RESPONSE'  # quote-trim + unescape on the WireMock JSON-quoted-string response"
+  - "viewer_response.status == 200  # viewer can ALSO call — the security gap"
+  - "viewer_response.body.body == 'PROBE-160-EXTERNAL-RESPONSE'  # the response shape is identical between admin and viewer — no per-role gate"
+  - "anon_response.status in [401, 302]  # under LOGIN_FORM, unauthenticated is rejected (control case)"
+  - "wiremock_log.count_post_query_data == 2  # exactly 2 external calls fired (admin + viewer); anon was rejected before reaching the service"
+  - "wiremock_log.entries[0].body matches /PROBE-160-QUESTION-ADMIN/"
+  - "wiremock_log.entries[1].body matches /PROBE-160-QUESTION-VIEWER/"
+  - "platform_logs_grep.match_count == 0  # the question text is NOT in the platform's logs — confirming the no-audit-log finding"
+
+cleanup:
+  - kind: wiremock-reset
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  related_sidecars:
+    - odd-platform__java__GenAIController__controller-class__GenAIController
+    - odd-platform__java__org_opendatadiscovery_oddplatform_config_properties__config-properties-class__GenAIProperties
+  retrospectives: []
+
+realism_caveats: |
+  The probe pins the no-permission-gate hypothesis directly. The assertions
+  discriminate clearly:
+    - admin_response == viewer_response in BOTH status and body shape =>
+      the authorization model is binary (authenticated vs not), not graduated
+      (admin vs viewer vs custom role). The platform has no notion of
+      'who is allowed to use GenAI'.
+    - wiremock_log.count_post_query_data == 2 => every authenticated call
+      reaches the external service end-to-end; the cost is incurred regardless
+      of caller role.
+    - platform_logs_grep.match_count == 0 => the question text is not in the
+      platform's logs (no log.info, log.debug, log.warn anywhere on the
+      request path). Forensic reconstruction of who asked what is impossible
+      from platform logs alone.
+  The probe does NOT test OAUTH2/LDAP modes (those would need an external IdP
+  fixture); LOGIN_FORM is the simplest mode that exercises the
+  authenticated-only fall-through. Under OAUTH2 the same fall-through path
+  applies (AuthorizationCustomizer.java:22-30) but the probe cannot exercise
+  it without spinning up Keycloak. Sibling probe P-159 covers the concurrency
+  failure mode; the cost-injection consequence is the union of P-160 (no
+  permission gate) and the absence of rate-limit (no separate probe — the
+  static evidence is sufficient: grep returns no rate-limit primitives
+  anywhere on the path).

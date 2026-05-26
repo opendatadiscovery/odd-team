@@ -1,0 +1,333 @@
+name: |-
+  searchId URL route-param is a session UUID, NOT a saved-search id (Category F drift — UI-layer instance)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-01
+description: |-
+  **NEW MEDIUM-severity Category F INVARIANT, batch ZI (2026-05-26)** —
+  the SPA's `/search/{searchId}` URL form exposes a route parameter
+  called `searchId` whose NAME promises a saved-search/durable-handle
+  semantic but whose IMPLEMENTATION binds to a server-side transient
+  session row in `search_facets` with NO user binding, NO TTL guarantee
+  visible at the UI layer, and mutated by every facet change.
+
+  **Trace** (from searchRoutes batch ZI):
+
+    - URL form: `searchRoutes.ts:4-5` declares
+      `SEARCH_ID_PARAM = ':searchId'`. The path template at line 9 is
+      `generatePath('${BASE_PATH}/${SEARCH_ID_PARAM}')` → produces
+      `/search/{uuid}`.
+    - Param hook: `useSearchRouteParams()` at lines 18-19 returns
+      `{searchId: string}` via `useParams<keyof SearchRouteParams>()`.
+    - Consumer: `Search.tsx:27` reads `routerSearchId`; at lines 44-48
+      dispatches `getDataEntitiesSearch({searchId: routerSearchId})`.
+    - Thunk: `dataentitiesSearch.thunks.ts:43-50` calls
+      `searchApi.getSearchFacetList({searchId})` → `GET /api/search/{searchId}`.
+    - Backend: `SearchController.getFacetList(searchId)` per batch-M
+      class-level sidecar — `SearchServiceImpl.fetchFacetState(searchId)`
+      → `ReactiveSearchFacetRepositoryImpl.get(id)` →
+      `SELECT * FROM search_facets WHERE id = {uuid}::uuid` (raw
+      UUID-keyed lookup, no owner predicate, no created_by predicate).
+
+  **The NAME `searchId` promises**:
+    1. A SAVED-SEARCH IDENTIFIER (operator's mental model: "search #42",
+       like Jira's saved-filter ids or Splunk's report ids — durable,
+       bookmarkable, user-owned).
+    2. A USER-MEANINGFUL HANDLE (operator's mental model: shareable,
+       like a Twitter status URL where every viewer sees the same
+       canonical thing).
+    3. A QUERY-DEFINITION POINTER (operator's mental model: the URL
+       encodes WHAT was searched, even if results change as data
+       evolves).
+
+  **The IMPLEMENTATION provides**:
+    1. **A server-side TRANSIENT SESSION ROW** in `search_facets`
+       (`V0_0_1__init.sql:204-211` — no `owner_id`, no `created_by`,
+       no `user_id` column; the UUID IS the sole identifier). NOT a
+       saved-search; the table HAS the
+       `housekeeping.ttl.search_facets_days` (default 30 days)
+       reaper which deletes the row asynchronously. Bookmark fragility
+       at week 5+.
+    2. **A BEARER-TOKEN-SHAPED HANDLE** (per existing
+       `search-facets-bearer-token-shaped-no-user-binding` invariant)
+       — any authenticated user with any other user's `searchId` UUID
+       can READ + UPDATE + DRIVE that session. Cross-user link sharing
+       exposes the recipient to whatever state the session has at
+       fetch time (which may differ from when the link was sent).
+    3. **A MUTABLE STATE POINTER** — every facet change calls `PUT
+       /api/search/{searchId}/facets` mutating the SAME row. The URL
+       does NOT encode WHAT was searched; it points to a row whose
+       contents change. User A clicking around their UI mutates the
+       row in real time; User B opens the URL 30 seconds later and
+       sees state B never expected.
+
+  **Operator-visible consequences** (three patterns):
+
+  (a) **Bookmark fragility**. A user bookmarks `/search/{uuid}`. After
+      30 days the housekeeping job deletes the row. The bookmark
+      returns 404. The user sees an empty Catalog (or a toast) and
+      doesn't understand why their "saved search" disappeared. The
+      doc page at `/features/data-discovery/search` does NOT mention
+      the URL form, does NOT mention the TTL, does NOT warn about
+      bookmark fragility (WebFetched 2026-05-26 status 200).
+
+  (b) **Cross-user sharing exposes whatever state the session has at
+      fetch time**. User A shares `/search/{uuid}` with User B; B
+      (authenticated) opens it. If A is concurrently clicking around
+      their UI (mutating the same row via PUT /facets), B sees the
+      session in whatever state it happens to be in — not necessarily
+      what A intended to share. The URL behaves like a pointer, not
+      a snapshot.
+
+  (c) **Tab navigation drops the session**. The Catalog top-nav tab
+      (`ToolbarTabs.tsx:38`) links to `searchPath()` (no UUID). Clicking
+      the tab navigates to `/search` (no param). Search.tsx:37-42 sees
+      no UUID and dispatches `createDataEntitiesSearch(...)` →
+      `POST /api/search` → server INSERTs a NEW `search_facets` row →
+      navigates to `/search/{new-uuid}`. The previous session's UUID
+      is dropped from the URL bar; the previous session row still
+      exists in the database (and is reachable by direct URL until
+      the TTL reaper deletes it).
+
+  **The same Category F drift class — but at a different layer.** The
+  existing `LSN-020` family captures drift at the SQL layer (e.g.
+  `userIds` filter binding to `USER_OWNER_MAPPING.OWNER_ID` instead of
+  `activity.created_by`; the `Title` filter binding to
+  `OWNERSHIP.TITLE_ID` instead of dataset name). This invariant is the
+  drift at the URL-PARAM-LAYER — same shape, different surface. The
+  operator first encounters the misleading name in the URL bar; they
+  never see the SQL.
+
+  **Fix surfaces** (maintainer-triage):
+
+    1. **Rename the URL param** (high-churn). `/search/{searchSessionId}`
+       or `/search/session/{id}` would more accurately encode the
+       transient-session semantic. Breaking change for any external
+       link or third-party deep-link target.
+
+    2. **Document the semantic on the doc page**. The
+       `/features/data-discovery/search` page does NOT mention URLs at
+       all today. A "Session URLs" section explaining that the URL
+       represents a transient session (not a saved search), that
+       URLs are session-handles (not bookmark-safe beyond 30 days by
+       default), and that URL sharing exposes whatever state the
+       session has at fetch time. LOW-churn; high operator value.
+
+    3. **Implement a real saved-search feature** if operator demand
+       exists. The current `search_facets` row IS the persistent
+       session; adding a `name` + `owner_id` + a "Save" affordance
+       in the UI would transform it into a true saved-search. This is
+       a feature, not a fix.
+
+  vocabulary_status: codebase-anchored, NOT in docs. The live doc page
+  uses the phrase "search and filtering" but does NOT name the URL
+  form, the session semantics, or the bookmark fragility.
+
+  ## STRENGTHENED — batch ZL (2026-05-26) — Search.tsx COMPONENT PRIMARY-SOURCE
+
+  Batch ZL adds the Search.tsx page-component sidecar
+  (odd-platform__ts__react-component__component__Search.md)
+  confirming the searchId param Category F drift at the
+  COMPONENT layer. The Search.tsx sidecar's
+  stress_findings.request_inputs.searchId explicitly traces:
+
+    "TRANSLATES_SILENTLY — name promises 'a search identifier'
+    (implies a user-meaningful handle); implementation is a
+    server-side ephemeral session UUID with 30-day TTL
+    eviction (F-010) and NO user-binding column (REFACTOR-344).
+    The translation is undocumented in the live doc page
+    (WebFetched 2026-05-20)."
+
+  Search.md:bugs_limitations_corner_cases.[7] — "Session-expiry:
+  stale URL UUID with no recovery path. IDENTICAL to TermSearch
+  batch-U bugs[5]. If a user reloads / deep-links to /search/
+  {stale-uuid} after the server-side SearchFacetsHousekeepingJob
+  evicted the session (default 30 days per F-010 + LSN-018),
+  the GET returns 404 / empty. The slice's missing .rejected
+  reducer means the state stays empty; the URL still carries
+  the stale UUID; refreshing repeats. No automatic fall-back
+  to create a fresh session." Severity MEDIUM.
+
+  Search.md:docs_link_semantic.doc_drift_findings.UI-DOC-GAP-Search-A
+  — "The live doc does NOT document the URL-backed deep-link
+  share-ability of filtered Catalog views." Severity MEDIUM.
+
+  P-187 probe emitted at this layer for auth-mode reach
+  verification under DISABLED.
+
+  POST-BATCH-ZL: the bookmark-fragility and bearer-token shape
+  are now confirmed at the COMPONENT primary-source side
+  (Search.tsx) in addition to the route-module side
+  (searchRoutes.ts batch ZI). Operator awareness gap remains —
+  the live doc page WebFetched in batch ZL still does not
+  document the URL form, the TTL, or the bearer-token shape.
+
+
+vocabulary_status: codebase-anchored
+axes_present:
+  - ui_routes
+  - controllers
+  - sql_migrations
+nodes:
+  - odd-platform ts react-component component:Search
+  - odd-platform ts routes route:search
+  - odd-platform java SearchController controller-class:SearchController
+contributors:
+  - |-
+    search route batch ZI:
+      concepts.invariants[searchId is a SERVER-SIDE session UUID, not a saved-search id, not a query parameter];
+      stress_findings.request_inputs[searchId — DRIFT_INPUT_NAME_VS_IMPLEMENTATION — name promises 'saved/persistent search identifier'; implementation uses it as a server-side session row UUID];
+      bugs_limitations_corner_cases[Deep-link sharing — :searchId UUID has NO user binding];
+      bugs_limitations_corner_cases[Bookmark fragility — server-side row may be cleaned up at unknown TTL];
+      bugs_limitations_corner_cases[Tab navigation drops session — clicking the Catalog tab links to searchPath() with no UUID];
+      docs_link_semantic.doc_drift_findings[live doc page does NOT mention the /search/{searchId} URL form at all]
+evidence:
+  - |-
+    search.md:concepts.invariants.[1] (searchId is a SERVER-SIDE session UUID,
+    not a saved-search id, not a query parameter)
+  - |-
+    search.md:stress_findings.request_inputs.[searchId — DRIFT_INPUT_NAME_VS_IMPLEMENTATION]
+  - |-
+    search.md:bugs_limitations_corner_cases.[3] (deep-link sharing — :searchId
+    UUID has NO user binding)
+  - |-
+    search.md:bugs_limitations_corner_cases.[5] (no URL state for filter /
+    facet / query / page-position — only the session UUID; bookmark fragility)
+  - |-
+    search.md:bugs_limitations_corner_cases.[2] (tab navigation drops session)
+  - |-
+    search.md:docs_link_semantic.doc_drift_findings.[0] (live doc page does
+    NOT mention the /search/{searchId} URL form at all)
+  - |-
+    Cross-reference: search-facets-bearer-token-shaped-no-user-binding
+    invariant — the schema-level evidence (V0_0_1__init.sql:204-211 with
+    no owner column) underlies this Category F drift at the URL layer.
+security_aggregate:
+  overall: MEDIUM
+  auth_modes_relevant:
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
+    - DISABLED
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: UNGATED
+    detail: |-
+      The URL-layer drift IS a security consequence: an operator
+      sharing a `/search/{uuid}` URL exposes their session state to
+      any recipient who can authenticate to the platform. Under
+      DISABLED the URL is reachable anonymously by anyone who can
+      reach the application port.
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      The session row has no owner binding (per the
+      search-facets-bearer-token-shaped-no-user-binding invariant);
+      the URL exposing the UUID is the operator-facing surface where
+      that schema-level bypass becomes visible.
+  strengths:
+    - |-
+      Server-generated v4 UUID — unguessable in O(2^60) attempts. The
+      URL bar exposing the UUID is a leak vector but not a guessing
+      surface.
+    - |-
+      TTL-bounded retention via housekeeping.ttl.search_facets_days
+      (default 30 days) — the leak surface decays over time.
+  weaknesses:
+    - |-
+      The URL name `searchId` promises a saved-search; operators
+      bookmark and share these URLs expecting saved-search semantics.
+      The implementation gives bearer-token-session semantics with
+      30-day TTL. Mismatch leads to silent bookmark expiry + accidental
+      session sharing across users.
+    - |-
+      Doc-side silence is total — the live `/features/data-discovery/search`
+      page (WebFetched 2026-05-26 status 200) does NOT mention the URL
+      form, the session semantics, the TTL, or the cross-user link
+      sharing exposure. An operator has no way to learn the semantic
+      from docs.
+    - |-
+      Tab navigation (`ToolbarTabs.tsx:38` → `searchPath()` no-arg → `/search`)
+      DROPS the URL UUID and creates a fresh session via INSERT, leaving
+      the previous session row orphaned until the housekeeping reaper.
+      Operator surprised by "my saved search disappeared when I clicked
+      Catalog tab".
+  cross_file_inconsistencies:
+    - |-
+      The Category F drift at the URL layer (this invariant) and the
+      Category F drift at the SQL layer (the userIds-binds-to-OWNER_ID
+      LSN-020 family) are the SAME drift class but at different
+      surfaces. The URL-layer drift is operator-first-contact; the
+      SQL-layer drift is hidden behind the API. Both should be
+      documented together as the broader "name-vs-implementation
+      drift" architectural pattern.
+  contributing_files:
+    - odd-platform__ts__routes__route__search.md
+    - SearchController-class.md
+  evidence:
+    - |-
+      search.md:stress_findings.request_inputs.[searchId DRIFT_INPUT_NAME_VS_IMPLEMENTATION]
+    - |-
+      search.md:bugs_limitations_corner_cases.[2,3,5]
+performance_aggregate:
+  overall: HIGH
+  hot_paths: []
+  throughput_shape:
+    verdict: N/A
+    detail: |-
+      Not a performance concept — name-vs-behaviour drift.
+  scaling_shape:
+    verdict: N/A
+    detail: ''
+  strengths: []
+  weaknesses:
+    - |-
+      Tab-drops-session pattern produces an unconditional INSERT
+      into search_facets every time a user navigates back to the
+      Catalog tab. The housekeeping reaper accumulates work.
+  cross_file_inconsistencies: []
+  contributing_files:
+    - odd-platform__ts__routes__route__search.md
+  evidence: []
+triangulation_count: 2
+cross_batch: true
+cross_batch_refs:
+  - batch-ZI (search route sidecar — primary source for the URL-layer
+    instance of the Category F drift)
+  - cross-reference batch-M / batch-E (schema-level + service-level
+    instances of the same bearer-token semantic — see existing
+    search-facets-bearer-token-shaped-no-user-binding invariant)
+severity: MEDIUM
+severity_dim: security
+related_features:
+  - F-001
+related_pillar_features:
+  - P-01
+related_concepts:
+  - entitie:search-session
+  - invariant:search-facets-bearer-token-shaped-no-user-binding
+  - operation:search-catalog-faceted-session-as-server-state
+  - invariant:dashboard-title-filter-binds-ownership-title-not-dataset-name
+  - invariant:bare-base-url-behavior-divergence-redirect-vs-blank
+notes: |-
+  Coherence (Rule 6): grepped `concepts/detail/invariants/` and
+  `feature-flows/` for "searchId" + "session UUID" + "saved search" —
+  found `entitie:search-session`, `invariant:search-facets-bearer-token-shaped-no-user-binding`,
+  `operation:search-catalog-faceted-session-as-server-state`. None
+  describe the DRIFT at the URL-PARAM-NAME layer specifically. The
+  existing concepts pin the schema/service/controller bearer-token
+  semantic; this new invariant pins the OPERATOR-FACING URL drift
+  that is the FIRST encounter point with the semantic.
+
+  STRENGTHENS the existing search-facets-bearer-token-shaped invariant
+  by adding the UI-route-layer evidence. Adds the operator-visible
+  consequences (bookmark fragility, cross-user share exposure, tab
+  drops session) as concrete UX manifestations of the schema gap.
+
+  Class membership: LSN-020 (Category F drift class — input name
+  promises one semantic, implementation provides another). Same shape
+  as `dashboard-title-filter-binds-ownership-title-not-dataset-name`
+  (the Title filter LSN-020 instance). Operator-facing surface
+  variant.
+maintainer_curated: false

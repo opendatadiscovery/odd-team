@@ -1,0 +1,89 @@
+---
+probe_id: P-192
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__react-component__component__LookupTables
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: integration
+verified_against_commit: 9ac6436e9bd36ba132d765076c6bbd5916fde729
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category B + LSN-019 class — name-vs-behaviour for infinite scroll):
+  LookupTablesList.tsx mounts <ScrollableContainer id='lookup-tables-list'> wrapping an
+  <InfiniteScroll scrollableTarget='directory-entities-list'> (lines 51-53). The
+  scrollableTarget references the WRONG DOM id — `directory-entities-list` is the
+  container id used by the Directory feature, not Master Data. react-infinite-scroll-component
+  uses `scrollableTarget` to locate the scrollable parent that should trigger
+  `fetchNextPage` when the user scrolls within it; with a stale id, the component falls
+  back to window-scroll detection (the documented default) — but the container itself is
+  the scrollable element (overflow:auto via ScrollableContainer's $offsetY=165 prop).
+  Hypothesis: with 31+ lookup tables, the user scrolls within the list container, but
+  `fetchNextPage` never fires because the InfiniteScroll cannot match the wrong DOM id;
+  the user sees only the first 30 rows, no skeleton, no further loading. If the hypothesis
+  holds, this is a critical pagination defect: any tenant with >30 lookup tables shows
+  only 30 in the UI.
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: rest
+    method: POST
+    path: /api/namespaces
+    headers:
+      X-S2S-Token: ${S2S_ADMIN_TOKEN}
+      Content-Type: application/json
+    body: |
+      {"name": "p192_ns"}
+  # Seed 35 lookup tables (exceeds the size=30 page) so fetchNextPage MUST be triggered
+  # to render rows 31-35.
+  - kind: loop
+    count: 35
+    body:
+      kind: rest
+      method: POST
+      path: /api/referencedata/table
+      headers:
+        X-S2S-Token: ${S2S_ADMIN_TOKEN}
+        Content-Type: application/json
+      body: |
+        {"name": "p192_table_${i}", "namespace_name": "p192_ns", "description": "seed ${i}"}
+act:
+  - kind: dom-probe
+    description: |
+      Open Playwright to http://localhost:8080/master-data/lookup-tables logged in as admin.
+      Wait for network-idle. Verify the table list renders 30 rows initially.
+      Then programmatically scroll the #lookup-tables-list container to the bottom (or
+      scroll the window if InfiniteScroll fell back to window-scroll mode).
+      Wait 2 seconds, then count the rendered rows.
+    capture_as: scroll_test_state
+observe:
+  - kind: network-capture
+    pattern: "/api/referencedata/search/*/results"
+    capture_as: pagination_requests
+assert:
+  - "scroll_test_state.initial_row_count == 30                  -- first page renders"
+  - "scroll_test_state.row_count_after_scroll >= 35             -- all rows must render after scroll"
+  - "pagination_requests.length >= 2                            -- second page request must fire"
+  # If pagination_requests.length == 1 only, the scrollableTarget bug is confirmed.
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM lookup_tables WHERE name LIKE 'p192_%';
+      DELETE FROM namespace WHERE name = 'p192_ns';
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__LookupTables
+  retrospectives:
+    - LSN-019
+realism_caveats: |
+  Probe pins the InfiniteScroll mis-target hypothesis. react-infinite-scroll-component has
+  changed behaviour across versions; if the project's version falls back gracefully to
+  window-scroll, the user may STILL see all 35 rows when the entire page scrolls (the
+  container would then be irrelevant). The interesting case for the operator is when the
+  container has overflow:auto and the user scrolls within it — verify the ScrollableContainer
+  computed style at probe time. If the container does NOT have overflow:auto in the rendered
+  CSS, the window-scroll fallback rescues the bug; the smell remains (wrong scrollableTarget)
+  even if it does not manifest.

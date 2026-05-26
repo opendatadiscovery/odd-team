@@ -1,0 +1,172 @@
+name: |-
+  Alerts tab badge totals stale — fetched once on mount, never refreshed after Resolve action
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-07
+description: |-
+  NEW MEDIUM-severity UX INVARIANT, batch ZL (2026-05-26) — the
+  Alerts page (`components/Alerts/Alerts.tsx:15-17`) dispatches
+  `fetchAlertsTotals()` ONCE on mount via a useEffect with empty
+  dependency array. The fetched totals populate the three tab
+  badges ('All [325]', 'My Objects [12]', 'Dependents [3]'). The
+  badges NEVER refresh:
+
+      useEffect(() => {
+        dispatch(fetchAlertsTotals());
+      }, []);  // ← empty deps; fires exactly once per mount
+
+  Operator-visible failure mode: after the user resolves alerts
+  (via the per-alert Resolve button → updateAlertStatus thunk),
+  the badge counts stay stale until the user fully reloads the
+  page OR navigates away and back to the /alerts route.
+
+  **Trace**:
+    - Mount: Alerts.tsx:15-17 → fetchAlertsTotals → AlertController.getAlertTotals
+      → AlertServiceImpl runs `Mono.zipDelayError(allCount, countByOwner,
+      countDependent)` — three COUNT queries in parallel. Results
+      populate state.alerts.totals.
+    - After mount: state.alerts.totals is REFERENCED only at
+      AlertsTabs.tsx:23,28,34 (each tab label gets the count from
+      a different field — `totals.total ?? 0`,
+      `totals.myTotal ?? 0`, `totals.dependentTotal ?? 0`).
+    - Resolve action: AlertItem.tsx:48-70 → updateAlertStatus
+      thunk → alerts.thunks.ts:78-82 → backend mutates ALERT.STATUS.
+      The thunk's fulfilment reducer (alerts.slice.ts) updates
+      the specific alert's row in state.alerts.items but does
+      NOT touch state.alerts.totals. No `dispatch(fetchAlertsTotals())`
+      side-effect.
+
+  **The structural cause is the slice's separation of concerns**
+  — alerts.slice.ts treats totals (counts) and items (rows) as
+  independent state slots. The mutation lifecycle updates rows;
+  it does not re-fetch counts. A correct implementation would
+  either:
+    (a) Optimistically decrement the affected count
+        (e.g., `state.alerts.totals.total--` if the resolved
+        alert was previously OPEN);
+    (b) Dispatch `fetchAlertsTotals` from the updateAlertStatus
+        fulfilment;
+    (c) Subscribe Alerts.tsx's useEffect to a state.alerts.items
+        change signal (deps array including a count-affecting
+        derived value).
+
+  **Operator-visible consequences** (three patterns):
+
+  (a) **Operator resolves 10 alerts; badge still shows the pre-
+      resolve count.** They may infer the resolve action 'didn't
+      take' (it did — the row updated to RESOLVED, but the
+      All-tab counter is OPEN-only per the
+      `alerts-all-tab-name-vs-implementation-drift-open-only`
+      invariant, so the resolved alerts should have decreased
+      the All count). They may re-click Resolve; the second
+      attempt is idempotent at the backend (per the
+      AlertServiceImpl reopen-guard) but wastes their attention.
+
+  (b) **Operator navigating between tabs sees badge counts that
+      reflect a state from N actions ago.** The asymmetry between
+      'tab counts: stale' and 'tab content: fresh' is operator-
+      confusing — the operator may not realise the badges are
+      mount-time-only.
+
+  (c) **Tab badge values are also stale during normal-platform
+      operation** — new alerts created server-side (via
+      AlertManagerWebhook or AlertActionResolver) do NOT propagate
+      to the badges until the user re-visits /alerts. This is
+      especially visible on long-lived browser tabs (operator
+      keeps /alerts open as a dashboard); the badges become a
+      lying summary.
+
+  **Fix surfaces** (maintainer-triage):
+
+  1. **Optimistic decrement** — in alerts.slice.ts's
+     updateAlertStatus.fulfilled reducer, look at the
+     pre/post-status transition and adjust totals accordingly:
+       if (was OPEN and isNow RESOLVED) state.alerts.totals.total--;
+       if (the resolved alert was in the user's owner set)
+         state.alerts.totals.myTotal--;
+     ~10 lines; closes the bug for the common case (single-user
+     Resolve flow).
+
+  2. **Background re-fetch** — dispatch fetchAlertsTotals from
+     the fulfilment reducer. ~5 lines; correct for any state
+     change but adds a network round-trip per Resolve action.
+
+  3. **Polling** — Alerts.tsx useEffect with `setInterval` to
+     re-fetch every N seconds. Crude; works for long-lived
+     dashboard use; should be feature-flagged.
+
+  4. **Event-driven** — backend WebSocket or SSE pushes alert
+     state changes to the UI; the badge update is reactive. Out
+     of UI-only scope; substantial backend infrastructure work.
+
+  vocabulary_status: codebase-anchored. The live doc page does
+  not document the badge refresh behaviour. Surface to
+  doc-gap-finder.
+nodes:
+  - odd-platform ts react-component component:Alerts
+contributors:
+  - odd-platform ts react-component component:Alerts
+evidence:
+  - |-
+    Alerts.md:bugs_limitations_corner_cases.[stale-totals] —
+    'Tab badge totals (totals, myTotal, dependentTotal) are
+    fetched ONCE on mount (Alerts.tsx:15-17, useEffect([])
+    no deps) — they do not refresh after a Resolve action, after
+    navigating tabs, or after the backend creates new alerts.
+    An operator who resolves alerts watches the badge stay stale
+    until full reload.' Severity MEDIUM.
+  - |-
+    Alerts.md:stress_findings.resource_boundaries.cache —
+    'No cache. Each tab visit re-fetches; totals fetched once
+    on mount (Alerts.tsx:15-17) and never invalidated — that
+    IS the staleness gap. After Resolve, totals.total still
+    reflects pre-Resolve count until full page reload.'
+  - |-
+    Alerts.md:performance.known_performance_gaps.[totals-stale] —
+    'Totals are fetched once on Alerts mount and never refreshed —
+    operator who resolves an alert sees the badge stay stale
+    (off-by-one) until they leave and re-enter /alerts.'
+    Severity LOW (perf), but UX MEDIUM.
+related_concepts:
+  - operation:mount-alerts-page-shell-three-tab-shared-state-slot
+  - invariant:alerts-all-tab-name-vs-implementation-drift-open-only
+axes_present:
+  - ui_components
+triangulation_count: 1
+cross_batch: false
+severity: MEDIUM
+severity_dim: ux
+mitigations_unimplemented:
+  - |-
+    Fix surface 1 (preferred) — optimistic decrement in
+    alerts.slice.ts's updateAlertStatus.fulfilled reducer.
+    ~10 lines; correct for the common single-user Resolve flow.
+  - |-
+    Fix surface 2 (correctness) — background re-fetch of totals
+    from the fulfilment reducer. ~5 lines; one extra round-trip
+    per Resolve.
+  - |-
+    Fix surface 3 (long-lived dashboard) — polling fetchAlertsTotals
+    every 30-60 seconds. Should be feature-flagged.
+  - |-
+    Fix surface 4 (architectural) — event-driven WebSocket / SSE
+    push from backend. Out of UI-only scope.
+notes: |-
+  NEW invariant captured in batch ZL (2026-05-26) FINAL refresh.
+  Class membership: 'useEffect with empty deps + state mutation
+  decoupled from the fetch' — a recurring pattern across the SPA.
+  Cross-batch audit candidates:
+    - DataEntityDetailsHeader's view_count (LSN-017 case-law —
+      different shape; the doubled-fetch bug was the inverse of
+      this: too-many fetches, not too-few);
+    - Activity.tsx counts (fetched per queryParams change —
+      OK; but the badge counts on the data-entity-detail
+      breadcrumb (when implemented) would face the same class);
+    - LookupTables.tsx counter (fetched at list-fetch time —
+      stale after delete? PROBE-NEEDED).
+
+  Pairs with the LSN-017 measurement-truth principle — a
+  Playwright probe would empirically confirm the badge stays
+  stale after Resolve. Worth promoting to a probe if/when the
+  fix lands.

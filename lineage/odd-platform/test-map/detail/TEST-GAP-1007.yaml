@@ -1,0 +1,135 @@
+---
+gap_id: TEST-GAP-1007
+category: missing-edge-case
+criticality: HIGH
+node_ids:
+  - "odd-platform ts routes route:search"
+surfaced_by:
+  - "odd-platform__ts__routes__route__search.md:stress_findings.request_inputs.[searchId].DRIFT_INPUT_NAME_VS_IMPLEMENTATION"
+  - "odd-platform__ts__routes__route__search.md:bugs_limitations_corner_cases.[3]"
+  - "odd-platform__ts__routes__route__search.md:bugs_limitations_corner_cases.[5]"
+  - "odd-platform__ts__routes__route__search.md:docs_link_semantic.doc_drift_findings.[0]"
+related_pillar_features:
+  - "P-01:F-002"
+pillars_affected: ["P-01"]
+related_features: ["F-001", "F-008"]
+feature_id: "F-008"
+test_class: missing-edge-case
+strengthens:
+  - TEST-GAP-252   # search session UUID no per-user binding (security angle)
+  - TEST-GAP-519   # facet endpoint cross-owner enumeration via session UUID
+  - TEST-GAP-841   # bearer-token-shaped session UUID propagation surfaces
+behaviour: |-
+  **HIGH — UI route param `searchId` is a Category F (LSN-020 family)
+  DRIFT_INPUT_NAME_VS_IMPLEMENTATION drift.** `searchRoutes.ts:4`
+  declares `SEARCH_ID_PARAM = ':searchId'`. The name promises "the identifier
+  of a search" — a naive reading suggests a saved-search id, a user-meaningful
+  query id, or a saved-filter token. The URL form `/search/{searchId}`
+  reinforces this — it looks like the canonical "view search id X" RESTful URL.
+
+  **The implementation translates this as a SERVER-SIDE SESSION ROW UUID** —
+  a transient `search_facets` row that was minted by the most recent
+  `POST /api/search` and that has no user binding, no TTL guarantee at this
+  layer, no "saved search" semantics. The same row gets MUTATED on every
+  facet change (`PUT /api/search/{searchId}/facets`).
+
+  This drift produces **three operator-visible consequences distinct from
+  the TEST-GAP-252 security angle (UUID-as-bearer-token, session hijack)**:
+
+  (a) **Bookmark fragility.** A user bookmarks `/search/{uuid}`. The
+  server-side `search_facets` row may be cleaned up at some unknown TTL
+  (probe P-168 emitted to resolve). The bookmark 404s; the user sees an
+  empty Catalog (or a toast) and doesn't understand why their "saved
+  search" disappeared.
+
+  (b) **Cross-user sharing exposes whatever state the session has at
+  fetch time.** User A shares `/search/{uuid}` with User B; between A's
+  last `updateSearchFacets` and B's arrival, A keeps clicking
+  (each click mutates the SAME row via PUT /facets); the URL B opens
+  30 seconds later shows STATE B never expected. The URL doesn't behave
+  like a saved-search id; it behaves like "pointer to whatever this row
+  currently holds".
+
+  (c) **Tab navigation drops the session.** Clicking the Catalog top-nav
+  tab (`ToolbarTabs.tsx:38 → searchPath()` no arg → `/search`) drops the
+  UUID. The user expected their "saved search" would be there when they
+  came back. It isn't — `Search.tsx:37-42` creates a fresh empty session
+  via `useCreateSearch({query:'', pageSize:30, filters:{}})`. Their
+  previous filter state is lost.
+
+  The live doc page `https://docs.opendatadiscovery.org/features/data-discovery/search`
+  (WebFetched 2026-05-26, status 200) does NOT mention the
+  `/search/{searchId}` URL form at all — no statement that the URL bar
+  carries a session UUID, no statement that the UUID is shareable, no
+  statement that the UUID represents a persisted server-side row, no
+  warning that tab-click drops the session. Operators have NO way to
+  learn this except by reading source or trial-and-error.
+
+  **Distinct from TEST-GAP-252**: TEST-GAP-252 is the SECURITY angle
+  (no per-user binding → bearer-token UUID enumeration); this gap is the
+  Category F UX/operator-surprise angle (NAME promises saved-search,
+  IMPLEMENTATION delivers session UUID). Both gaps are operator-relevant
+  and need distinct regression pins. TEST-GAP-1007 is the LSN-020
+  family's third UI-tier instance after the LSN-020 backend
+  `userIds`/`OWNER_ID` finding and the activity-route inheritance.
+
+  **Fix at the documentation layer + at the type layer**: either rename
+  the param to `searchSessionId` across all three modules
+  (`searchRoutes.ts`, the URL form `/search/{sessionId}`,
+  `useSearchRouteParams`) — high-churn rename — OR add a JSDoc on the
+  `SearchRouteParams` interface documenting "this is a server-side
+  session UUID, not a saved-search id"; PLUS a doc-page sentence
+  explaining the URL form and its lifecycle.
+test_files_existing: []
+test_files_proposed:
+  - path: "odd-platform-ui/src/components/Search/__tests__/SearchSessionUUIDLifecycle.test.tsx"
+    name: "tabClickOnCatalogTab_dropsActiveSearchSessionUUID_pinsTabNavDropSession"
+    description: |-
+      Integration test (Vitest + Testing Library + MemoryRouter) that:
+      (a) mounts <App /> at /search/{uuid} with a seeded Redux state carrying
+      the session's query+facets; (b) renders ToolbarTabs; (c) simulates a
+      click on the Catalog tab; (d) asserts the URL is now /search (no UUID),
+      Redux searchId is reset, and a fresh useCreateSearch dispatch fires.
+      Pins the deliberate tab-drop-session behaviour so a future maintainer
+      flipping the tab to preserve the UUID does so deliberately.
+  - path: "odd-platform-ui/src/components/Search/__tests__/SearchSessionUUIDBookmark.test.tsx"
+    name: "deepLinkSearchUUIDWithNoFacetsRowReturns404_pinsBookmarkFragility"
+    description: |-
+      Integration test that mounts <App /> with MemoryRouter initialEntries
+      ['/search/00000000-0000-0000-0000-000000000000'] (a UUID that the
+      backend will return 404 for). Mock the backend `GET /api/search/{uuid}`
+      to return 404. Assert the UI surfaces an error state (toast OR empty
+      results) and NOT a silent zero-results state. Pins the
+      bookmark-fragility shape; a future fix that surfaces a "session not
+      found" message must update this test.
+  - path: "odd-platform-ui/src/routes/__tests__/searchRoutes.semantic.test.ts"
+    name: "useSearchRouteParams_searchIdSemantic_documentsSessionNotSavedSearch"
+    description: |-
+      Unit test PLUS a JSDoc-bearing change to searchRoutes.ts:14-16
+      documenting the Category F drift. The test asserts the hook returns
+      a string segment with no validation; the comment above the interface
+      declares: "searchId is a server-side search_facets row UUID, NOT a
+      saved-search id; bookmarks are fragile to TTL cleanup; tab clicks
+      drop the session." Pins the operator-surprise contract in code.
+evidence:
+  - "search.md:stress_findings.request_inputs.[searchId] verbatim: 'TRANSLATES_SILENTLY. The name searchId promises a saved/persistent search identifier. The implementation uses it as a SERVER-SIDE SESSION ROW UUID — a transient row in search_facets that was minted by the most recent POST /api/search and that has no user binding, no TTL guarantee at this layer, no saved search semantics. The same row gets MUTATED on every facet change (PUT /api/search/{searchId}/facets). The UUID is not user-meaningful, not bookmarkable in the way saved search #42 would be, not durable in the way a saved-search id would be.'"
+  - "search.md:bugs_limitations_corner_cases.[3]: 'Clicking the Catalog top-nav tab DROPS the current search session.'"
+  - "search.md:bugs_limitations_corner_cases.[5]: 'No URL state for ANY filter / facet / query / page-position — only the session UUID.'"
+  - "search.md:docs_link_semantic.doc_drift_findings.[0]: 'The live doc page does NOT mention the /search/{searchId} URL form at all. WebFetched 2026-05-26 status 200.'"
+  - "Grep against test files for searchPath OR useSearchRouteParams in /home/raman/work/odd/odd-platform/odd-platform-ui/src/.../__tests__/: 0 matches (verified 2026-05-26)"
+  - "Primary source: searchRoutes.ts:1-19 (the route module) + Search.tsx:27, 37-48 (the consumer) + useCreateSearch.ts:17 (the navigate-target) + ToolbarTabs.tsx:38 (the session-dropping tab link) + batch-M SearchController.search sidecar (the search_facets row keyed by server-generated UUID; mutated by PUT /facets; no user binding)"
+cross_references:
+  - "LSN-020 family — Category F naming drift, third instance: backend userIds→OWNER_ID (LSN-020 itself) + activity-route inheritance (TEST-GAP-1006 sister) + search-route searchId session-UUID (THIS gap)"
+  - "TEST-GAP-252 (security angle on same surface — bearer-token enumeration; complementary, not duplicate)"
+  - "TEST-GAP-519 (facet endpoint cross-owner enumeration via session UUID; complementary)"
+  - "TEST-GAP-841 (bearer-token-shaped session UUID propagation surfaces — Slack-linking, URL sharing)"
+  - "F-002 (DQ Dashboard feature flow refers to searchId UUID as session-ownership)"
+  - "P-168 (probe for search_facets row TTL/reaper — pending resolution from search sidecar)"
+proposed_action: |-
+  (a) Add three Vitest tests pinning tab-drop, bookmark-fragility, and
+  hook-semantic contract behaviour. (b) Add a JSDoc on SearchRouteParams.
+  (c) Surface a doc-gap to add a "URL form and its lifecycle" section to the
+  Search feature page explaining the searchId is a session UUID, not a
+  saved-search; that tab clicks drop the session; that the session TTL is
+  governed by housekeeping (link to P-168 resolution).
+maintainer_curated: false

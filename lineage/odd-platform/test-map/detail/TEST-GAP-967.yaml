@@ -1,0 +1,59 @@
+gap_id: TEST-GAP-967
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DataCollaborationController controller-class:DataCollaborationController"
+pillars_affected: [P-07]
+surfaced_by:
+  - "DataCollaborationController__controller-class.md:tests_coverage_semantic.uncovered_behaviours.[2]"
+  - "DataCollaborationController__controller-class.md:concepts.invariants.[5]"
+  - "DataCollaborationController__controller-class.md:docs_link_semantic.doc_drift_findings.[3]"
+behaviour: |-
+  **MEDIUM — `GET /api/datacollaboration/providers/slack/channels?channel_name=<X>` filters by `channel.name.startsWith(X)`, NOT `contains` / `fuzzy`. A user typing the middle of a channel name (e.g. `platform` to find `#odd-platform-alerts`) returns zero results despite the channel existing in the bot's joined set.**
+
+  Verified at primary source: `SlackMessageProviderClient.java:50-55`:
+  ```java
+  return cache.get(SENTINEL).thenApply(channels ->
+    channels.stream()
+        .filter(c -> c.name().startsWith(nameLike))
+        .toList());
+  ```
+
+  **Operator-visible UX consequences**:
+  - User types `platform` in the channel autocomplete → expects autocomplete to surface `#odd-platform-alerts`, `#data-platform-team`, `#core-platform-engineering` → gets EMPTY autocomplete list.
+  - User then types `odd-platform` (the prefix) → autocomplete works → user learns the implicit prefix-only contract by trial-and-error.
+  - Slack's own channel autocomplete (`#`-typeahead in the desktop app) uses `contains` matching — the ODD platform autocomplete is INCONSISTENT with Slack's UX norms.
+  - Documentation: the live api-reference page describes `channel_name` as 'optionally filtered by `channel_name`' — does NOT state the filter is `startsWith` (per sidecar's doc_drift_findings.[3]).
+
+  **The 500ms debounce compounds**: `SlackChannelsAutocomplete.tsx:43-54` dispatches a fresh API call on every debounced keystroke. A user typing 'platform' (8 chars) dispatches up to 8 cache-fronted requests, all returning empty — the user sees the empty list flicker for 4+ seconds before giving up.
+
+  **Why MEDIUM**: the failure mode is UX-shaped (the channel exists, user just can't find it). But (a) the Discussions sub-feature is OPT-IN and operator-facing-only; (b) the workaround (type the channel prefix) is discoverable; (c) the silent contract drift erodes operator confidence in autocomplete reliability.
+
+  **Distinguishes**: no prior TEST-GAP covers this specific filter contract. NET-NEW.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/datacollaboration/DataCollaborationControllerSlackChannelsFilterContractTest.java"
+  name: "get_slackChannels_currentImplementationFiltersByStartsWith_notContains_pinsAutocompleteContract"
+evidence:
+  - 'DataCollaborationController.md says (tests_coverage_semantic.uncovered_behaviours.[2]): ''`getSlackChannels` `startsWith`-not-contains filter — query `platform` on a workspace with channel `odd-platform-alerts` returns empty'' (criticality MEDIUM)'
+  - 'DataCollaborationController.md says (concepts.invariants.[5]): ''`getSlackChannels` filters by `startsWith`, not `contains` — `SlackMessageProviderClient.java:52` is `slackChannel.name().startsWith(nameLike)`. A user typing the middle of a channel name (`platform` to find `#odd-platform-alerts`) gets zero results despite the channel existing in the bot''''s joined set.'''
+  - 'DataCollaborationController.md says (docs_link_semantic.doc_drift_findings.[3]): ''Live api-reference describes `channel_name` as ''''optionally filtered by `channel_name`'''' — does NOT state that the filter is `startsWith`, not `contains` or fuzzy. A user typing the middle of a channel name expects results; gets empty.'' (severity LOW)'
+  - "Verified at primary source: SlackMessageProviderClient.java:50-55 (the .filter(c -> c.name().startsWith(nameLike)) line) + SlackChannelsAutocomplete.tsx:43-54 (UI debounce dispatcher)"
+cross_references:
+  - "TEST-GAP-968 (sister this batch — same endpoint, 1-minute cache staleness)"
+  - "TEST-GAP-963 (sister — DataCollab class)"
+  - "DOC-GAP-NNN-candidate (live api-reference must state startsWith contract; or REFACTOR to contains-match)"
+  - "F-022 (Data Collaboration / Discussions sub-feature)"
+related_features: [F-022]
+related_pillar_features: ["P-07:F-NNN Data Collaboration (Discussions)"]
+proposed_action: |-
+  Add `DataCollaborationControllerSlackChannelsFilterContractTest`:
+
+  1. `get_slackChannels_channelNamePlatform_workspaceWithOddPlatformAlerts_returnsEmpty_pinsStartsWithContract` — mock the channel set to `[#odd-platform-alerts, #data-platform-team]`; query `channel_name=platform`; assert empty array.
+  2. `get_slackChannels_channelNameOddPlatform_returnsBothChannels_pinsPrefixMatch` — same set; query `channel_name=odd-platform`; assert 1 channel.
+  3. `get_slackChannels_channelNameEmptyString_returnsAllChannels_pinsAllCaseBehaviour` — same set; query `channel_name=`; assert 2 channels.
+  4. Pair with DOC-GAP-NNN-candidate (live api-reference must state the startsWith contract) OR REFACTOR-NNN-candidate (switch to contains-match, which is Slack-app-UX-consistent).
+
+  Coherence note (LSN-018 Rule 6): NET-NEW.
+batch: 2026-05-25-ZF
+feature_id: F-022

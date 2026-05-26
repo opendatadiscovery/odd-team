@@ -1,0 +1,133 @@
+---
+probe_id: P-128
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__LinksController__controller-class__LinksController.md
+emitted_at: 2026-05-25T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: integration
+verified_against_commit: null
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress questions for GET /api/links (LinksController):
+
+  (1) ORDERING (Category C): The controller streams linkProperties.links() and maps
+  to LinkList without an explicit ORDER BY or sort. Spring Boot's @ConfigurationProperties
+  binder for List<Record> typically preserves declaration order from the YAML / env
+  flattening. Hypothesis: the order returned matches the order in the YAML / env
+  variable indices. If the operator declares
+      odd.links[0].title=A
+      odd.links[1].title=B
+      odd.links[2].title=C
+  the API response.items SHOULD be A, B, C in that order. Verify this holds.
+
+  (2) BOOT-TIME BINDING (Category E): @ConfigurationProperties is bound once at
+  application startup. If the operator edits application.yml or the env at runtime
+  (without restart), the endpoint MUST continue to return the boot-time value.
+  Hypothesis: zero-rebind; the change is invisible until restart. Operator-visible
+  consequence: editing the YAML inside a running container and refreshing the UI
+  shows the OLD links, with no indication that a restart is required.
+
+  (3) AUTH GATE (Category D): /api/links is NOT in WHITELIST_PATHS and has no
+  SecurityRule entry, so it falls under the default
+  `pathMatchers("/**").authenticated()`. Hypothesis:
+    - DISABLED mode → 200, returns links (no auth wall at all).
+    - LOGIN_FORM / OAUTH2 / LDAP modes → 401 unauthenticated, 200 for any
+      authenticated user regardless of role/permission.
+  No per-role gate. Verify that a freshly-provisioned user with no roles/owners
+  can still read the global link list.
+
+  (4) NULL / EMPTY HANDLING: When odd.links is unset entirely, linkProperties
+  receives links=null; CollectionUtils.isEmpty handles both null and []. Response
+  should be 200 with items=[]. Verify behaviour matches.
+
+  (5) NO LIST-SIZE CAP: No upper bound enforced on the number of configured links.
+  Hypothesis: with 5000 link entries configured, the endpoint still returns 200
+  with all 5000; the UI's AppInfoMenu would render all 5000 (no pagination on
+  client side either). Operator-visible: pathological config crashes the menu.
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: env
+    set:
+      ODD_LINKS_0_TITLE: "Internal Wiki"
+      ODD_LINKS_0_URL: "https://wiki.internal/odd"
+      ODD_LINKS_1_TITLE: "Runbook"
+      ODD_LINKS_1_URL: "https://runbook.internal/odd"
+      ODD_LINKS_2_TITLE: "Grafana"
+      ODD_LINKS_2_URL: "https://grafana.internal/d/odd"
+  - kind: app-restart
+act:
+  - kind: rest
+    method: GET
+    path: /api/links
+    auth: authenticated-no-roles
+    capture_as: links_response_authn
+  - kind: rest
+    method: GET
+    path: /api/links
+    auth: none
+    capture_as: links_response_anon
+observe:
+  - kind: rest-status
+    of: links_response_authn
+    capture_as: status_authn
+  - kind: rest-status
+    of: links_response_anon
+    capture_as: status_anon
+  - kind: rest-body
+    of: links_response_authn
+    capture_as: body_authn
+assert:
+  - "status_authn == 200"
+  - "status_anon == 401  # default authenticated() applies; not whitelisted"
+  - "body_authn.items.length == 3"
+  - "body_authn.items[0].title == 'Internal Wiki'   # ordering preserved from env indices"
+  - "body_authn.items[1].title == 'Runbook'"
+  - "body_authn.items[2].title == 'Grafana'"
+  - "body_authn.items[0].url == 'https://wiki.internal/odd'"
+
+  # Boot-time binding: change env without restart
+  - kind: env-mutate-runtime
+    set:
+      ODD_LINKS_0_TITLE: "Changed Wiki"
+  - kind: rest
+    method: GET
+    path: /api/links
+    auth: authenticated-no-roles
+    capture_as: links_response_after_mutate
+  - "links_response_after_mutate.body.items[0].title == 'Internal Wiki'  # NOT 'Changed Wiki' — boot-time only"
+
+  # Null/empty handling
+  - kind: env-unset
+    keys: ["ODD_LINKS_0_TITLE", "ODD_LINKS_0_URL", "ODD_LINKS_1_TITLE", "ODD_LINKS_1_URL", "ODD_LINKS_2_TITLE", "ODD_LINKS_2_URL"]
+  - kind: app-restart
+  - kind: rest
+    method: GET
+    path: /api/links
+    auth: authenticated-no-roles
+    capture_as: links_response_empty
+  - "links_response_empty.status == 200"
+  - "links_response_empty.body.items == []"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__LinksController__controller-class__LinksController
+    - odd-platform__java__AdditionalLinkProperties__config-properties-class__AdditionalLinkProperties
+  retrospectives: []
+realism_caveats: |
+  This probe verifies the BACKEND behaviour only. It does NOT verify the UI-side
+  consequences flagged in the sidecar's bugs_limitations_corner_cases:
+    - target='_blank' without rel="noopener noreferrer" (tabnabbing) — needs a
+      Playwright/headless-browser probe against AppInfoMenu.tsx that injects a
+      malicious link.url and asserts that the rendered <a> attribute carries rel.
+    - link.url used as React key — needs a probe that configures two odd.links
+      entries with the SAME url and asserts the UI renders both (or warns).
+    - URL scheme validation — needs a probe that configures odd.links[0].url =
+      "javascript:alert(1)" and asserts the rendered <a href> is sanitised.
+  These three UI-side concerns SHOULD be split into separate probes (P-129,
+  P-130, P-131) when a UI-layer Playwright harness is available; this single
+  probe stays scoped to backend behaviour.

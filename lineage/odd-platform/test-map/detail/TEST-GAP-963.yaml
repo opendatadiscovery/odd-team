@@ -1,0 +1,70 @@
+gap_id: TEST-GAP-963
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform java DataCollaborationController controller-class:DataCollaborationController"
+pillars_affected: [P-07, P-09]
+surfaced_by:
+  - "DataCollaborationController__controller-class.md:tests_coverage_semantic.uncovered_behaviours.[6]"
+  - "DataCollaborationController__controller-class.md:bugs_limitations_corner_cases.[0]"
+  - "DataCollaborationController__controller-class.md:understanding (item 3)"
+behaviour: |-
+  **HIGH — `GET /api/messages/{message_id}/url` (redirect) emits `ResponseEntity.status(FOUND).headers(h -> h.setLocation(URI.create(providerUrl)))` (DataCollaborationController.java:42-48) where `providerUrl` comes from Slack's `chat.getPermalink` response (SlackAPIClientImpl.java:84-95) UNCONDITIONALLY. No host check, no scheme check, no allowlist. The platform is an open-redirect surface dependent SOLELY on Slack API integrity.**
+
+  Verified by reading the four files in the chain: `DataCollaborationController.java:42-48` (the controller), `DataCollaborationServiceImpl.java:72-77` (the service), `SlackMessageProviderClient.java:64-66` (the client), `SlackAPIClientImpl.java:83-95` (the SDK wrapper) — none of them validate the URL. The trust assumption is 'Slack returns slack.com URLs'.
+
+  **Three concrete bug classes the absence enables**:
+  1. **Scheme bypass**: if Slack's API ever returns `javascript:` / `data:` / `file:` URLs, the controller emits 302 to them. `URI.create` accepts any valid URI scheme.
+  2. **Host smuggling**: if Slack's API is compromised, returns an attacker-controlled URL (`https://evil.com/...`), the platform redirects every user clicking 'Open in Slack' on every Discussions thread.
+  3. **Malformed URI propagation**: `URI.create(providerUrl)` throws `IllegalArgumentException` on malformed strings; failure bubbles to WebFlux's default exception handler → 5xx, not 4xx. Operator-confusing.
+
+  **No defence in depth**:
+  - No `URI.create(providerUrl).getHost().endsWith(".slack.com")` check.
+  - No `URI.create(providerUrl).getScheme().equals("https")` check.
+  - No allowlist of known-good URL prefixes (e.g. `https://*.slack.com/archives/...`).
+  - No catch-and-fallback for `IllegalArgumentException`.
+
+  **OWASP class**: A01:2021 Broken Access Control — Open Redirect sub-class. See `https://owasp.org/Top10/A01_2021-Broken_Access_Control/`.
+
+  **Why HIGH (not CRITICAL)**: the attack surface depends on Slack's API integrity. Slack has a strong reputation for not returning attacker-controlled permalinks. But the platform's failure to defend in depth means a single Slack incident (e.g. workspace token rotation gone wrong, Slack's response cache poisoning, MITM if outbound TLS pinning is missed) produces an immediate platform-wide pivot vector. With TEST-GAP-959 (no inbound signature verification) + TEST-GAP-960 (no idempotency) compounding, the trust-the-Slack-API anti-pattern is **the dominant security weakness in P-07 Data Collaboration**.
+
+  **Distinguishes from existing IDs**:
+  - TEST-GAP-142 (HIGH) — `auth.login-form-redirect` open-redirect class via `@Value`. SAME CLASS-OF-BUG, different ingestion surface (config-key consumer vs Slack API consumer).
+  - TEST-GAP-738 (HIGH) — link URL `javascript:` scheme bypass. Different controller surface (DataEntity link UI), same class.
+  - TEST-GAP-807 / 808 — Webhook / Slack URI no scheme allowlist. Sister gaps in the **outbound** direction (notification sender).
+  - This entry is the **redirect endpoint in the Discussions sub-feature** class instance.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/datacollaboration/DataCollaborationControllerRedirectOpenRedirectTest.java"
+  name: "get_messageUrl_currentImplementation_trustsSlackPermalinkVerbatim_pinsOpenRedirectClass"
+evidence:
+  - 'DataCollaborationController.md says (tests_coverage_semantic.uncovered_behaviours.[6]): ''`redirect` open-redirect class — when Slack''''s `chat.getPermalink` returns an attacker-controlled URL (mock SlackAPIClient), assert the controller still emits the 302 to that URL (the unconditional trust). This is the bug-class boundary'' (criticality HIGH)'
+  - 'DataCollaborationController.md says (bugs_limitations_corner_cases.[0]): ''Open-redirect-class surface on `redirect`: the controller emits `ResponseEntity.status(FOUND).headers(h -> h.setLocation(URI.create(providerUrl)))` (lines 42-48) where `providerUrl` comes from Slack''''s `chat.getPermalink` response UNCONDITIONALLY. No host check, no scheme check, no allowlist of known-good URL prefixes. The trust assumption is ''''Slack returns slack.com URLs'''' — enforced nowhere in the controller-service-client chain'' (severity MEDIUM — promoted to HIGH at the reducer level because the class compounds with TEST-GAP-959 + TEST-GAP-960)'
+  - "Verified at primary source: DataCollaborationController.java:42-48 + DataCollaborationServiceImpl.java:72-77 + SlackMessageProviderClient.java:64-66 + SlackAPIClientImpl.java:83-95 (full chain reading 2026-05-25 — zero validation)"
+  - "Reducer-side Grep `Location.*validate|getHost.*slack|scheme.*https|URI.*allowlist` against `/home/raman/work/odd/odd-platform/odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/datacollaboration/`: 0 hits (verified 2026-05-25)"
+cross_references:
+  - "TEST-GAP-142 (HIGH — auth.login-form-redirect open-redirect; same class)"
+  - "TEST-GAP-738 (HIGH — link URL javascript: scheme bypass; same class)"
+  - "TEST-GAP-807 (MEDIUM — Webhook no SSRF guard; outbound sister)"
+  - "TEST-GAP-808 (MEDIUM — Slack outbound URI no scheme allowlist; outbound sister)"
+  - "TEST-GAP-959 (CRITICAL — EventApi no inbound signature verification; compounding trust-Slack-API anti-pattern)"
+  - "TEST-GAP-960 (CRITICAL — EventApi no idempotency; compounding)"
+  - "TEST-GAP-965 (sister — non-v1 UUID silent 200; different bug-class on the same endpoint)"
+  - "TEST-GAP-966 (sister — 302-vs-301 status drift on the same endpoint)"
+  - "REFACTOR-NNN-candidate (FIX: add host+scheme allowlist on redirect; fail-fast on validation miss)"
+  - 'concepts/detail/invariants/openapi-200-vs-201-status-code-drift.yaml (different drift family)'
+  - "F-022 (Data Collaboration / Discussions sub-feature)"
+related_features: [F-022]
+related_pillar_features: ["P-07:F-NNN Data Collaboration (Discussions)", "P-09:Security & Access Control"]
+proposed_action: |-
+  Add `DataCollaborationControllerRedirectOpenRedirectTest`:
+
+  1. `get_messageUrl_slackReturnsEvilDotComUrl_currentImplementationEmits302ToEvilCom_pinsOpenRedirectVulnerability` — mock `SlackAPIClient.exchangeForUrl` to return `https://evil.com/forged`; assert WebTestClient response is 302 with `Location: https://evil.com/forged`. Comment: '// REGRESSION-PIN — open-redirect class. When TEST-GAP-963 is fixed, this test MUST FLIP to expectStatus().is5xxServerError() (or 4xx, depending on fix shape).'
+  2. `get_messageUrl_slackReturnsJavascriptScheme_currentImplementationEmits302ToJavascript_pinsSchemeBypassClass` — mock the SDK to return `javascript:alert(1)`; assert 302 emitted.
+  3. `get_messageUrl_slackReturnsMalformedURI_currentImplementationBubbles5xx_pinsErrorMode` — mock the SDK to return `not-a-uri`; assert response is 5xx (not 4xx).
+  4. `get_messageUrl_slackReturnsLegitimateSlackComUrl_currentImplementationEmits302Correctly_pinsHappyPath` — the contrast happy path; mock returns `https://workspace.slack.com/archives/...`; assert 302 emitted with correct Location.
+  5. Pair with REFACTOR-NNN-candidate (FIX: validate URL host ends in `.slack.com` AND scheme equals `https`; fail-fast 5xx otherwise; log warn-level event for forensics).
+
+  Coherence note (LSN-018 Rule 6): NET-NEW for THIS endpoint. STRENGTHENS the open-redirect class umbrella (TEST-GAP-142, TEST-GAP-738) by adding the Data Collaboration instance.
+batch: 2026-05-25-ZF
+feature_id: F-022

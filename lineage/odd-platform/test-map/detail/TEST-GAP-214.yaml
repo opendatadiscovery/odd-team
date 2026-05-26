@@ -3,24 +3,32 @@ category: missing-integration
 criticality: MEDIUM
 node_ids:
 - odd-platform java org.opendatadiscovery.oddplatform.housekeeping.config config-properties-class:HousekeepingTTLProperties
+- odd-platform java org.opendatadiscovery.oddplatform.config config-class:SchedulingConfiguration
+pillars_affected: [P-04]
 surfaced_by:
 - HousekeepingTTLProperties.md:tests_coverage_semantic.uncovered_behaviours.[6]
 - HousekeepingTTLProperties.md:performance.known_performance_gaps.[2]
-behaviour: 'ShedLock multi-instance race: two instances boot simultaneously, both
-  attempt to run housekeeping at minute 0 — only one acquires the lock; the other
-  no-ops (HousekeepingJobManager.java:26 `@SchedulerLock(name="housekeepingJob", lockAtLeastFor="14m",
-  lockAtMostFor="14m")`). The 14-minute upper bound is dangerously close to the 15-minute
-  schedule; a job running 14m 1s releases the lock prematurely. No multi-process test
-  verifies the single-leader invariant.'
+- "SchedulingConfiguration.md:tests_coverage_semantic.uncovered_behaviours.[5] (batch-ZK STRENGTHENED — ShedLock acquisition is INSERT-or-UPDATE under PG's usingDbTime; the .usingDbTime() invariant at SchedulingConfiguration.java:22 is the load-bearing precondition for the multi-instance lock-race correctness)"
+- "SchedulingConfiguration.md:stress_findings.probes_emitted.[P-182] (batch-ZK STRENGTHENED — multi-instance lock-race probe pinned at the foundation-config level)"
+behaviour: |-
+  ShedLock multi-instance race: two instances boot simultaneously, both attempt to run housekeeping at minute 0 — only one acquires the lock; the other no-ops (HousekeepingJobManager.java:26 `@SchedulerLock(name="housekeepingJob", lockAtLeastFor="14m", lockAtMostFor="14m")`). The 14-minute upper bound is dangerously close to the 15-minute schedule; a job running 14m 1s releases the lock prematurely. No multi-process test verifies the single-leader invariant.
+
+  STRENGTHENED batch ZK — the SchedulingConfiguration sidecar adds the foundation-tier confirmation: the `.usingDbTime()` call at SchedulingConfiguration.java:22 is the load-bearing precondition. Without it, JVM-side timestamps would cause two replicas with skewed clocks to write different lock_until values and the lock semantics would be vulnerable to clock drift. The multi-instance race test should ALSO verify the clock-arbitration is PG-anchored (cross-reference TEST-GAP-1028).
 test_files_existing: []
 test_files_proposed:
   path: odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/housekeeping/HousekeepingShedLockMultiInstanceTest.java
   name: twoInstancesBootSimultaneously_onlyOneRunsHousekeepingPerCycle
 evidence:
 - HousekeepingTTLProperties.md:tests_coverage_semantic.uncovered_behaviours.[6]
+- "SchedulingConfiguration.md says (stress_findings.resource_boundaries.[lock]): 'Two replicas booting simultaneously and both attempting to acquire the same @SchedulerLock name receive atomic INSERT-OR-UPDATE semantics from PG's usingDbTime — only one wins.'"
 cross_references:
-- concepts.yaml:entities[Housekeeping TTL retention].performance_aggregate.scaling_shape
-  (ShedLock-coordinated)
-proposed_action: 'Testcontainers-Postgres multi-process test: spawn two JVMs sharing
-  the same Postgres ShedLock table. Assert only one runs the cycle. Locks the single-leader
-  invariant.'
+- concepts.yaml:entities[Housekeeping TTL retention].performance_aggregate.scaling_shape (ShedLock-coordinated)
+- TEST-GAP-1028 (.usingDbTime() invariant — precondition for this race correctness)
+- TEST-GAP-1026 (single-thread executor — sister scheduling-foundation concern)
+- P-182 probe (multi-instance correctness)
+related_features: [F-010]
+related_pillar_features: ["P-04:F-010"]
+proposed_action: |-
+  Testcontainers-Postgres multi-process test: spawn two JVMs sharing the same Postgres ShedLock table. Assert only one runs the cycle. Locks the single-leader invariant. Pair with the TEST-GAP-1028 clock-arbitration pin so the .usingDbTime() precondition is independently exercised.
+batch: 2026-05-26-ZK-STRENGTHENED
+feature_id: null

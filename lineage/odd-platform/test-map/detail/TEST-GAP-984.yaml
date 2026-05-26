@@ -1,0 +1,62 @@
+gap_id: TEST-GAP-984
+category: missing-integration
+criticality: CRITICAL
+node_ids:
+  - "odd-platform java DataQualityRunsController controller-class:DataQualityRunsController"
+pillars_affected: [P-04]
+surfaced_by:
+  - "DataQualityRunsController.md:bugs_limitations_corner_cases.[0] (test_results counts TESTS keyed on latest-run-status, not RUNS — diverges from the user-facing label and from the live documentation — severity HIGH)"
+  - "DataQualityRunsController.md:docs_link_semantic.doc_drift_findings.[0] (DOC DRIFT — test_results counts TESTS, not RUNS, contrary to the dashboard doc's verbatim definition)"
+  - "DataQualityRunsController.md:tests_coverage_semantic.uncovered_behaviours.[4] (Latest-run vs all-runs semantics — a test that has run 100 times (90 SUCCESS, 10 FAILED, latest=FAILED) contributes ONE count to FAILED bucket, not 90/10 split)"
+behaviour: |-
+  **The Quality Dashboard's "Test Results Breakdown" ring lies — it shows TEST counts (one per test) keyed on latest-run-status, NOT RUN counts as both the operation name and the live documentation promise.** This is an LSN-019-class drift instantiated on the highest-visibility surface of P-04: every operator triaging the catalog-wide dashboard reads a count expecting "run volume by status" and gets "test count by their most recent run's status".
+
+  **The semantic drift in detail**:
+  - The OpenAPI operation summary reads "Get Data Quality tests runs" (`openapi.yaml:1975-1976`).
+  - The UI title chart label says "Test Results Breakdown" (`DataQualityContent.tsx:110`).
+  - The live doc at `https://docs.opendatadiscovery.org/features/data-quality/dashboard` says verbatim: **"Test Results Breakdown — the count of test runs broken down by status (passed / failed / skipped)"** (WebFetched 2026-05-25, status 200).
+  - The implementation joins `DATA_ENTITY_TASK_LAST_RUN` (`ReactiveDataQualityRunsRepositoryImpl.java:76, 95`), whose `task_oddrn` is `PRIMARY KEY` (`V0_0_45__last_runs_table.sql:9`) — exactly one row per test.
+
+  **Concrete consequence**:
+  - A test that ran 100 times (99 SUCCESS, 1 latest FAILED) contributes 1 to the FAILED bucket — NOT 99/1 split.
+  - A test that flapped 50/50 over its history but most recently succeeded contributes 1 to SUCCESS — the dashboard cannot distinguish "stable test" from "transient flap".
+  - A test that succeeded for years and just started failing shows as 1 FAILED — eclipsing the long success history.
+  - An operator reading the FAILED count assumes "N tests are failing right now"; the count actually says "N tests had their most recent run fail at some point" — which COULD include tests that fail intermittently and are currently green at the last refresh.
+
+  **Why CRITICAL**:
+  - **Operational mis-decision-making**: triagers prioritise based on this count; the count's meaning disagrees with the operator's mental model formed from the label + doc.
+  - **Drift-prone**: a future maintainer "fixing" the SQL to count rows from `DATA_ENTITY_TASK_RUN` would silently triple/100x the counts on the dashboard — and arguably MATCH the documented contract. There is no test pinning the current denormalised behaviour, so the bug-fix-or-bug-pin ambiguity is unresolved.
+  - **Compound with TEST-GAP-986**: the denormalisation invariant (single-row-per-task) is the load-bearing assumption — a schema change reverting the denormalisation would silently flip the dashboard's meaning.
+  - **LSN-019 family**: this is the canonical instantiation of "operationId name vs implementation behaviour" drift on the highest-traffic dashboard endpoint.
+test_class: missing-integration
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/DataQualityRunsTestResultsCountSemanticTest.java"
+  name: "testResults_count_equalsNumberOfTestsByLatestRunStatus_notNumberOfHistoricalRuns_pinsLSN019Drift"
+evidence:
+  - "DataQualityRunsController.md:bugs_limitations_corner_cases.[0] verbatim: 'test_results counts TESTS keyed on latest-run-status, not RUNS — diverges from the user-facing label and from the live documentation. The OpenAPI operation summary says Get Data Quality tests runs, the UI title chart label says Test Results Breakdown, the live doc says count of test runs broken down by status. The SQL joins DATA_ENTITY_TASK_LAST_RUN; task_oddrn is PRIMARY KEY, guaranteeing one row per test. A test with 100 historical runs (99 SUCCESS, 1 latest FAILED) contributes 1 to FAILED bucket; the dashboard cannot distinguish one transient failure on a healthy test from a test that fails every time it runs. An operator triaging will see a count and assume it reflects run volume; the count actually reflects test count whose most recent execution had that status. This is the LSN-019 class transcription drift.' severity: HIGH"
+  - "DataQualityRunsController.md:docs_link_semantic.doc_drift_findings.[0] verbatim: 'DOC DRIFT — test_results counts TESTS, not RUNS, contrary to the dashboard doc''s verbatim definition.' (live doc says 'count of test runs broken down by status', WebFetched 2026-05-25 status 200)"
+  - "Verified at primary source: openapi.yaml:1975-1976 (operation summary 'Get Data Quality tests runs') + DataQualityContent.tsx:110 (UI label 'Test Results Breakdown') + ReactiveDataQualityRunsRepositoryImpl.java:76, 95 (the JOIN to DATA_ENTITY_TASK_LAST_RUN) + V0_0_45__last_runs_table.sql:9 (PRIMARY KEY on task_oddrn — single row per test)"
+  - "Probe P-156 emits the canonical verification scenario"
+cross_references:
+  - "TEST-GAP-983 (parent — controller HTTP-tier zero-coverage gap)"
+  - "TEST-GAP-985 (sibling — getLatestTablesHealth zero coverage)"
+  - "TEST-GAP-986 (sibling — denormalisation invariant; the schema-evolution risk that compounds this drift)"
+  - "LSN-019 (the case-law class — operationId name vs implementation behaviour drift)"
+  - "DOC-NNN candidate: correct the live doc to say 'count of TESTS by their LATEST RUN STATUS' OR change the implementation to count runs and pre-cache; the doc-and-code mutual-correction conversation is owed by the dashboard maintainer"
+  - "REFACTOR-NNN candidate: rename `test_results` → `latest_test_results_by_status` OR rename the dashboard label to match"
+  - "P-156 (the probe skeleton emitted in the sidecar)"
+related_features: []
+related_pillar_features: ["P-04:F-002"]
+proposed_action: |-
+  Add `DataQualityRunsTestResultsCountSemanticTest` at `odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/`. Four test methods:
+  1. `testResults_count_equalsNumberOfTestsByLatestRunStatus_notNumberOfHistoricalRuns_pinsLSN019Drift` — seed 1 DQ-test with 100 historical runs (99 SUCCESS, 1 latest FAILED); GET dashboard; assert testResults[CATEGORY].results[FAILED].count = 1 (NOT 1; NOT 100). PIN the per-test-not-per-run semantics.
+  2. `testResults_count_flapMostRecentlySuccess_singleSuccess_pinsLatestRunOverride` — seed 1 test with 50 SUCCESS + 50 FAILED runs, MOST RECENT = SUCCESS; assert count[SUCCESS]=1, count[FAILED]=0 (the historical 50 FAILED runs are invisible). PIN the most-recent-overrides semantics.
+  3. `testResults_count_zeroRunsButTestExists_pinsTestVsRunDistinction` — seed 1 DQ-test entity with category set but NO task_run rows; assert count[*]=0 (the test exists but has no latest_run row to contribute). PIN the latest-run-required clause.
+  4. `testResults_count_acrossMultipleCategories_pinsCategoryPartition` — seed 5 tests across 3 categories with varying latest-run statuses; GET; assert per-category counts match a manually-computed aggregation; PIN the per-category partition correctness.
+
+  Pair with DOC-NNN: correct the live dashboard doc to match — either rename to "Tests by Latest Status" OR change the implementation to count historical runs (Option A is far cheaper). Pair with REFACTOR-NNN: rename the response field if the doc owner chooses Option A.
+
+  When Option A lands: test #1 inverts but #2-4 do not (the latest-run semantics is preserved; only the LABEL changes).
+batch: 2026-05-25-ZG
+feature_id: null

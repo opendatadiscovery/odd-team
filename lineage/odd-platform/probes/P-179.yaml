@@ -1,0 +1,231 @@
+---
+probe_id: P-179
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__java__config_properties__config-properties-class__GenAIProperties
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-039
+test_class: integration
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress questions Q-A-tunable-zero and Q-A-tunable-negative on
+  GenAIProperties.requestTimeout:
+
+  Pin the LSN-002-class SDK-builder concern: Reactor Netty's
+  HttpClient.responseTimeout(Duration.ofMinutes(N)) when N=0
+  and when N=negative.
+
+  Hypotheses:
+
+  (1) N=0 (the Java primitive int default):
+      - WebClient construction at boot SUCCEEDS (no exception).
+      - First POST /api/genai/ask returns an error containing
+        the literal string '0 min' from the format-string at
+        GenAIServiceImpl.java:50.
+      - The HTTP status is 500 (GenAIException wraps the
+        ReadTimeoutException).
+      - The user-visible error message is the verbatim
+        'Gen AI request take longer that 0 min' — confusing,
+        not diagnostic.
+
+  (2) N=-5 (negative):
+      - WebClient construction at boot SUCCEEDS (Duration.ofMinutes(-5)
+        is a legal Duration in Java).
+      - Reactor Netty's responseTimeout behavior on a negative
+        Duration is undocumented. Possibilities:
+          (a) NPE / IllegalArgumentException at construction.
+          (b) Silent no-effective-timeout (treats negative as
+              'never time out').
+          (c) Immediate timeout (treats negative as zero).
+      - This probe records the actual behavior so the sidecar
+        can replace 'PROBE-NEEDED' with the verified answer.
+
+  (3) N=2 (the smallest sensible value, from the commented
+      example in application.yml:20):
+      - WebClient construction at boot SUCCEEDS.
+      - A request to a slow external endpoint (mocked at >2min
+        response time) times out with 'Gen AI request take
+        longer that 2 min' after exactly 2 minutes.
+      - This is the happy-path baseline.
+
+  Together these three runs confirm or deny the LSN-002 class
+  for GenAIProperties: 'a primitive-int default of 0 silently
+  misconfigures the SDK builder; an explicit @Min(1) would
+  have produced a fail-fast at boot'.
+---
+arrange:
+  - kind: docker-compose-up
+    profile: odd-minimal
+    services: [odd-platform, odd-postgres, mock-slow-llm]
+  - kind: mock-server
+    description: "Spin up a mock LLM service that takes 3 minutes to respond. Use this to test the N=2 timeout boundary."
+    name: mock-slow-llm
+    port: 5000
+    responses:
+      - path: /query_data
+        method: POST
+        delay_ms: 180000  # 3 minutes — longer than any test timeout to force timeout
+        status: 200
+        body: '"mock response"'
+act:
+  - kind: scenario
+    name: "N_equals_zero"
+    description: "genai.request_timeout=0 (Java primitive default) — confirm the misleading '0 min' message."
+    env:
+      GENAI_ENABLED: "true"
+      GENAI_URL: "http://mock-slow-llm:5000"
+      # GENAI_REQUEST_TIMEOUT: NOT SET — falls back to int default 0
+    steps:
+      - kind: wait
+        expression: "platform_health == 'UP'"
+        timeout_seconds: 60
+      - kind: rest
+        method: POST
+        path: /api/genai/ask
+        body: |
+          {"body": "test"}
+        capture_as: response_n0
+      - kind: capture
+        source: clock
+        capture_as: response_n0_elapsed_ms
+  - kind: scenario
+    name: "N_equals_negative_five"
+    description: "genai.request_timeout=-5 — observe undefined behavior of responseTimeout(Duration.ofMinutes(-5))."
+    env:
+      GENAI_ENABLED: "true"
+      GENAI_URL: "http://mock-slow-llm:5000"
+      GENAI_REQUEST_TIMEOUT: "-5"
+    steps:
+      - kind: capture
+        description: "Capture boot logs — does Reactor Netty throw at HttpClient construction with negative Duration?"
+        source: docker-logs
+        service: odd-platform
+        capture_as: boot_logs_neg5
+      - kind: wait
+        expression: "platform_health == 'UP' or platform_health == 'DOWN'"
+        timeout_seconds: 60
+      - kind: rest
+        method: POST
+        path: /api/genai/ask
+        body: |
+          {"body": "test"}
+        capture_as: response_neg5
+        # Maximum timeout the runner waits before forcibly cancelling
+        max_wait_seconds: 240   # 4 minutes — longer than the mock delay
+      - kind: capture
+        source: clock
+        capture_as: response_neg5_elapsed_ms
+  - kind: scenario
+    name: "N_equals_two"
+    description: "genai.request_timeout=2 — the canonical happy-path; confirm 2-minute timeout fires exactly."
+    env:
+      GENAI_ENABLED: "true"
+      GENAI_URL: "http://mock-slow-llm:5000"
+      GENAI_REQUEST_TIMEOUT: "2"
+    steps:
+      - kind: wait
+        expression: "platform_health == 'UP'"
+        timeout_seconds: 60
+      - kind: rest
+        method: POST
+        path: /api/genai/ask
+        body: |
+          {"body": "test"}
+        capture_as: response_n2
+        max_wait_seconds: 240
+      - kind: capture
+        source: clock
+        capture_as: response_n2_elapsed_ms
+observe:
+  - kind: derived
+    description: "N=0 observations — immediate timeout, '0 min' in error message."
+    expressions:
+      - "n0_status: response_n0.status_code"
+      - "n0_message_contains_0_min: '0 min' in response_n0.body.text"
+      - "n0_elapsed_is_fast: response_n0_elapsed_ms < 5000"  # < 5 seconds = effectively immediate
+  - kind: derived
+    description: "N=-5 observations — boot success or failure, runtime behavior."
+    expressions:
+      - "neg5_boot_threw: 'IllegalArgumentException' in boot_logs_neg5 or 'NullPointerException' in boot_logs_neg5"
+      - "neg5_status: response_neg5.status_code"
+      - "neg5_message_contains_neg5_min: '-5 min' in response_neg5.body.text"
+      - "neg5_elapsed_is_fast: response_neg5_elapsed_ms < 5000"
+      - "neg5_elapsed_is_long: response_neg5_elapsed_ms > 180000"  # > 3 min = no effective timeout, mock delay completed
+  - kind: derived
+    description: "N=2 observations — 2-min timeout fires close to the boundary."
+    expressions:
+      - "n2_status: response_n2.status_code"
+      - "n2_message_contains_2_min: '2 min' in response_n2.body.text"
+      - "n2_elapsed_close_to_2min: response_n2_elapsed_ms > 115000 and response_n2_elapsed_ms < 125000"  # 115-125 seconds = ~2 min ±5s
+assert:
+  # N=0 — immediate timeout, '0 min' in message
+  - "n0_status == 500"
+  - "n0_message_contains_0_min == True"
+  - "n0_elapsed_is_fast == True"
+  # N=2 — timeout fires close to 2 min
+  - "n2_status == 500"
+  - "n2_message_contains_2_min == True"
+  - "n2_elapsed_close_to_2min == True"
+  # N=-5 — record whatever happens; no strict assertion because the behavior
+  # is undocumented and may change between Reactor Netty versions. The probe
+  # is observational for this scenario; the sidecar's PROBE-NEEDED entry
+  # gets updated to PROBE-VERIFIED with whichever branch (boot-throw /
+  # no-effective-timeout / immediate-timeout) the run pins.
+  # The probe-runner records the outcome and writes it back to the sidecar
+  # as one of:
+  #   (a) "boot fails with IllegalArgumentException — neg5_boot_threw==True"
+  #   (b) "silent no-effective-timeout — neg5_elapsed_is_long==True"
+  #   (c) "immediate-timeout — neg5_elapsed_is_fast==True"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__config_properties__config-properties-class__GenAIProperties
+  retrospectives:
+    - LSN-002-minio-region-unset
+realism_caveats: |
+  What this probe pins:
+    - The N=0 misleading-error-message contract: operators get
+      '0 min' (typo and confusing); a fail-fast at boot would be
+      better.
+    - The N=2 happy-path: confirms the responseTimeout binding
+      actually fires at the configured value.
+    - The N=-5 undefined-behavior class: pins WHICH undefined
+      branch is taken (so the sidecar can stop saying 'PROBE-NEEDED').
+
+  What this probe does NOT verify:
+    - The behavior at N=MAX_INT (~4080 years) — the elapsed-time
+      check would be impractical. Static analysis is sufficient
+      for this case (Duration.ofMinutes(MAX_INT) is legal; the
+      WebClient never times out on responseTimeout; inbound
+      Spring WebFlux defaults still cap the inbound request).
+    - Connection-establishment failures (the mock IS reachable
+      in this probe) — a separate probe could point genai.url
+      at an unreachable host to confirm the connect-timeout
+      behavior, which is governed by Reactor Netty defaults,
+      NOT by genai.request_timeout.
+    - The interaction with Spring WebFlux's inbound request
+      timeout (the request thread on the platform side may
+      time out before the outbound socket does, especially
+      at N=MAX_INT).
+
+  Reactor Netty version assumption:
+    The behavior of responseTimeout(Duration.ofMinutes(0)) and
+    responseTimeout(Duration.ofMinutes(-5)) depends on the
+    Reactor Netty version pinned by Spring Boot. The probe is
+    informational — if a Spring Boot upgrade changes the
+    behavior at N=0 or N=-5, the sidecar's PROBE-VERIFIED entry
+    must be re-run.
+
+  Mock LLM service:
+    The probe uses a docker-compose-managed mock at
+    http://mock-slow-llm:5000 with a 3-minute delay. If the
+    probe-runner's mock-server primitive doesn't support
+    arbitrary delays, substitute a WireMock or MockServer
+    container with the equivalent configuration. The N=0
+    scenario doesn't actually need the mock to be reachable
+    (the timeout fires before the connection completes), but
+    the N=2 scenario does.

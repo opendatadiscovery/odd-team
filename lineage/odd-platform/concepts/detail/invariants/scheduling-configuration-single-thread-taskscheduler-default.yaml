@@ -1,0 +1,176 @@
+name: 'Spring single-thread ThreadPoolTaskScheduler default — four @Scheduled jobs serialise on ONE thread'
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-08
+  - P-07
+description: |-
+  **NEW INVARIANT, batch ZK (2026-05-26) — PRIMARY-SOURCE PIN of the
+  platform's scheduled-task subsystem foundation.**
+
+  `SchedulingConfiguration.java:1-26` is the 26-line `@Configuration`
+  class that turns on the entire scheduled-task subsystem with three
+  annotations stacked on one class: `@EnableScheduling` (imports
+  Spring's `ScheduledAnnotationBeanPostProcessor` + builds the default
+  `TaskScheduler`), `@EnableSchedulerLock(defaultLockAtMostFor = "1h")`
+  (imports ShedLock-spring's `MethodProxyScheduledLockAdvisor`), and
+  the `lockProvider(DataSource)` `@Bean` that returns a
+  `JdbcTemplateLockProvider` with `.usingDbTime()` enabled.
+
+  **THE LOAD-BEARING ABSENCE**: the codebase declares NO `TaskScheduler`
+  `@Bean` anywhere (`grep TaskScheduler odd-platform-api/src/main/java`
+  returns zero matches) AND NO `spring.task.scheduling.pool.size` in
+  `application.yml` (grep returns zero matches). Spring Boot's
+  `TaskSchedulerBuilder` therefore constructs a default
+  `ThreadPoolTaskScheduler` with `poolSize = 1`.
+
+  **THE CONSEQUENCE**: all FOUR `@Scheduled` methods in the codebase
+  share ONE executor thread, executing serially:
+    - `HousekeepingJobManager.runHousekeepingJobs` — `fixedRate=15min`
+      + `@SchedulerLock("housekeepingJob", 14m, 14m)`
+    - `DataEntityStatusSwitchJob.run` — `fixedRate=10min` +
+      `@SchedulerLock("statusSwitchJob", 9m, 9m)`
+    - `PostgreSQLPartitionCreationJob.run` — `cron="0 1 0 * * *"`
+      daily at 00:01 + `@SchedulerLock("partitionCreationJob", 10m, 10m)`
+    - `PostgreSQLSessionHousekeepingJobHandler.deleteExpiredSessions` —
+      `fixedRate=1h` (NO @SchedulerLock — see the existing
+      `housekeeping-job-no-scheduler-lock-multi-instance-amplification`
+      invariant)
+
+  When two of these jobs are due simultaneously, the second WAITS for
+  the first to complete. Under sustained heavy load:
+
+  - A 14-minute `HousekeepingJobManager` cycle DELAYS `DataEntityStatusSwitchJob`
+    by up to 14 minutes. The 10-minute status-switch cadence drifts
+    to 24 minutes (or worse on cumulative backlog).
+  - A housekeeping cycle running past midnight DELAYS the daily
+    `PostgreSQLPartitionCreationJob` (00:01 cron) by minutes to hours.
+    Spring's default cron-misfire behaviour is QUEUE-AND-DELAY, not
+    skip. If the delayed partition-creation lands AFTER the new day's
+    first INSERT against ACTIVITY/MESSAGE arrives, the INSERT fails
+    with `no partition exists for the given key` (P-183 probe NEW
+    pins the empirical behaviour).
+
+  **OPERATOR MITIGATION**: set `spring.task.scheduling.pool.size: 4`
+  in `application.yml` to give each scheduled job its own thread.
+  One-line config change.
+
+  **DOC GAP**: this is NOT documented anywhere in the live ODD docs.
+  WebFetch `/configuration-and-deployment/odd-platform` 2026-05-26
+  (HTTP 200) describes the housekeeping job firing every 15 minutes
+  and the session-housekeeping firing every hour but does NOT state
+  that all four `@Scheduled` jobs share ONE thread. An operator reading
+  the docs expects parallel execution; the actual contract is
+  serial-through-a-single-thread executor.
+
+  **CROSS-CUTTING CONNECTIONS**:
+    - Pairs with the existing
+      `housekeeping-job-no-scheduler-lock-multi-instance-amplification`
+      invariant — that one describes a SINGLE-MODE asymmetry (session
+      housekeeping has no @SchedulerLock); THIS one describes the
+      cross-job EXECUTOR coupling (all four jobs serialise).
+    - Pairs with the new `scheduling-configuration-usingdbtime-clock-skew-mitigation`
+      invariant — that one is the POSITIVE implicit ADR
+      (`.usingDbTime()` mitigates clock-skew); THIS one is the
+      NEGATIVE silent operational risk (no thread-pool sizing).
+    - Pairs with the existing LSN-002-class invariant — single-thread
+      executor default is conceptually the SAME failure mode (Spring
+      framework default supplied without an operator-visible-action;
+      the action is absence-of-config, not presence-of-bad-config).
+
+  **FIX SHAPES**:
+    (a) Operator-side: `spring.task.scheduling.pool.size: 4` in
+        application.yml — one-line, immediate mitigation.
+    (b) Platform-side: declare a `@Bean public TaskScheduler` in
+        SchedulingConfiguration with explicit poolSize=4 +
+        Micrometer-instrumented `ThreadPoolTaskExecutor` (the cleaner
+        fix; closes the no-Micrometer observability gap simultaneously).
+    (c) Both: document the single-thread default in
+        `/configuration-and-deployment/odd-platform#housekeeping`
+        admonition + name the `spring.task.scheduling.pool.size`
+        mitigation operator-side.
+
+  Severity: HIGH — silent operational risk under load; the operator's
+  expectation 'I have four scheduled jobs, they run in parallel' is
+  wrong by default. Severity bounded by deployment load (light loads
+  produce no observable consequence; heavy loads produce silent
+  cadence drift on the 10-min and 15-min jobs).
+nodes:
+  - odd-platform java org.opendatadiscovery.oddplatform.config config-class:SchedulingConfiguration
+  - odd-platform java service service:HousekeepingJobManager
+contributors:
+  - |-
+    SchedulingConfiguration.md (batch ZK NEW — PRIMARY-SOURCE pin):
+    bugs_limitations_corner_cases.[0] HIGH (the headline finding —
+    single-thread ThreadPoolTaskScheduler default undocumented and
+    operationally fragile, 4 @Scheduled jobs serialise);
+    performance.known_performance_gaps.[0] HIGH (silent operational
+    risk under load); performance.scaling_characteristics
+    (vertical-scaling bottleneck at thread count);
+    stress_findings.tunables.[ThreadPoolTaskScheduler.poolSize]
+    (N=1 today / N=2 / N=4 / N=100 boundary analysis);
+    stress_findings.probes_emitted.[P-183] (cron-misfire under thread
+    starvation — empirical confirmation)
+  - |-
+    HousekeepingJobManager.md (batch K existing — STRENGTHENS this
+    invariant from the orchestrator-side angle): the slowest job in the
+    iteration bounds the cycle time; sequential execution on one
+    connection (lines 33-35) compounds with single-thread executor.
+    A slow DataEntityHousekeepingJob cascade + the single-thread
+    executor produces a 14-minute serialisation surface.
+evidence:
+  - SchedulingConfiguration.md:bugs_limitations_corner_cases.[0] (HIGH severity — single-thread default + 4 @Scheduled consumers + no spring.task.scheduling.pool.size + no TaskScheduler @Bean)
+  - 'SchedulingConfiguration.md:performance.known_performance_gaps.[0] (HIGH — operator''s mental model is wrong by default)'
+  - 'SchedulingConfiguration.md:stress_findings.tunables.[ThreadPoolTaskScheduler.poolSize] — Spring Boot default poolSize=1 inferred via absence-of-config'
+  - 'SchedulingConfiguration.md:docs_link_semantic.doc_drift_findings.[0] (live docs silent on single-thread default)'
+  - 'SchedulingConfiguration.md:stress_findings.probes_emitted.[P-183] (Spring''s default cron-misfire behaviour under thread starvation — empirical)'
+  - 'HousekeepingJobManager.md:performance.throughput_characteristics — sequential execution within the manager + single-thread executor compounds the cross-job blocking'
+axes_present:
+  - config_classes
+  - services
+triangulation_count: 2
+cross_batch: false
+severity: HIGH
+severity_dim: operational-risk
+mitigations_unimplemented:
+  - |-
+    Operator-side mitigation (one-line): set
+    `spring.task.scheduling.pool.size: 4` in `application.yml` to give
+    each scheduled job its own thread.
+  - |-
+    Platform-side mitigation: declare a `@Bean public TaskScheduler` in
+    SchedulingConfiguration with explicit poolSize=4 +
+    Micrometer-instrumented `ThreadPoolTaskExecutor` exporting
+    `spring_executor_queued_tasks` and `spring_executor_active_threads`.
+    Closes the no-Micrometer observability gap simultaneously.
+  - |-
+    Docs-side mitigation: add admonition on
+    `/configuration-and-deployment/odd-platform#housekeeping` naming the
+    single-thread default + the `spring.task.scheduling.pool.size`
+    mitigation operator-side.
+  - |-
+    Add an integration test asserting the 4 @Scheduled jobs share one
+    thread by default (and adding `spring.task.scheduling.pool.size: 4`
+    correctly parallelises them).
+related_features: []
+related_pillar_features:
+  - P-08
+notes: |-
+  NEW invariant batch ZK (2026-05-26). The first PRIMARY-SOURCE pin to
+  the platform-level scheduling FOUNDATION at SchedulingConfiguration.java.
+  The four @Scheduled consumers were enumerated in prior batches
+  (HousekeepingJobManager batch K, the partition-creation job, the
+  status-switch job, the session-housekeeping job batch X); batch ZK
+  adds the platform-side observation that they all share ONE thread
+  by Spring Boot's default — undocumented in live docs and not surfaced
+  by any prior sidecar.
+
+  Three high-priority DOC-NNN candidates from this invariant:
+    (a) `/configuration-and-deployment/odd-platform#housekeeping`
+        admonition naming the single-thread default + the
+        `spring.task.scheduling.pool.size` mitigation
+    (b) Platform-side: declare a Micrometer-instrumented TaskScheduler
+        @Bean (closes the no-Micrometer gap simultaneously)
+    (c) An integration test asserting the 4 @Scheduled jobs serialise
+        by default (pins the current behaviour; allows future
+        parallel-execution changes to be detected)

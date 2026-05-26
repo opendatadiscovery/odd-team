@@ -1,0 +1,41 @@
+gap_id: TEST-GAP-1027
+category: missing-integration
+criticality: LOW
+node_ids:
+  - "odd-platform java org.opendatadiscovery.oddplatform.config config-class:SchedulingConfiguration"
+pillars_affected: [P-04]
+surfaced_by:
+  - "SchedulingConfiguration.md:tests_coverage_semantic.uncovered_behaviours.[2] (defaultLockAtMostFor=1h inheritance — LOW)"
+  - "SchedulingConfiguration.md:bugs_limitations_corner_cases.[2] (defaultLockAtMostFor=1h currently DEAD CODE — severity LOW)"
+  - "SchedulingConfiguration.md:implicit_adrs.[defaultLockAtMostFor 1h as latent safety floor — HIGH]"
+  - "SchedulingConfiguration.md:stress_findings.tunables.[defaultLockAtMostFor]"
+behaviour: |-
+  **`@EnableSchedulerLock(defaultLockAtMostFor = "1h")` at SchedulingConfiguration.java:14 is currently DEAD CODE in the platform.** All three `@SchedulerLock`-annotated methods in `<odd-platform-repo>/odd-platform-api/src/main/java` set their own `lockAtMostFor` explicitly:
+
+  - HousekeepingJobManager.java:26 — `lockAtMostFor = "14m"`
+  - DataEntityStatusSwitchJob.java:22 — `lockAtMostFor = "9m"`
+  - PostgreSQLPartitionCreationJob.java:41 — `lockAtMostFor = "10m"`
+
+  The `1h` default is a latent safety floor for FUTURE `@SchedulerLock(name="X")` annotations that omit the timing attribute. No test currently exercises this inheritance contract. A reader of SchedulingConfiguration.java cannot tell from the file alone whether the default is meaningful; the `1h` value is only validated by reading the three downstream consumers and confirming each sets its own.
+
+  Test gap shape: a custom `@Component` in the test source set declaring `@Scheduled(fixedRate = ...)` + `@SchedulerLock(name = "testLock")` WITHOUT any timing attributes, then asserting that the `shedlock` row's `lock_until` is approximately `now() + 1h` (from PG via `.usingDbTime()`).
+
+  Currently LOW because (a) no current code path exercises the default; (b) the alternative (the ShedLock library default, typically `Long.MAX_VALUE`) is strictly worse — the explicit `1h` IS the safety mechanism. Pin to ensure a future SchedulingConfiguration refactor does not accidentally drop the default value (e.g. someone removing the argument and falling back to ShedLock's library default).
+test_class: integration
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/config/SchedulerLockDefaultInheritanceTest.java"
+  name: "schedulerLockWithoutLockAtMostFor_inherits1hDefault_shedlockRowLockUntilApprox1hFromNow"
+evidence:
+  - 'SchedulingConfiguration.md says (bugs_limitations_corner_cases.[2] verbatim): ''The `1h` default at SchedulingConfiguration.java:14 applies to ZERO methods in the current codebase. It exists as a latent safety floor for future `@SchedulerLock` annotations that omit their timing attributes — but no current code path exercises it.'''
+  - 'SchedulingConfiguration.md says (implicit_adrs verbatim): ''The presence of a non-default value on the `@EnableSchedulerLock` annotation IS the decision. The annotation''s own default is `Long.MAX_VALUE` (effectively "lock until manually released"); choosing `1h` instead is an explicit choice to set a safety ceiling.'''
+  - 'Verified: grep `@SchedulerLock` across odd-platform-api/src/main returns three matches, all of which set lockAtMostFor explicitly'
+cross_references:
+  - "TEST-GAP-465 (14m-vs-15m HousekeepingJobManager window — sister ShedLock timing concern)"
+  - "TEST-GAP-1026 (single-thread executor — sister scheduling-foundation gap)"
+related_features: [F-010]
+related_pillar_features: ["P-04:F-010"]
+proposed_action: |-
+  Integration test in `<odd-platform-repo>/odd-platform-api/src/test/java/.../config/` declaring a test-only `@Component` with `@Scheduled(fixedRate = 1s)` + `@SchedulerLock(name = "testInheritanceLock")` — no `lockAtMostFor` argument. Use Testcontainers PostgreSQL with the `shedlock` table present (V0_0_52 migration). After the first fire, query `SELECT lock_until FROM shedlock WHERE name = 'testInheritanceLock'`; assert the value is approximately `now() + 1h` (within ~30 second tolerance to account for PG round-trip + ShedLock acquisition latency). When the maintainer removes the `defaultLockAtMostFor` argument or changes it, the test breaks deliberately.
+batch: 2026-05-26-ZK
+feature_id: null

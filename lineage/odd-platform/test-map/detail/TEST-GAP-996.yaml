@@ -1,0 +1,50 @@
+gap_id: TEST-GAP-996
+category: missing-security
+criticality: MEDIUM
+node_ids:
+  - "odd-platform ts routes route:management"
+pillars_affected: [P-08, P-09]
+surfaced_by:
+  - 'management.md:bugs_limitations_corner_cases.[1] (the /management/integrations and /management/integrations/:id routes have NO <WithPermissionsProvider> wrapping at all — ManagementRoutes.tsx:150)'
+  - 'management.md:security.known_security_gaps.[1] severity MEDIUM'
+behaviour: |-
+  **MEDIUM — `/management/integrations*` sub-route has NO permission-context wrapper at all** (ManagementRoutes.tsx:150 — `<Route path='integrations/*' element={<Integrations />} />`). Every OTHER Management sub-route at least wraps in a context provider (which doesn't block rendering anyway per TEST-GAP-994, but DOES seed the `PermissionContext` that `<WithPermissions>` descendants consume).
+
+  **Why this is a wiring drift, not just a cosmetic asymmetry**: any `usePermissions().hasAccessTo(...)` call inside the Integrations subtree falls back to the OUTER Management.tsx context, whose `allowedPermissions = [OWNER_ASSOCIATION_MANAGE]` ONLY. This means an inner check like `hasAccessTo(Permission.DATA_SOURCE_UPDATE)` on an Integration edit form deny-by-defaults regardless of the user's GLOBAL permissions, because the `allowedPermissions.includes(...)` check at PermissionProvider.tsx:27-32 fails (`OWNER_ASSOCIATION_MANAGE != DATA_SOURCE_UPDATE`).
+
+  **Concrete failure modes the sidecar identifies**:
+  - BROKEN-CLOSED: an Integration form's `Save` button gated by `<WithPermissions permissionTo={Permission.DATA_SOURCE_UPDATE}>` silently hides for a user who SHOULD be allowed (false-deny — frustrating UX, no error message).
+  - BROKEN-OPEN-ish: a future Integration component that relies on `usePermissions().hasAccessTo` for a write affordance MIGHT silently OPEN the affordance if the integration team uses the wrapper differently.
+
+  **The wiring suggests Integrations was retro-fitted** without the per-sub-route `WithPermissionsProvider` discipline applied to the eight other sub-areas. The sidecar surfaces this as a TODO-grep-`usePermissions|hasAccessTo` across `components/Management/Integrations` to verify the live impact.
+
+  **No test pins this** — a regression that ADDS a `<WithPermissionsProvider>` wrapping to Integrations (closing the wiring drift) ships green; a future maintainer who adds permission-dependent affordances to Integration components without realising the context is missing/wrong silently misroutes them.
+test_class: missing-security
+criticality_rationale: |-
+  Sidecar rates this MEDIUM and held MEDIUM because: (a) the wiring drift only matters if an Integration component USES `usePermissions` (current grep is a P-162 follow-up — uncertain live impact); (b) the Integrations subtree is gated at the backend (DataSourceController + IntegrationController have @PreAuthorize per their sidecars); (c) the asymmetry is observable (`grep ManagementRoutes.tsx | wc -l` for `WithPermissionsProvider` is 7 of 9 sub-routes — odd-one-out is loud). Bumped from sidecar-rated LOW per Rule 3 cross-pillar amplification (`pillars_affected: [P-08, P-09]` — len >= 2). NOT escalated to HIGH because the consequence is bounded by the absence of `usePermissions` consumers in the Integrations subtree TODAY.
+test_files_existing: []
+test_files_proposed:
+  path: 'odd-platform-ui/src/components/Management/__tests__/ManagementRoutesWrapperConsistency.test.tsx'
+  name: 'integrationsSubroute_lacksPermissionContextWrapper_misroutesInnerHasAccessTo'
+evidence:
+  - 'management.md says (bugs_limitations_corner_cases.[1]): The /management/integrations and /management/integrations/:id routes have NO <WithPermissionsProvider> wrapping at all (ManagementRoutes.tsx:150 — <Route path=integrations/* element={<Integrations />} />). Every other sub-route at least wraps in a context provider. severity: MEDIUM'
+  - 'management.md says (security.known_security_gaps.[1]): an inner check like hasAccessTo(Permission.DATA_SOURCE_UPDATE) on an Integration form deny-by-defaults regardless of the user global permissions, because OWNER_ASSOCIATION_MANAGE != DATA_SOURCE_UPDATE so the allowedPermissions.includes() check fails (per PermissionProvider.tsx:27-32). severity: MEDIUM'
+  - 'Verified at primary source: ManagementRoutes.tsx:150 (no permission wrap) + Management.tsx:9 (outer context = OWNER_ASSOCIATION_MANAGE only) + Integrations.tsx:10-19 (no permission gating in the integrations subtree either)'
+cross_references:
+  - 'TEST-GAP-994 (cross-cutting WithPermissionsProvider semantic drift — this is the inverse defect: missing wrapper)'
+  - 'TEST-GAP-995 (Management surface no route-level gate — sister gap)'
+  - 'probe P-162 (Auth-gate audit of the entire Management surface — grep `usePermissions|hasAccessTo` across Integrations subtree is part of the probe)'
+proposed_action: |-
+  Add `ManagementRoutesWrapperConsistency.test.tsx`:
+
+  (a) `integrationsSubroute_renderedWithoutPermissionContextProvider_pinsCurrentWiringDrift`: assert that `<Route path='integrations/*'>` at ManagementRoutes.tsx:150 is NOT wrapped in `<WithPermissionsProvider>` while ALL OTHER sub-routes at ManagementRoutes.tsx:29-149 ARE wrapped (use snapshot or DOM traversal of the rendered route tree); pins the asymmetry so a future maintainer either fixes it intentionally or has to update this test.
+
+  (b) `integrationsSubroute_innerHasAccessTo_fallsBackToOuterContextOnly`: mount `<Integrations />` under the actual `<Management />` route tree with an authenticated user holding `DATA_SOURCE_UPDATE` (a non-Management-tier permission); inject a test-only `<TestComponent>` that calls `usePermissions().hasAccessTo(Permission.DATA_SOURCE_UPDATE)` and assert it returns FALSE (the outer context does not include the permission). Pins the BROKEN-CLOSED failure mode explicitly so a fix has a target.
+
+  Add a TODO comment at ManagementRoutes.tsx:150 documenting: 'Integrations sub-route omits the per-sub-route <WithPermissionsProvider> by historical accident (retro-fit). Inner `usePermissions().hasAccessTo` calls fall back to the OUTER Management.tsx context (allowedPermissions=[OWNER_ASSOCIATION_MANAGE]). If you add permission-gated affordances inside Integrations, wrap the route in <WithPermissionsProvider allowedPermissions={[...]}> with the appropriate permissions vector.'
+related_features: []
+related_pillar_features: ['P-08:F-007']
+related_refactor_ids: []
+related_doc_gap_ids: []
+batch: 2026-05-26-ZH
+feature_id: null

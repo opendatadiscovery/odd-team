@@ -1,0 +1,140 @@
+name: |-
+  PermissionController accepts MANAGEMENT as enum value but rejects at runtime (USR001 400)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-09
+description: |-
+  **NEW INVARIANT, batch 2026-05-25-ZD** — the
+  `PermissionResourceType` enum at `components.yaml:3381-3387`
+  lists FOUR allowed values for the path parameter on
+  `GET /api/resource/{permission_resource_type}/{resource_id}/permissions`:
+  `DATA_ENTITY`, `TERM`, `QUERY_EXAMPLE`, `MANAGEMENT`. A
+  spec-compliant client built strictly from `openapi.yaml` believes
+  all four are valid.
+
+  At runtime, calling
+  `GET /api/resource/MANAGEMENT/{anyId}/permissions` triggers
+  `PermissionServiceImpl.java:25-27`:
+
+      if (!policyTypeDto.isHasContext()) {
+          throw new BadUserRequestException(
+              "Resource type " + resourceType + " does not have context");
+      }
+
+  `PolicyTypeDto.java:12` declares MANAGEMENT as `hasContext = false`.
+  The service-tier discriminator throws; `ControllerAdvice` maps
+  to HTTP 400 with code `USR001` and body
+  `"Resource type MANAGEMENT does not have context"`.
+
+  ## Why the asymmetry exists
+
+  Per `implicit_adrs.[3]` in the batch-ZD sidecar, the
+  resource-type ↔ context coupling is encoded at the ENUM
+  (`PolicyTypeDto.hasContext`), not at the controller. The
+  controller is type-agnostic — accepts every enum value the
+  spec allows, lets the service-tier discriminator raise for
+  non-contextual values. Alternative shapes (e.g. two separate
+  path matchers `/api/resource/contextual/...` vs
+  `/api/resource/management/...`) were explicitly avoided in
+  favour of the type-with-hasContext shape.
+
+  ## The non-contextual MANAGEMENT path lives elsewhere
+
+  Calling this endpoint with MANAGEMENT is NOT how the platform
+  delivers MANAGEMENT-scope permissions to the UI. The
+  non-contextual half is delivered through the `Identity` payload:
+    - `IdentityServiceImpl.whoami` populates
+      `identity.permissions[]` via
+      `PermissionService.getNonContextualPermissionsForCurrentUser`
+    - The UI consumes the field via the `getGlobalPermissions`
+      selector at `profile.selectors.ts:17-20`
+    - The selector returns the MANAGEMENT-scope permissions for
+      the caller
+
+  A maintainer reading the spec sees `MANAGEMENT` as a valid
+  `PermissionResourceType` value and reasonably assumes the
+  endpoint supports it. The non-obvious split (this controller
+  handles three of four; the IdentityController handles the
+  fourth) is invisible in the spec.
+
+  ## Live doc drift
+
+  The live `/authorization` page (WebFetched 2026-05-25, status
+  200) and the `/authorization/permissions` page do NOT describe:
+    - The MANAGEMENT-rejection invariant (the 400 USR001 response)
+    - The non-contextual MANAGEMENT delivery via Identity payload
+    - The split between contextual reads (this controller) and
+      non-contextual reads (IdentityServiceImpl)
+
+  An operator authoring a third-party RBAC integration would not
+  know to look at the Identity payload for global permissions.
+
+  ## Severity
+
+  MEDIUM. The error is informative (the 400 body names the
+  problem) but the invariant is undocumented — operators discover
+  the behaviour by experience.
+
+  ## Mitigation candidates
+
+  - **Spec**: split `PermissionResourceType` into two enums
+    (`ContextualPermissionResourceType` with three values +
+    `PermissionResourceType` with all four), use the contextual
+    enum on the path parameter. Aligns spec and runtime; breaks
+    SDK consumers built on the current enum.
+
+  - **Doc**: add an explicit admonition on the live permissions
+    page naming the four enum values + their three-vs-one split
+    + the Identity-payload delivery path for the fourth.
+
+  - **Service-tier (alternative)**: when MANAGEMENT is passed,
+    delegate to `getNonContextualPermissionsForCurrentUser`
+    instead of throwing. The endpoint would accept all four enum
+    values consistently. Trade-off: the resourceId parameter
+    becomes meaningless for MANAGEMENT — should the endpoint
+    accept ANY long? Currently the spec requires a long; making
+    it conditional is messy.
+axes_present:
+- controllers
+nodes:
+- odd-platform java PermissionController controller-class:PermissionController
+contributors:
+- 'PermissionController.md (batch ZD class-level sidecar):
+  invariants.[6] + bugs_limitations_corner_cases.[1] +
+  doc_drift_findings.[2] + implicit_adrs.[3] +
+  stress_findings.name_behavior_pairs.[0]'
+evidence:
+- 'components.yaml:3381-3387 (the OpenAPI PermissionResourceType
+  enum with FOUR values)'
+- 'PolicyTypeDto.java:8-12 (the internal enum with hasContext
+  discriminator; MANAGEMENT alone is hasContext=false)'
+- 'PermissionServiceImpl.java:24-27 (the discriminator throw)'
+- 'ControllerAdvice.java:24-28 (BadUserRequestException → 400 USR001)'
+- 'IdentityServiceImpl + profile.selectors.ts:17-20 (the
+  non-contextual MANAGEMENT delivery path)'
+- WebFetch 2026-05-25 status 200 against the /authorization and
+  /authorization/permissions pages
+related_features:
+- F-001
+- F-006
+related_pillar_features:
+- P-09
+related_concepts:
+- 'operation:query-resource-permissions (the operation this
+  invariant describes the rejection rule for)'
+- 'operation:query-current-user-identity-whoami (the
+  alternate-path delivery surface for non-contextual MANAGEMENT
+  permissions)'
+- 'entitie:permission-authorization'
+notes: |-
+  NEW invariant captured in batch 2026-05-25-ZD. The spec-vs-runtime
+  asymmetry on the enum is a discoverable surface — operators
+  building third-party clients from the spec hit the 400 once and
+  learn the constraint. The doc gap is the higher-leverage fix
+  (a single admonition closes it permanently). The spec split is
+  more invasive and would break SDK consumers.
+
+  DOC-NNN candidate: admonition on the live
+  /authorization/permissions page naming the constraint +
+  cross-link to the Identity-payload delivery path.

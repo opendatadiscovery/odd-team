@@ -1,0 +1,91 @@
+gap_id: TEST-GAP-946
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - 'odd-platform java SearchController controller-class:SearchController'
+surfaced_by:
+  - 'odd-platform__java__SearchController__controller-class__SearchController.md:tests_coverage_semantic.uncovered_behaviours.[6]'
+  - 'odd-platform__java__SearchController__controller-class__SearchController.md:bugs_limitations_corner_cases.[6]'
+  - 'odd-platform__java__SearchController__controller-class__SearchController.md:stress_findings.request_inputs.[5] (highlightDataEntity inputs)'
+behaviour: |-
+  **CRITICAL HTTP-ENTRY-POINT REGRESSION-PIN — SearchController.highlightDataEntity
+  is the operator-visible HTTP entry that drives the TRUE SQL-injection vector at
+  ReactiveDataEntityRepositoryImpl.java:798-806 (`.formatted(text, tsQuery)` raw
+  string-interpolation into ts_headline SQL).** STRENGTHENS TEST-GAP-316 (the
+  repository-level finding) by adding the FULL request-shape attack chain:
+
+  (1) attacker calls POST /api/search with a body whose
+  `SearchFormData.query` field contains a crafted payload (e.g. `X', NULL);
+  SELECT pg_sleep(10); --`) — the platform persists this verbatim into
+  `search_facets.query_string` (SearchServiceImpl.java:74-82); no validation
+  at controller, service, or repository layer;
+
+  (2) attacker (OR ANY OTHER AUTHENTICATED USER WHO SEES THE searchId UUID)
+  calls GET /api/search/{searchId}/data_entities/{data_entity_id}/highlights
+  (SearchController.java:85-91); SearchController has no @PreAuthorize, the
+  searchId is a bearer-token UUID with no owner_id binding (cross-link
+  TEST-GAP-252), and any catalog data_entity_id is reachable;
+
+  (3) DataEntityHighlightServiceImpl.java:36 zips (session-state read, data
+  entity searchable string, latest dataset version) into a single Mono that
+  calls getHighlightedResult(text, queryString) at line 44;
+
+  (4) ReactiveDataEntityRepositoryImpl.java:798-806 builds the SQL via
+  `String.formatted(text, tsQuery)` — both arguments interpolated raw into
+  ts_headline('english', '%s', to_tsquery('%s'), ...). The persisted
+  query_string from step (1) reaches `to_tsquery('%s')` directly; the
+  closing-quote terminator + arbitrary-SQL injection payload runs on the
+  read connection.
+
+  TEST-GAP-316 frames the gap at the repository layer — useful for unit
+  testing the SQL builder but blind to the FULL chain. This gap is the HTTP
+  contract regression-pin: a future maintainer reviewing
+  SearchController.highlightDataEntity in isolation would not see the
+  repository-level SQL site; the chain only surfaces when the test drives
+  the request through the controller. THIS test fails today (production
+  vulnerability) and SHOULD fail forever (regression-pin) until the
+  String.formatted call is replaced by jOOQ parameterised binding per
+  TEST-GAP-316.proposed_action.
+test_class: security
+test_files_existing: []
+test_files_proposed:
+  - path: 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/SearchControllerHighlightSqlInjectionIntegrationTest.java'
+    name: 'highlightDataEntity_persistedMaliciousQuery_doesNotExecuteAsSql_returnsCleanError'
+  - path: 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/SearchControllerHighlightSqlInjectionIntegrationTest.java'
+    name: 'highlightDataEntity_persistedQueryWithSingleQuote_returnsEscapedHighlightOrCleanError'
+  - path: 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/SearchControllerHighlightSqlInjectionIntegrationTest.java'
+    name: 'highlightDataEntity_maliciouslyNamedDataEntity_doesNotExecuteAsSql'
+evidence:
+  - 'SearchController.md says: "ReactiveDataEntityRepositoryImpl.java:798-806 does `final String sql = ts_headline(...).formatted(text, tsQuery)` — direct string-interpolation into raw SQL via String.formatted. Both text (the catalog-supplied entity searchable string) and tsQuery (the user-supplied search query after tokenisation) are interpolated WITHOUT escaping"'
+  - 'SearchController.md says: "A caller POSTs query=X NULL); SELECT pg_sleep(10); -- → the persisted query_string flows through getHighlightedResult → arbitrary SQL execution on the read connection"'
+  - 'Source: SearchController.java:85-91 (HTTP entry) + DataEntityHighlightServiceImpl.java:26-46 (service orchestration) + ReactiveDataEntityRepositoryImpl.java:798-806 (raw SQL site)'
+  - 'Grep against test files for SearchControllerHighlight or highlightDataEntity in odd-platform-api/src/test: 0 matches (verified 2026-05-25)'
+cross_references:
+  - 'TEST-GAP-316 (repository-level SQL injection — this gap is the HTTP-entry-point STRENGTHENS)'
+  - 'TEST-GAP-250 (tsquery operator DoS — the upstream tsQuery() unsafe-tokenisation precondition)'
+  - 'TEST-GAP-252 (search-session UUID bearer token — the access-control precondition that makes step 2 reachable cross-user)'
+  - 'concepts.yaml:entities[Data Entity].security_aggregate.weaknesses (raw-SQL interpolation class)'
+  - 'REFACTOR-229 family (FTS-injection architectural gap)'
+related_refactor_ids:
+  - REFACTOR-229
+related_doc_gap_ids: []
+related_pillar_features:
+  - 'P-01:Discovery and Search'
+related_features: []
+strengthens:
+  - 'TEST-GAP-316'
+proposed_action: |-
+  Author SearchControllerHighlightSqlInjectionIntegrationTest as a
+  @SpringBootTest + WebTestClient harness that:
+  (a) POSTs /api/search with a body containing `query: "X', NULL); SELECT
+  pg_sleep(5); --"` and captures the returned searchId;
+  (b) GETs /api/search/{searchId}/data_entities/{any_de_id}/highlights;
+  (c) asserts that no out-of-band SQL effect occurred (no pg_sleep delay,
+  no DDL artifact, no row mutation) AND that the response is either a
+  clean 4xx or a 200 with safely-escaped highlight markup.
+  Add a sibling test for a maliciously-named data entity (e.g. ingested
+  with `external_name = "X', NULL); --"`) that flows into the `text`
+  argument. The test is RED today — it serves as regression-pin until
+  the .formatted() call is replaced per TEST-GAP-316.proposed_action.
+maintainer_curated: false
+batch: 2026-05-25-ZE

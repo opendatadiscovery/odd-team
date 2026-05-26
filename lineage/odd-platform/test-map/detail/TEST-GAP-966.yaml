@@ -1,0 +1,56 @@
+gap_id: TEST-GAP-966
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - "odd-platform java DataCollaborationController controller-class:DataCollaborationController"
+pillars_affected: [P-07, P-11]
+surfaced_by:
+  - "DataCollaborationController__controller-class.md:tests_coverage_semantic.uncovered_behaviours.[5]"
+  - "DataCollaborationController__controller-class.md:docs_link_semantic.doc_drift_findings.[1]"
+  - "DataCollaborationController__controller-class.md:concepts.invariants.[9]"
+behaviour: |-
+  **MEDIUM — OpenAPI spec declares 301 Moved Permanently for `GET /api/messages/{message_id}/url` but the controller emits `HttpStatus.FOUND` (302). Three sources of truth disagree: code emits 302, spec declares 301, live api-reference doc page acknowledges 302 — OpenAPI-codegen clients are wrongly typed.**
+
+  Verified at primary source:
+  - `openapi.yaml:1788-1789` declares `'301': $ref './components.yaml/#/components/responses/MovedPermanently'`.
+  - `DataCollaborationController.java:45` emits `ResponseEntity.status(FOUND)` where `FOUND` is `HttpStatus.FOUND` (302).
+  - Live `https://docs.opendatadiscovery.org/developer-guides/api-reference/data-collaboration` (WebFetched 2026-05-25 status 200) acknowledges: 'The OpenAPI spec declares `301 Moved Permanently` for this route; the platform actually serves `302 Found`. Operators should treat responses as 302.'
+
+  **Operator-visible consequence**:
+  - OpenAPI-codegen clients (TypeScript, Python, Java, etc.) generate response-type signatures based on the spec. A client expecting 301 may not register a handler for 302 → falls into a default-handler path that drops the redirect.
+  - Browser-via-UI: modern browsers handle both 301 and 302 the same way for GET (follow redirect); no operator impact for the in-app UI use case.
+  - Spec-conformance audits: the platform fails OpenAPI conformance.
+
+  **Why MEDIUM**: harmless for the dominant UI use-case, but locks in the spec-vs-code drift indefinitely without a test. The live api-reference doc page acknowledging the drift is itself documentation debt — the spec should match the implementation OR the implementation should switch to 301.
+
+  **Why pin the current behaviour (not fix immediately)**: the choice between 301 (cacheable) and 302 (non-cacheable) is meaningful. For Slack permalinks that may change (Slack workspace migration, channel rename, archived channel), 302 is the correct semantic. The fix is to update the SPEC, not the CODE. The test pins the current shipped behaviour so spec-update + test-update happen in lock-step.
+
+  **Distinguishes**:
+  - `concepts/detail/invariants/openapi-200-vs-201-status-code-drift.yaml` — sister drift family (different status pair).
+  - TEST-GAP-971 (sister this batch) — Ingestion controller class-wide 200-vs-201 drift on 3 mutating handlers.
+test_files_existing: []
+test_files_proposed:
+  path: "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/api/datacollaboration/DataCollaborationControllerRedirectStatusCodeTest.java"
+  name: "get_messageUrl_returnsHttp302_notHttp301_pinsCurrentStatusCodeDrift"
+evidence:
+  - 'DataCollaborationController.md says (tests_coverage_semantic.uncovered_behaviours.[5]): ''`redirect` status-code drift — assert response is 302 (de facto) vs OpenAPI 301'' (criticality MEDIUM)'
+  - 'DataCollaborationController.md says (docs_link_semantic.doc_drift_findings.[1]): ''Live api-reference page acknowledges the 302-vs-301 drift on the redirect endpoint, but the OpenAPI spec at openapi.yaml:1788-1789 STILL declares 301 Moved Permanently. Spec-generated client code may interpret responses incorrectly. Three sources of truth disagree: code (302), spec (301), live doc (302 + note)'' (severity MEDIUM)'
+  - "Verified at primary source: openapi.yaml:1788-1789 (301 in spec) + DataCollaborationController.java:45 (HttpStatus.FOUND = 302) + live api-reference WebFetch 2026-05-25 (302 + acknowledgement)"
+cross_references:
+  - "TEST-GAP-971 (sister this batch — Ingestion controller class-wide 200-vs-201 drift)"
+  - "TEST-GAP-974 (sister this batch — Owner controller 201-vs-200 drift on create+update)"
+  - "TEST-GAP-963 (CRITICAL — same endpoint, open-redirect class)"
+  - "TEST-GAP-965 (sister — same endpoint, missing 404 path)"
+  - "DOC-GAP-NNN-candidate (update openapi.yaml:1788-1789 to declare 302; remove the now-redundant acknowledgement from the live api-reference page)"
+  - "F-022 (Data Collaboration / Discussions sub-feature)"
+related_features: [F-022]
+related_pillar_features: ["P-07:F-NNN Data Collaboration (Discussions)", "P-11:Platform API & Developer Surface"]
+proposed_action: |-
+  Add `DataCollaborationControllerRedirectStatusCodeTest`:
+
+  1. `get_messageUrl_returnsHttp302_notHttp301_pinsCurrentStatusCodeDrift` — WebTestClient assert `.expectStatus().isEqualTo(302)`. Comment: '// REGRESSION-PIN — code returns 302, OpenAPI spec declares 301. When the spec is updated to match (DOC-GAP-NNN-candidate), this test stays green; if the code is changed instead, this test surfaces the deliberate intent change.'
+  2. Pair with DOC-GAP-NNN-candidate (update openapi.yaml:1788-1789 to declare 302).
+
+  Coherence note (LSN-018 Rule 6): NET-NEW. NO conflicts.
+batch: 2026-05-25-ZF
+feature_id: F-022

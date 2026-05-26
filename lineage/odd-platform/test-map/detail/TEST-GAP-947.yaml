@@ -1,0 +1,75 @@
+gap_id: TEST-GAP-947
+category: missing-integration
+criticality: HIGH
+node_ids:
+  - 'odd-platform java SearchController controller-class:SearchController'
+  - 'odd-platform java service DataEntityServiceImpl:findByState'
+surfaced_by:
+  - 'odd-platform__java__SearchController__controller-class__SearchController.md:tests_coverage_semantic.uncovered_behaviours.[1]'
+  - 'odd-platform__java__SearchController__controller-class__SearchController.md:bugs_limitations_corner_cases.[1]'
+  - 'odd-platform__java__SearchController__controller-class__SearchController.md:stress_findings.name_behavior_pairs.[0] (DataEntityList.pageInfo.hasNext drift)'
+behaviour: |-
+  **OpenAPI contract bug — `DataEntityList.pageInfo.hasNext` is ALWAYS
+  true regardless of remaining rows on GET /api/search/{search_id}/results.**
+  `DataEntityServiceImpl.findByState:181-194` constructs
+  `new Page<>(dtos, total, true)` with the third argument HARD-CODED to
+  `true` (Page.java:11-15 is the wrapper carrying it through). The mapper
+  writes that into `DataEntityList.pageInfo.hasNext` verbatim. No
+  compensating logic exists at the service, mapper, or controller layers.
+
+  Operator-visible impact diverges by consumer class:
+  (a) ODD UI: the `fetchDataEntitySearchResults` thunk at
+  `dataentitiesSearch.thunks.ts:62-63` OVERRIDES with
+  `hasNext: page * size < pageInfo.total` — the UI is correct;
+  (b) third-party API consumers (mobile, CLI, automation, third-party
+  catalog connectors) reading the documented OpenAPI contract directly
+  trust `hasNext: false` as the pagination terminator. With the value
+  hard-coded to `true`, those consumers pagination-loop indefinitely —
+  fetching page 1, page 2, ..., page N where N*size >= total, then
+  continue fetching empty pages until rate-limited or timed out.
+
+  This is a Category B drift (UI compensates for backend) on a documented
+  OpenAPI response field. The OpenAPI spec at openapi.yaml:734-755
+  documents PageInfo as the standard pagination envelope; the UI's
+  client-side override is undocumented compensation. No regression test
+  for this exists. A fix candidate is changing
+  DataEntityServiceImpl.java:192 from `new Page<>(dtos, total, true)` to
+  `new Page<>(dtos, total, (page * size) < total)`.
+test_class: integration
+test_files_existing:
+  - 'tests/features/search/search.spec.ts (Playwright UI; does NOT test hasNext semantics — UI overrides client-side)'
+test_files_proposed:
+  - path: 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/SearchControllerPaginationContractTest.java'
+    name: 'getSearchResults_lastPage_hasNextIsFalse'
+  - path: 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/SearchControllerPaginationContractTest.java'
+    name: 'getSearchResults_pageBeyondTotal_hasNextIsFalse_itemsEmpty'
+  - path: 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/SearchControllerPaginationContractTest.java'
+    name: 'getSearchResults_middlePage_hasNextIsTrue'
+evidence:
+  - 'SearchController.md says: "getSearchResults.hasNext is always true regardless of remaining rows — contract bug. DataEntityServiceImpl.findByState:181-194 constructs new Page<>(dtos, total, true) with true hard-coded"'
+  - 'SearchController.md says: "third-party API consumers using the OpenAPI contract directly will loop fetching empty pages indefinitely; the UI compensates client-side at dataentitiesSearch.thunks.ts:62-63 with hasNext: page * size < pageInfo.total — but this is undocumented compensation"'
+  - 'Source: DataEntityServiceImpl.java:192 + Page.java:11-15 + openapi.yaml:734-755 (the OpenAPI PageInfo contract)'
+  - 'Grep against test files for SearchControllerPagination or `pageInfo.*hasNext` in odd-platform-api/src/test: 0 matches (verified 2026-05-25)'
+cross_references:
+  - 'REFACTOR-024 / REFACTOR-053 (UI-compensates-for-backend-bug pattern; this is a fresh instance)'
+  - 'concepts.yaml:entities[Data Entity] (paginated list contract)'
+related_refactor_ids: []
+related_doc_gap_ids: []
+related_pillar_features:
+  - 'P-01:Discovery and Search'
+related_features: []
+proposed_action: |-
+  Author SearchControllerPaginationContractTest as a @SpringBootTest +
+  WebTestClient harness covering three pages of the same search session:
+  (a) middle page (assert hasNext=true, items.length == size);
+  (b) last page (assert hasNext=false, items.length == total % size or
+  size if cleanly divisible);
+  (c) over-range page (page > total/size + 1; assert hasNext=false,
+  items=[]).
+  The test is RED today on (b) and (c). Pair with a fix at
+  DataEntityServiceImpl.java:192 changing `true` → `(page * size) < total`.
+  Also update the UI's `fetchDataEntitySearchResults` thunk to trust the
+  backend hasNext (removing the client-side override) ONLY after the
+  backend fix lands.
+maintainer_curated: false
+batch: 2026-05-25-ZE

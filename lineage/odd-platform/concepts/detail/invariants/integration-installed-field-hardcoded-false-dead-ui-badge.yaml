@@ -1,0 +1,127 @@
+name: |-
+  Integration `installed: boolean` field is hardcoded `false` — structurally-dead UI badge
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+- P-10
+description: |-
+  **NEW INVARIANT, batch 2026-05-25-ZD** — the `installed: boolean`
+  field on every Integration response is hardcoded constant `false`.
+  The field is declared REQUIRED in the OpenAPI contract
+  (`components.yaml:64-70`) and the UI gates a conditional
+  "Integrated" badge on its truthiness — but the badge will NEVER
+  render because the value is always false.
+
+  ## Mechanism
+
+  `IntegrationMapper.java:27` (for the full `Integration` shape) and
+  `IntegrationMapper.java:30` (for the `IntegrationPreview` shape)
+  both carry `@Mapping(target = "installed", constant = "false")`.
+  No code path inspects whether an integration is actually wired
+  into the platform — there is no `DataSourceRepository` lookup
+  matching wizard id to a registered datasource, no comparison
+  against registered collectors. The field is structurally dead.
+
+  ## UI consequence
+
+  `IntegrationPreviewItem.tsx:44-51` renders a conditional
+  "Integrated" badge with a checkmark icon and a translated label:
+
+      {installed && (
+          <Badge color="success" .../>
+      )}
+
+  The conditional NEVER evaluates true. The entire visual affordance
+  + the translation key + the icon are wasted. An operator who has
+  connected (e.g.) a Snowflake datasource and sees the Snowflake
+  wizard card sees NO "Integrated" indicator; they cannot distinguish
+  "wizard exists, integration done" from "wizard exists, integration
+  pending".
+
+  ## Severity
+
+  MEDIUM. Functional impact zero (no operator action triggered by
+  the badge) but the spec/UX promise is broken in a discoverable
+  way: a maintainer reading the OpenAPI contract sees `installed`
+  declared REQUIRED, reasonably assumes a meaningful value, and
+  builds downstream tooling on the assumption. The architectural
+  intent (a was-it-installed signal) is real; the implementation
+  is missing.
+
+  ## Fix surface
+
+  Two coherent paths:
+
+    (A) Remove the field — declare `installed` as NOT REQUIRED on
+        the OpenAPI contract, remove the `@Mapping(constant ...)`,
+        remove the UI conditional. Aligns the contract to reality.
+        Breaks any downstream SDK consumer that expects the field
+        to be present.
+
+    (B) Implement the field — wire a `DataSourceRepository` lookup
+        matching wizard `id` to a registered datasource (e.g. by
+        `data_source.type` or a vendor-name match), populate
+        `installed = true` when found. Makes the UI badge work.
+
+  Path (B) is the "do what the spec promised" path. Path (A) is
+  the "stop lying" path. Either fix is small (~10-30 lines of
+  code) but neither has been chosen in the platform's history.
+
+  ## Live doc drift
+
+  The live API-reference page
+  (`https://docs.opendatadiscovery.org/developer-guides/api-reference/integrations`
+  WebFetched 2026-05-25, status 200) lists
+  `{id, name, description, installed}` as the IntegrationPreview
+  shape WITHOUT warning that `installed` is always false. The
+  wizard live page is similarly silent. An operator integrating
+  against the API receives the field, treats it as meaningful,
+  and is silently misled.
+
+  ## Severity escalator candidate
+
+  If a future feature DOES add "Integrated" badge functionality
+  by examining `data_source.type`, the change is straightforward
+  but must coordinate with the documentation (the badge is
+  documented; the no-detection-code state is undocumented). DOC-NNN
+  candidate: a single admonition on the wizard doc page warning
+  the field is currently hardcoded.
+axes_present:
+- controllers
+- ui_components
+nodes:
+- odd-platform java IntegrationController controller-class:IntegrationController
+contributors:
+- 'IntegrationController.md (batch ZD class-level sidecar):
+  bugs_limitations_corner_cases.[0] + stress_findings.name_behavior_pairs.[0]
+  + doc_drift_findings.[2]'
+evidence:
+- 'IntegrationMapper.java:27 (full Integration shape — `@Mapping(target =
+  "installed", constant = "false")`)'
+- 'IntegrationMapper.java:30 (preview shape — same constant mapping)'
+- 'components.yaml:64-70 (OpenAPI contract — `installed: boolean` declared
+  REQUIRED on IntegrationPreview)'
+- 'IntegrationPreviewItem.tsx:44-51 (UI conditional render gated on
+  installed — never fires)'
+- 'Grep `installed` in `<odd-platform-repo>/odd-platform-api/src/main`
+  returns ONLY the two mapper lines — no detection code anywhere'
+- WebFetch 2026-05-25 status 200 against the live API-reference page
+  (silent on the constant)
+related_features:
+- F-001
+related_pillar_features:
+- P-10
+related_concepts:
+- 'entitie:integration-wizard-manifest-classpath-meta-inf-yaml'
+- 'operation:list-integrations-wizard-registry'
+notes: |-
+  NEW invariant captured in batch 2026-05-25-ZD. Single
+  highest-leverage UX/contract mismatch on the Integration Wizard
+  surface — the field is declared, the UI uses it, but the value
+  is structurally dead. The fix is small (path A or B above) but
+  the absence of either has shipped silently for the lifetime of
+  the feature.
+
+  Refactoring-scope candidate: REFACTOR-NNN for either (A) or (B).
+  Path (A) aligns to reality; path (B) delivers the promised UX.
+  Maintainer's call.

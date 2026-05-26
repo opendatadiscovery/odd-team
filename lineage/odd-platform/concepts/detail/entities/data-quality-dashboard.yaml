@@ -37,12 +37,14 @@ axes_present:
 - react_components
 - jotai_stores
 - ui_routes
+- controllers
 nodes:
 - odd-platform ts react-component component:DataQuality
 - odd-platform ts react-component component:DataQualityContent
 - odd-platform ts react-component component:DataQualityFilters
 - odd-platform ts jotai-store store:DataQualityStore
 - odd-platform ts react-component component:TestCategoryResults
+- odd-platform java DataQualityRunsController controller-class:DataQualityRunsController
 contributors:
 - |-
   DataQuality (route-entry component) batch ZC:
@@ -75,6 +77,27 @@ contributors:
   TestCategoryResults (per-category row) batch ZC:
     operations[render-category-row];
     entities[DataQualityCategoryResults — the per-category prop]
+- |-
+  DataQualityRunsController (backend, batch ZG PRIMARY SOURCE — resolves P-090):
+    entities[DataQualityResults envelope, DATA_ENTITY_TASK_LAST_RUN denormalised
+    PK-per-task table — the SINGLE source of `status` for both test_results and
+    tables_health, DataQualityTestFiltersDto 10-field record (2 prefixes x 5
+    dimensions), DataQualityCategory enum (6 categories), DataEntityRunStatus
+    (6 statuses)];
+    operations[list-aggregate-dq-runs / GET /api/dataqatests/runs;
+    compute-latest-runs-per-category-and-status / multi-CTE JOOQ chain;
+    compute-table-health / HEALTHY-ERROR-WARNING CTE algebra; compute-monitored-tables
+    / restricted to TABLE-type only; pad-missing-statuses / 36-cell matrix];
+    invariants[three parallel sub-queries via Mono.zipWith; test_results counts
+    TESTS by latest-run-status, NOT RUNS — contradicts live doc];
+    bugs[HIGH test_results counts tests not runs; HIGH titleIds binds to
+    OWNERSHIP.TITLE_ID; MEDIUM namespaceIds widens via DATA_SOURCE.NAMESPACE_ID;
+    NO @PreAuthorize, NO SecurityRule entry — resolves the P-090
+    UNKNOWN-becomes-UNGATED verdict];
+    implicit_adrs[denormalisation as design choice; read-collaborative posture
+    deliberate ABSENCE of SecurityRule; composition-at-service via Mono.zipWith;
+    closed-enum + UNKNOWN fallback + always-padded response];
+    confidence_overall MEDIUM
 evidence:
 - DataQuality.md:concepts.entities.[0] (DataQualityDashboard — the page DOM root)
 - DataQuality.md:understanding (the /data-quality route-entry component)
@@ -83,6 +106,12 @@ evidence:
 - DataQualityContent.md:understanding (the catalog-wide aggregate view, distinct from F-022)
 - DataQualityFilters.md:concepts.operations (the two-set filter sidebar)
 - DataQualityStore.md:concepts.entities (formFiltersAtom — the dashboard filter store)
+- DataQualityRunsController.md:concepts.entities (10 entities — envelope + components + DATA_ENTITY_TASK_LAST_RUN)
+- DataQualityRunsController.md:concepts.invariants[1-9] (load-bearing semantic invariants)
+- DataQualityRunsController.md:implicit_adrs[0-4] (5 ADRs at HIGH confidence)
+- DataQualityRunsController.md:bugs_limitations_corner_cases[0-9] (10 findings, 3 HIGH severity)
+- DataQualityRunsController.md:security.known_security_gaps (no auth gate beyond authenticated, resolves P-090)
+- DataQualityRunsController.md:docs_link_semantic.doc_drift_findings.[0-5] (6 doc drifts)
 security_aggregate:
   overall: LOW
   auth_modes_relevant:
@@ -94,16 +123,21 @@ security_aggregate:
   authorization_consistency:
     verdict: UNGATED
     detail: |-
-      At the FRONTEND layer the /data-quality route is mounted bare at App.tsx:73
-      (`<Route path={dataQualityPath()} element={<DataQuality />} />`) with NO
-      WithPermissionsProvider wrapper — contrast the sibling /lookup-tables route
-      at App.tsx:75-88 which IS wrapped and gates on LOOKUP_TABLE_* permissions.
-      The 'Data Quality' top-bar tab (ToolbarTabs.tsx:45-49) is rendered
-      unconditionally with no permission check. Any authenticated user who reaches
-      the app shell renders the full catalog-wide aggregate quality view. The
-      BACKEND authorization posture of GET /api/dataqatests/runs is PROBE-NEEDED
-      (P-090) — not enrichable from the UI sidecars; the DataQualityRunsController
-      node is not yet enriched.
+      RESOLVED END-TO-END batch ZG (2026-05-25). At the FRONTEND layer the
+      /data-quality route is mounted bare at App.tsx:73 with NO WithPermissionsProvider
+      wrapper — contrast the sibling /lookup-tables route at App.tsx:75-88 which IS
+      wrapped and gates on LOOKUP_TABLE_* permissions. The "Data Quality" top-bar
+      tab (ToolbarTabs.tsx:45-49) is rendered unconditionally. At the BACKEND
+      layer the DataQualityRunsController class-level sidecar CONFIRMED the
+      ungated posture: no @PreAuthorize, no entry in SecurityConstants.SECURITY_RULES
+      for /api/dataqatests/runs (verified by grep over lines 98-355 returning
+      zero matches), no programmatic permissionService.hasPermission call in the
+      service, no owner predicate at the repository tier. The path falls through
+      to AuthorizationCustomizer.pathMatchers("/**").authenticated(). The P-090
+      hypothesis was CORRECT — the dashboard mirrors the read-collaborative
+      posture of the per-dataset DataQualityController. Any authenticated user
+      renders the full catalog-wide aggregate quality view; under
+      auth.type=DISABLED anonymously reachable.
   owner_scoping:
     verdict: BYPASSES
     detail: |-
@@ -156,11 +190,13 @@ security_aggregate:
   - DataQualityFilters.md
   - DataQualityStore.md
   - TestCategoryResults.md
+  - DataQualityRunsController.md
   evidence:
   - DataQuality.md:security.known_security_gaps.[0] (ungated route — App.tsx:73 vs gated /lookup-tables)
   - DataQualityContent.md:security.known_security_gaps.[0] (bare GET, no UI permission gate)
   - DataQualityContent.md:bugs_limitations_corner_cases.[5] (no error UI — failed fetch looks like empty catalog)
   - DataQualityFilters.md:security.known_security_gaps.[0] (filter names leaked into URL query string)
+  - DataQualityRunsController.md:security.known_security_gaps (BACKEND UNGATED CONFIRMED — no @PreAuthorize, no SecurityRule, no owner predicate)
 performance_aggregate:
   overall: MEDIUM
   hot_paths:

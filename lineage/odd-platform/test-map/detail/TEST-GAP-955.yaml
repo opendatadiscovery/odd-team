@@ -1,0 +1,77 @@
+gap_id: TEST-GAP-955
+category: missing-integration
+criticality: MEDIUM
+node_ids:
+  - 'odd-platform java TitleController controller-class:TitleController'
+surfaced_by:
+  - 'odd-platform__java__TitleController__controller-class__TitleController.md:tests_coverage_semantic.uncovered_behaviours.[0]'
+  - 'odd-platform__java__TitleController__controller-class__TitleController.md:tests_coverage_semantic.uncovered_behaviours.[3]'
+  - 'odd-platform__java__TitleController__controller-class__TitleController.md:invariants.[0]'
+  - 'odd-platform__java__TitleController__controller-class__TitleController.md:invariants.[1]'
+behaviour: |-
+  **`getTitleList(page, size, query)` controller and service `list` path
+  has ZERO direct test coverage — only the lower-level repository CRUD
+  is exercised (TitlesRepositoryImplTest), and the Ownership test covers
+  the auto-create write side-effect (`getOrCreate`), NOT the read.** A
+  regression that broke the ORDER BY id ASC contract, the soft-delete
+  filter (deleted_at IS NULL), OR the case-insensitive substring filter
+  semantics would land silently.
+
+  The implicit contract:
+  (a) Order: `id ASC` at the OUTER select (insertion order; bigserial PK
+  → unique deterministic; the autocomplete shows oldest titles first).
+  This is operator-surprising — operators expecting alphabetical or
+  relevance-ranked ordering are wrong. Pin the ID-ASC contract before
+  someone "improves" it to alphabetical and breaks 30+ downstream
+  autocomplete consumers.
+  (b) `query` filter: case-insensitive substring containment
+  (`LOWER(name) LIKE LOWER('%query%')`). Empty/null returns ALL
+  non-deleted titles. Typing 'data' returns 'Data Steward' AND
+  'Metadata Owner' (both substring matches), ordered by id ASC. This
+  is NOT prefix-match priority and NOT FTS — operators expecting
+  prefix-priority get noisy results.
+  (c) Soft-delete: titles with deleted_at IS NOT NULL are filtered out.
+
+  No test pins any of these. The TitlesRepositoryImplTest covers
+  create/update/delete/getByName CRUD but NOT the paginated list
+  contract.
+test_class: integration
+test_files_existing:
+  - 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/repository/TitlesRepositoryImplTest.java (covers CRUD only, NOT list)'
+test_files_proposed:
+  - path: 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/TitleControllerListContractTest.java'
+    name: 'getTitleList_emptyQuery_returnsAllNonDeletedTitlesInIdAscOrder'
+  - path: 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/TitleControllerListContractTest.java'
+    name: 'getTitleList_query_returnsSubstringMatchesCaseInsensitive'
+  - path: 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/TitleControllerListContractTest.java'
+    name: 'getTitleList_softDeletedTitle_isFiltered'
+  - path: 'odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/controller/TitleControllerListContractTest.java'
+    name: 'getTitleList_pagination_secondPageReturnsNextSlice'
+evidence:
+  - 'TitleController.md says: "The controller and service list paths have ZERO direct test coverage — only the lower-level repository CRUD is exercised, and the Ownership test covers getOrCreate (the write side-effect path), not the read"'
+  - 'TitleController.md says: "A regression that breaks the ordering, the soft-delete filter, the query substring filter, or the unbounded-size class would land silently"'
+  - 'Source: TitleController.java:17-23 + TitleServiceImpl.java:25-27 + ReactiveAbstractCRUDRepository.java:84-100 + V0_0_3__add_ownership.sql:1-8'
+  - 'Existing tests verified: TitlesRepositoryImplTest.java:23-172 covers testCreatesTitlePojo, testBulkCreateTitle, testBulkUpdateTitle, testUpdatesTitlePojo, testDeletesTitlePojo, testGetByNameTitle, testGetByNameTitle_DifferentName — NO list test'
+cross_references:
+  - 'TEST-GAP-956 (Title getOrCreate concurrent race — sibling write-side gap)'
+  - 'TEST-GAP-912 (DataQuality Title filter — sibling LSN-020)'
+related_refactor_ids: []
+related_doc_gap_ids: []
+related_pillar_features:
+  - 'P-09 Authentication and Authorization (ownership-title role label)'
+related_features: []
+proposed_action: |-
+  Author TitleControllerListContractTest as a @SpringBootTest +
+  WebTestClient harness with four cases against a seeded directory of
+  6+ titles (including one soft-deleted):
+  (a) empty query → assert all non-deleted titles in id ASC;
+  (b) query='owner' → assert substring matches case-insensitive;
+  (c) soft-deleted title → assert absent;
+  (d) pagination boundary: page=1, size=2 → assert first 2; page=2,
+  size=2 → assert next 2.
+  Order-pin is the load-bearing assertion — id-ASC is intentional
+  framework default, not relevance-ranked. A maintainer "improving" to
+  alphabetical without seeing this test would break the
+  OwnerTitleAutocomplete UX silently.
+maintainer_curated: false
+batch: 2026-05-25-ZE

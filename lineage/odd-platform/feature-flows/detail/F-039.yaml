@@ -1,0 +1,849 @@
+feature_id: F-039
+pillar_id: P-07
+pillar_anchored_id: P-07:F-005
+pillar_anchored_feature_name: GenAI Assistant
+feature_name: |-
+  GenAI free-text proxy — POST /api/genai/ask thin pass-through to operator-run
+  external LLM, any-authenticated-user reachable with no audit / rate-limit /
+  prompt sanitisation / cost protection
+primary_drift_class: free_text_proxy_no_authorization_no_audit_no_rate_limit_no_pii_redaction
+drift_class_summary:
+- free_text_proxy_no_authorization_no_audit_no_rate_limit_no_pii_redaction
+- thin_proxy_no_catalog_context_no_prompt_template
+- silent_misconfiguration_zero_timeout_default_immediate_failure
+- disabled_mode_anonymous_reach
+- response_unwrap_brittle_assumes_quoted_json_string
+- enabled_gate_at_service_tier_400_not_404_diverges_from_sibling_conditionalonproperty_pattern
+- live_doc_acknowledges_no_authentication_no_retry_but_silent_on_no_authorization_no_rate_limit_no_audit_no_pii_redaction
+- request_body_unbounded_no_maxlength_no_validate
+- server_web_exchange_exposed_but_discarded_fix_anchor_for_audit
+- no_max_in_memory_size_override_256kb_default_long_form_response_fails
+- genai_url_no_scheme_allowlist_ssrf_surface
+- api_only_today_no_ui_consumer_zero_test_coverage
+cross_pillar_relationships:
+- pillar_id: P-09
+  kind: shares_data_with
+  via: |-
+    The endpoint is gated only by the catch-all `.authenticated()` at the
+    SecurityWebFilterChain layer — there is NO Permission entry in
+    PolicyPermissionDto for GenAI usage, NO SecurityRule entry in
+    SecurityConstants.SECURITY_RULES for `/api/genai/**`. Any authenticated
+    principal (any Role, any owner association) succeeds under
+    LOGIN_FORM/OAUTH2/LDAP; under DISABLED any anonymous caller succeeds.
+    The read-collaborative posture extends here AS A WRITE: the call drives
+    cost on the operator's external LLM account with no per-user gate.
+- pillar_id: P-11
+  kind: shares_data_with
+  via: |-
+    The endpoint is exposed via the OpenAPI Platform API specification at
+    `openapi.yaml:4194-4213` under the `genai` tag. There is NO UI consumer
+    (grep over odd-platform-ui/src for `GenaiApi|genAiQuestion|/genai/`
+    returns zero matches at commit 4ec2b20); the live config page documents
+    "API-only today (no in-app UI affordance calls the endpoint)". The
+    surface is reachable only via the OpenAPI-generated SDK or hand-crafted
+    REST calls, which is the developer-facing P-11 audience.
+batch_extensions:
+- batch: ZK
+  entry_point_added: |-
+    config-properties-class:GenAIProperties (org.opendatadiscovery.oddplatform.config.properties
+    path) — the config-tier PRIMARY-SOURCE for the `genai.*` namespace
+    (`enabled` + `url` + `requestTimeout`). F-039 batch-ZG cited
+    GenAIProperties via the GenAIController sidecar's
+    dependencies_semantic references but did not enrich the props
+    record as primary-source. Batch ZK closes the config tier by
+    promoting the GenAIProperties sidecar to a contributing node
+    with its own primary-source evidence chain (the LSN-002-class
+    silent-misconfiguration shape is now anchored at the field-declaration
+    tier, not just the controller-side observation tier).
+  contributing_nodes_added:
+  - odd-platform java org.opendatadiscovery.oddplatform.config.properties config-properties-class:GenAIProperties
+  notes: |-
+    THREE primary-source confirmations + ONE new drift facet surface
+    at the config tier, all anchored at GenAIProperties.java:1-13 +
+    application.yml:17-20 + WebClientConfiguration.java:14-31:
+
+    (1) **LSN-002 SILENT-MISCONFIGURATION CONFIRMED AT THE
+    FIELD-DECLARATION TIER (STRENGTHENS F-039 batch-ZG
+    `silent_misconfiguration_zero_timeout_default_immediate_failure`)** —
+    GenAIProperties.java:8-12 declares `boolean enabled` (line 9),
+    `String url` (line 10), `int requestTimeout` (line 11). The two
+    UNSAFE-WHEN-ENABLED defaults are PROVABLE FROM THE FIELD
+    DECLARATIONS: `String url` with no `=` initializer defaults to
+    Java's `null`; `int requestTimeout` with no `=` initializer
+    defaults to Java's `0`. The `application.yml:19-20` "examples"
+    are COMMENTED OUT (`# url: http://localhost:5000`,
+    `# request_timeout: 5`) — they are NOT YAML defaults, they are
+    operator-hints. The `application.yml:18` `enabled: false` IS a
+    real YAML default for the boolean. The LSN-002 silent-misconfiguration
+    surface is therefore: enable the feature without explicitly
+    setting `url` + `request_timeout` and the WebClient is built
+    with `baseUrl(null)` + `Duration.ofMinutes(0)` — both legal at
+    bean-construction time, both fatal on the first request.
+    F-039 batch-ZG observed this from the controller-side
+    error-path angle; this batch confirms from the
+    field-declaration-side angle (the LSN-002 shape is structurally
+    provable from the props record itself). STRENGTHENS F-039 batch-ZG
+    drift facet via primary-source at the config tier.
+
+    (2) **NO `@Validated`, NO `@NotBlank`, NO `@URL`, NO `@Min(1)`,
+    NO `@PostConstruct validate()` (STRENGTHENS F-039 batch-ZG
+    `silent_misconfiguration_zero_timeout_default_immediate_failure`
+    + `genai_url_no_scheme_allowlist_ssrf_surface`)** —
+    GenAIProperties.java:1-12 carries ONLY `@ConfigurationProperties`
+    + `@Data`. No `@Validated` annotation, no `jakarta.validation.constraints.*`
+    annotations on any field, no `@PostConstruct validate()` (contrast:
+    the SIBLING ODDLDAPProperties class — also enriched this batch
+    under F-006 + F-011 — DOES carry `@PostConstruct validate()` for
+    URL + search-method invariants; the inconsistency is real). An
+    operator-supplied `genai.request_timeout: -5` (typo, intentional)
+    silently binds and is consumed as `Duration.ofMinutes(-5)`
+    (Reactor Netty's behaviour on negative duration is undefined —
+    documented Duration semantics say negative durations subtract,
+    so `responseTimeout(-5min)` is equivalent to immediate
+    timeout). No fail-fast at boot. The `genai.url` field is
+    similarly unvalidated — `javascript:`, `data:`, `file:`,
+    `vbscript:`, malformed strings all bind. STRENGTHENS BOTH the
+    timeout-default and the SSRF-surface facets via the
+    field-declaration-tier primary source.
+
+    (3) **NO `apiKey` / `token` / `authorization` FIELD ON THE
+    PROPS RECORD — NO EXTENSION POINT TODAY (STRENGTHENS F-039
+    batch-ZG cross-pillar relationship to P-09 (Security))** —
+    GenAIProperties.java:8-12 declares EXACTLY three fields. There
+    is no `apiKey`, no `token`, no `authorization`, no `defaultHeaders`,
+    no `clientCertPath`. The downstream WebClient builder at
+    WebClientConfiguration.java:26-29 carries NO
+    `defaultHeader(HttpHeaders.AUTHORIZATION, ...)`, NO
+    `ExchangeFilterFunction` for auth. F-039 batch-ZG observed
+    "the platform sends no authentication to the external service";
+    this batch confirms the absence is structural at the
+    field-declaration tier (not just an oversight on the WebClient
+    builder). Operators deploying the feature MUST front the
+    external service with their own auth proxy or rely on
+    network-layer controls; the platform has no extension point for
+    bearer-token auth without code changes to add a field. NEW
+    drift facet for F-039:
+    `genai_properties_no_auth_field_no_extension_point_for_external_service_credentials_platform_change_required`.
+
+    (4) **STARTUP-BAKED `url` + `requestTimeout` — CONFIG CHANGES
+    REQUIRE RESTART (STRENGTHENS F-039 batch-ZG
+    `live_doc_acknowledges_no_authentication_no_retry_but_silent_on_no_authorization_no_rate_limit_no_audit_no_pii_redaction`)** —
+    GenAIProperties.java:9-11 + WebClientConfiguration.java:20-30
+    together encode: `enabled` is re-read on every request (the
+    request-time gate at GenAIServiceImpl.java:37); `url` and
+    `requestTimeout` are baked into the `genAiWebClient` `@Bean`
+    at construction time and CANNOT be changed without a Platform
+    restart. The live config page documents the three keys
+    individually but does NOT call out the asymmetry. Operators
+    tuning timeout in response to an LLM-vendor's intermittent
+    slow-response pattern must restart Platform to apply changes
+    — a discoverability gap because the docs make the three keys
+    look symmetric. STRENGTHENS F-039 batch-ZG doc-silence facet
+    with the startup-baked-config sub-finding.
+
+    Coherence sweep STRENGTHENS=4 (F-039 batch-ZG
+    `silent_misconfiguration_zero_timeout_default_immediate_failure`
+    — re-confirmed at field-declaration tier; F-039 batch-ZG
+    `genai_url_no_scheme_allowlist_ssrf_surface` — re-confirmed at
+    field-declaration tier; F-039 batch-ZG cross-pillar
+    `shares_data_with P-09` — extended with structural absence
+    of extension-point for credentials; F-039 batch-ZG
+    `live_doc_acknowledges_no_authentication_no_retry_but_silent_on_no_authorization_no_rate_limit_no_audit_no_pii_redaction`
+    — extended with the startup-baked-config restart-required
+    asymmetry). SUPERSEDES=0. CONFLICTS=0. The new drift facet
+    (genai_properties_no_auth_field) is a STRUCTURAL extension
+    of the existing platform-to-EXTERNAL no-authentication finding;
+    not a duplicate.
+batch_origin: ZG
+created_in_batch: ZG
+discovered_from_entry_point: rest:POST /api/genai/ask
+contributing_nodes:
+- odd-platform java GenAIController controller-class:GenAIController
+- odd-platform java service service:GenAIServiceImpl (referenced from sidecar — not yet enriched)
+- odd-platform java org.opendatadiscovery.oddplatform.config.properties config-properties-class:GenAIProperties  # batch ZK — config-tier primary source promoted from referenced-but-unenriched
+- odd-platform java config service:WebClientConfiguration (referenced from sidecar)
+description: |-
+  GenAI Assistant is the FIRST GenAI/LLM surface in the ontology — the
+  thin reactive proxy from any authenticated ODD user to an external
+  Generative AI service. POST /api/genai/ask receives a free-text question,
+  gates on the request-time `genai.enabled` flag, forwards the question
+  verbatim as `{"question": "..."}` to `POST {genai.url}/query_data`, and
+  returns the response unwrapped (CharMatcher trim-quote +
+  StringEscapeUtils.unescapeJava). The endpoint is API-only today (no UI
+  consumer); it is the canonical example of a feature whose advertised
+  "GenAI assistant" surface is, in reality, a free-text-forwarder with no
+  catalog context, no prompt template, no PII scrubbing, no safety filter,
+  no retry, no cache, no audit, no rate limit, and no permission gate
+  beyond generic `.authenticated()`.
+
+  Per Rule 0 evaluation against `system-mission.md`: P-07 Active Platform
+  Features explicitly enumerates GenAI assistant in its sub-feature seed
+  ("GenAI assistant (`POST /api/genai/ask` → forwards to operator-run
+  `genai.url`; disabled by default; API-only today)") with maintainer notes
+  citing the GenAIController + GenAIProperties sidecars. The natural slot
+  is therefore P-07:F-005 — fifth sub-feature inside the Active Platform
+  Features pillar, sibling of F-007 (P-07:F-001 AlertManager Integration),
+  F-009 (P-07:F-002 WAL-driven Notification Delivery), F-014 (P-07:F-003
+  Per-Entity Alert View), F-021 (P-07:F-004 Activity Feed).
+
+  The user-observable promise (per live `features/active-platform-features/genai`
+  WebFetched 2026-05-25 status 200): "The platform sends no authentication
+  to the external service. Operators must enforce network-layer controls
+  (mesh, ingress, NetworkPolicy)" + "No prompt modification: Questions are
+  forwarded verbatim; the external service handles prompt construction and
+  RAG entirely" + "No retry logic: Single attempt per request; external
+  service must be reliable" + "the platform is a thin proxy".
+
+  The user-observable REALITY, per the batch-ZG GenAIController controller-class
+  sidecar: TWELVE load-bearing drift facets cluster around three load-bearing
+  themes — (a) security posture undocumented on the platform-to-USER axis
+  (any-authenticated-user reach + no rate-limit + no audit + no PII
+  redaction + no body-size cap + DISABLED-mode anonymous reach + SSRF
+  surface via unrestricted genai.url + ServerWebExchange exposed-but-
+  discarded — the canonical fix-anchor for per-user audit/rate-limit/gate);
+  (b) silent-misconfiguration via LSN-002-class zero-defaults (genai.url=null
+  → outbound fails before any external call; genai.request_timeout=0 →
+  Duration.ofMinutes(0) is legal and trips ReadTimeoutException immediately
+  on every call, surfacing the typo "Gen AI request take longer that 0 min"
+  as the user-visible diagnostic); (c) response-shape brittleness
+  (CharMatcher quote-trim + StringEscapeUtils.unescapeJava assumes the
+  external service returns a JSON-quoted string, NOT a structured JSON
+  object — undocumented compatibility constraint on the external service).
+
+  Plus the architectural asymmetry: the enabled gate lives at the SERVICE
+  tier (BadUserRequestException → HTTP 400 when `genai.enabled=false`),
+  NOT at the CONTROLLER bean registration (HTTP 404 via
+  @ConditionalOnProperty) like the sibling DataCollaboration EventApiController.
+  The route is ALWAYS REACHABLE; only the response code changes by config.
+  This is a deliberate framing — "feature flag off" rather than "feature
+  not deployed" — but the asymmetry between sibling controllers is
+  operator-visible drift.
+
+  Live docs DO disclose: thin-proxy, no authentication-to-external, no
+  retry, no prompt modification. Live docs DO NOT disclose: any-authenticated
+  -user reach, no rate limit, no audit log, no PII redaction, no body-size
+  cap, response-unwrap contract on external service shape, SSRF surface
+  via genai.url, no UI consumer / API-only-today (the latter IS in the
+  config page but not the feature page).
+
+  Status: NOT ui-incomplete per Rule 0b — the live config page explicitly
+  states "API-only today (no in-app UI affordance calls the endpoint)"; the
+  feature is INTENTIONALLY backend-only-today; no UI hop exists or is
+  expected; classification confidence HIGH per the docs.
+chain:
+- hop: 1
+  node: odd-platform java GenAIController controller-class:GenAIController
+  sidecar: odd-platform__java__GenAIController__controller-class__GenAIController.md
+  multiplicity_per_trigger: 1
+  evidence: |-
+    GenAIController.java:13-24 — 11-line @RestController implementing
+    OpenAPI-generated GenaiApi. One operation `genAiQuestion` at POST
+    /api/genai/ask (openapi.yaml:4194-4213). Method body is a one-liner
+    `return body.flatMap(genAIService::getResponseFromGenAI).map(ResponseEntity::ok)`.
+    NO @PreAuthorize, NO @Valid, NO @RequestBody size constraint, NO
+    @RateLimit, NO log.* call. ServerWebExchange parameter (line 20) is
+    DECLARED but NEVER read — the user Principal + request headers are
+    available-but-unused.
+  unresolved: false
+  resolved_in_batch: ZG
+- hop: 2
+  node: odd-platform java service service:GenAIServiceImpl
+  sidecar: '(referenced from GenAIController sidecar dependencies_semantic — not yet enriched standalone)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    GenAIServiceImpl.java:35-52 — the request-time gate fires at line 37:
+    `if (!genAIProperties.isEnabled()) return Mono.error(new BadUserRequestException("Gen AI is disabled"))`
+    → ControllerAdvice.java:24-28 maps to HTTP 400. On the enabled path,
+    lines 41-43 issue the outbound POST: `webClient.post().uri("/query_data").bodyValue(Map.of("question", request.getBody())).retrieve()`.
+    No retry. Lines 45-47 unwrap the response: `CharMatcher.is('"').trimFrom`
+    + `StringEscapeUtils.unescapeJava` — brittle assumption that the
+    external service returns a JSON-quoted string. Lines 48-51 — only
+    ReadTimeoutException gets the friendly "Gen AI request take longer
+    that N min" message; every other exception is collapsed into
+    GenAIException(throwable) → HTTP 500 with raw e.getMessage().
+  unresolved: true
+  unresolved_reason: |-
+    GenAIServiceImpl is referenced from the GenAIController sidecar's
+    dependencies_semantic + line citations but not yet enriched as a
+    standalone service-tier sidecar. The cited line numbers come from
+    the controller-class sidecar's understanding + invariants blocks.
+- hop: 3
+  node: odd-platform java config service:WebClientConfiguration
+  sidecar: '(referenced from GenAIController sidecar — earlier-batch config-class sidecar)'
+  multiplicity_per_trigger: 1
+  evidence: |-
+    WebClientConfiguration.java:20-30 — the genAiWebClient bean is
+    constructed ONCE at startup from a single `HttpClient.create()`. Line
+    23 sets `responseTimeout(Duration.ofMinutes(genAIProperties.getRequestTimeout()))`
+    — Duration.ofMinutes(0) is a LEGAL zero Duration; Reactor Netty treats
+    it as immediate timeout. Line 28 sets `baseUrl(genAIProperties.getUrl())`
+    — if null, every outbound POST fails before reaching the external
+    service. NO `.codecs(...)` chain, so the WebClient uses Spring WebFlux
+    default 256KB max-in-memory-size (NOT inherited from the application-wide
+    `spring.codec.max-in-memory-size: 20MB` at application.yml:14-15) — long
+    LLM responses fail with DataBufferLimitException. NO `.defaultHeader`
+    chain — no User-Agent, no Authorization. NO ExchangeFilterFunction for
+    rate-limit or audit.
+  unresolved: false
+- hop: 4
+  node: odd-platform java org.opendatadiscovery.oddplatform.config.properties config-properties-class:GenAIProperties
+  sidecar: odd-platform__java__org_opendatadiscovery_oddplatform_config_properties__config-properties-class__GenAIProperties.md  # batch ZK — primary-source enrichment
+  multiplicity_per_trigger: 1
+  evidence: |-
+    GenAIProperties.java:8-12 — three fields with UNSAFE-WHEN-ENABLED
+    defaults: `boolean enabled = false` (safe), `String url = null` (UNSAFE),
+    `int requestTimeout = 0` (UNSAFE — Java primitive int default; not a
+    YAML-supplied default). Live config page at
+    `https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform#genai-configuration`
+    (WebFetch 2026-05-25 status 200) documents the silent-misconfiguration
+    warning: "Setting only `genai.enabled=true` will silently misconfigure
+    the feature. With `url` defaulting to `null` and `request_timeout`
+    defaulting to `0`, the WebClient is built with no `baseUrl` and a
+    `Duration.ofMinutes(0)` timeout — every `POST /api/genai/ask` will
+    fail before the external service has a chance to respond. Always set
+    all three keys when enabling."
+  unresolved: false
+terminal_side_effect:
+  side_effect_class: external-call
+  description: |-
+    Outbound HTTP POST to `{genai.url}/query_data` with JSON body
+    `{"question": <user-supplied verbatim text>}`. Runs on the platform's
+    egress identity (no Authorization header attached; operator must
+    enforce network-layer controls). Single attempt per inbound call —
+    no retry, no exponential backoff, no circuit breaker. Response is
+    quote-trimmed + JSON-unescaped and returned to the caller as
+    GenAIResponse.body.
+  evidence: |-
+    GenAIServiceImpl.java:41-47 (the outbound POST + response unwrap).
+    WebClientConfiguration.java:26-29 (the baseUrl-only WebClient builder).
+    On disabled (`genai.enabled=false`), service short-circuits at line 37
+    with HTTP 400 BadUserRequestException — no outbound call fires.
+  cardinality_per_call: |-
+    1 outbound POST per inbound request when genai.enabled=true; 0 when
+    disabled (BadUserRequestException at service tier). No retry, no
+    parallel calls, no fan-out — the operation is single-shot.
+amplification_factor: 1
+amplification_factor_provenance: |-
+  STATIC-INFERRED HIGH. Each `POST /api/genai/ask` produces exactly ONE
+  outbound POST to `{genai.url}/query_data` on the enabled path; ZERO
+  outbound calls on the disabled path (service-tier short-circuit at HTTP
+  400). The cardinality is constant by construction — there is no retry
+  loop, no fan-out, no parallel sub-call, no response polling. The hop-by-hop
+  product is 1 × 1 × 1 × 1 = 1. The hot-path observation is at the OUTBOUND
+  layer (operator's external LLM cost) not at the platform layer — N replicas
+  behind a load balancer multiply effective rate by N because there is no
+  cross-instance rate limit or shared cache.
+observed_vs_expected:
+  facets:
+  - facet: |-
+      Any authenticated user can call /api/genai/ask and drive cost on the
+      operator's external LLM account
+    observed: |-
+      GenAIController.java:13-24 has NO @PreAuthorize; PolicyPermissionDto
+      has no GENAI_USE Permission (grep over PolicyPermissionDto.java for
+      `GENAI` returns zero matches at commit 4ec2b20); SecurityConstants.SECURITY_RULES
+      has no entry for `/api/genai/**` (grep over SecurityConstants.java:98-355
+      returns zero matches). The endpoint falls through to AuthorizationCustomizer.java:29-30
+      `.pathMatchers("/**").authenticated()` under OAUTH2/LDAP, and
+      LoginFormSecurityConfiguration.java:57 `.pathMatchers("/**").authenticated()`
+      under LOGIN_FORM (since `/api/genai/ask` is not in `permittedPaths`
+      at lines 49-51). Three of four auth modes require authentication
+      only — no Permission, no Role, no owner scope — and the fourth
+      (DISABLED) requires nothing.
+    expected: |-
+      Either (a) introduce a `GENAI_USE` Permission gating the endpoint,
+      OR (b) the live feature page disclosures the any-authenticated-user
+      reach explicitly so operators know any read-only viewer can drive
+      external-LLM cost.
+    drift_class: free_text_proxy_no_authorization_no_audit_no_rate_limit_no_pii_redaction
+    provenance: |-
+      PRIMARY-SOURCE — GenAIController batch-ZG sidecar
+      bugs_limitations_corner_cases[0] + security.known_security_gaps[0] +
+      stress_findings.auth_gates. Evidence: GenAIController.java:13-24 (no
+      annotations) + SecurityConstants.java:98-355 (path absent) +
+      AuthorizationCustomizer.java:29-30 (fallthrough) + LoginFormSecurityConfiguration.java:49-57
+      + DisabledAuthSecurityConfiguration.java:13-17. Probe P-160 pins.
+      Severity: HIGH.
+  - facet: |-
+      No rate limit, no audit log, no PII redaction — combined cost-injection
+      + diagnostic-vacuum surface
+    observed: |-
+      No Bucket4j, no Resilience4j RateLimiter, no @RateLimit, no token
+      bucket anywhere on the request path (grep over the genai/controller/config
+      packages for `RateLimiter|@Bucket|TokenBucket|@RateLimit` returns
+      zero matches at commit 4ec2b20). GenAIServiceImpl.java:35-52 — `@Slf4j`
+      is declared but NO log.* call records the user identity, the question
+      text, or the response. The ServerWebExchange parameter on the
+      controller method (GenAIController.java:20) is auto-injected for the
+      generated GenaiApi signature but NEVER read — the user Principal,
+      X-Forwarded-For, User-Agent, and trace context are all
+      available-but-unused (Stress Cat F Q5 fix-anchor). User prompts are
+      forwarded verbatim with NO scrubber, NO allowlist, NO detection of
+      credentials/secrets/PII (GenAIServiceImpl.java:41-43). Combined with
+      the no-authorization finding, any authenticated user can fire requests
+      at HTTP client speed, with each request charging the operator's
+      external LLM account and leaving NO in-platform trace of who asked
+      what.
+    expected: |-
+      Either (a) introduce per-user rate-limiting + audit logging + optional
+      PII pre-scrub (the ServerWebExchange parameter is the existing fix-anchor),
+      OR (b) the live feature page documents that operators must enforce
+      these controls at the proxy / network layer (today the page is silent
+      on the platform-to-user posture).
+    drift_class: free_text_proxy_no_authorization_no_audit_no_rate_limit_no_pii_redaction
+    provenance: |-
+      PRIMARY-SOURCE — GenAIController batch-ZG sidecar
+      bugs_limitations_corner_cases[1,2,3,4,7] +
+      security.known_security_gaps[2,3,4]. Evidence: GenAIServiceImpl.java:35-52
+      (no log.* calls) + GenAIController.java:19-23 (ServerWebExchange
+      unreferenced) + WebClientConfiguration.java:20-30 (no rate-limit
+      wiring on builder) + components.yaml:4200-4204 (no @Size / maxLength
+      on body) + grep over genai package for rate-limit primitives (zero
+      matches). Severity: HIGH.
+  - facet: |-
+      Silent misconfiguration via LSN-002-class zero-default request_timeout
+    observed: |-
+      `genai.request_timeout` is a Java `int` field at GenAIProperties.java:11
+      with NO `@DefaultValue`, NO `@NotNull`, NO `@Min(1)` validator. When
+      YAML omits the key, the Java primitive int default `0` is used.
+      WebClientConfiguration.java:23 then constructs the WebClient with
+      `Duration.ofMinutes(0)` — which is a LEGAL zero Duration in Reactor
+      Netty and does NOT fail at bean construction. Every subsequent
+      outbound POST trips ReadTimeoutException IMMEDIATELY; the onErrorResume
+      branch at GenAIServiceImpl.java:48-51 surfaces the verbatim formatted
+      message "Gen AI request take longer that 0 min" (note: typo "that"
+      should be "than") as a GenAIException → HTTP 500 via
+      ControllerAdvice.java:55-59. The operator sees a confusing user-error
+      message instead of a startup configuration error. This is the
+      LSN-002 regional analogue — an unset SDK builder parameter that ships
+      silent misbehaviour rather than a fail-fast at startup.
+    expected: |-
+      Either (a) `@Min(1)` constraint on the requestTimeout field (fail-fast
+      at app boot when `genai.enabled=true` and timeout < 1), OR (b) sensible
+      `@DefaultValue("5")` so unset defaults to 5 minutes (the documented
+      working-config example).
+    drift_class: silent_misconfiguration_zero_timeout_default_immediate_failure
+    provenance: |-
+      PRIMARY-SOURCE — GenAIController batch-ZG sidecar
+      stress_findings.tunables (request_timeout = 0 boundary analysis) +
+      performance.known_performance_gaps[0]. Evidence: GenAIProperties.java:11
+      (no @Min, no @DefaultValue) + WebClientConfiguration.java:23 +
+      GenAIServiceImpl.java:48-51 + live config page at
+      docs.opendatadiscovery.org/configuration-and-deployment/odd-platform#genai-configuration
+      (WebFetch 2026-05-25 status 200 — the warning admonition documents
+      the misconfiguration mode but the code permits it). Probe P-161
+      pins. Severity: HIGH.
+  - facet: |-
+      Under auth.type=DISABLED the endpoint is anonymously reachable
+    observed: |-
+      DisabledAuthSecurityConfiguration.java:13-17 declares
+      `anyExchange().permitAll()` — under DISABLED mode every endpoint
+      bypasses auth globally; this controller (and every other) becomes
+      anonymously reachable. The service-tier `genai.enabled` gate still
+      applies — disabled → HTTP 400; enabled → outbound POST fires on
+      whatever the anonymous caller submits.
+    expected: |-
+      Either (a) the live config page warns that auth.type=DISABLED leaves
+      `/api/genai/ask` reachable to anonymous callers (the page does
+      document the API-only-today nature; the DISABLED-mode caveat is the
+      additional disclosure), OR (b) the controller declines DISABLED
+      mode for the genai endpoint specifically.
+    drift_class: disabled_mode_anonymous_reach
+    provenance: |-
+      PRIMARY-SOURCE — GenAIController batch-ZG sidecar
+      bugs_limitations_corner_cases[?] + security.known_security_gaps[5].
+      Evidence: DisabledAuthSecurityConfiguration.java:13-17 + GenAIController.java:13-24
+      (no method-level @ConditionalOnProperty / @ConditionalOnExpression).
+      Severity: LOW (operator misuse of dev-only mode) — joins the
+      REFACTOR-185 DISABLED-bypass cluster.
+  - facet: |-
+      Response-unwrap silently brittle — assumes external service returns
+      a JSON-quoted string
+    observed: |-
+      GenAIServiceImpl.java:45-47 does
+      `new GenAIResponse().body(StringEscapeUtils.unescapeJava(CharMatcher.is('"').trimFrom(item)))`.
+      The transformation assumes the external service's response is a
+      JSON-encoded quoted string (e.g. `"the answer text\\n"`); trim-quote
+      + unescape converts that to the unquoted, unescaped string. If the
+      external service returns a structured JSON object (e.g.
+      `{"answer":"the answer text"}`), `CharMatcher.is('"').trimFrom`
+      strips boundary `"` chars (none exist at the boundaries of `{...}`,
+      so the JSON text is returned literal); `StringEscapeUtils.unescapeJava`
+      then processes any `\n`/`\t` it finds. The user sees raw JSON text in
+      the response body — silently wrong, not a clear error.
+    expected: |-
+      Either (a) document the response-shape contract (external service
+      MUST return a JSON-quoted string, not a structured JSON object), OR
+      (b) the platform accepts both shapes via content-negotiation or a
+      JsonNode-then-format step.
+    drift_class: response_unwrap_brittle_assumes_quoted_json_string
+    provenance: |-
+      PRIMARY-SOURCE — GenAIController batch-ZG sidecar
+      bugs_limitations_corner_cases[5] + concepts.invariants.response-unwrap-brittle.
+      Evidence: GenAIServiceImpl.java:45-47. Severity: MEDIUM (silent wrong
+      response, not a crash).
+  - facet: |-
+      Enabled gate at SERVICE tier (HTTP 400) — asymmetric with sibling
+      DataCollaboration @ConditionalOnProperty (HTTP 404)
+    observed: |-
+      GenAIController.java:13-24 — no `@ConditionalOnProperty` on the
+      controller class. The bean is ALWAYS registered; the route is
+      always REACHABLE. The gate is at the SERVICE layer:
+      GenAIServiceImpl.java:37-39 — `if (!genAIProperties.isEnabled())
+      throw new BadUserRequestException("Gen AI is disabled")` → HTTP 400
+      via ControllerAdvice.java:24-28. The sibling EventApiController
+      (data collaboration) carries `@ConditionalOnDataCollaboration` so
+      its bean is NOT registered when the feature is disabled — that
+      endpoint returns HTTP 404. Two siblings, two different conventions
+      for "feature flag off". Both internally consistent; the inconsistency
+      between sibling controllers is the finding.
+    expected: |-
+      Either (a) align the two conventions (both 400 or both 404 — the
+      choice is product-policy, not technical), OR (b) document both
+      conventions explicitly so operators / SDK consumers know what to
+      expect from each.
+    drift_class: enabled_gate_at_service_tier_400_not_404_diverges_from_sibling_conditionalonproperty_pattern
+    provenance: |-
+      PRIMARY-SOURCE — GenAIController batch-ZG sidecar implicit_adrs[1].
+      Evidence: GenAIServiceImpl.java:37-39 + ControllerAdvice.java:24-28
+      + GenAIController.java:13-24 (no @ConditionalOnProperty) +
+      contrast with EventApiController.java:15 (@ConditionalOnDataCollaboration).
+      Severity: LOW (operator-observable but benign — both behaviours
+      are acceptable; the inconsistency is the actionable finding).
+  - facet: |-
+      Live feature page documents platform-to-EXTERNAL stance but is
+      silent on platform-to-USER stance
+    observed: |-
+      Live `features/active-platform-features/genai` (WebFetch 2026-05-25
+      status 200) documents the three platform-to-external posture
+      statements: (a) "no authentication" to the external service, (b)
+      "no retry logic", (c) "no prompt modification". The platform-to-user
+      posture is SILENT: (a) NO statement about ODD-side authorization
+      (any authenticated user can call); (b) NO per-user / per-tenant
+      rate limit warning; (c) NO request-body size cap warning; (d) NO
+      prompt-injection mitigation guidance; (e) NO audit-log disclosure
+      (in fact, no audit log exists); (f) NO PII redaction guidance.
+      An operator reading the feature page does NOT learn from the docs
+      alone that any authenticated user can drive arbitrary cost on the
+      operator's AI vendor account with no in-platform record of what
+      was asked.
+    expected: |-
+      The live feature page disclosures all five platform-to-user gaps
+      (no authorization beyond authenticated; no rate-limit; no audit
+      log; no PII redaction; no body-size cap) so an operator enabling
+      the feature understands the full risk surface.
+    drift_class: live_doc_acknowledges_no_authentication_no_retry_but_silent_on_no_authorization_no_rate_limit_no_audit_no_pii_redaction
+    provenance: |-
+      PRIMARY-SOURCE — GenAIController batch-ZG sidecar
+      docs_link_semantic.doc_drift_findings[0]. Evidence: WebFetch
+      `features/active-platform-features/genai` 2026-05-25 status 200
+      (verbatim excerpts captured in sidecar) + GenAIController.java:13-24
+      + GenAIServiceImpl.java:35-52 + grep for rate-limit/audit-log/PII-redact
+      primitives (zero matches). Severity: HIGH (the actionable finding;
+      doc-gap routes to doc-gap-finder).
+  - facet: |-
+      Request body unbounded — no @Size, no @Pattern, no maxLength
+    observed: |-
+      `GenAIRequest.body` is `type: string` in the OpenAPI schema
+      (components.yaml:4200-4204) with NO `maxLength`, NO `pattern`, NO
+      `description`. The generated Java model carries no `@Size`,
+      `@NotBlank`, or `@Pattern`. The controller method
+      (GenAIController.java:19-23) has no `@Valid` on the `Mono<GenAIRequest>`
+      parameter. An authenticated user can POST a multi-megabyte body
+      which is forwarded verbatim to the external service. Combined with
+      the no-auth-gate finding and no-rate-limit finding, this is a
+      cost-injection vector — a single API call with size=50MB charges
+      the operator's external LLM account for tokens that may exhaust
+      the LLM's context window.
+    expected: |-
+      Either (a) `@Size(max=N)` on the body field + `maxLength: N` in the
+      OpenAPI schema (typical LLM context windows are 4K-128K tokens —
+      a 50KB cap on the input body is reasonable), OR (b) the live doc
+      states no body-size cap exists at the platform layer.
+    drift_class: request_body_unbounded_no_maxlength_no_validate
+    provenance: |-
+      PRIMARY-SOURCE — GenAIController batch-ZG sidecar
+      bugs_limitations_corner_cases[1] + security.known_security_gaps[1].
+      Evidence: components.yaml:4200-4204 + GenAIController.java:19-23.
+      Severity: HIGH.
+  - facet: |-
+      ServerWebExchange parameter exposed but discarded — Cat F fix-anchor
+    observed: |-
+      GenAIController.java:19-20 — the controller method signature takes
+      `ServerWebExchange exchange` (auto-injected by Spring as part of
+      the generated GenaiApi interface signature), but the body never
+      references it. `exchange.getPrincipal()` returns the user, but no
+      log captures it. `exchange.getRequest().getHeaders()` returns
+      headers (X-Forwarded-For, User-Agent, X-Tenant-Id), but no policy
+      consumes them. The trace context is available but never propagated.
+      This is the canonical Category F available-but-unused smell — the
+      fix-anchor for adding audit logging, rate-limit-by-user, or
+      per-user permission checks.
+    expected: |-
+      The controller body reads the exchange and either (a) logs the
+      Principal + question, or (b) wraps the call in a rate-limited
+      decorator, or (c) calls a permission service for a GENAI_USE
+      check.
+    drift_class: server_web_exchange_exposed_but_discarded_fix_anchor_for_audit
+    provenance: |-
+      PRIMARY-SOURCE — GenAIController batch-ZG sidecar
+      bugs_limitations_corner_cases[8] + stress_findings.request_inputs
+      (the body field Q5 available-but-unused). Evidence:
+      GenAIController.java:19-23 (exchange parameter declared but
+      unreferenced in method body). Severity: MEDIUM (the fix is small;
+      the operator-visible consequence depends on which gap closes
+      first).
+  - facet: |-
+      No max-in-memory-size override on genAiWebClient — 256KB default
+      cuts off long-form LLM responses
+    observed: |-
+      WebClientConfiguration.java:26-29 — the `WebClient.builder()` chain
+      does NOT call `.codecs(c -> c.defaultCodecs().maxInMemorySize(...))`.
+      The WebClient uses Spring WebFlux default 256KB. The application-wide
+      `spring.codec.max-in-memory-size: 20MB` (application.yml:14-15) is
+      NOT inherited onto this client because the builder chain doesn't
+      apply it. Verbose LLM answers (long-form summaries, multi-paragraph
+      explanations) > 256KB throw DataBufferLimitException mid-stream,
+      collapsing through `.onErrorResume` to a generic GenAIException →
+      HTTP 500 with the raw DataBufferLimitException.getMessage().
+    expected: |-
+      Either (a) explicit `.codecs(c -> c.defaultCodecs().maxInMemorySize(20*1024*1024))`
+      on the genAiWebClient builder (matching the platform-wide setting),
+      OR (b) the live doc disclosures the 256KB cap so operators
+      requesting long-form LLM responses configure a smaller-output prompt.
+    drift_class: no_max_in_memory_size_override_256kb_default_long_form_response_fails
+    provenance: |-
+      PRIMARY-SOURCE — GenAIController batch-ZG sidecar
+      bugs_limitations_corner_cases[7] + performance.resource_allocation[2].
+      Evidence: WebClientConfiguration.java:26-29 + application.yml:14-15.
+      Severity: MEDIUM.
+  - facet: |-
+      genai.url accepts any string — no scheme allowlist, no SSRF guard
+    observed: |-
+      GenAIProperties.java:10 — `String url` field with no `@URL` constraint,
+      no `@Pattern` for scheme/host allowlist. WebClientConfiguration.java:28
+      sets `.baseUrl(genAIProperties.getUrl())` with no validation. An
+      operator (or an attacker with config-write access) can point the
+      outbound POST at any reachable URL, including the platform's own
+      internal network. The WebClient runs in the platform's JVM, so
+      requests originate from the platform's egress identity — an SSRF
+      surface via configuration if config is operator-mutable at runtime.
+    expected: |-
+      Either (a) `@URL` constraint + scheme/host allowlist on the url
+      field, OR (b) the live config page states the SSRF caveat and
+      operators must validate `genai.url` against their trust boundary.
+    drift_class: genai_url_no_scheme_allowlist_ssrf_surface
+    provenance: |-
+      PRIMARY-SOURCE — GenAIController batch-ZG sidecar
+      bugs_limitations_corner_cases[6]. Evidence: GenAIProperties.java:10
+      (no @URL, no @Pattern) + WebClientConfiguration.java:28 (baseUrl
+      passes through). Severity: MEDIUM (operator-configured, not
+      user-supplied; the operator owns the config trust boundary).
+  - facet: |-
+      API-only today — no UI consumer, zero test coverage
+    observed: |-
+      Grep over odd-platform-ui/src for `GenaiApi|genAiQuestion|/genai/`
+      returns zero matches at commit 4ec2b20. Live config page documents
+      "API-only today (no in-app UI affordance calls the endpoint)".
+      Grep over odd-platform-api/src/test for `GenAI|genai|/api/genai`
+      returns zero matches at commit 4ec2b20. The endpoint is reachable
+      only by operators who read the OpenAPI spec; the discoverability
+      of the security gaps is therefore lower for typical users, but
+      the gaps are no less present — and a future UI consumer (an in-app
+      "Ask GenAI" affordance, a sidebar chat panel) would EXPAND the
+      reach to every authenticated user with a single deployment-time
+      flip.
+    expected: |-
+      Either (a) the API surface gains the missing gates BEFORE a UI
+      consumer ships (the audit + rate-limit + permission gate), OR (b)
+      the absence of UI today is documented as the security-mitigation
+      reason it's currently acceptable (the docs should NOT pretend the
+      gaps don't exist; they exist regardless of UI presence).
+    drift_class: api_only_today_no_ui_consumer_zero_test_coverage
+    provenance: |-
+      PRIMARY-SOURCE — GenAIController batch-ZG sidecar
+      bugs_limitations_corner_cases[9] + tests_coverage_semantic.gaps.
+      Evidence: grep over odd-platform-ui/src + odd-platform-api/src/test
+      (zero matches) + live config page WebFetch 2026-05-25 status 200
+      (explicit "API-only today"). Severity: LOW (information-only —
+      surfaces the trajectory risk if a UI consumer is added later).
+  surfaced_by:
+  - 'GenAIController: odd-platform__java__GenAIController__controller-class__GenAIController.md (batch ZG)'
+  - 'GenAIController (earlier alias): odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__GenAIController.md (earlier batch)'
+  - 'GenAIProperties: odd-platform__java__org_opendatadiscovery_oddplatform_config_properties__config-properties-class__GenAIProperties.md (earlier batch — referenced)'
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+    - GenAIServiceImpl.getResponseFromGenAI — assert disabled path throws BadUserRequestException with message "Gen AI is disabled"
+    - GenAIServiceImpl.getResponseFromGenAI — assert enabled path POSTs to {url}/query_data with body Map.of("question", body)
+    - GenAIServiceImpl.getResponseFromGenAI — assert ReadTimeoutException maps to GenAIException with formatted "Gen AI request take longer that N min" message (note typo)
+    - GenAIServiceImpl.getResponseFromGenAI — assert other exceptions collapse to generic GenAIException(throwable)
+    - Response-unwrap — assert quoted-JSON-string trims+unescapes; assert structured-JSON-object surfaces as literal text (the brittle case)
+    - GenAIProperties validation — assert @Min(1) on requestTimeout when added (TODO — not yet present)
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+    - 'POST /api/genai/ask with genai.enabled=false returns HTTP 400 with `code: BAD_REQUEST` and message "Gen AI is disabled" (the default-state response)'
+    - 'POST /api/genai/ask with genai.enabled=true + valid url + valid timeout: question POSTed to {url}/query_data, response body returned as GenAIResponse.body (WireMock-based — P-160 partial cover)'
+    - 'POST /api/genai/ask with genai.enabled=true and unset url (null) — what does the user see? (LSN-002-class silent misconfiguration; behaviour is undefined IllegalArgumentException/NPE; operator gets HTTP 500)'
+    - 'POST /api/genai/ask with genai.enabled=true and request_timeout=0 — every request fires Duration.ofMinutes(0) → immediate ReadTimeoutException → "Gen AI request take longer that 0 min" (P-161 pins)'
+    - 'POST /api/genai/ask with response > 256KB — DataBufferLimitException → HTTP 500 (the long-form-LLM-response failure)'
+    - 'POST /api/genai/ask with response shaped {"answer":"text"} (structured JSON) — assert the user sees literal `{"answer":"text"}` not the unwrapped string'
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+    - 'N concurrent POST /api/genai/ask requests — outbound connection pool behaviour (Reactor Netty default ConnectionProvider max-connections = 2 × CPU, pendingAcquireTimeout = 45s) — P-159 pins'
+    - 'Burst test — under 100 concurrent requests with a slow external service, what does request 21+ see (acquire-timeout vs read-timeout)?'
+    - 'Connection-acquire-timeout vs read-timeout error message divergence — confirm acquire-timeout produces generic GenAIException (NOT the friendly timeout message) since the .onErrorResume branch matches ReadTimeoutException specifically'
+    - 'Cost-injection load — 1 authenticated user fires 10K requests / minute against a stub external service — confirm absence of rate limit at the platform layer'
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+    - 'Under LOGIN_FORM / OAUTH2 / LDAP, a least-privilege authenticated user (no admin, no GenAI permission, default Role) successfully calls /api/genai/ask and reaches the external service — P-160 pins'
+    - 'Under auth.type=DISABLED, /api/genai/ask is anonymously reachable; external service receives the POST with no Authorization header'
+    - 'Prompt-injection content (role-override prompts, jailbreak headers, system-prompt-overriding text) forwarded verbatim with no platform-side filter — P-158 pins'
+    - 'Body-size > 1MB accepted by the controller and forwarded — no @Size validation surfaces the cost-injection vector'
+    - 'PII-shaped content (credit card numbers, SSNs, emails) forwarded verbatim — no scrubber'
+    - 'No log captures the user identity or question text — forensic reconstruction requires external service logs cross-referenced with reverse-proxy access logs'
+    - 'genai.url pointed at internal network (e.g. http://localhost:8025/metrics) — confirm the platform issues the outbound POST without scheme/host validation (the SSRF surface)'
+control_summary: |-
+  0 of 16 cells PROBED — feature MINTED this batch (ZG) from the
+  GenAIController controller-class primary-source sidecar. TWELVE
+  load-bearing drift facets cluster around three themes: (a) platform-to-user
+  security posture entirely absent (no authorization, no rate-limit, no
+  audit, no PII redaction, no body-size cap, ServerWebExchange unreferenced —
+  combined cost-injection + diagnostic-vacuum surface); (b) silent
+  misconfiguration via LSN-002-class zero-defaults (request_timeout=0,
+  url=null); (c) response-shape brittleness assuming JSON-quoted string
+  external responses.
+
+  The entire genai package has ZERO test coverage (grep over
+  odd-platform-api/src/test for `GenAI|genai|/api/genai` returns zero
+  matches at commit 4ec2b20). Four probes already authored by the sidecar:
+  P-158 (prompt injection), P-159 (concurrency burst), P-160 (auth-mode
+  matrix + permission gap), P-161 (zero-timeout default).
+
+  The HIGHEST-LEVERAGE probe candidates, all executable on the maintainer's
+  local workstation (local docker-compose ODD platform + WireMock for the
+  external LLM stub — NO cloud infrastructure):
+
+  (a) auth-mode + permission gap pin (P-160) — boot probe stack with
+      auth.type=LOGIN_FORM + create user-bob with default Role / no
+      permissions / no owner association; POST /api/genai/ask with valid
+      body; assert HTTP 200 with response body forwarded. Pins the
+      any-authenticated-user finding end-to-end.
+
+  (b) zero-timeout silent-misconfiguration pin (P-161) — set
+      genai.enabled=true + genai.url=<wiremock-stub> + leave
+      genai.request_timeout unset; POST /api/genai/ask; assert HTTP 500
+      with body containing "Gen AI request take longer that 0 min" (note
+      typo). Pins the LSN-002-class regional analogue.
+
+  (c) prompt-injection forward pin (P-158) — POST with body containing
+      a recognizable jailbreak-marker text; wiremock captures the outbound
+      payload; assert the question is forwarded VERBATIM and no platform
+      log captured the marker. Pins the no-filter + no-audit findings.
+
+  (d) concurrency burst pin (P-159) — fire 100 concurrent POSTs with a
+      slow wiremock that sleeps 90s + request_timeout=2min; assert
+      requests 21+ produce a connection-acquire-timeout-class error
+      message DISTINCT from the read-timeout-class friendly message,
+      confirming the .onErrorResume narrow branch.
+
+  Cross-feature coherence: F-039 LIVES INSIDE pillar P-07 Active Platform
+  Features as the FIFTH P-07 feature — sibling to F-007 (AlertManager
+  Integration), F-009 (WAL-driven Notification Delivery), F-014 (Per-Entity
+  Alert View), F-021 (Activity Feed). The system-mission.md sub-feature
+  seed for P-07 explicitly lists "GenAI assistant" with maintainer notes
+  citing GenAIController + GenAIProperties sidecars. The feature is
+  intentionally OPT-IN (genai.enabled=false default) AND intentionally
+  API-only-today (no UI consumer); both choices are explicit at the live
+  config page. The actionable findings on this feature are NOT "ship the
+  missing UI" but "before any UI consumer ships, close the authorization
+  + audit + rate-limit + body-cap gaps that the doc currently elides".
+related_refactoring_scopes:
+- REFACTOR-185  # DISABLED-mode bypass cluster — /api/genai/ask is an additional ungated surface anonymously reachable under auth.type=DISABLED
+related_test_gaps:
+- TEST-GAP-NNN (no @WebFluxTest / no service-tier mock test for GenAIController or GenAIServiceImpl)
+- TEST-GAP-NNN (no test pins the disabled-state HTTP 400 + "Gen AI is disabled" message)
+- TEST-GAP-NNN (no test pins the zero-timeout silent-misconfiguration default-failure mode)
+- TEST-GAP-NNN (no test exercises the response-unwrap path against a structured-JSON external response)
+- TEST-GAP-NNN (no test exercises the any-authenticated-user reach gap)
+- TEST-GAP-NNN (no test exercises the body-unbounded cost-injection vector)
+related_doc_gaps:
+- DOC-GAP-082  # META — auth.type=DISABLED bypasses the Authorization framework; /api/genai/ask is a further ungated surface
+- DOC-GAP-NNN (genai feature page silent on platform-to-USER posture — no-authorization, no-rate-limit, no-audit, no-PII-redaction, no-body-cap)
+- DOC-GAP-NNN (genai feature page does not document the response-unwrap contract — external service must return a JSON-quoted string)
+- DOC-GAP-NNN (genai config page does not warn about the SSRF surface via unrestricted genai.url)
+- DOC-GAP-NNN (the @ConditionalOnProperty vs service-tier-gate asymmetry between GenAI and DataCollaboration is undocumented — sibling-controller convention divergence)
+related_concepts:
+- gen-ai-assistant
+- external-llm-service
+- silent-misconfiguration-lsn-002-class
+- disabled-mode-anonymous-reach
+- audit-log-presence-asymmetry-2-tier-audit-story
+- read-collaborative-catalog-posture
+related_retrospectives:
+- LSN-001  # permissive defaults hide operator error — disabled-mode anonymous reach AND the absent rate-limit/audit defaults are both the LSN-001 pattern
+- LSN-002  # unset SDK builder parameter ships silent misbehaviour — genai.request_timeout=0 is the regional analogue; genai.url=null is the second analogue
+- LSN-017  # cross-layer cross-half effects — the controller + service + WebClient + properties together compose the feature; per-node scan cannot see the user-visible cost-injection surface
+- LSN-018  # coherence pre-emit check — the live config-page admonition (warning about silent misconfiguration) was added recently; the GenAIProperties sidecar from earlier batches predated it and recorded a stale doc-drift claim
+related_features:
+- F-007  # AlertManager Integration (P-07) — sibling P-07 ingestion-side surface with similar no-authentication-to-external posture
+- F-021  # Activity Feed (P-07:F-004) — the natural home for a future GENAI_USAGE activity event if audit logging is added
+- F-006  # RBAC (P-09:F-001) — the natural home for a future GENAI_USE Permission if authorization is added
+related_probes:
+- P-158
+- P-159
+- P-160
+- P-161
+probe_verifications: []
+maintainer_curated: false
+batch_origin_note: |-
+  2026-05-25 batch ZG — NEW pillar-anchored feature MINTED from the
+  GenAIController batch-ZG controller-class sidecar plus references to
+  the earlier-batch GenAIServiceImpl, WebClientConfiguration, and
+  GenAIProperties sidecars.
+
+  Per Rule 0 evaluation against system-mission.md: GenAI assistant is
+  EXPLICITLY listed in P-07 Active Platform Features sub-feature seed
+  ("GenAI assistant (POST /api/genai/ask → forwards to operator-run
+  genai.url; disabled by default; API-only today)"). The pillar's
+  maintainer notes specifically cite GenAIController + GenAIProperties as
+  the sidecar evidence. The natural slot is P-07:F-005 — fifth sub-feature
+  inside Active Platform Features (after F-007 AlertManager, F-009
+  Notifications, F-014 Per-Entity Alert View, F-021 Activity Feed). No
+  duplicate feature exists per registry-search graph-search verification
+  (`lineage-extractor graph-search odd-platform "GenAI question forwarding
+  external LLM proxy authenticated catalog assistant" --label Feature --k 6`
+  returned zero results at batch-start).
+
+  Per Rule 0b (UI-completeness): F-039's entry point IS the REST endpoint
+  — there is NO UI consumer (grep over odd-platform-ui/src for the genai
+  surface returns zero matches; the live config page documents "API-only
+  today (no in-app UI affordance calls the endpoint)"). The feature is
+  INTENTIONALLY backend-only. Per Rule 0b the absence of a UI is by-design
+  rather than incomplete; the feature is NOT classified ui-incomplete.
+  Future ui-completeness reassessment will be required if/when a UI
+  consumer (in-app chat panel, GenAI sidebar) lands.
+
+  The 12 load-bearing drift facets close the GenAI surface at the
+  controller tier + the config tier; future batches refine via
+  service-tier (GenAIServiceImpl) and webclient-config-tier
+  (WebClientConfiguration) primary-source enrichment. Cross-pillar
+  back-links to P-09 (security posture — no authorization, no rate
+  limit, no audit) and P-11 (developer surface — API-only today, no
+  UI consumer).
+
+  The headline drift facet is the platform-to-user security vacuum —
+  any authenticated user can drive external-LLM cost on the operator's
+  account with no in-platform record of who asked what. This is the
+  canonical "operator follows our guide off a cliff" scenario for the
+  AI-vendor-billing audience: enable genai, fail to add network-layer
+  rate-limit / audit / authorization, ship to production, discover the
+  bill.

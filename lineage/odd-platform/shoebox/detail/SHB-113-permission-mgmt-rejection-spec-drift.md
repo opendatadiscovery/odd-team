@@ -1,0 +1,41 @@
+# SHB-113 — `PermissionResourceType.MANAGEMENT` is valid in spec but rejected at runtime
+
+**Category**: open
+**Severity**: MEDIUM
+
+## Hypothesis
+
+The OpenAPI spec at `components.yaml:3381-3387` declares `PermissionResourceType` with FOUR values: `DATA_ENTITY`, `TERM`, `QUERY_EXAMPLE`, `MANAGEMENT`. The spec-driven endpoint `GET /api/resource/{permission_resource_type}/{resource_id}/permissions` accepts all four. A third-party client compiled from the OpenAPI spec believes MANAGEMENT is a valid value AND expects 200 OK with the management-scope permission list. The runtime contradicts: `PermissionServiceImpl.java:25-27` raises `BadUserRequestException("Resource type MANAGEMENT does not have context")` → HTTP 400 USR001 for any MANAGEMENT call. The management-scope permissions DO exist (they live elsewhere — `IdentityServiceImpl` populates `Identity.permissions` for `getGlobalPermissions` consumption); the spec is misleading. The feature is **"Permission read surface — contextual half exposed via /api/resource/.../permissions, non-contextual half via /api/identity/whoami → Identity.permissions; the split is undocumented"**.
+
+## Evidence
+
+- `odd-platform-specification/components.yaml:3381-3387` (per PermissionController sidecar) — `PermissionResourceType` enum declares four values; MANAGEMENT included. OpenAPI spec implies all four are valid for the `getResourcePermissions` operation at `openapi.yaml:3681-3702`.
+- `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/PermissionServiceImpl.java:24-27` — `PolicyTypeDto.valueOf(resourceType.name())` then `if (!policyTypeDto.isHasContext()) throw new BadUserRequestException("Resource type " + resourceType + " does not have context")`. `PolicyTypeDto.java:8-12` — DATA_ENTITY/TERM/QUERY_EXAMPLE have `hasContext=true`; MANAGEMENT has `hasContext=false`.
+- `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/PermissionController.java:19-25` — the single-method controller is type-agnostic; it accepts every PermissionResourceType value the spec allows and forwards to the service. The discriminator runs at service-tier; the controller carries no validation.
+- `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/PermissionService.java:7-12` — TWO methods on the interface: `getResourcePermissionsForCurrentUser` (contextual, wired to the controller) AND `getNonContextualPermissionsForCurrentUser` (management, NOT wired to any controller endpoint). The other half is invoked by `IdentityServiceImpl` to populate the `Identity.permissions` field in the whoami response.
+- `odd-platform-ui/src/redux/selectors/profile.selectors.ts:17-20` — UI reads `getGlobalPermissions` from `profile.owner?.identity.permissions` — i.e. from the whoami response's `Identity.permissions`. This is the OTHER half of the read surface — the UI consumes BOTH endpoints (whoami for global, /api/resource/.../permissions for contextual) but the docs document neither mechanism explicitly.
+- Live `/configuration-and-deployment/enable-security/authorization` + `/authorization/permissions` docs WebFetched 2026-05-25 status 200 — neither mentions the `/api/resource/{type}/{id}/permissions` endpoint, the PermissionResourceType enum, the contextual-vs-global split, the MANAGEMENT-rejection invariant, or HOW the UI obtains user permissions. The page lists FIVE permission categories (Data Entity / Term / Query Example / Lookup Table / Management) — but the code enum has FOUR (Lookup Table is a Management-scope permission per `PolicyPermissionDto.java:80-88`, NOT a separate resource type). Spec-vs-docs-vs-code three-way drift.
+
+## Notes
+
+- **Operator/Integrator threat model**: a third-party integrator builds a TypeScript client from `openapi.yaml`. The generated `PermissionResourceType` enum has four values. The integrator writes `getResourcePermissions("MANAGEMENT", 0)` to query "what management capabilities does this user have?". Runtime returns HTTP 400 with a (correctly-formatted but unexpected-for-this-call) error body. The integrator's mental model is broken silently — they have to read the source AND the IdentityServiceImpl chain AND the whoami response shape to discover the actual mechanism.
+- The split is structural — contextual permissions need a `resource_id` to evaluate policy conditions (e.g. "DATA_ENTITY_INTERNAL_NAME_UPDATE for entity id 42 — does the policy's `owner=self` predicate match?"). Management permissions are global; there is no `resource_id` to evaluate against. So the split makes semantic sense — but the OpenAPI spec enum exposes BOTH categories as one type, then the service rejects half. The architectural anchor is `PolicyTypeDto.hasContext`; the OpenAPI shape DOES NOT mirror it.
+- Caveat: a NEW PolicyTypeDto value with `hasContext=true` added without a corresponding `ContextualPermissionExtractor` bean raises `IllegalArgumentException("No extractor for resource type %s")` at `PermissionServiceImpl.java:47-48`. `IllegalArgumentException` has NO dedicated handler in `ControllerAdvice.java:23-66`; the catch-all surfaces it as HTTP 500 with body `Internal Server Error` — losing the specific message. A maintainer adding a new resource type AND forgetting the extractor sees 500 not 400.
+- Caveat: the docs claim FIVE permission categories (Data Entity / Term / Query Example / Lookup Table / Management). The code enum exposes FOUR (Lookup Table folded into Management). An integrator reading the docs builds a four-way switch over the documented categories and ALSO produces a runtime mismatch — Lookup Table permissions are reachable only via the Management half (`/api/identity/whoami` → `Identity.permissions` carrying `LOOKUP_TABLE_*` values).
+- Cross-link with F-026 (Lookup Tables): F-026 anchors the no-context-scoped-permissions finding for the LookupTable surface. This thread anchors the READ-SIDE complement — how the UI / API consumer discovers their LookupTable permissions (via the global half, not the contextual half).
+- Cross-link with REFACTOR-435 (the phantom `getPolicyPermissions` candidate per batch P) — the PermissionController sidecar primary-sources the absence: a 27-line file, ONE method, no `getPolicyPermissions` exists. This thread describes the OTHER half of the same architectural split: the contextual half is on PermissionController; the non-contextual half is on IdentityServiceImpl. Two thin reads, two distinct controllers (no central permission catalogue endpoint).
+- This is an ENRICHER for the broader "Authorization read surface" feature that the methodology has not anchored as an F-NNN yet. The closest existing feature is F-006 (RBAC policy lifecycle); F-006 covers the WRITE-side; this thread is the READ-side complement.
+
+## Next
+
+1. Probe — `curl -H "Authorization: <token>" "https://<deployment>/api/resource/MANAGEMENT/0/permissions"`. Confirm HTTP 400 with body containing `"Resource type MANAGEMENT does not have context"` and code `USR001`.
+2. Probe — `curl -H "Authorization: <token>" https://<deployment>/api/identity/whoami` and confirm the response's `identity.permissions` contains MANAGEMENT-scope values (POLICY_CREATE, OWNER_CREATE, etc.) when the user is admin OR when DISABLED is active.
+3. ENRICHER for the (not-yet-anchored) "Authorization read surface" feature — extend with the contextual-vs-global split, the spec-vs-runtime MANAGEMENT-rejection invariant, the IllegalArgumentException → HTTP 500 latent regression, and the 5-categories-vs-4-resource-types docs-code drift.
+4. DOC-NNN — add a "Reading user permissions" section to the `/authorization` docs page documenting: (a) the TWO endpoints (contextual + global), (b) which Permission values are accessible via which endpoint, (c) the explicit rejection of MANAGEMENT at /api/resource/.../permissions, (d) the UI's consumption pattern (`WithPermissionsProvider` consults both halves).
+5. REFACTOR-NNN — consider tightening the OpenAPI spec: either remove MANAGEMENT from PermissionResourceType (forcing operators to use the whoami endpoint for global permissions) OR add a separate operationId `getNonContextualPermissions` for MANAGEMENT and have the controller wire BOTH halves.
+
+## Links
+
+- cluster_with: [F-006, F-026]
+- merged_into: (open)
+- supersedes: []

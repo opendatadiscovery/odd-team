@@ -1,0 +1,36 @@
+# SHB-160 — Datasource token regeneration confirms an "Are you sure?" prompt but never warns it breaks running ingestion
+
+**Category**: clustering
+**Severity**: HIGH
+
+## Hypothesis
+
+When operators click "Regenerate" on a datasource's collector token in Management → Datasources, the UI shows a ConfirmationDialog asking "Are you sure you want to regenerate token for «X»?" — but the dialog body NEVER warns that regeneration is a destructive in-place rotation that immediately kills the old token, with no grace period, and any collector still presenting the old token will start failing ingestion until the operator reconfigures it. The dialog MITIGATES an accidental click but does NOT inform an intentional one. An operator who knowingly clicks Regenerate (perhaps to rotate on a routine schedule) has no warning that they're about to break a running pipeline.
+
+## Evidence
+
+- `odd-platform-ui/src/components/Management/DataSourcesList/DataSourceItem/DataSourceItemToken/DataSourceItemToken.tsx:37-49` — ConfirmationDialog body: `Regenerate token for "{name}"?` — no consequence text.
+- `odd-platform-ui/src/components/Management/DataSourcesList/DataSourceItem/DataSourceItem.tsx:110-121` — the warning that DOES appear ("Save token in a secure location. You will not be able to retrieve it again.") fires ONLY AFTER successful rotation — too late.
+- (Cross-ref backend regenerateDataSourceToken sidecar) — destructive in-place UPDATE, no grace period, ingestion lockout.
+
+## Notes
+
+- The UI is the LAST chance to warn before the destructive action; this is exactly where the warning belongs.
+- "Save token in a secure location" addresses the SECOND risk (one-time-reveal of the new token); the FIRST risk (the old token dies) is never surfaced.
+- Operator-impact: an SRE rotating credentials during business hours can take their ingestion pipeline down for hours before discovering it — there's no "rotation event" log they could grep.
+- A two-line fix: enrich the ConfirmationDialog body with "Warning: this immediately invalidates the current token; any collector still using it will stop ingesting until reconfigured."
+- Also worth a grace-period feature: allow old + new tokens to coexist for N hours before old expires. That's a bigger refactor, but the warning is small.
+- Cluster: this is an ENRICHER for F-031 (Data Source Lifecycle) and F-020 (Collector Lifecycle Management — token one-shot visibility).
+
+## Next
+
+1. Enrich the ConfirmationDialog body with the "this kills active ingestion" warning — two-line fix.
+2. DOC-NNN — `docs.opendatadiscovery.org/features/management` doesn't document the regeneration consequences either.
+3. File a forward-looking REFACTOR-NNN for a token-rotation grace period (old + new valid for N hours).
+4. Promote: cluster_with F-031, F-020 as the operator-warning facet.
+
+## Links
+
+- cluster_with: [F-031, F-020]
+- merged_into: (set when graduated)
+- supersedes: []

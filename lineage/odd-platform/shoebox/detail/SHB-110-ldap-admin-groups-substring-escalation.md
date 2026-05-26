@@ -1,0 +1,41 @@
+# SHB-110 — LDAP `admin-groups` substring match grants admin via name collision
+
+**Category**: open
+**Severity**: HIGH
+
+## Hypothesis
+
+Operators configuring LDAP `auth.ldap.groups.admin-groups: ['Admins']` reasonably expect EXACT-MATCH semantics — "users in the `Admins` group are admins". The actual matcher is `OperationUtils.containsIgnoreCase` — a **case-insensitive SUBSTRING containment match**. An admin-groups config of `['ops']` matches LDAP groups `cn=Operations`, `cn=devops`, `cn=NoOpsContractors`, `cn=AppsTeam` — every group whose name CONTAINS the substring. Combined with the silent-truncation behaviour on `LdapTemplate.setIgnoreSizeLimitExceededException(true)` (large group searches truncate silently, demoting admins; small admin-groups allowlist + many-member directory = non-deterministic authority sets per login), the LDAP admin-detection contract is operator-counterintuitive in two distinct directions. The feature is **"LDAP admin-detection — substring match + silent truncation"**.
+
+## Evidence
+
+- `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/config/LDAPSecurityConfiguration.java:94-98` — `containsIgnoreCase(adminGroups, authority.getAuthority())` predicate. Line 48 import: `static org.opendatadiscovery.oddplatform.utils.OperationUtils.containsIgnoreCase`.
+- `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/utils/OperationUtils.java:7-10` — the helper. **Verify primary**: the file IS `element::equalsIgnoreCase` (so the GoogleUserHandler / GitHubUserHandler use the helper for FULL-string case-insensitive equality on principal lists). BUT the LDAP usage at LDAPSecurityConfiguration.java:96 passes a different shape — the predicate is applied differently in the LDAP `authoritiesMapper`.
+- LDAPSecurityConfiguration sidecar `bugs_limitations_corner_cases[5]` (HIGH severity): "`containsIgnoreCase` (LDAPSecurityConfiguration.java:96, imported from `OperationUtils` line 48) is a SUBSTRING match, not an EQUALITY match. An admin-groups config of `['Admin']` will match LDAP group `cn=Administrators` AND `cn=NonAdminContractors` (because both contain 'Admin' as a substring). An operator who configures `admin-groups: ['ops']` may inadvertently promote anyone in a group named `devops` or `apps`."
+- `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/config/LDAPSecurityConfiguration.java:91-93` — when `properties.getGroups()` is null OR `adminGroups` is empty (the bundled `application.yml:50-65` ships the `groups:` block COMMENTED OUT), every authenticated LDAP user gets ONLY `UserProviderRole.USER`. NO admin. The only path to admin in such a deployment is via S2S — see SHB-109.
+- `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/config/LDAPSecurityConfiguration.java:131` — `setIgnoreSizeLimitExceededException(true)`. Large group-membership searches truncate silently; an admin user whose membership row is past the truncation cutoff is silently demoted to USER per login. No log, no alert, no `/actuator/health` signal. Authority set is non-deterministic across logins for users in many groups.
+- Live LDAP docs WebFetched 2026-05-12 — describe `admin-groups: A list granting admin permissions` but do NOT warn about substring matching, do NOT warn about size-limit truncation, do NOT warn about the empty-`admin-groups`-means-no-admin behaviour, do NOT distinguish `ldap://` from `ldaps://` (LDAPSecurityConfiguration.java:117-124 accepts the URL verbatim — no scheme enforcement, no TLS minimum). The cleartext-`ldap://` finding is a separate severity-HIGH issue.
+
+## Notes
+
+- **Operator threat model**: an operator with a corporate directory containing groups `developers`, `ops` (devops), `sysops`, and `admins` configures `admin-groups: ['ops']` intending to grant admin to the SysOps team. The actual behaviour: every member of `developers` (no match), `ops` (substring match → ADMIN), `sysops` (substring match → ADMIN), `admins` (no match, no "admin" substring in `ops`), AND any group whose name CONTAINS `ops` becomes ADMIN. The intended SysOps team admin grant ALSO inadvertently grants admin to devops / nopsstaff / etc. The matcher is NOT what the operator's mental model assumes.
+- Caveat: `containsIgnoreCase` is case-insensitive — `admin-groups: ['ADMIN']` matches LDAP `cn=administrators`. This is benign on the case-insensitivity axis but compounds the substring-match risk.
+- Caveat: the predicate at LDAPSecurityConfiguration.java:96 — verify by reading the actual lambda. Per the sidecar's reading: `authorities.stream().anyMatch(authority -> containsIgnoreCase(adminGroups, authority.getAuthority()))`. So for EACH authority granted by the LDAP populator, the predicate checks if `adminGroups` CONTAINS (substring of) the authority string. The authority string is typically `ROLE_<GROUP_NAME>` (Spring LDAP's `DefaultLdapAuthoritiesPopulator` adds a `ROLE_` prefix). So `admin-groups: ['ops']` actually checks `containsIgnoreCase(['ops'], 'ROLE_developers')` — and `'ops'` IS substring of `'ROLE_developers'` if `'ops'` is in the string. Verify with a probe.
+- Cross-link with `SHB-103` (OAuth provider admin asymmetry) — Google handler uses `OperationUtils.containsIgnoreCase` for admin-principal matching (`GoogleUserHandler.java:60`); GithubUserHandler uses it for admin-groups team-name matching. BUT in those handlers the helper is used on a list of WHOLE strings (admin-principals are full email addresses; team names are full team names) so the substring shape ONLY surfaces when an operator's allowlist entry happens to be a substring of a real principal/team — much narrower window. The LDAP usage is fundamentally different because LDAP group names tend to have common substrings (`admin`, `ops`, `dev`) AND operators tend to configure short tags.
+- Cross-link with REFACTOR-185 (default-insecure cluster): an operator deploying LDAP without `admin-groups` configured gets a deployment where NO LDAP user can ever be admin (the empty-admin-groups → USER-only path) — unless S2S is on, in which case S2S grants global ADMIN. Two incompatible default footguns combined.
+- The LDAPSecurityConfiguration sidecar lists this as severity HIGH along with: LDAPS-vs-LDAP scheme enforcement (cleartext bind), `actuator/env` exposes `auth.ldap.password` (the operator-bind password is recoverable), and the empty-admin-groups behaviour. This thread focuses on the substring-match dimension specifically because it is the most operator-counterintuitive of the three.
+- Zero test coverage of LDAP admin-groups logic — `find <odd-platform-api>/src/test -name '*LDAP*'` returns zero matches. The substring-match invariant could be flipped to equals (correctness fix) without any test catching it.
+
+## Next
+
+1. Probe — Docker-compose LDAP server (e.g. `osixia/openldap`) with groups `admins`, `devops`, `sysops`. Configure ODD `admin-groups: ['ops']`. Log in as user in `devops` (NOT `admins`). Confirm authority set contains ADMIN.
+2. Read `OperationUtils.containsIgnoreCase` source directly — the sidecar claims line 7-10 has `element::equalsIgnoreCase`, but the LDAP sidecar's behavioural claim (substring match) contradicts that. Resolve the apparent inconsistency: is the matcher `String.contains` or `String.equalsIgnoreCase`? The behavioural claim across two sidecars (LDAP + GitHub) needs reconciliation. If the helper is full-string equals, the LDAP claim is WRONG — but if so, the LDAP behaviour is closer to operator-intuitive equals; the substring-match risk would NOT apply. Resolve before promoting.
+3. Promote (conditional on probe + read confirmation) to a NEW `F-NNN — LDAP Admin-Detection Semantics` with `seeded_from: SHB-110` and `primary_subject: [LDAPSecurityConfiguration, OperationUtils, ODDLDAPProperties]`. Test matrix: substring-match × case-sensitivity × size-limit truncation × empty-admin-groups behaviour.
+4. DOC-NNN — add a "LDAP admin-detection matching semantics" admonition to the LDAP setup docs page explicitly stating the matcher behaviour AND warning about size-limit truncation.
+5. SEC-NNN — if the substring claim is correct, propose changing the matcher to full-string `equalsIgnoreCase` (matching the operator's mental model). Backward-incompatible — would need a config flag or migration note.
+
+## Links
+
+- cluster_with: [F-011]
+- merged_into: (open)
+- supersedes: []

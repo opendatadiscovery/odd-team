@@ -1014,3 +1014,115 @@ Per APPROACH §6 ("How to apply this to your project"), the shoebox layer ports 
 - `lineage/_extractor/src/lineage_extractor/graph_query/loaders.py` — `_load_markdown_reducer(... "shoebox", "SHB", config.L_SHOEBOX)` registration.
 - `retrospectives/LSN-023` — the `permission_side_door` mis-read; the shoebox is the corrective for that class of error.
 - Pirolli & Card 2005; Von Mayrhauser & Vans 1995/96; Votipka et al. USENIX Security 2020 — the research grounding (full citations in `shoebox/README.md` §"Why this layer exists").
+
+---
+
+## 19. The Subject Matter Expert consultation pattern *(rev 11)*
+
+### 19.1 Why this role exists — the missing domain anchor during composition
+
+Layer 0 (`system-mission.md`, §13) supplies the project's static domain shape — pillars, audiences, architectural pillars. It runs ONCE per scan and produces an artefact. But composition runs every batch, and reflection runs every feature; both need a callable, on-demand consultation point for domain claims that are NOT captured in `system-mission.md` and that go beyond what the canonical concepts page covers:
+
+- *"Is this hypothesis a plausible feature in the data-catalog domain, or am I forcing structure on noise?"*
+- *"What does the industry call the concept this code embodies, and does our vocabulary align?"*
+- *"What implicit functional / security / performance requirements does an operator of a system like this expect by default?"*
+- *"How does {competitor system} behave for the equivalent feature, and does ODD's behaviour match operator expectations or surprise them?"*
+- *"What operator workflow does this feature serve, and what other features does that workflow touch?"*
+
+Without a place to ground answers to these, the file-analyser, feature-flow-builder, and feature-reflector each substitute pretrained domain knowledge for verified domain knowledge. That is the same failure shape as Rule 1 of the file-analyser (training-data ODD docs are forbidden; live URLs are mandatory). Domain claims about *what operators expect* are at least as drift-prone as documentation claims about *what the code does*.
+
+The 2026-05-26 case-law named two concrete instances where this gap mattered:
+
+- **Data Entity Staleness** (`SHB-001`) — the hypothesis "operators see a 'source has stopped publishing' indicator across every entity listing" is a domain claim. It is industry-standard (every published data catalog has freshness signals) but the current methodology has no consultation point to confirm that, name what operators expect (per-tenant thresholds? alerting integration? per-source overrides?), and align ODD's `is_stale` against how DataHub / Amundsen / OpenMetadata expose the same concept.
+- **Compact lineage view-mode** (`SHB-002`) — the hypothesis "lineage views support a compact rendering for dense graphs" is a domain claim. Every modern lineage UI has this; without a consultation point, the feature-flow-builder can't ground "what should the compact mode actually do" in operator expectations.
+
+### 19.2 What the SME is, what it is not
+
+The SME is a project-specific subagent — **one per project** — invoked on-demand by other subagents or the maintainer. It is:
+
+- **Interactive.** It runs per consultation question, not per scan.
+- **Source-grounded.** It cites real URLs (the project's published docs, competitor systems' published pages) and workspace files. It NEVER cites pretraining knowledge.
+- **Bounded.** ≤30 minutes per consultation; 2-5 WebFetches; one output note.
+- **Advisory.** It produces a structured consultation note that the caller incorporates into its own artefact. It does not author finalized features, sidecars, or concepts.
+- **Project-specific.** The SME for ODD knows about data-catalog systems; the SME for a Django payroll app would know about payroll-domain conventions; the SME for a Rust embedded controller would know about real-time systems and safety-critical patterns. The contract is universal; the knowledge anchors are per-project.
+
+It is NOT:
+
+- **A reducer.** It does not compose cross-sidecar truth.
+- **An enricher.** It does not enrich one node end-to-end.
+- **A backlog source.** Recommendations from a consultation go to the caller, which decides whether to file backlog. The SME does not file `REFACTOR-NNN` / `DOC-GAP-NNN` / `TEST-GAP-NNN` directly.
+- **A replacement for the maintainer's senior PO lens.** The SME informs the lens with real domain evidence; the maintainer (and the feature-reflector) still does the judgment.
+
+### 19.3 The universal contract (project-portable)
+
+Every project's SME shares this contract:
+
+| Block | What it carries |
+|---|---|
+| **Rule 0 — operating stance** | Senior product manager for the project's domain; ≥decade of operator experience; thinks in terms of operator workflows, not feature taxonomies. |
+| **Rule 1 — live URLs only for domain claims** | The exact analogue of file-analyser Rule 1. Pretraining domain knowledge is forbidden. Every claim about industry behaviour, competitor systems, or operator expectations cites a live URL or a workspace file. |
+| **Rule 2 — bounded scope** | One consultation question per invocation; ~30 minutes; 2-5 WebFetches; one output note. |
+| **Rule 3 — anchor in project-specific positioning** | The SME references the project's `system-mission.md` for pillars, audiences, architectural pillars. Comparisons against competitors anchor on *specific pillar* differences, not vague "feature coverage." |
+| **Rule 4 — operator workflows are the unit of judgment** | A feature hypothesis is plausible if it maps to a recognizable operator workflow. The SME's contract enumerates the project-specific operator workflow seed set. |
+| **Rule 5 — output shape** | One file per invocation: `lineage/{repo}/sme-consultations/YYYY-MM-DD-{slug}.md` with frontmatter + sections (TL;DR / Question scope / Domain plausibility / Industry vocabulary alignment / Implicit requirements / Operator workflows / Competitor comparison / Recommended framing / Caveats / Citations). |
+| **Rule 6 — explicit uncertainty** | A consultation that confesses `confidence: LOW` and names what would unblock is more useful than one that fabricates confidence. The caller treats LOW-confidence consultations as informative-not-load-bearing. |
+
+The project-specific bits each SME authors:
+
+1. **Domain identity** — what kind of platform this is (data catalog / payroll / observability / embedded controller / etc.)
+2. **Operator workflow seed set** — 5-10 concrete workflows operators run (per role + trigger + expected outcome)
+3. **Canonical competitor list** — 4-8 named reference systems with authoritative URLs, ranked by relevance to consultation questions
+4. **Allowed pretraining knowledge boundary** — explicitly named topics where pretraining is the only source (e.g. abstract industry vocabulary that has no canonical URL — flagged `confidence: LOW`)
+
+### 19.4 Integration into the existing pipeline
+
+The SME consultation is woven into three existing subagent contracts:
+
+- **`file-analyser` Rule 10 extension** — when local context does not explain product purpose AND the observation is shoebox-eligible (per §18), the file-analyser may consult the SME to check whether the hypothesis fits a known domain pattern. If yes, that's stronger than a `guess:` note — the SME's framing goes into the shoebox thread's `## Notes` block as a citation. If no, the thread stays open with `domain_unverified: true`.
+- **`feature-flow-builder` Step 0 extension** — during the per-run shoebox evaluation (§18.4), for each thread in `clustering` state the builder MAY (not MUST) spawn the SME to validate the hypothesis against domain expectations and surface implicit requirements before deciding graduate / merge / cluster / defer. SME consultation is mandatory for `graduate` and `merge` verdicts when the feature's pillar mapping is ambiguous.
+- **`feature-reflector`** — when generating user-facing hypotheses for a composed flow (§15), the reflector consults the SME for industry-vocabulary alignment and for the canonical operator workflow this feature participates in. SME consultation strengthens reflection hypotheses with domain citations.
+
+The maintainer may invoke the SME directly (via `Agent` with `subagent_type: {project}-sme`) for ad-hoc consultations during `/code-walk` or planning sessions.
+
+### 19.5 Output discipline — consultation notes are flat reference material
+
+Consultation notes live at `lineage/{repo}/sme-consultations/YYYY-MM-DD-{slug}.md`. They are:
+
+- **Dated and citable** — each note carries `consulted_at`, `consulted_by`, `consultation_question`, `confidence_overall`.
+- **Bounded** — typically 400-1200 words. A note longer than 1200 → either split or overrunning.
+- **Cross-referenced** — the caller's artefact (shoebox thread / feature flow / feature reflection) adds a one-line reference back to the consultation slug. The consultation's frontmatter names the caller.
+- **Re-runnable** — if a consultation is >30 days old and the question is re-raised, the caller spawns a fresh consultation rather than reusing the stale note. Domain knowledge ages.
+- **NOT in the graph (initially)** — consultations are kept as flat reference material. If a future review shows semantic search would help, the loader registration is one line away (per the shoebox pattern). Until then, grep + recency-aware reading is enough.
+
+### 19.6 Bootstrapping a new project's SME
+
+Per APPROACH §6 ("How to apply this to your project"), the SME consultation pattern ports verbatim:
+
+1. Copy `.claude/agents/odd-sme.md` to `.claude/agents/{your-project}-sme.md` and rewrite three blocks:
+   - The frontmatter `name`, `description` for your project's domain.
+   - Rule 4's operator-workflow seed set — your project's concrete workflows.
+   - Rule 3's competitor / reference list — your domain's authoritative URLs.
+2. Create `lineage/{your-repo}/sme-consultations/` with a README naming the directory's purpose.
+3. Add Rule 10 (consult SME path) to your `file-analyser` agent contract; add the Step-0 hook to your `feature-flow-builder`; add the vocabulary-alignment hook to your `feature-reflector`.
+4. Seed the first 2-3 consultations during your initial feature batch as worked examples — the directory earns into use; no big-bang seeding required.
+
+### 19.7 What this layer does NOT add
+
+Per the 2026-05-26 conversation guidance ("methodology should subtract"; "minimal resources, maximum value"), the SME layer is intentionally minimal:
+
+- **No new reducer.** It does not produce a cross-sidecar artefact.
+- **No new substrate axis.** It does not change the node kinds the extractor harvests.
+- **No new graph label initially.** Consultation notes are flat reference material; if semantic search proves valuable, registration is one line.
+- **No new metric.** The SME does not introduce a coverage metric or a scoring axis. Its output is advisory.
+
+The SME is one new subagent + one new directory + a Rule-10/Step-0/vocab-hook extension to three existing contracts. That is the entire footprint.
+
+### Cross-references
+
+- `.claude/agents/odd-sme.md` — the concrete ODD-domain SME (the worked instance of this universal pattern).
+- `.claude/agents/file-analyser.md` — Rule 10 (shoebox path + optional SME consultation when domain pattern is recognizable).
+- `.claude/agents/feature-flow-builder.md` — Step 0 + Rule 8 (SME consultation during shoebox evaluation; mandatory for graduate/merge with ambiguous pillar mapping).
+- `.claude/agents/feature-reflector.md` — SME consultation for industry-vocabulary alignment and operator-workflow grounding in user-facing hypotheses.
+- `.claude/agents/domain-extractor.md` — your sibling that produced `system-mission.md`; the SME is its on-demand interactive counterpart.
+- `lineage/{repo}/system-mission.md` — Layer 0's static output; the SME's primary internal source.
+- `lineage/{repo}/sme-consultations/` — the SME's output directory (one consultation per file, dated).

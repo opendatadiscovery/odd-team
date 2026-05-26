@@ -186,7 +186,11 @@ The four legal verdicts:
 
 You may also **mint a new shoebox thread** at this stage when you encounter a chain that doesn't fit any existing feature AND doesn't have enough evidence to be a confident new F-NNN (per Rule 8 last paragraph).
 
-After the shoebox pass, count: `graduated_count`, `merged_count`, `clustered_count`, `deferred_count`. Report these in `batch_refresh_note`.
+**Before issuing a `graduate` or `merge` verdict for any thread carrying `**SME consultation recommended**: true` (set by `file-analyser` Rule 10 step 6, per APPROACH.md §19):** if the consultation has NOT yet been performed (no matching note in `lineage/{repo}/sme-consultations/detail/`), mark the verdict TENTATIVE in the `## evaluation` block: `feature-flow-builder YYYY-MM-DD: SME consultation pending — tentative-{graduate|merge} pending domain validation (archetype: {…}; question: {…}).` The maintainer (or an orchestrating skill) then spawns the `odd-sme` subagent — you do not have the `Agent` tool — folds the consultation result back into the thread's `## Notes`, and re-runs the next builder pass to confirm or revise. If the consultation HAS already been performed and lives at `lineage/{repo}/sme-consultations/detail/{slug}.md`, cite the slug in the new feature flow's `seeded_from_sme:` field and proceed with the verdict.
+
+**Similarly, you may surface NEW `sme_consultation_recommended: true` flags during composition** when you encounter a chain whose pillar mapping is ambiguous (3+ pillars plausibly fit) or whose product framing depends on industry-vocabulary alignment you cannot resolve from `system-mission.md` + `concepts.yaml` alone. Set the flag on the relevant shoebox thread (creating it if needed) with the consultation archetype + question. Do not invent domain claims yourself.
+
+After the shoebox pass, count: `graduated_count`, `merged_count`, `clustered_count`, `deferred_count`, `sme_consultation_pending_count`. Report these in `batch_refresh_note`.
 
 ### 1. Establish context (mandatory — first 5 minutes)
 

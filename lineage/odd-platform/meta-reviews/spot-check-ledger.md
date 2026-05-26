@@ -34,3 +34,7 @@ Every target the meta-review's spot-checks have covered, across all runs. The `m
 | 2026-05-22 | CollectorController.registerCollector / CollectorServiceImpl.create — namespace_name get-or-create on collector registration | random-walk |
 | 2026-05-22 | AlertController.changeAlertStatus — legal alert-status value set (AlertStatusEnum) | boundary |
 | 2026-05-22 | DataEntityRunController.getRuns — per-entity run history (re-check of prior MISSED-SILENT) | negative-space |
+| 2026-05-26 | LookupTableForm.tsx — Edit-form DTO drift (LookupTableFormData submitted to update endpoint) | boundary |
+| 2026-05-26 | DirectoryController.getDatasourceEntities — page-vs-count predicate divergence (level-4) | capability |
+| 2026-05-26 | TermController — surface count of operations exposed (controller-class vs controller-methods) | capability |
+| 2026-05-26 | NamespaceAutocomplete.tsx — select-or-create UX pattern linkage into feature flows F-019/F-026/F-031 | negative-space |

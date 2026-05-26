@@ -1,0 +1,64 @@
+gap_id: TEST-GAP-994
+category: missing-security
+criticality: CRITICAL
+node_ids:
+  - "odd-platform ts routes route:management"
+  - "odd-platform ts routes route:dataModelling"
+  - "odd-platform ts routes route:masterData"
+  - "odd-platform ts react-component component:WithPermissionsProvider"
+pillars_affected: [P-08, P-09, P-02, P-03]
+surfaced_by:
+  - 'management.md:bugs_limitations_corner_cases.[0] (the outer WithPermissionsProvider with OWNER_ASSOCIATION_MANAGE provides permission CONTEXT but does NOT block rendering)'
+  - 'management.md:stress_findings.name_behavior_pairs[WithPermissionsProvider] DRIFT_NAME_VS_BEHAVIOR'
+  - 'dataModelling.md:bugs_limitations_corner_cases.[WithPermissionsProvider does not block]'
+  - 'dataModelling.md:security.known_security_gaps.[0] severity MEDIUM'
+  - 'masterData.md:bugs_limitations_corner_cases.[1] severity HIGH'
+  - 'masterData.md:security.known_security_gaps.[0] severity HIGH (audit-trail integrity)'
+behaviour: |-
+  CROSS-CUTTING META — `WithPermissionsProvider` is named like a route gate but behaves like a context publisher only. The wrapper unconditionally renders its child (WithPermissionsProvider.tsx:30-39 + 41-48; child is returned via `{render()}` / `<Component />` / `{children}` with no `isAllowedTo`-gated branch); it ONLY seeds `PermissionContext` so descendant `<WithPermissions>` (different component, no `Provider` suffix) can gate UI ACTIONS like buttons.
+
+  Concretely affected route mounts:
+  (a) Management — Management.tsx:9-12 (outer wrap on `OWNER_ASSOCIATION_MANAGE`) + ManagementRoutes.tsx:29-149 (7 of 9 sub-routes wrapped); ALL non-associations sub-tabs render to ANY authenticated user.
+  (b) Data Modelling — DataModellingRoutes.tsx:19-25 (query-examples wrap on `QUERY_EXAMPLE_CREATE`) + 31-37 (details wrap on `QUERY_EXAMPLE_UPDATE`+`QUERY_EXAMPLE_DELETE`); BOTH render unconditionally — only the inner `<WithPermissions>` around Add/Edit buttons in QueryExamples.tsx:36-46 actually blocks anything.
+  (c) Lookup Tables — App.tsx:75-88 (wrap on `LOOKUP_TABLE_CREATE`+`_UPDATE`+`_DELETE`); page chrome + table list ALL render to ANY authenticated user; only the in-list `+Add new` button gated by `<WithPermissions>` at LookupTables.tsx:72-82.
+
+  The naming is a maintainer FOOT-GUN — an auditor reading `App.tsx:75-88` reasonably concludes the route is gated; it is not. A junior maintainer copying the `WithPermissionsProvider` pattern for a future sensitive route (e.g. a `/secrets` page) ships a green-build open-route. ZERO tests exist that pin (a) the misleading semantic OR (b) the deliberate read-collaborative posture across these 3+ surfaces.
+
+  This is the SYSTEMIC FRAMEWORK-NAMING DRIFT for the entire UI-route security model. It pairs with the read-collaborative backend posture documented in concepts.yaml (REFACTOR-024 family) — the intent is consistent, but the wrapper name is sand-trap that survives only because reviewers learn it by experience.
+test_class: missing-security
+criticality_rationale: |-
+  Bumped from HIGH (sidecar-rated MEDIUM individually across 3 sources) to CRITICAL per Rule 3 cross-pillar amplification (`pillars_affected: [P-08, P-09, P-02, P-03]` — 4 pillars; Rule 3 caps cross-pillar bumps at CRITICAL). The drift is FRAMEWORK-WIDE (3+ route mounts using the misleading wrapper), spans 4 pillars (Management / Auth-and-Access / Data Modelling / Master Data), and is the single audit-trail-integrity defect a security-conscious operator would flag first on reading the route table. The behaviour itself is intended (read-collaborative posture); the test gap is the absence of a regression-pin that locks in the deliberate intent against (a) a junior maintainer changing `WithPermissionsProvider` to actually-block (silently breaking 3+ surfaces) OR (b) a future security-tightening PR copy-pasting the pattern for a sensitive route without realising it doesn't block.
+test_files_existing: []
+test_files_proposed:
+  path: 'odd-platform-ui/src/components/shared/contexts/Permission/__tests__/WithPermissionsProvider.semantic.test.tsx'
+  name: 'WithPermissionsProvider_doesNotBlockRendering_isContextPublisherOnly'
+evidence:
+  - 'management.md says (bugs_limitations_corner_cases.[0]): outer WithPermissionsProvider with allowedPermissions=[OWNER_ASSOCIATION_MANAGE] provides permission CONTEXT but does NOT block rendering (WithPermissionsProvider.tsx:30-39, 41-48 returns children unconditionally). Result: any authenticated user reads the full Namespace catalog, Owner catalog, Role catalog, Policy catalog with detail pages, Datasource catalog, Collector catalog, Tag catalog, Integration catalog. severity: HIGH'
+  - 'management.md says (stress_findings.name_behavior_pairs DRIFT_NAME_VS_BEHAVIOR): naming WithPermissionsProvider misleads a reader into believing it gates ACCESS; inspection of WithPermissionsProvider.tsx:11-49 + PermissionProvider.tsx:12-46 shows the wrapper unconditionally renders its child'
+  - 'dataModelling.md says (bugs_limitations_corner_cases): WithPermissionsProvider does NOT block rendering; it only seeds a context. Naming the wrapper WithPermissionsProvider and using it at the route level misleads a reader into believing it gates ACCESS, severity: MEDIUM'
+  - 'masterData.md says (security.known_security_gaps.[0]): A reviewer auditing route-level RBAC by reading App.tsx alone would conclude the page is gated; it is not. severity: HIGH (audit-trail integrity)'
+  - 'Grep verified: zero `*WithPermissionsProvider*.test.*` files under odd-platform-ui/src (2026-05-26); zero `*.test.*` files in routes/ directory'
+cross_references:
+  - 'concepts.yaml:entities[read-collaborative-posture] (REFACTOR-024 family)'
+  - 'TEST-GAP-634 (AppToolbar tab visibility — sibling shell-tier finding; tabs UNCONDITIONAL even when routes claim to gate)'
+  - 'TEST-GAP-421 (DataEntityDetails — uses WithPermissionsProvider per its 3-permission vector; same wrapper used INSIDE a route correctly seeds context for inner button gates)'
+  - 'TEST-GAP-911 (DataQuality dashboard — sister-shape, ungated NEXT to wrapped sibling /lookup-tables in App.tsx)'
+  - 'P-090 + P-162 + P-163 + P-165 (4 probes pinning the BACKEND half of the same read-collaborative posture across DataQuality + Management + LookupTables + DataModelling routes)'
+proposed_action: |-
+  Three-method test class `WithPermissionsProvider.semantic.test.tsx` under `odd-platform-ui/src/components/shared/contexts/Permission/__tests__/`:
+
+  (a) `WithPermissionsProvider_renderingChildIsUnconditional`: mount `<WithPermissionsProvider allowedPermissions={[Permission.LOOKUP_TABLE_CREATE]}>` with `usePermissions().hasAccessTo` stub returning false for ALL permissions; assert the wrapped child IS rendered (the gate does NOT block); pins the deliberate context-only semantic.
+
+  (b) `WithPermissions_renderingChildIsBlocked`: same setup but the SIBLING `<WithPermissions permissionTo={Permission.LOOKUP_TABLE_CREATE}>`; assert child is NOT rendered (returns null); pins the contrast that THIS wrapper IS the actual gate.
+
+  (c) `WithPermissionsProvider_seedsContext`: assert that `<WithPermissions>` descendant correctly reads from the seeded context (the function the wrapper is named for is FULFILLED — context seeding works); pins the legitimate purpose so a future refactor knows to preserve it.
+
+  Pair with a single integration test under `odd-platform-ui/src/__tests__/routes-permissions.posture.test.tsx`: drive `<App>` in a MemoryRouter with a minimum-privilege user; navigate to `/management/policies` AND `/data-modelling/query-examples` AND `/master-data/lookup-tables`; assert ALL THREE pages render (page chrome + list); pins the deliberate cross-route read-collaborative posture.
+
+  Add a REGRESSION-PIN comment in WithPermissionsProvider.tsx:30 documenting: 'This wrapper does NOT block rendering — it seeds PermissionContext only. Use <WithPermissions> (no Provider suffix) to actually gate an affordance. See tests/WithPermissionsProvider.semantic.test.tsx for the contract.'
+related_features: []
+related_pillar_features: ['P-08:*', 'P-02', 'P-03', 'P-09:F-006']
+related_refactor_ids: []
+related_doc_gap_ids: []
+batch: 2026-05-26-ZH
+feature_id: null

@@ -1,0 +1,72 @@
+gap_id: TEST-GAP-995
+category: missing-security
+criticality: HIGH
+node_ids:
+  - "odd-platform ts routes route:management"
+pillars_affected: [P-08, P-09]
+surfaced_by:
+  - 'management.md:bugs_limitations_corner_cases.[0] (Management UI mounted in App.tsx:62 with no route-level permission guard — severity HIGH)'
+  - 'management.md:security.known_security_gaps.[0] (any authenticated user with empty Management-tier permissions navigates to /management/* and reads the full catalog — severity HIGH)'
+  - 'management.md:tests_coverage_semantic.uncovered_behaviours.[any authenticated user reaches /management/* and sees the rendered list]'
+  - 'management.md:stress_findings.probes_emitted.P-162'
+behaviour: |-
+  **HIGH — `/management/*` (App.tsx:62) is a SPLAT route with NO route-level permission guard.** Inside Management.tsx, the outer `<WithPermissionsProvider allowedPermissions={[OWNER_ASSOCIATION_MANAGE]}>` only provides a permission CONTEXT (per Management.tsx:9-12); it does NOT block. Each per-sub-route `WithPermissionsProvider` inside ManagementRoutes.tsx:29-149 does the same — provides context, does not block. The single route-level GUARD is `<RestrictedRoute>` around `/management/associations/*` (ManagementRoutes.tsx:101-110).
+
+  **Eight of nine sub-areas read by ANY authenticated user**:
+  - `/management/namespaces` — full namespace catalog rendered + `fetchNamespaceList` thunk fires (NamespaceList.tsx:46-48).
+  - `/management/datasources` — full datasource catalog.
+  - `/management/collectors` — full collector catalog.
+  - `/management/owners` — full owner catalog.
+  - `/management/tags` — full tag catalog.
+  - `/management/roles` — full role catalog including SYSTEM-role tier.
+  - `/management/policies` — full policy catalog INCLUDING `/management/policies/:id` (Policy JSON visible).
+  - `/management/integrations` and `/management/integrations/:integrationId` — full integration catalog.
+
+  **Only `/management/associations/*` is route-gated** (RestrictedRoute with `redirectTo='../namespaces'` on missing `OWNER_ASSOCIATION_MANAGE`).
+
+  **Operator mental-model drift**: the docs at `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization` and `/permissions` (WebFetched 2026-05-26 status 200) describe 11 Management-tier permissions (COLLECTOR_*, DATA_SOURCE_*, NAMESPACE_*, OWNER_*, POLICY_*, ROLE_*, TAG_*, DIRECT_OWNER_SYNC, OWNER_RELATION_MANAGE, OWNER_ASSOCIATION_MANAGE) without ever stating that the Management UI is reachable to read by everyone authenticated. An operator forming the mental model "Management is admin-only" is wrong: the code says "any authenticated user reads everything; only Associations is admin-only".
+
+  **The cross-pillar risk** (P-08 × P-09): The Roles / Policies / Permissions UI exposes the AUTHORIZATION CONFIG of the platform — a low-privilege user can enumerate the WHOLE RBAC matrix (policy JSON, role memberships, permission assignments) by deep-linking. This is RBAC-reconnaissance.
+
+  **No test pins this** at any layer. A regression that ADDS a route-level gate (silently blocking the read-collaborative posture) OR REMOVES the `RestrictedRoute` around Associations (opening the audit-trail surface) ships green.
+
+  Probe P-162 is the primary-source verifier (does the operator with no Management permissions actually reach `/management/policies/:id` and see the policy JSON?).
+test_class: missing-security
+criticality_rationale: |-
+  Sidecar rates this HIGH; held HIGH (not CRITICAL) because: (a) the deliberate posture is documented under the read-collaborative cornerstone of REFACTOR-024; (b) no DATA-LOSS or credential-leak vector — the user reads but cannot write; (c) backend mutation endpoints are gated by SecurityConstants per the RoleController + PolicyController + NamespaceController sidecars (batches Q, W, ZD). HOWEVER the gap remains HIGH because the surface exposed (full RBAC matrix introspection) is reconnaissance-value for a malicious authenticated user, and the absence of a regression-pin test creates undetected drift risk in EITHER direction. Cross-pillar (P-08 × P-09) per Rule 3 — already at HIGH ceiling.
+test_files_existing: []
+test_files_proposed:
+  path: 'odd-platform-ui/src/components/Management/__tests__/ManagementRoutePosture.test.tsx'
+  name: 'managementRoutes_eightSubAreas_readableByAnyAuthenticatedUser_associationsAlone_isRouteGated'
+evidence:
+  - 'management.md says (bugs_limitations_corner_cases.[0]): App.tsx:62 mounts <Route path={`${managementPath()}/*`} element={<Management />} /> with no route-level permission guard. Inside Management.tsx the outer <WithPermissionsProvider allowedPermissions={[OWNER_ASSOCIATION_MANAGE]}> provides a permission context but does NOT block rendering. severity: HIGH'
+  - 'management.md says (security.known_security_gaps.[0]): any authenticated user — including a user with empty Management-tier permissions — can navigate to /management, /management/namespaces, /management/datasources, /management/collectors, /management/owners, /management/tags, /management/roles, /management/policies, /management/policies/:policyId, /management/integrations, /management/integrations/:integrationId AND see the lists/details/forms rendered. severity: HIGH'
+  - 'management.md says (stress_findings.auth_gates): UI-side route-level gates live in TWO places: (a) Associations via RestrictedRoute ManagementRoutes.tsx:101-110, the ONLY hard route gate; (b) write-button level via in-list <WithPermissions> wrappers. There is NO route-level gate on the Management surface as a whole.'
+  - 'Verified at primary source via the sidecar: App.tsx:62 + Management.tsx:9-21 + ManagementRoutes.tsx:29-150 + WithPermissionsProvider.tsx:12-48 + NamespaceList.tsx:46-48'
+  - 'Verified docs (WebFetch 2026-05-26 status 200): /configuration-and-deployment/enable-security/authorization page lists 11 Management permissions but NEVER states that the Management UI is reachable by any authenticated user'
+  - 'Glob verified: zero `*Management*.test.*` files under odd-platform-ui/src (2026-05-26)'
+cross_references:
+  - 'TEST-GAP-994 (cross-cutting WithPermissionsProvider semantic drift — Management is the largest surface affected)'
+  - 'TEST-GAP-634 (AppToolbar Management tab visibility — sister shell-tier; tab visible to all)'
+  - 'TEST-GAP-646 (RoleService non-ADMIN list fork — sister data-tier; backend half of the read-collaborative posture for the Role catalog Management UI exposes)'
+  - 'concepts.yaml:entities[read-collaborative-posture] (REFACTOR-024 family)'
+  - 'probe P-162 (Auth-gate audit of the entire Management surface — primary-source verifier)'
+  - 'documentation/docs/configuration-and-deployment/enable-security/authorization.md (doc-side silence on Management UI read access)'
+proposed_action: |-
+  Add `ManagementRoutePosture.test.tsx` under `odd-platform-ui/src/components/Management/__tests__/`:
+
+  (a) `eightSubAreas_renderForMinimumPrivilegeUser_pinsReadCollaborativePosture`: drive `<App>` in a MemoryRouter with a minimum-privilege authenticated user (zero Permissions, zero Owners); for each of the 8 ungated sub-routes (`/management/namespaces`, `/management/datasources`, `/management/integrations`, `/management/collectors`, `/management/owners`, `/management/tags`, `/management/roles`, `/management/policies`), assert the corresponding list component MOUNTS; pins the deliberate posture.
+
+  (b) `policiesDetail_renderForMinimumPrivilegeUser_pinsRBACMatrixVisibility`: assert `/management/policies/:id` mounts the policy detail/JSON view to the minimum-privilege user; pins the RBAC-reconnaissance surface for explicit awareness.
+
+  (c) `associations_redirectsForMinimumPrivilegeUser_pinsTheSingleRouteGate`: assert `/management/associations/new` redirects to `/management/namespaces` via `RestrictedRoute`; pins the SOLE hard gate.
+
+  (d) `writeButtonsHidden_pinsTheInListGates`: assert the `Add` / `Edit` / `Delete` buttons on each of the 8 surfaces are NOT rendered to the minimum-privilege user (inner `<WithPermissions>` gates) — proves the "writes blocked but reads open" invariant.
+
+  Add a REGRESSION-PIN comment in ManagementRoutes.tsx:29 documenting: 'Management surface is INTENTIONALLY read-collaborative. The 8 non-associations sub-routes are reachable to any authenticated user (only write actions are gated). If you want to gate any sub-route at the route level, (1) update this test, (2) update documentation/docs/configuration-and-deployment/enable-security/authorization.md to document the new gate, (3) coordinate with the backend half (probe P-162) to ensure the API-tier matches.'
+related_features: []
+related_pillar_features: ['P-08:F-001', 'P-08:F-002', 'P-08:F-003', 'P-08:F-004', 'P-08:F-005', 'P-08:F-006', 'P-08:F-007', 'P-08:F-008', 'P-09:F-006']
+related_refactor_ids: ['REFACTOR-024']
+related_doc_gap_ids: []
+batch: 2026-05-26-ZH
+feature_id: null

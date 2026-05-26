@@ -2498,3 +2498,176 @@ No `state/coherence-conflicts-batch-ZG.md` entries were created; the batch commi
 | DOC-GAP-299 | 1 (DataEntityRunController) | 3 inherited (3 data-quality pages 200 each) | 3 graph-search queries (status_reason leak, cross-owner cluster, free-form text) | ~15 KB | YES |
 | 8 STRENGTHENS | 5 sidecars (already read for NEW findings) | 0 fresh (all inherited within stale-probe cadence) | already-loaded from above | ~10 KB combined | YES |
 | **Batch total** | 5 sidecars | 10 inherited fresh WebFetches | 19 graph-search queries | ~111 KB total | **YES — under 200 KB per-batch budget** |
+<!--
+batch: ZH
+generated_at: "2026-05-26T00:00:00Z"
+generated_at_commit: 4ec2b20
+prompt_version: "doc-gap-finder/0.1.0"
+mode: incremental
+consumed_sidecars: 5
+  - odd-platform__ts__routes__route__management
+  - odd-platform__ts__routes__route__terms
+  - odd-platform__ts__routes__route__masterData
+  - odd-platform__ts__routes__route__dataModelling
+  - odd-platform__ts__routes__route__dataQuality
+
+new_findings: 3                # DOC-GAP-300 (LOW) + DOC-GAP-301 (MEDIUM compound) + DOC-GAP-302 (MEDIUM META)
+strengthened_findings: 5       # DOC-GAP-186 + DOC-GAP-205 + DOC-GAP-263 + DOC-GAP-138 + DOC-GAP-287 (no severity / category change — no headline rewrite)
+
+frontmatter_count_deltas:
+  total_findings: +3
+  findings_by_severity:
+    HIGH: +0
+    MEDIUM: +2                 # DOC-GAP-301 + DOC-GAP-302
+    LOW: +1                    # DOC-GAP-300
+  findings_by_category:
+    drift: +3
+    broken-url: +0
+    missing-anchor: +0
+    missing-page: +0
+    stale-page: +0
+    coverage-gap: +0
+    meta: +1                   # DOC-GAP-302 (compound META — WithPermissionsProvider naming-vs-behaviour META)
+  notes:
+    - "DOC-GAP-302 is META — it is both classified as category=drift AND meta=true; the count is reflected in BOTH the drift +3 and the meta +1."
+
+dedup:
+  protocol: registry-search-spawn.md rev 7.1 (semantic graph-search)
+  dedup_runs_per_candidate:
+    - "Management UI route /management not admin-only any authenticated user reads catalog WithPermissionsProvider does not block rendering" → top hits DOC-GAP-186 (0.72), DOC-GAP-187 (0.71), DOC-GAP-082 (0.70). Decision: STRENGTHENS DOC-GAP-186 (closest match; the management-route sidecar is the URL-shape PRIMARY SOURCE that confirms the WithPermissionsProvider context-only behaviour at all 9 Management sub-routes).
+    - "WithPermissionsProvider context seed does not block rendering naming-vs-behaviour drift" → top hit DOC-GAP-072 (0.71) but unrelated; no existing entry on this naming-vs-behaviour META — MINT DOC-GAP-302.
+    - "terms route docs say catalog-wide list but UI is search-with-facets Dictionary tab termsearch" → top hit DOC-GAP-205 (0.80). Decision: STRENGTHENS DOC-GAP-205 (the terms-route sidecar is the URL-shape PRIMARY SOURCE for the same list-vs-search drift; adds 2-LAYER triangulation).
+    - "data-modelling URL redirect query-examples doc page describes /data-modelling RBAC overstatement" → top hit DOC-GAP-211 (0.74; query-examples field count drift — not the same), DOC-GAP-287 (0.71; relationships visibility — closest contextual match). Decision: STRENGTHENS DOC-GAP-287 (the dataModelling-route sidecar adds the UI-route primary source for the same P-02 read-collaborative posture cluster).
+    - "data-quality dashboard route no access control silence permissions any authenticated user" → top hit DOC-GAP-263 (0.78). Decision: STRENGTHENS DOC-GAP-263 (the dataQuality-route sidecar is the URL-shape PRIMARY SOURCE).
+    - "masterData RBAC phrasing route-level permission gate misleading WithPermissionsProvider lookup-tables overstates restriction" → top hits DOC-GAP-186 (0.67) + DOC-GAP-134 (0.66) + DOC-GAP-133 (0.66) — none on Master Data / Lookup Tables specifically; MINT DOC-GAP-301 (compound — 3 vectors).
+    - "bare /terms URL blank page no element no index route React Router parent route deep-link rendering hole" → top hits DOC-GAP-138 (0.72; NaN coercion — different class), DOC-GAP-203 (0.69; term-to-term linkage — different class), DOC-GAP-011 (0.68; legacy-URL — different class). Decision: MINT DOC-GAP-300 (no equivalent entry exists for bare-URL blank-page issue at the Data Glossary surface).
+    - "termId parseInt NaN coercion no isNaN guard backend 404 invalid term URL non-numeric" → top hit DOC-GAP-138 (0.72). Decision: STRENGTHENS DOC-GAP-138 (the terms-route + management-route sidecars surface 2 additional instances of the SAME class — `useTermsRouteParams` + `useIntegrationRouteParams`).
+    - "data-modelling relationships ungated read-collaborative ERD any authenticated user" → top hit DOC-GAP-287 (0.75). Decision: STRENGTHENS DOC-GAP-287 (same finding — UI-route layer COMPANION to the existing controller-tier primary source).
+    - "/management/integrations sub-route no WithPermissionsProvider asymmetry inconsistent permission wrapping" → top hit DOC-GAP-187 (0.72; UI-vs-API DISABLED asymmetry — adjacent but different angle). Decision: surfaced as a NEW STRUCTURAL ANCHOR within DOC-GAP-186 strengthen (Integrations sub-route asymmetry is the per-sub-route variant of the broader Management posture drift) + cross-link to DOC-GAP-302 NEW META. Not minted as a standalone finding (the asymmetry is a sub-case of the META + the route-mount documented in DOC-GAP-186 strengthen).
+    - "stale URL legacy /features/active-platform-features/data-modelling 404" → top hits DOC-GAP-035 (0.80), DOC-GAP-011 (0.80), DOC-GAP-012 (0.80) — the legacy-URL cluster. Decision: surfaced as a NEW STRUCTURAL ANCHOR within DOC-GAP-287 strengthen (the dataModelling-route sidecar's record adds this pillar to the cluster) but NOT minted as a standalone finding (no in-platform link references the stale URL; the issue is observational not load-bearing).
+  dedup_fallback: none (semantic graph-search succeeded for all 8 candidate queries)
+  webfetch_verifications_this_session:
+    - "All 5 batch-ZH sidecars' WebFetch records inherited within LSN-018 stale-probe 11-day window — see individual detail files. 0 direct WebFetches in THIS reducer pass (per LSN-018 protocol — sidecar enrichments fetched in-session)."
+
+coherence_rule6:
+  strengthens: 5
+    # DOC-GAP-186 (Management top-nav tab visibility — same-registry same-polarity strengthen via route-module URL-shape PRIMARY SOURCE)
+    # DOC-GAP-205 (Dictionary tab UX undocumented — same-registry same-polarity strengthen via route-module URL-shape primary source)
+    # DOC-GAP-263 (/data-quality no client-side gate — same-registry same-polarity strengthen via route-module URL-shape primary source)
+    # DOC-GAP-138 (DataEntityDetails NaN coercion — same-registry same-polarity strengthen, extended to 3-instance cluster across DataEntityDetails + Terms + Management route modules)
+    # DOC-GAP-287 (Data Modelling relationships visibility — same-registry same-polarity strengthen via UI-route layer COMPANION to the existing controller-tier primary source)
+  cross_registry_strengthens: 4
+    # concepts.yaml:entities[Term] + entities[Lookup Table] + entities[Permission (Authorization)] + entities[Term Search Session] — back-links emitted in DOC-GAP-300/301/302 frontmatter `related_pillar_features`
+    # feature-flows F-001 (Lookup Tables) + F-002 (Term-search session) — same-polarity cluster members; back-links emitted in DOC-GAP-300/301 frontmatter
+    # implicit-adrs ADR-CANDIDATE-* (read-collaborative posture across P-02/P-03/P-04/P-06 + P-08) — same-polarity; the platform-wide read-collaborative posture is structurally consistent across these 5 pillars
+    # retrospectives LSN-001 + LSN-002 + LSN-006 + LSN-018 — same-polarity (operator-trap class + coherence-conflict mechanism)
+  supersedes: 0
+  conflicts_surfaced: 0
+  note: |
+    Rule-6 pre-emit check ran for the 3 new findings (anchors:
+    `termsPath / termsRoutes / parseInt(termId, 10) / WithPermissionsProvider /
+    PermissionProvider / WithPermissions / RestrictedRoute / lookupTablesPath /
+    BASE_PATH / dataModellingPath / queryExamplesPath / relationshipsPath /
+    dataQualityPath / managementPath / associationsPath / integrationsPath`).
+    Every cross-registry hit in concepts.yaml + feature-flows + implicit-adrs +
+    retrospectives is SAME-POLARITY (the registries already assert the same
+    facts: the read-collaborative posture across 5 pillars, the
+    WithPermissions HOC HIDE mechanism, the read-collaborative cross-owner
+    enumeration cluster, the NaN-coercion type-assertion-lie pattern). No
+    CONTRADICTS, no SUPERSEDES. Back-links emitted on all 3 new detail files +
+    all 5 strengthen-append shards.
+
+severity_buckets_after_batch_ZH:
+  HIGH: 87       # unchanged (+0)
+  MEDIUM: 94     # 92 + 2 (DOC-GAP-301 + DOC-GAP-302) = 94
+  LOW: 19        # 18 + 1 (DOC-GAP-300) = 19
+  total: 200     # 197 + 3 = 200
+
+ranking_after_batch_ZH:
+  top_3_by_triangulation_count_x_severity_weight:
+    - "DOC-GAP-082 (META — DISABLED-bypasses-RBAC — 29-sidecar at batch S; unchanged this batch)"
+    - "DOC-GAP-302 NEW (META — WithPermissionsProvider naming-vs-behaviour META — 11+ route-mount sites across 3 pillars; surfaces cross-pillar reviewer-trap)"
+    - "DOC-GAP-149 META (REV-3 LAYER-0 — P-09 pillar-claim vs doc-page coverage drift — 8-sub-mechanism at batch VAL-LSN-019-B; unchanged this batch)"
+-->
+
+# Batch ZH index reconciliation — 2026-05-26
+
+This file is appended alongside the main `index.md` (per the catalog's batch-by-batch append convention used since batch X). The main `index.md` headline carries the batch-S/R counts (197); subsequent batches (T/U/V/X/VAL-LSN-019-B/Y/Z/ZA/ZB/ZC/ZD/ZE/ZF/ZG/ZH) added shards directly to `detail/` without updating the headline counts. This batch-ZH reconciliation file records the additions WITHOUT modifying the main index headline counts.
+
+## Batch summary
+
+**Trigger**: batch ZH (UI Routes 1) — 5 UI-route-module sidecars for the Management + Data Modelling + Master Data + Data Quality + Data Glossary surfaces. The sidecars are URL-shape primary sources for the operator-facing UX manifestation of the read-collaborative posture + the WithPermissionsProvider naming-vs-behaviour META + the bare-base URL convention pattern.
+
+**Outcome**: **3 NEW findings (0 HIGH + 2 MEDIUM + 1 LOW)** + **5 STRENGTHENED existing entries**. Per LSN-018 stale-probe cadence: 0 direct live WebFetches this reducer session — all relevant `docs.opendatadiscovery.org` URLs inherited from the 5 sidecars' enrichments this session (each within the 11-day stale-probe window):
+
+- `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization` (2026-05-26 status 200 — management-route sidecar)
+- `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions` (2026-05-26 status 200 — management-route + dataModelling-route + terms-route + masterData-route sidecars)
+- `https://docs.opendatadiscovery.org/features/data-glossary` (2026-05-26 status 200 — terms-route sidecar)
+- `https://docs.opendatadiscovery.org/features/data-glossary/business-glossary` (2026-05-26 status 200 — terms-route sidecar)
+- `https://docs.opendatadiscovery.org/features/master-data-management/lookup-tables` (2026-05-26 status 200 — masterData-route sidecar)
+- `https://docs.opendatadiscovery.org/features/data-modelling` (2026-05-26 status 200 — dataModelling-route sidecar)
+- `https://docs.opendatadiscovery.org/features/active-platform-features/data-modelling` (2026-05-26 status **404** — dataModelling-route sidecar; legacy URL — recorded as observation, not a new finding)
+- `https://docs.opendatadiscovery.org/features/data-quality` + `https://docs.opendatadiscovery.org/features/data-quality/dashboard` (2026-05-25 status 200 — inherited from DOC-GAP-263 batch ZC + batch-T DataQualityController class-tier sidecar)
+- `https://docs.opendatadiscovery.org/features/management` (2026-05-20 status 200 — inherited from DOC-GAP-186 batch Q)
+
+## NEW (3) — DOC-GAP-300 .. DOC-GAP-302
+
+### LOW severity
+
+- **DOC-GAP-300** (LOW; drift): Visiting bare `/terms` renders a BLANK PAGE (no element, no redirect, no error fallback at the route-mount layer in `App.tsx:66-68`) — the Data Glossary live doc page frames the Dictionary tab as a "catalog-wide list of all terms" without naming the URL path, and the operator inferring "list of terms ⇒ /terms" lands on a dead-end. The fix is a one-line code edit OR a single doc paragraph. NEW URL-surface dead-end finding on the P-06 Data Glossary surface; sibling to DOC-GAP-301's `/master-data` dead-end (the same convention break).
+  - **Full detail**: `detail/DOC-GAP-300.md`
+
+### MEDIUM severity
+
+- **DOC-GAP-301** (MEDIUM; drift): Master Data pillar live doc page `features/master-data-management/lookup-tables.md` claims `WithPermissionsProvider` gates the Lookup Tables PAGE on `LOOKUP_TABLE_CREATE/UPDATE/DELETE` — the wrapper actually renders unconditionally and the page is reachable to any authenticated user; SAME page lists 9 LOOKUP_TABLE_* permissions but route-mount enumerates only 3; AND visiting bare `/master-data` renders nothing. **Compound 3-vector P-03 URL-surface-vs-doc drift cluster.** Cross-link to DOC-GAP-263 (sibling read-collaborative posture silence on `/data-quality`).
+  - **Full detail**: `detail/DOC-GAP-301.md`
+
+- **DOC-GAP-302** (MEDIUM; drift + meta): **META — `WithPermissionsProvider` is a NAMING-VS-BEHAVIOUR DRIFT across 11+ route-mount sites in 3 pillars (Management + Data Modelling + Master Data + Lookup Tables).** The wrapper's name promises a permission GATE; the implementation seeds a permission CONTEXT but renders unconditionally. The SIBLING `WithPermissions` HOC (no `Provider` suffix) is the real gate. This is a SECURITY-AUDIT-TRAP class drift (reviewer reads App.tsx + ManagementRoutes.tsx, concludes routes are gated, is wrong) + DOC-PRODUCT-TRAP class drift (the live Permissions page is silent on the page-vs-button distinction). NEW cross-pillar META; 11+ route-mount sites surfaced. Cross-link to DOC-GAP-186 + DOC-GAP-187 + DOC-GAP-263 + DOC-GAP-301.
+  - **Full detail**: `detail/DOC-GAP-302.md`
+
+## STRENGTHENED (5)
+
+- **DOC-GAP-186** (Management top-nav tab visibility — original framing: top-nav tab visibility CONTRADICTS the live `/features/management` doc) → batch ZH adds **UI-ROUTE-MODULE layer** primary source via the management-route sidecar; the catalog now has **5-LAYER coverage** at the Management surface (UI-shell + UI-component + UI-route + controller + service). NEW STRUCTURAL DIMENSION: the 9-sub-area route-mount enumeration is now explicit; the 7 per-sub-route WithPermissionsProvider sites + 1 RestrictedRoute site are anchored; the `/management/integrations/*` permission-wrapping ABSENCE is the per-sub-route asymmetry that strengthens the META coverage.
+  - **Strengthen append**: `detail/DOC-GAP-186-batch-ZH-append.md`
+
+- **DOC-GAP-205** (Dictionary tab UX structurally undocumented — original framing: TermSearch component primary source for the 5 undocumented UX traits at `/termsearch`) → batch ZH adds **UI-ROUTE-MODULE layer** primary source via the terms-route sidecar; the catalog now has **2-LAYER coverage** of the Dictionary surface (UI-component + UI-route). NEW STRUCTURAL DIMENSION: the two-base-path topology (`/terms` deep-link + `/termsearch` Dictionary tab) is anchored; the route-module's `docs_link_semantic.doc_drift_findings.[list-vs-search]` independently arrived at the SAME drift conclusion from the URL-shape angle.
+  - **Strengthen append**: `detail/DOC-GAP-205-batch-ZH-append.md`
+
+- **DOC-GAP-263** (`/data-quality` route has NO client-side permission gate AND every live Data Quality doc page is silent on access control) → batch ZH adds **UI-ROUTE-MODULE layer** primary source via the dataQuality-route sidecar; the catalog now has **3-LAYER coverage** at the Quality Dashboard surface (UI-component + UI-route + controller). NEW STRUCTURAL DIMENSION: the route function is verbatim a bare-string return (`dataQualityRoutes.ts:1-3`); the structural statelessness confirms the access-control silence is structural at the URL-string layer, not a runtime-decided posture.
+  - **Strengthen append**: `detail/DOC-GAP-263-batch-ZH-append.md`
+
+- **DOC-GAP-138** (DataEntityDetails NaN coercion — original framing: `useDataEntityRouteParams()` calls `parseInt(dataEntityId, 10)` with no `Number.isNaN` guard) → batch ZH establishes a **3-INSTANCE CROSS-ROUTE-MODULE CLUSTER**: DataEntityDetails + Terms (`useTermsRouteParams`) + Management (`useIntegrationRouteParams`). Same type-assertion-lie pattern at all 3 instances. The cluster framing strengthens the case for a META `useStrictParams` utility fix. NEW SUB-DRIFT — the terms hook is REUSED outside the matching route subtree (`TermSearch.tsx:26` from the `/termsearch` subtree) and "works" by accident; a future consumer mistakenly reading `termId` would silently get `NaN`.
+  - **Strengthen append**: `detail/DOC-GAP-138-batch-ZH-append.md`
+
+- **DOC-GAP-287** (Data Modelling relationships visibility silent on cross-owner posture) → batch ZH adds **UI-ROUTE-MODULE layer** primary source via the dataModelling-route sidecar; the catalog now has **3-LAYER coverage** of the P-02 Data Modelling read-collaborative posture cluster (controller + UI-route + doc-page WebFetch). NEW STRUCTURAL DIMENSION: the 4-vector P-02 read-collaborative cluster is now structurally complete (backend SQL + service + UI-route + doc-page — all 4 silent at the visibility-disclosure axis). The `every() AND-of-permissions` subtlety is a NEW SUB-DRIFT discovered via the dataModelling-route sidecar's analysis of `PermissionProvider.tsx:21-25`.
+  - **Strengthen append**: `detail/DOC-GAP-287-batch-ZH-append.md`
+
+## Notable patterns surfaced
+
+- **The 5-pillar P-02/P-03/P-04/P-06/P-08 read-collaborative cluster is now triangulated at the UI-route layer.** Five batch-ZH route-module sidecars confirm the SAME structural posture: lists / details / forms are reachable to any authenticated user; only ACTIONS are gated. The doc-product disclosure is sporadic and never fully aligned with the implementation; THIS batch adds 3 new findings (DOC-GAP-300/301/302) and strengthens 5 existing findings, all on the same posture. The catalog's cross-pillar read-collaborative cluster is now structurally COMPLETE at the UI-route layer for these 5 pillars.
+
+- **The bare-base URL convention pattern.** 5 of 6 multi-tab pillar bases redirect to a canonical first tab (Alerts → `/alerts/all`, Data Modelling → `/data-modelling/query-examples`, Management → `/management/namespaces` via `<Navigate replace>`, Search, Directory). The OUTLIERS are: `/terms` (DOC-GAP-300 NEW — renders blank) + `/master-data` (DOC-GAP-301 NEW — renders blank). Both surface in batch ZH. The fix is consistent: either redirect to the canonical first tab OR document the URL surface explicitly. The pattern would be checked once at App.tsx-mount-time review and would surface any future regression.
+
+- **The WithPermissionsProvider META is the audit-trap class.** DOC-GAP-302 NEW META names the 11+ route-mount sites across 3 pillars. This is the first cross-pillar reviewer-trap META in the catalog and surfaces at a load-bearing layer (the platform's most-used React HOC for permission-aware mounting). The fix is doc-product-side (one META section in the Authorization page) + optional code-side (rename to `PermissionContextProvider` + introduce `PermissionGate`).
+
+- **The route-params type-assertion-lie cluster (DOC-GAP-138 batch ZH strengthen).** The 3-instance cluster (DataEntityDetails + Terms + Management) confirms the pattern is platform convention; a META `useStrictParams` utility would close all 3 instances in one place. The cluster framing strengthens the case for the systemic fix vs the per-call-site patch.
+
+- **The `/data-modelling` redirect convention IS present (DOC-GAP-287 batch ZH strengthen confirmation) — the OUTLIERS prove the rule.** Both `/terms` and `/master-data` deviate from the pattern that 5 of 6 pillar bases follow; this is a code-side convention break, not an intentional design choice (no comment / no annotation defends the difference in either route module).
+
+## Frontmatter delta (after batch ZH)
+
+- total_findings: 197 → **200**
+- findings_by_severity: HIGH 87 + MEDIUM 92 + LOW 18 → HIGH 87 + **MEDIUM 94 + LOW 19** = **200**
+- findings_by_category: broken-url 9 + drift 173 + missing-page 9 + coverage-gap 4 + meta 9 → broken-url 9 + **drift 176** + missing-page 9 + coverage-gap 4 + **meta 10** = **208** (drift+meta overlap: DOC-GAP-302 is drift AND meta, contributing +1 to BOTH)
+
+## Re-rank top-20 by leverage (triangulation_count × severity_weight)
+
+The top-3 from batch S unchanged: DOC-GAP-082 META (29-sidecar, HIGH-weighted) > DOC-GAP-149 META (REV-3 LAYER-0 — 8-sub-mechanism) > DOC-GAP-083 META (No-audit-log RBAC pattern — 3-sidecar). Batch ZH adds DOC-GAP-302 NEW META to the top tier (11+ route-mount sites + 3-pillar coverage + reviewer-trap class — MEDIUM-weighted but high triangulation). Final top-4 ranking after batch ZH: DOC-GAP-082 > DOC-GAP-149 > DOC-GAP-302 NEW > DOC-GAP-083. The catalog now carries **4 META findings** in the top-rank tier (DOC-GAP-082 / DOC-GAP-083 / DOC-GAP-149 / DOC-GAP-302 NEW).
+
+(Remaining 16 entries in the top-20 unchanged from batch S — see `index.md` head for the full list.)
+
+## Maintainer notes
+
+- The 3 NEW findings + 5 STRENGTHENED entries are all WITHIN the UI-route layer of the substrate; the underlying read-collaborative posture is structurally consistent with the controller / service / repository layers documented in prior batches. No CONTRADICTS surfaced; the cross-registry coherence sweep (Rule 6) confirmed same-polarity at all 4 cross-registry hits.
+- The doc-product fix is bounded: ONE META section on the Authorization page (DOC-GAP-302 proposed action 1) + 4-5 per-page cross-links (DOC-GAP-302 proposed action 2) + 2-3 small per-page disclosures (DOC-GAP-301 + DOC-GAP-300 + DOC-GAP-263 — already proposed). The combined fix closes the operator-facing access-control-disclosure gap for the entire 5-pillar read-collaborative cluster.
+- Optional code-side fixes are 2 small edits (the `/master-data` + `/terms` redirects to close the dead-ends, consistent with the 5-of-6 pillar convention) + 1 rename (WithPermissionsProvider → PermissionContextProvider, advisory) + 1 NEW HOC (`<PermissionGate>` for genuine route-level gating, advisory). None are required for the doc-product fix to land.

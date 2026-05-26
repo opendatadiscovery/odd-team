@@ -1,0 +1,190 @@
+name: useParams type-lie — typed-wrapper hooks erase react-router-dom Partial<> semantics and coerce parseInt without isNaN guards
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-06
+  - P-08
+description: |-
+  **NEW LOW-severity INVARIANT, batch ZH (2026-05-26)** — the SPA's
+  typed-wrapper hooks around react-router-dom's `useParams` exhibit
+  a shared name-vs-behaviour drift: they ASSERT a non-undefined
+  return shape to callers, but at runtime return `undefined` (or
+  `NaN` after parseInt coercion) when invoked outside the matching
+  route subtree.
+
+  **Two confirmed instances in batch ZH**:
+
+  (a) `useTermsRouteParams()` at `routes/termsRoutes.ts:54-63`:
+      - calls `useParams<keyof TermsRouteParams>()` (line 55, where
+        TermsRouteParams has `termId: Term['id']` = `number` and
+        `termSearchId: string`)
+      - destructures `termId` + `termSearchId` (line 55), asserts
+        `as TermsRouteParams` (line 57) erasing the Partial<> shape
+      - coerces `termId` from string to number via `parseInt(termId,
+        10)` (line 60) with NO isNaN guard
+      - Result: if invoked outside a `/terms/:termId/*` route,
+        `useParams()` returns `{}`, `termId = undefined`,
+        `parseInt(undefined, 10) = NaN`, and the hook returns
+        `{termId: NaN, termSearchId: undefined}` while the type
+        system reports `{termId: number, termSearchId: string}`.
+      - Currently 4 consumers (TermDetails.tsx:25, TermSearch.tsx:26,
+        TermDetailsRoutes.tsx:20, TermDetailsTabs.tsx:11). TermSearch
+        is inside /termsearch/:termSearchId where termId is NOT
+        bound — termId is NaN but the consumer ignores it; the hook
+        'works by accident' in that caller.
+      - URL `/terms/abc/overview` (non-numeric termId): `useParams()`
+        returns `{termId: 'abc'}`, `parseInt('abc', 10) = NaN`,
+        downstream `fetchTermDetails({termId: NaN})` serialises
+        to `termId=NaN` in the URL, backend returns 404, UI surfaces
+        AppErrorPage.
+
+  (b) `useIntegrationRouteParams()` at `routes/managementRoutes.ts:43-44`:
+      - calls `useParams<keyof IntegrationRouteParams>()` (where
+        IntegrationRouteParams has `integrationId: string`)
+      - asserts `as IntegrationRouteParams` (line 44) erasing the
+        Partial<> shape
+      - PROMISES `integrationId: string` to every caller
+      - Result: if invoked outside an `:integrationId`-bearing
+        route, `useParams()` returns `{}`, `integrationId = undefined`,
+        but the type system reports `string`. A consumer calling
+        `fetchIntegration(integrationId)` passes `undefined` to the
+        backend without compile-time warning.
+      - Single in-repo caller (IntegrationHeader.tsx) is inside an
+        `:integrationId` route so the assertion holds today — but
+        the cast is a future-foot-gun for any new caller.
+
+  **The shared shape**:
+    - React Router v6 `useParams<Key>()` natively returns
+      `Partial<Record<Key, string>>` to acknowledge that path-params
+      are absent outside the matching route.
+    - The typed wrappers strip Partial<> via a type assertion,
+      lying to TypeScript about runtime guarantees.
+    - parseInt(<undefined|non-numeric>, 10) returns NaN and IS
+      propagated downstream without an isNaN guard.
+    - The hooks ARE safe IF called only inside the right route
+      subtree — the SPA's React Router declaration enforces this
+      structurally for the current call sites. The drift is a
+      LATENT bug: a future caller relocating the hook breaks
+      silently.
+
+  **The architectural intent**: typed wrappers exist precisely TO
+  make consumer code cleaner — `const { termId } = useTermsRouteParams()`
+  is more ergonomic than threading the Partial<>-aware unwrap on every
+  call. The drift is the tradeoff: ergonomic API vs runtime safety
+  honesty. The pragmatic decision is correct (typed coverage of the
+  primary code paths) but the lack of any guard at the wrapper layer
+  means the type assertion is the ONLY documentation of the contract.
+
+  **Minimum-viable corrections**:
+    (1) Add `isNaN` guard in useTermsRouteParams: return
+        `parseInt(termId, 10) || undefined` and update the consumer
+        type to `Term['id'] | undefined`.
+    (2) Add a runtime invariant check in useIntegrationRouteParams:
+        `if (!integrationId) throw new Error('useIntegrationRouteParams
+        called outside :integrationId route')` to surface the misuse
+        at the first sign of relocation.
+    (3) Replace the type assertion with a runtime-safe wrapper hook
+        that returns `Partial<TermsRouteParams>` honestly and forces
+        consumers to handle undefined.
+
+  vocabulary_status: codebase-anchored. The pattern is observable
+  but not documented as an idiom.
+vocabulary_status: codebase-anchored
+axes_present:
+  - ui_routes
+  - hook
+nodes:
+  - odd-platform ts routes route:terms
+  - odd-platform ts routes route:management
+contributors:
+  - |-
+    terms route batch ZH:
+      concepts.invariants[The termId coercion in useTermsRouteParams swallows NaN. Line 60: parseInt(termId, 10). If the URL path is /terms/abc/overview, termId is 'abc', parseInt returns NaN, no guard];
+      concepts.invariants[useTermsRouteParams is a typed wrapper around useParams — no undefined-guard];
+      bugs_limitations_corner_cases[useTermsRouteParams returns termId: NaN when the URL has a non-numeric segment; type-system lie];
+      bugs_limitations_corner_cases[useTermsRouteParams is reused outside the /terms/:termId/* subtree — TermSearch.tsx:26 calls it from /termsearch/* — hook 'works by accident'];
+      stress_findings.name_behavior_pairs.[useTermsRouteParams — DRIFT_MINOR]
+  - |-
+    management route batch ZH:
+      concepts.invariants[useIntegrationRouteParams performs an `as` cast — hook PROMISES a non-undefined integrationId];
+      bugs_limitations_corner_cases[useIntegrationRouteParams performs a type assertion that PROMISES integrationId: string — if called outside an :integrationId-bearing route, undefined at runtime despite the type];
+      stress_findings.name_behavior_pairs.[useIntegrationRouteParams — DRIFT_NAME_VS_BEHAVIOR]
+evidence:
+  - "terms.md:concepts.invariants.[2] (parseInt(termId, 10) swallows NaN — no isNaN guard)"
+  - "terms.md:concepts.invariants.[5] (useTermsRouteParams typed wrapper erases Partial<> — currently safe but future-foot-gun)"
+  - "terms.md:bugs_limitations_corner_cases.[1] (NaN coercion drift) + [5] (cross-route reuse from /termsearch)"
+  - "terms.md:stress_findings.name_behavior_pairs.[useTermsRouteParams] DRIFT_MINOR"
+  - "management.md:bugs_limitations_corner_cases.[2] LOW (useIntegrationRouteParams type-asserts; integrationId can be undefined)"
+  - "management.md:stress_findings.name_behavior_pairs.[useIntegrationRouteParams] DRIFT_NAME_VS_BEHAVIOR"
+security_aggregate:
+  overall: HIGH
+  auth_modes_relevant: []
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: N/A
+    detail: |-
+      Not an authorization invariant. The NaN coercion can cause
+      404 responses but those are correctly-shaped errors at the
+      backend, not authorization bypasses.
+  owner_scoping:
+    verdict: N/A
+    detail: ''
+  strengths:
+    - |-
+      The hooks ARE safe for current call sites — React Router's
+      route declaration structurally pins where each hook can be
+      called.
+  weaknesses:
+    - |-
+      The type-system assertions are LIES — a future caller
+      relocating the hook gets silently NaN/undefined with no
+      compile-time warning. Tests would catch it; no tests exist
+      (zero UI coverage per the existing
+      zero-ui-test-coverage-vitest-installed-no-test-files
+      invariant).
+  cross_file_inconsistencies: []
+  contributing_files:
+    - odd-platform__ts__routes__route__terms.md
+    - odd-platform__ts__routes__route__management.md
+  evidence: []
+performance_aggregate:
+  overall: HIGH
+  hot_paths: []
+  throughput_shape:
+    verdict: N/A
+    detail: |-
+      Not a performance concept — pure type-system drift.
+  scaling_shape:
+    verdict: N/A
+    detail: ''
+  strengths: []
+  weaknesses: []
+  cross_file_inconsistencies: []
+  contributing_files:
+    - odd-platform__ts__routes__route__terms.md
+    - odd-platform__ts__routes__route__management.md
+  evidence: []
+triangulation_count: 2
+cross_batch: false
+cross_batch_refs:
+  - batch-ZH (2 route sidecars exhibit the shared pattern)
+severity: LOW
+severity_dim: ux
+related_features: []
+related_pillar_features:
+  - "P-06"
+  - "P-08"
+related_concepts:
+  - invariant:zero-ui-test-coverage-vitest-installed-no-test-files
+notes: |-
+  Coherence (Rule 6): No existing concept describes this pattern.
+  Pure batch-ZH net-new. The 2-instance triangulation across two
+  different pillars (P-06 Glossary, P-08 Management) suggests the
+  pattern is conventional — additional route modules with `:id`
+  params may exhibit the same drift but the batch did not enrich
+  them.
+
+  Surfaced for future batches: any new `use*RouteParams` hook
+  authored in a route module SHOULD include an isNaN guard or
+  honest Partial<>-aware return type.
+maintainer_curated: false

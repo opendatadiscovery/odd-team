@@ -2531,3 +2531,38 @@ DataSourceController is now class+method complete. High-value fully-dark control
 - 16 unfixable YAML quarantines unchanged.
 - Coherence-sweep 103516 generic regex candidates (baseline; per-reducer coherence vetted).
 
+
+---
+
+## Batch ZH — 2026-05-26 (UI Routes batch 1)
+
+**Sidecars added** (5/5): dataModelling + dataQuality + management + masterData + terms route definitions. **Coverage 48.9% direct / 93.4% effective.** 40 features.
+
+### Headline systemic finding
+`WithPermissionsProvider` is **CONTEXT-SEED-ONLY, NOT a route gate**. Wrapped routes render children unconditionally — only the sibling `<WithPermissions>` HOC actually gates UI elements. Confirmed across 4 of 5 route sidecars; live docs and operator mental-model OVERSTATE the restriction. This is a cross-pillar META finding (DOC-GAP-302) spanning 11+ route-mount sites in 3 pillars.
+
+### Per-route findings
+1. **management** — Route-gated ONLY on /management/associations/* (RestrictedRoute). EVERY other tab (Namespaces, Datasources, Integrations, Collectors, Owners, Tags, Roles, Policies+detail) is reachable by any authenticated user. List/detail data IS fetched and rendered; only the create/update/delete BUTTONS are permission-gated. Integrations sub-route has NO permission-context wrap at all. P-162.
+2. **terms** — `termsPath()` returns `/terms` but the route is mounted as an elementless parent at App.tsx:66-68 → bare `/terms` renders BLANK. Dictionary tab actually navigates to `/termsearch` (search UI with facets), while live docs say "catalog-wide list of all terms". List-vs-search drift confirmed. P-164.
+3. **masterData** — WithPermissionsProvider does NOT route-gate render — same NON-BLOCKING posture; BASE_PATH `/master-data` implies a mounted root that doesn't exist (bare /master-data renders blank). P-163.
+4. **dataModelling** — `WithPermissionsProvider` is context-seed-only; `/data-modelling` redirects to `/query-examples` (canonical first tab); relationships route ungated end-to-end. P-165.
+5. **dataQuality** — Bare-route NO-WithPermissionsProvider posture; only route module without BASE_PATH constant (convention break). Backend auth-gate question already pinned by P-090 from batch ZC; no new probe needed.
+
+### Phase 2 deltas
+- concept-merger: +5 new (`withpermissionsprovider-context-seed-not-route-gate` HIGH 5-sidecar / `management-section-half-gated-only-associations-route-restricted` HIGH / `bare-base-url-behavior-divergence-redirect-vs-blank` MEDIUM / `useparams-type-lie-parseint-nan-coercion` LOW / `ui-route-path-builder-convention` HIGH dev-ergonomics) + 6 extended.
+- adr-archaeologist: +3 new ADRs (-227 / -228 / -229) + 5 strengthened. +7 new REFACTORs (REFACTOR-668..674; 2 HIGH/4 MEDIUM/1 LOW) + 5 strengthened (REFACTOR-289, REFACTOR-617, REFACTOR-640, REFACTOR-185, REFACTOR-008/009/217/318 family).
+- doc-gap-finder: +3 new DOC-GAPs (300-302; DOC-GAP-302 NEW META cross-pillar reviewer-trap) + 5 strengthens. Total META findings now 4 in top tier.
+- test-coverage-mapper: +12 new TEST-GAPs (994-1005); 1 CRITICAL (994 WithPermissionsProvider semantic drift cross-cutting 4-pillar META) + 1 HIGH + 5 MEDIUM + 5 LOW. 5 strengthens. **Total test-gaps crossed 1000 → 1002.**
+- feature-flow-builder: 10 features EXTENDED with hop-0 UI-route entry points (F-025/F-037/F-032/F-022/F-026/F-024/F-019/F-020/F-028/F-006) + 6 net-new route-tier drift facets. No new features minted (route-level RBAC posture deferred to ADR side per agent's classification).
+
+### Cumulative
+- Direct: 188 → **193/395 (48.9%)** — approaching 50%
+- Effective: 364 → **369/395 (93.4%)** ← broke 93%
+- Features: 40 → **40** (0 new this batch — UI routes are entry-points to existing features)
+- CRITICAL test-gaps: 164 → **165**
+- Total test-gaps: 993 → **1002** ← crossed 1000
+
+### Follow-ups
+- 16 unfixable YAML quarantines unchanged.
+- Coherence-sweep 108508 generic regex candidates (baseline).
+

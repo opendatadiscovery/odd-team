@@ -1,0 +1,279 @@
+name: WithPermissionsProvider is a context-seed, NOT a route gate (operator mental-model trap)
+canonical_in_docs: false
+canonical_candidate: true
+pillar_affinity:
+  - P-08
+  - P-02
+  - P-03
+  - P-04
+  - P-06
+description: |-
+  **NEW HIGH-severity INVARIANT, batch ZH (2026-05-26)**. The
+  `<WithPermissionsProvider allowedPermissions={[...]}>` wrapper used
+  at React Router route mounts across the SPA — visible in App.tsx,
+  DataModellingRoutes.tsx, ManagementRoutes.tsx, and Management.tsx —
+  **does NOT block rendering**. Inspection of
+  `components/shared/contexts/Permission/WithPermissionsProvider.tsx:11-49`
+  + `PermissionProvider.tsx:12-46` confirms the wrapper unconditionally
+  renders its child (`{render()}` at line 25, `<Component />` at line 36,
+  or `{children}` at line 46); it only WRAPS the child in
+  `PermissionProvider`, which computes an `isAllowedTo` boolean and
+  exposes it via React Context for descendant components to consult.
+
+  **The actual gate is the SIBLING component `WithPermissions`** (no
+  `Provider` suffix) at `WithPermissions.tsx:27-29` which DOES return
+  `null` when the permission is missing. The naming-vs-behaviour drift
+  is the trap: a reviewer reading `App.tsx:75-88` (LookupTables mount)
+  or `DataModellingRoutes.tsx:19-25` (Query Examples create-surface
+  mount) or `App.tsx:62` -> `Management.tsx:9-12` (Management section
+  outer wrap) **reasonably concludes the route is gated** by the listed
+  permissions — when in fact only the inner `<WithPermissions>` HOCs
+  (on individual buttons, individual form sections) actually block.
+
+  **Confirmed across 5 route sidecars in batch ZH**:
+    - dataModelling route: Query Examples + Query Example Details
+      wrapped in WithPermissionsProvider (QUERY_EXAMPLE_CREATE /
+      _UPDATE+_DELETE) — both render to ALL authenticated users; only
+      the +Add and Edit buttons inside hide.
+    - masterData route: LookupTables wrapped in WithPermissionsProvider
+      (LOOKUP_TABLE_CREATE / _UPDATE / _DELETE) at App.tsx:75-88 —
+      page renders to all; only the +Add new button hides.
+    - management route: Management.tsx wraps the entire section in
+      WithPermissionsProvider([OWNER_ASSOCIATION_MANAGE]) — only the
+      Associations sub-route uses RestrictedRoute (a true guard).
+      The other 8 sub-areas (Namespaces/Datasources/Collectors/Owners
+      /Tags/Roles/Policies/Integrations) RENDER to every authenticated
+      user; only mutation buttons are hidden via WithPermissions HOCs.
+    - dataQuality route: NO wrapper at all (bare route); the contrast
+      makes the broader pattern visible — even wrapped routes ARE bare
+      in practice.
+    - terms route: NO wrapper at App.tsx:66; inner TermDetails uses
+      WithPermissionsProvider on the header (TermDetails.tsx:59-70 for
+      TERM_UPDATE / TERM_DELETE) which seeds context for inner
+      WithPermissions buttons.
+
+  **The architectural intent IS read-collaborative** (consistent with
+  ADR-CANDIDATE-003, REFACTOR-024, the
+  `read-collaborative-cross-owner-enumeration` invariant): pages render
+  for any authenticated user; only WRITE affordances are gated. But
+  the wrapper's NAME promises an access gate that doesn't exist. The
+  result:
+    (a) A future maintainer auditing route-level RBAC by reading
+        App.tsx or any *Routes.tsx file alone concludes the page IS
+        gated — and may ship a configuration change that depends on
+        a non-existent gate (e.g. removing a "redundant" inner
+        WithPermissions HOC believing the route wrapper handles it).
+    (b) An operator reading the docs cannot tell from "RBAC-gated by
+        QUERY_EXAMPLE_CREATE" (per data-modelling.md, WebFetched
+        2026-05-26 status 200) what part of the surface the gate
+        actually applies to — the doc phrasing IS more restrictive
+        than the implementation.
+    (c) The "every() AND-of-permissions" semantic at
+        PermissionProvider.tsx:21-25 compounds the trap: a route mount
+        listing `[QUERY_EXAMPLE_UPDATE, QUERY_EXAMPLE_DELETE]` requires
+        BOTH permissions for the context to evaluate `isAllowedTo: true`
+        — but since the wrapper doesn't gate, this AND semantic only
+        affects what the inner `WithPermissions` buttons render. A
+        user with one-but-not-both still lands on the page.
+
+  **Audit-trail consequence**: the route mount's `allowedPermissions`
+  array IS effectively documentation-shaped — the listed permissions
+  ARE the inner-button permissions that will be queried via context.
+  But the wrapper at the mount site is misleading code: a reviewer
+  cannot grep for "route gates" by searching `WithPermissionsProvider`;
+  the actual route gates are the one (Management/Associations:
+  RestrictedRoute) + the dynamic in-button HOCs.
+
+  **Fix surfaces** (maintainer-triage):
+    (1) Rename `WithPermissionsProvider` -> `PermissionsContextProvider`
+        or `PermissionsSeed` so the name reflects context-only behaviour.
+    (2) Add a JSDoc warning at WithPermissionsProvider.tsx:11
+        explaining the no-block semantic with `WithPermissions`
+        cross-reference.
+    (3) Document the read-collaborative posture on each pillar's doc
+        page so operators don't mis-read "RBAC-gated by PERM" as
+        "page-blocked by PERM".
+
+  vocabulary_status: codebase-anchored, NOT in docs. The live doc
+  pages (data-modelling, master-data-management, etc.) use phrasing
+  ("RBAC-gated by PERM") that is more restrictive than the
+  implementation. Surfaces here for canonical-vocabulary review.
+vocabulary_status: codebase-anchored
+axes_present:
+  - react_components
+  - ui_routes
+nodes:
+  - odd-platform ts routes route:dataModelling
+  - odd-platform ts routes route:masterData
+  - odd-platform ts routes route:management
+  - odd-platform ts routes route:dataQuality
+  - odd-platform ts routes route:terms
+contributors:
+  - |-
+    dataModelling route batch ZH:
+      bugs_limitations_corner_cases[WithPermissionsProvider does NOT block rendering; it only seeds a context];
+      stress_findings.name_behavior_pairs[WithPermissionsProvider — DRIFT_NAME_VS_BEHAVIOR];
+      security.known_security_gaps[wrapper at DataModellingRoutes.tsx:19-25, 31-37 does not block; only inner Add button gated]
+  - |-
+    masterData route batch ZH:
+      bugs_limitations_corner_cases[Route mount lists CREATE / UPDATE / DELETE permissions but the Provider does NOT block rendering];
+      stress_findings.auth_gates[DRIFT_NAME_VS_BEHAVIOR — wrapper LOOKS like a gate, doesn't block];
+      security.known_security_gaps[a reviewer auditing route-level RBAC by reading App.tsx alone would conclude the page is gated; it is not]
+  - |-
+    management route batch ZH:
+      bugs_limitations_corner_cases[Management UI mounted with NO route-level guard; Management.tsx outer WithPermissionsProvider provides context but does NOT block; per-sub-route WithPermissionsProvider wrappers behave identically];
+      stress_findings.auth_gates[only Associations is route-gated via RestrictedRoute; 8 other sub-routes ungated];
+      security.known_security_gaps[the Management route surface mounted at App.tsx:62 has NO route-level permission guard]
+  - |-
+    dataQuality route batch ZH:
+      bugs_limitations_corner_cases[/data-quality bare route mount, no WithPermissionsProvider — contrast with sibling /lookup-tables wrapper];
+      stress_findings.auth_gates[FRONTEND layer has NO gate; backend P-090];
+      security.known_security_gaps[any authenticated principal can navigate to /data-quality]
+  - |-
+    terms route batch ZH:
+      understanding[the /terms mount has NO route-level permission gate, unlike sibling /lookup-tables mount four lines later];
+      implicit_adrs[Route module owns no auth gating; all gating is consumer-side];
+      stress_findings.auth_gates[At the UI level: the route module itself has NO gate; the gate is delegated to the inner TermDetails component]
+evidence:
+  - "dataModelling.md:bugs_limitations_corner_cases.[1] (the wrapper at DataModellingRoutes.tsx:19-25, 31-37 does not block; only inner WithPermissions buttons gate)"
+  - "dataModelling.md:stress_findings.name_behavior_pairs.[WithPermissionsProvider — DRIFT_NAME_VS_BEHAVIOR]"
+  - "masterData.md:bugs_limitations_corner_cases.[1] (Route mount lists CREATE/UPDATE/DELETE but Provider does NOT block; reviewer reading App.tsx:75-88 reasonably believes route is gated)"
+  - "masterData.md:stress_findings.auth_gates.[0] q4 DRIFT_NAME_VS_BEHAVIOR — the gate is at the in-page button, not the route"
+  - "management.md:bugs_limitations_corner_cases.[0] (HIGH — Management UI mounted with no route-level guard; Management.tsx outer provider provides context but does NOT block; per-sub-route providers same)"
+  - "management.md:implicit_adrs.[1] (per-sub-route permission CONTEXT via WithPermissionsProvider — NOT route-level guards; write-button gating via WithPermissions further inside each list)"
+  - "management.md:security.known_security_gaps.[0] HIGH (Management surface NO route-level guard; any authenticated user reads full Owner/Role/Policy/Namespace/Tag/Collector/DataSource/Integration catalogs)"
+  - "dataQuality.md:bugs_limitations_corner_cases.[1] (no client-side permission gate at the URL declaration's only mount site App.tsx:73)"
+  - "terms.md:implicit_adrs.[3] (Route module owns no auth gating; all gating is consumer-side)"
+security_aggregate:
+  overall: LOW
+  auth_modes_relevant:
+    - LOGIN_FORM
+    - OAUTH2
+    - LDAP
+    - DISABLED
+  ingestion_filter_relevance: false
+  authorization_consistency:
+    verdict: UNGATED
+    detail: |-
+      Routes that LOOK gated by WithPermissionsProvider listing permissions
+      are NOT gated — the wrapper renders unconditionally. The only
+      route-level gates in the entire SPA route registry are
+      ManagementRoutes.tsx:101-110 (RestrictedRoute around Associations)
+      and a few specific cases. Every other 'wrapped' route renders for
+      any authenticated user; the inner WithPermissions HOCs hide
+      individual buttons.
+  owner_scoping:
+    verdict: BYPASSES
+    detail: |-
+      Route mount has no current-user predicate; data fetched by inner
+      components is read-collaborative (per the cross-owner enumeration
+      invariant). The wrapper at the mount does not narrow data access.
+  strengths:
+    - |-
+      The read-collaborative intent IS consistent across the codebase —
+      every route that wraps with WithPermissionsProvider is intentionally
+      read-open; the wrapper's purpose IS to seed inner button permissions
+      via context. The intent is intentional.
+    - |-
+      The 'real' gate (WithPermissions HOC) at the button level DOES
+      consistently HIDE-not-DISABLE when permission absent (return null
+      per WithPermissions.tsx:27-29). The HOC name and behaviour align —
+      drift is in the Provider sibling.
+  weaknesses:
+    - |-
+      The wrapper name promises an access gate; the behaviour is context
+      only. A reviewer reading the route registry believes routes are
+      gated. A maintainer simplifying an inner WithPermissions believing
+      the route wrapper handles it ships an open page.
+    - |-
+      The doc-side phrasing ('RBAC-gated by PERM') across data-modelling,
+      lookup-tables, and other pillar docs is more restrictive than the
+      implementation — operators reading the docs cannot tell from the
+      phrasing where the gate actually applies.
+    - |-
+      The maintainer cannot grep for 'route gates' by searching
+      WithPermissionsProvider — the actual route-level gates are
+      RestrictedRoute (Associations only) + the dynamic in-button HOCs.
+      Audit surface is opaque.
+  cross_file_inconsistencies:
+    - |-
+      The 5 contributing sidecars TRIANGULATE on the same finding —
+      WithPermissionsProvider does not block rendering — across 5
+      independent route mounts spanning P-02 (Data Modelling),
+      P-03 (Master Data), P-04 (Data Quality), P-06 (Glossary), P-08
+      (Management). No contributing sidecar disputes the claim.
+  contributing_files:
+    - odd-platform__ts__routes__route__dataModelling.md
+    - odd-platform__ts__routes__route__masterData.md
+    - odd-platform__ts__routes__route__management.md
+    - odd-platform__ts__routes__route__dataQuality.md
+    - odd-platform__ts__routes__route__terms.md
+  evidence:
+    - "dataModelling.md:security.known_security_gaps.[0]"
+    - "masterData.md:security.known_security_gaps.[0]"
+    - "management.md:security.known_security_gaps.[0]"
+    - "dataQuality.md:security.known_security_gaps.[0]"
+    - "terms.md:security.known_security_gaps.[0]"
+performance_aggregate:
+  overall: HIGH
+  hot_paths: []
+  throughput_shape:
+    verdict: N/A
+    detail: |-
+      Security-posture invariant — not a performance concept.
+  scaling_shape:
+    verdict: N/A
+    detail: |-
+      Security-posture invariant — not a scaling concept.
+  strengths: []
+  weaknesses: []
+  cross_file_inconsistencies: []
+  contributing_files:
+    - odd-platform__ts__routes__route__dataModelling.md
+    - odd-platform__ts__routes__route__masterData.md
+    - odd-platform__ts__routes__route__management.md
+    - odd-platform__ts__routes__route__dataQuality.md
+    - odd-platform__ts__routes__route__terms.md
+  evidence: []
+triangulation_count: 5
+cross_batch: false
+cross_batch_refs:
+  - batch-ZH (5 route sidecars)
+severity: HIGH
+severity_dim: security
+related_features:
+  - F-002
+  - F-032
+related_pillar_features:
+  - "P-02:F-001"
+  - "P-03:F-001"
+  - "P-04:F-002"
+  - "P-06:F-001"
+  - "P-08:F-001"
+  - "P-08:F-002"
+  - "P-08:F-003"
+  - "P-08:F-004"
+related_concepts:
+  - invariant:ui-route-no-permission-guard-data-quality-vs-lookup-tables-contrast
+  - invariant:partial-permission-gating-edit-button-gated-content-unconditional
+  - invariant:management-tab-visible-to-all-authenticated-users-unpermissioned-tab-visibility
+  - invariant:read-collaborative-cross-owner-enumeration
+notes: |-
+  This invariant CLARIFIES (does NOT contradict) the existing
+  `partial-permission-gating-edit-button-gated-content-unconditional`
+  invariant — that one documents the WithPermissions HOC behaviour
+  (hide-not-disable on mutation buttons); THIS one documents the
+  WithPermissionsProvider SIBLING behaviour (context seed only).
+  Both must coexist for a maintainer reading the catalog to understand
+  the full permission-rendering picture.
+
+  Coherence (Rule 6): grepped feature-flows/index.yaml + invariants
+  detail/ for "WithPermissionsProvider" — found 7 mentions, all
+  consistent with the context-seed semantic (e.g.
+  DataEntityDetails wraps in WithPermissionsProvider carrying 3
+  permissions for descendant mutation affordances per the existing
+  partial-permission invariant line 22-25). No contradicting claim
+  found. STRENGTHENS the existing finding by adding 5 route-mount
+  contributors and surfacing the wrapper's name-vs-behaviour drift
+  as a distinct first-class concept.
+maintainer_curated: false

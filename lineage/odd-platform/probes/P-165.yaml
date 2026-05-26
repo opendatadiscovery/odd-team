@@ -1,0 +1,214 @@
+---
+probe_id: P-165
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__routes__route__dataModelling.md
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: P-02
+test_class: integration
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category B name-vs-behavior drift): the
+  `WithPermissionsProvider` wrapper at
+  `components/DataModelling/DataModellingRoutes.tsx:19-25` (around the
+  `/data-modelling/query-examples` route) declares
+  `allowedPermissions={[Permission.QUERY_EXAMPLE_CREATE]}`. A reader sees
+  this and reasonably concludes the route is GATED for users without
+  `QUERY_EXAMPLE_CREATE`. The file-analyser's static analysis claims the
+  opposite: `WithPermissionsProvider` only seeds a React Context
+  (`WithPermissionsProvider.tsx:11-49` + `PermissionProvider.tsx:12-46`
+  unconditionally render their children) and the actual gate is the SEPARATE
+  `WithPermissions` component at `WithPermissions.tsx:27-29` used inside
+  `QueryExamples.tsx:36-46` to hide the 'Add query example' button.
+
+  This probe pins the hypothesis: a user authenticated without
+  `QUERY_EXAMPLE_CREATE` who navigates to `/data-modelling/query-examples`
+  STILL SEES the page (search input, list of query examples, count
+  indicator) and only LOSES the Add button. If the hypothesis is confirmed,
+  the `WithPermissionsProvider` naming is misleading and the methodology
+  should record this as a documented architectural pattern (the route
+  surface is intentionally read-collaborative; the wrapper is misnamed)
+  AND a doc-gap-finder note to clarify in the operator-facing docs that
+  "RBAC-gated by QUERY_EXAMPLE_CREATE" means "the Add button is gated",
+  not "the page is gated".
+
+  Sibling hypothesis (same probe, second assertion block): the
+  `/data-modelling/query-examples/:id` route wraps with
+  `allowedPermissions={[QUERY_EXAMPLE_UPDATE, QUERY_EXAMPLE_DELETE]}` which
+  uses `every()` (`PermissionProvider.tsx:21-25`). A user with ONLY
+  `QUERY_EXAMPLE_UPDATE` and NOT `QUERY_EXAMPLE_DELETE` (or vice versa) —
+  STILL sees the page (wrapper doesn't block) but their `isAllowedTo`
+  evaluates to FALSE because every() requires both. The probe confirms
+  this asymmetry.
+---
+arrange:
+  - kind: docker-compose-up
+    profile: odd-minimal
+    services: [odd-platform-api, odd-platform-ui, postgres]
+    note: |
+      Standard odd-minimal stack — odd-platform + postgres. Auth mode:
+      LOGIN_FORM (so the test users have explicit permission profiles).
+  - kind: wait-for
+    target: http://localhost:8080/actuator/health
+    timeout_seconds: 60
+  - kind: sql
+    query: |
+      -- Seed a 'reader' Owner + Role with NO query-example permissions
+      INSERT INTO owner (id, name) VALUES (9001, 'p165_reader') ON CONFLICT DO NOTHING;
+      INSERT INTO role (id, name) VALUES (9101, 'p165_reader_role') ON CONFLICT DO NOTHING;
+      INSERT INTO policy (id, name, policy_schema) VALUES (
+        9201, 'p165_reader_policy',
+        '{"statements":[{"resource":{"type":"DATA_ENTITY"},"permissions":["DATA_ENTITY_VIEW"]}]}'::jsonb
+      ) ON CONFLICT DO NOTHING;
+      INSERT INTO role_to_policy (role_id, policy_id) VALUES (9101, 9201) ON CONFLICT DO NOTHING;
+      -- Seed an 'updater' Owner + Role with QUERY_EXAMPLE_UPDATE but NOT _DELETE
+      INSERT INTO owner (id, name) VALUES (9002, 'p165_updater') ON CONFLICT DO NOTHING;
+      INSERT INTO role (id, name) VALUES (9102, 'p165_updater_role') ON CONFLICT DO NOTHING;
+      INSERT INTO policy (id, name, policy_schema) VALUES (
+        9202, 'p165_updater_policy',
+        '{"statements":[{"resource":{"type":"QUERY_EXAMPLE"},"permissions":["QUERY_EXAMPLE_UPDATE"]}]}'::jsonb
+      ) ON CONFLICT DO NOTHING;
+      INSERT INTO role_to_policy (role_id, policy_id) VALUES (9102, 9202) ON CONFLICT DO NOTHING;
+  - kind: sql
+    query: |
+      -- Seed at least 3 query examples so the list page has content
+      INSERT INTO query_example (id, definition, query, created_at)
+      SELECT i, 'p165_def_' || i, 'SELECT ' || i || ';', NOW()
+      FROM generate_series(9101, 9103) AS i
+      ON CONFLICT (id) DO NOTHING;
+  - kind: register-user
+    method: LOGIN_FORM
+    username: p165-reader-user
+    password: p165-reader-pass
+    bind_to_owner_id: 9001
+    bind_to_role_id: 9101
+  - kind: register-user
+    method: LOGIN_FORM
+    username: p165-updater-user
+    password: p165-updater-pass
+    bind_to_owner_id: 9002
+    bind_to_role_id: 9102
+act:
+  # Block 1 — reader navigates to /data-modelling/query-examples
+  - kind: dom-probe
+    tool: playwright
+    auth_as: p165-reader-user
+    url: http://localhost:8080/data-modelling/query-examples
+    wait_for: networkidle
+    capture_as: reader_list_page
+    capture:
+      - selector: 'main h1'
+        property: textContent
+        capture_as: reader_h1_text
+      - selector: "[data-testid='query-examples-list'] > *, [data-testid='QueryExampleListItem']"
+        mode: count
+        capture_as: reader_list_items_count
+      - selector: "button:has-text('Add query example')"
+        mode: exists
+        capture_as: reader_add_button_present
+      - selector: "input#query-examples-search"
+        mode: exists
+        capture_as: reader_search_input_present
+      - kind: url-after-navigate
+        capture_as: reader_final_url
+  # Block 2 — updater navigates to /data-modelling/query-examples/9101 (details page)
+  - kind: dom-probe
+    tool: playwright
+    auth_as: p165-updater-user
+    url: http://localhost:8080/data-modelling/query-examples/9101
+    wait_for: networkidle
+    capture_as: updater_detail_page
+    capture:
+      - selector: 'body'
+        property: textContent
+        capture_as: updater_body_text
+      - kind: url-after-navigate
+        capture_as: updater_final_url
+      - selector: "[data-testid='query-example-detail'], main h1"
+        mode: exists
+        capture_as: updater_detail_rendered
+      - selector: "button:has-text('Edit')"
+        mode: exists
+        capture_as: updater_edit_button_present
+      - selector: "button:has-text('Delete')"
+        mode: exists
+        capture_as: updater_delete_button_present
+observe:
+  - description: "Block 1: reader (no QUERY_EXAMPLE_*) on the list page"
+    captures:
+      [reader_h1_text, reader_list_items_count, reader_add_button_present,
+       reader_search_input_present, reader_final_url]
+  - description: "Block 2: updater (QUERY_EXAMPLE_UPDATE only, no _DELETE) on the detail page"
+    captures:
+      [updater_final_url, updater_detail_rendered,
+       updater_edit_button_present, updater_delete_button_present]
+assert:
+  # Block 1 — Category B drift confirmation for the LIST route
+  - "reader_h1_text == 'Query Examples'  # page rendered for a user without QUERY_EXAMPLE_CREATE"
+  - "reader_final_url.endsWith('/data-modelling/query-examples')  # no redirect to a 403/login"
+  - "reader_list_items_count >= 3  # backend list endpoint falls through to authenticated()"
+  - "reader_search_input_present == true  # search UI is rendered (not gated)"
+  - "reader_add_button_present == false  # the Add button IS gated by WithPermissions inside QueryExamples.tsx:36-46"
+  # Block 2 — Category B drift confirmation for the DETAILS route + every()-AND-semantics
+  - "updater_final_url.endsWith('/data-modelling/query-examples/9101')  # detail page rendered for QUERY_EXAMPLE_UPDATE-only user"
+  - "updater_detail_rendered == true  # WithPermissionsProvider didn't block render despite every() failing on the AND of UPDATE+DELETE"
+  # Edit/Delete-button presence is captured but not asserted as PASS/FAIL — the
+  # probe records the state regardless to support follow-up file-analyser pass
+  # on QueryExampleDetailsContainerActions.tsx (the actions container's inner
+  # gating shape).
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM query_example WHERE id BETWEEN 9101 AND 9103;
+      DELETE FROM role_to_policy WHERE role_id IN (9101, 9102);
+      DELETE FROM policy WHERE id IN (9201, 9202);
+      DELETE FROM role WHERE id IN (9101, 9102);
+      DELETE FROM owner WHERE id IN (9001, 9002);
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__routes__route__dataModelling
+    - odd-platform__java__QueryExampleController__controller-class__QueryExampleController
+    - odd-platform__java__RelationshipController__controller-class__RelationshipController
+  related_retrospectives:
+    - LSN-019
+    - LSN-020
+realism_caveats: |
+  This probe pins TWO Category B drift hypotheses on the
+  `WithPermissionsProvider` wrapper:
+
+  (1) The wrapper is context-seed-only at the LIST route — confirmed by
+  `reader_h1_text == 'Query Examples'` + `reader_list_items_count >= 3`
+  + `reader_add_button_present == false`. If all three pass, the
+  methodology should record this as a documented architectural pattern
+  AND add a doc-gap-finder note ("RBAC-gated by QUERY_EXAMPLE_CREATE"
+  means "the Add button is gated", not "the page is gated").
+
+  (2) The every()-AND-of-permissions subtlety on the DETAIL route —
+  confirmed by `updater_detail_rendered == true` (the page renders for
+  a user with UPDATE-but-not-DELETE). The individual Edit / Delete
+  buttons may or may not be gated by separate `WithPermissions` calls
+  inside `QueryExampleDetailsContainer.tsx` /
+  `QueryExampleDetailsContainerActions.tsx`; the probe captures the
+  state for both regardless to support either interpretation. A
+  follow-up file-analyser pass on the details container would
+  determine the inner gating shape; this probe's job is the route-layer
+  question only.
+
+  If `reader_h1_text != 'Query Examples'` or `reader_list_items_count`
+  is 0, the static analysis is falsified — either the wrapper DOES
+  block rendering via some code path file-analyser missed, OR the
+  backend GET `/api/queryexample/list` requires an authorization the
+  reader lacks. probe-runner should capture the HTTP responses on
+  `/api/queryexample/list` to disambiguate.
+
+  The local-only stack assumption holds — Playwright headless + local
+  docker-compose; no remote infrastructure required.
+
+  The probe does NOT verify the `/data-modelling/relationships` route
+  (no permission wrapper at all) — that's a separate probe scope (the
+  RelationshipController sidecar's domain). This probe is strictly
+  about the `WithPermissionsProvider`-wrapped routes.

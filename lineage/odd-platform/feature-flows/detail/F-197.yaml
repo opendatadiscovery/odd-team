@@ -1,0 +1,210 @@
+feature_id: F-197
+pillar_id: P-07
+pillar_anchored_id: P-07:F-038-discussions-tab
+pillar_anchored_feature_name: |-
+  Per-Entity Discussions Tab — operator-visible UI surface of F-038
+  (Data Collaboration / Slack Discussions). Three-panel UI (Channels left,
+  MessagesList middle, CurrentMessage/Thread right) anchored to a data
+  entity with deep-linkable per-message URLs.
+feature_name: |-
+  Data Collaboration UI Tab — three-panel Slack-thread mirror anchored to a
+  data entity. Surfaces F-038's backend chain (incoming-webhook + outbound
+  Slack-message-sender + DB-backed thread store) as an operator-visible
+  Discussion tab with infinite-scroll messages list, channel selector, and
+  per-message thread drilldown.
+seeded_from: ui-review-2026-05-26
+seeded_at: 2026-05-26
+discovered_from_entry_point: "ui-component:DataCollaboration"
+primary_subject:
+  - "odd-platform ts react-component component:DataCollaboration"
+  - "odd-platform ts react-component component:MessagesList"
+  - "odd-platform ts react-component component:Channels"
+  - "odd-platform ts react-component component:CreateMessageForm"
+  - "odd-platform ts react-component component:Thread"
+contributing_nodes:
+  - "odd-platform ts react-component component:DataCollaboration"
+  - "odd-platform ts react-component component:MessagesList"
+  - "odd-platform ts react-component component:Channels"
+  - "odd-platform ts react-component component:CurrentMessage"
+  - "odd-platform ts react-component component:Thread"
+  - "odd-platform ts react-component component:ThreadContent"
+  - "odd-platform ts react-component component:ThreadMessage"
+  - "odd-platform ts react-component component:MainThreadMessage"
+  - "odd-platform ts react-component component:CreateMessageForm"
+  - "odd-platform ts react-component component:Message (MessagesList/Message)"
+  - "odd-platform ts react-component component:NoMessage"
+  - "odd-platform java DataCollaborationController controller-class:DataCollaborationController (per F-038 chain)"
+chain:
+  - hop: 1
+    node: "odd-platform ts react-component component:DataCollaboration"
+    sidecar: unresolved
+    evidence: |-
+      DataCollaboration.tsx:18-80 — three-column shell holding
+      Channels (left), MessagesList (middle), CurrentMessage/Thread
+      (right). Uses `useState<string | undefined>` for channelId
+      AND messageDate — local component state, not redux. Calls
+      `fetchDataEntityMessages({dataEntityId, channelId, size,
+      lastMessageId})` on every `[dataEntityId, channelId,
+      isMessageCreating]` change with cleanup
+      `clearCollaborationState()`. Mounted at
+      DataEntityDetailsRoutes.tsx:106-117 via `RestrictedRoute`
+      hiding it for soft-deleted entities — NO permission wrapper
+      (CONTRAST `alerts` route which uses both
+      `RestrictedRoute` + `WithPermissionsProvider`).
+    multiplicity_per_trigger: 1
+    unresolved: false
+  - hop: 2
+    node: "odd-platform ts react-component component:MessagesList"
+    sidecar: unresolved
+    evidence: |-
+      MessagesList.tsx:22-74 — InfiniteScroll wrapper. On message
+      click, navigates to `dataEntityDiscussionsPath(dataEntityId,
+      messageId)` putting messageId in the URL. Empty state hard-
+      coded `text='No messages'` (not translated). `fetchNextMessages`
+      called when scrolled within 200px of bottom; same redux state
+      mutation as the initial fetch.
+    multiplicity_per_trigger: 1
+    unresolved: false
+  - hop: 3
+    node: "odd-platform ts react-component component:CreateMessageForm"
+    sidecar: unresolved
+    evidence: |-
+      CreateMessageForm.tsx:23-122 — DialogWrapper with form-controlled
+      Slack channel autocomplete + text input. On submit dispatches
+      `createMessageToSlack({messageRequest: {dataEntityId, channelId,
+      text}})` then navigates to `dataEntityDetailsPath(dataEntityId,
+      'discussions')` ONLY if `meta.requestStatus === 'fulfilled'`.
+      Form-validation: channelId required + text required with custom
+      `validate: value => !!value.trim()` (trim-blank-text guard).
+      NO `<WithPermissions>` wrapper visible at this tier — the
+      mounting trigger (a button elsewhere) may carry one.
+    multiplicity_per_trigger: 1
+    unresolved: true
+    unresolved_reason: |-
+      The button that mounts CreateMessageForm via `btnCreateEl` prop
+      is rendered from a parent component not yet read in this slice
+      (the trigger lives outside the Discussions tab — likely on
+      Overview or DataEntityDetailsHeader). Permission-gating verification
+      needs that parent.
+  - hop: 4
+    node: "odd-platform ts react-component component:Thread"
+    sidecar: unresolved
+    evidence: |-
+      Thread.tsx:19-62 — on `[dataEntityId, messageId, size]` change,
+      dispatches `fetchRelatedMessages` AND short-circuit-navigates back
+      to `discussions` (the parent list) on `relatedMessagesError`
+      (line 31-34). The error-to-navigate side effect silently strips
+      the messageId from the URL on any fetch failure — operator sees
+      the message disappear with no error banner.
+    multiplicity_per_trigger: 1
+    unresolved: false
+  - hop: 5
+    node: "odd-platform java DataCollaborationController controller-class:DataCollaborationController"
+    sidecar: '(referenced from F-038 batch ZF — controller-class sidecar)'
+    evidence: |-
+      Per F-038 batch ZF: 3 outbound + 1 inbound endpoints class-gated by
+      `@ConditionalOnDataCollaboration`. Disabled by default
+      (`datacollaboration.enabled=false`). The UI tab is mounted
+      regardless of backend feature-flag state — operator-visible
+      consequence: the tab appears, the user clicks Send Message,
+      the request fails with 404 (no route registered) and no UI
+      pre-flight tells the user the feature is disabled.
+    multiplicity_per_trigger: 1
+    unresolved: true
+    unresolved_reason: |-
+      The frontend has no equivalent of `@ConditionalOnDataCollaboration`
+      gate — whether the Discussion tab is hidden when the backend
+      feature is disabled depends on a `/api/feature-flags`-style
+      probe not visible in DataEntityDetailsTabs.tsx (which renders
+      the tab unconditionally per line 95-99).
+observed_vs_expected:
+  facets:
+    - drift_class: discussions_tab_visible_when_feature_disabled_no_pre_flight_check
+      description: |-
+        DataEntityDetailsTabs.tsx:95-99 renders the `Discussions` tab
+        without consulting a backend feature-flag. The F-038 backend
+        is `@ConditionalOnDataCollaboration` (default off); the UI
+        cannot know this. Operator clicks Discussions, lands on
+        DataCollaboration.tsx, fetches an empty messages list (or 404
+        depending on route registration), no banner explains the
+        feature is disabled — silent-empty failure mode analogous to
+        F-064's My-objects silent-empty.
+      evidence:
+        - "DataEntityDetailsTabs/DataEntityDetailsTabs.tsx:95-99"
+        - "F-038 backend gating @ConditionalOnDataCollaboration"
+      ui_unverified: true
+      ui_unverified_reason: |-
+        Whether some other layer (e.g. a /api/feature-flags route or
+        the global app shell) hides the Discussions tab when
+        datacollaboration.enabled=false has not been traced.
+    - drift_class: thread_fetch_error_silently_navigates_away_no_user_feedback
+      description: |-
+        Thread.tsx:31-34 — on `relatedMessagesError`, the component
+        navigates to the parent discussions list URL with NO error
+        toast, NO inline banner. The operator's "open a thread" click
+        succeeds; on backend failure the URL silently rewrites and the
+        operator sees the messages list as if they never clicked.
+      evidence:
+        - "DataCollaboration/CurrentMessage/Thread/Thread.tsx:31-34"
+      ui_unverified: false
+    - drift_class: empty_state_text_not_translated_hardcoded_english
+      description: |-
+        MessagesList.tsx:70 — `<EmptyContentPlaceholder text='No
+        messages' />` is hardcoded English. Compare with other
+        EmptyContentPlaceholder usages in DataEntityActivity (no text
+        prop — falls back to default) and LinkedItemsList.tsx:86
+        which DOES use `t('No linked entities')`. Inconsistent
+        i18n discipline across the same content-tab surface set.
+      evidence:
+        - "DataCollaboration/MessagesList/MessagesList.tsx:70"
+        - "LinkedItemsList/LinkedItemsList.tsx:86 (t-wrapped sibling)"
+      ui_unverified: false
+    - drift_class: channelid_messagedate_in_component_state_not_url
+      description: |-
+        DataCollaboration.tsx:22-23 holds `channelId` and `messageDate`
+        in local React useState — sharing a discussions URL only
+        preserves `dataEntityId` + `messageId`; the channel filter
+        and the message-date scroll-position do NOT travel with the
+        URL. Recipient sees the same entity with NO channel filter,
+        scrolled to a different position. Pattern inconsistent with
+        DataEntityActivity which uses useQueryParams for filters.
+      evidence:
+        - "DataCollaboration/DataCollaboration.tsx:22-23"
+        - "DataEntityActivity/ActivityResults/ActivityResults.tsx:25 (useQueryParams pattern)"
+      ui_unverified: false
+    - drift_class: messages_list_useeffect_refires_on_ismessagecreating_change
+      description: |-
+        DataCollaboration.tsx:35-43 — useEffect dep array includes
+        `isMessageCreating`. When CreateMessageForm submits + the
+        thunk's loading flag toggles true→false, the parent's
+        useEffect re-fires `fetchDataEntityMessages` with the SAME
+        `lastMessageId: lastId` (line 27 → 37) — which after a
+        successful send becomes the ID of the JUST-CREATED message.
+        Net: each message-create fires a fresh fetch starting
+        AFTER the just-created message, potentially missing it from
+        the visible list until the user scrolls or refetches.
+      evidence:
+        - "DataCollaboration/DataCollaboration.tsx:27 (lastId binding)"
+        - "DataCollaboration/DataCollaboration.tsx:37 (lastMessageId: lastId)"
+        - "DataCollaboration/DataCollaboration.tsx:43 (isMessageCreating dep)"
+      ui_unverified: true
+      ui_unverified_reason: |-
+        Whether redux's `clearCollaborationState` in the cleanup +
+        the reducer's handling of `fulfilled` action result in
+        the lastId being reset before the refetch depends on
+        slice code not read at this tier.
+test_matrix:
+  unit: GAP
+  integration: GAP
+  performance: GAP
+  security: GAP
+status: ui-complete
+related_features:
+  - F-038  # Data Collaboration backend (controller + service + scheduler + slack-sdk)
+related_concepts:
+  - data-collaboration
+  - slack-thread-mirror
+  - per-entity-tab
+related_retrospectives:
+  - LSN-023  # ui-complete vs ui-incomplete — UI hops verified
+maintainer_curated: false

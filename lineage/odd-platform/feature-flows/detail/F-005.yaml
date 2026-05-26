@@ -53,6 +53,15 @@ description: 'The lineage-downstream endpoint accepts an optional lineage_depth 
 contributing_nodes:
 - ts react-component:Lineage (batch ZA — pure DEG↔non-DEG dispatcher shell; 5 lines of routing decision; mounts F-005 vs F-016 branch based on `isDEG`; zero internal state; LSN-017 dep-array pattern STRUCTURALLY UNAVAILABLE — the file has NO useEffect)
 - ts react-component:LineageGraph (Lineage tab on data-entity-detail page — shell + d3-hierarchy canvas)
+- odd-platform ts react-component:HierarchyLineage (batch J ui-review-2026-05-26 — issues sequential downstream-then-upstream thunks; hosts visx Zoom container)
+- odd-platform ts react-component:ZoomableLineage (batch J ui-review-2026-05-26 — visx Zoom child; persists zoom.transformMatrix into URL `?t=` on mouseleave at ZoomableLineage.tsx:28-31)
+- odd-platform ts react-component:LineageControls (batch J ui-review-2026-05-26 — hosts depth dropdown [1..20] + Full/Compact toggle + Show full names + Expand all nested items + Main center button)
+- odd-platform ts react-component:LineageProvider (batch J ui-review-2026-05-26 — context provider for nodeSize; LineageProvider.tsx:58-68 providerValue useMemo has missing-deps LSN-017-family bug — deps `[full, fn, renderedLinks, highLightedLinks]` omit `titleHeight`/`oddrnHeight` driving nodeSize)
+- odd-platform ts react-component:Node-Hierarchy (batch J ui-review-2026-05-26 — Node.tsx:46-52 hardcodes `d: node.depth || 1` in click-through query; Node.tsx:172-185 LoadMoreButton render gating)
+- odd-platform ts react-component:Info (batch J ui-review-2026-05-26 — Info.tsx renders Space/Source/Items in Full mode + ODDRN-only in Compact mode; gates DEG-membership entry point on `full && externalName && nodesRelatedWithDEG?.length > 0`)
+- odd-platform ts react-component:GroupedEntitiesListModal (batch J ui-review-2026-05-26 — DEG-member expansion modal; GroupedEntitiesListModal.tsx:51 hardcodes `lineageDepth: 1` on per-entity Load-More; line 73 idsToExclude excludes already-listed entities)
+- odd-platform ts react-component:LoadMoreButton (batch J ui-review-2026-05-26 — LoadMoreButton.tsx:56 hardcodes `lineageDepth: 1` on per-node Load-More; latches via parent hideLoadMore callback)
+- odd-platform ts react-component:HiddenDependencies (batch J ui-review-2026-05-26 — operator-visible affordance signalling "more lineage exists beyond this depth"; renders count-with-arrow at HiddenDependencies.tsx:60-72)
 - odd-platform java DataEntityController controller-method:getDataEntityDownstreamLineage
 - odd-platform java DataEntityController controller-method:getDataEntityGroupsLineage (batch M — DEG-anchored variant cross-ref to F-016)
 - odd-platform java LineageService.getLineage(int depth, ...)
@@ -465,6 +474,75 @@ observed_vs_expected:
     expected: Self-documenting code — either rename `.empty()` to `.seedOnly()` or add Javadoc clarifying the actual semantics
     drift_class: misleading_api_naming
     provenance: STATIC — primary-source verification in batch-H ReactiveLineageRepositoryImpl sidecar bugs_limitations_corner_cases[7]
+  - facet: |-
+      Per-entity Load-More + DEG-modal Load-More BOTH hardcode `lineageDepth: 1` — fanout pattern
+      (batch J ui-review-2026-05-26 — PRIMARY-SOURCE)
+    observed: |-
+      The hardcoded-d=1 pattern catalogued at the HierarchyLineage thunks
+      (constants.ts:74-84 + HierarchyLineage.tsx:47) REPEATS at TWO
+      additional UI surfaces that issue independent lineage-fetch
+      thunks for incremental graph expansion:
+      (1) `LoadMoreButton.tsx:56` — `const params = { dataEntityId, lineageDepth: 1, rootNodeId, expandGroups: eag };`
+      — per-node Load-More button. Each click fetches ONE MORE hop
+      from the clicked node.
+      (2) `GroupedEntitiesListModal.tsx:51` — `const params = { dataEntityId, lineageDepth: 1, rootNodeId, expandGroups: eag };`
+      — per-DEG-member Load-More button inside the DEG-membership
+      expansion modal. Each click fetches ONE MORE hop from the
+      modal-listed member entity.
+      The d=1 default ECHOES across THREE UI surfaces: initial graph
+      load (HierarchyLineage), node-side Load-More (LoadMoreButton), and
+      modal-member Load-More (GroupedEntitiesListModal). The pattern is
+      "every incremental expansion is exactly 1 hop", and each surface
+      embeds the constant locally rather than reading from a shared
+      constants module. A future change to "default incremental hop = 2"
+      requires 3 file edits with no compiler safety net.
+    expected: |-
+      Extract a shared `LINEAGE_INCREMENTAL_HOP_DEFAULT = 1` constant
+      in `constants.ts` consumed by all three call sites; OR document
+      the d=1-everywhere invariant on the feature page.
+    drift_class: ui_default_masks_backend_caveat
+    provenance: |-
+      STATIC — primary-source verification at LoadMoreButton.tsx:55-56 +
+      GroupedEntitiesListModal.tsx:47-51 + HierarchyLineage.tsx:47.
+      The d=1 pattern is now confirmed at FOUR sites total (counting
+      constants.ts:74-84 default + Node.tsx:46-52 click-through compounds
+      depth → d:node.depth||1 fallback at zero-depth). Severity:
+      EXTENSION of existing F-005 ui_default_masks_backend_caveat —
+      adds two new realisation points.
+  - facet: |-
+      ZoomableLineage persists zoom-transform-matrix to URL `?t=` — graph-state-in-URL coupling
+      (batch J ui-review-2026-05-26 — PRIMARY-SOURCE)
+    observed: |-
+      `ZoomableLineage.tsx:28-31` — `handleOnMouseLeave` JSON-stringifies
+      the zoom.transformMatrix into the `?t=` URL query param on every
+      mouseleave event. The persistence is unconditional. A user
+      navigating away with the mouse outside the canvas gets ANY
+      transient zoom state baked into the URL — including states
+      mid-drag (the function fires `zoom.dragEnd()` then writes the
+      matrix). Side effects:
+      (1) URL grows with stringified TransformMatrix (~80-120 chars)
+          on every mouse-leave, so SHARE-LINK URLs become opaque;
+      (2) Browser history accumulates entries via setQueryParams →
+          replace/push semantics depend on the underlying router
+          implementation;
+      (3) Combined with the URL-`?d=` depth (F-055) + the URL-`?fn`/`full`
+          flags + the URL-`?eag`/`exdg`/`exug`/`exd`/`exu` expansion sets,
+          the lineage URL becomes the de-facto canvas state container —
+          a single share-link captures the full graph-exploration state,
+          which is GOOD for user-to-user collaboration but POOR for
+          URL-length budgets and bookmark stability.
+    expected: |-
+      Either (a) document the "share-link captures full canvas state"
+      design intent explicitly on the data-lineage feature page; OR
+      (b) debounce the URL write (write only on dragEnd, not mouseleave);
+      OR (c) cap the URL length and degrade gracefully past some
+      threshold.
+    drift_class: ui_state_persistence_in_url_design_intent_undocumented
+    provenance: |-
+      STATIC — primary-source verification at ZoomableLineage.tsx:28-31 +
+      DEGLineageControls.tsx:31 (DEG branch has SIBLING but DIFFERENT
+      zoom-state-in-URL pattern via `x`/`y`/`s` params on Fit click).
+      Severity: LOW (design-intent doc gap; not security/correctness).
 test_matrix:
   unit:
     state: GAP

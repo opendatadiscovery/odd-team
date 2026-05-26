@@ -1,0 +1,208 @@
+feature_id: F-151
+pillar_id: P-06
+pillar_anchored_id: P-06:F-004
+pillar_anchored_feature_name: Term Detail Page Composition (Overview / Linked Entities / Linked Columns / Linked Terms / Query Examples)
+feature_name: |-
+  Term Detail Page — five-tab composition with affordance-gated tab
+  visibility, lazy-loaded sub-routes, and double-fetch shape on the
+  Overview tab
+seeded_from: ui-review-2026-05-26
+seeded_at: 2026-05-26
+discovered_from_entry_point: ui_route:/terms/:termId/*
+primary_subject:
+  - odd-platform ts react-component:TermDetailsView
+  - odd-platform ts react-component:TermDetailsTabs
+  - odd-platform ts react-component:TermDetailsRoutes
+contributing_nodes:
+  - odd-platform ts react-component:TermDetailsView
+  - odd-platform ts react-component:TermDetailsTabs
+  - odd-platform ts react-component:TermDetailsRoutes
+  - odd-platform ts react-component:TermDetailsHeader
+  - odd-platform ts react-component:Overview
+  - odd-platform java service service:TermServiceImpl
+  - odd-platform java repository reactive repository:ReactiveTermRepositoryImpl
+chain:
+  - hop: 1
+    node: odd-platform ts react-component:TermDetailsView
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      TermDetails.tsx:22-86 — mount fires `fetchTermDetails({termId})` +
+      `fetchResourcePermissions({resourceId: termId, type: TERM})` (lines
+      37-45). Single-fetch pattern on the SHELL component (explicitly
+      NOT LSN-017 shape; deps=[termId] only). Renders TermDetailsHeader
+      (Edit+Delete CTAs gated by `WithPermissionsProvider` with
+      `[TERM_UPDATE, TERM_DELETE]`) + TermDetailsTabs (the tab strip) +
+      TermDetailsRoutes (the lazy-loaded sub-route container).
+  - hop: 2
+    node: odd-platform ts react-component:TermDetailsTabs
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      TermDetailsTabs.tsx:9-63 — declares 5 tabs (Overview / Linked
+      entities / Linked columns / Linked terms / Query examples). Three
+      tabs auto-HIDE when the corresponding count is falsy (lines 24,
+      30, 36 — `hidden: !termDetails?.entitiesUsingCount`,
+      `hidden: !termDetails?.columnsUsingCount`,
+      `hidden: !termDetails?.linkedTermsUsingCount`). Two tabs
+      (Overview + Query examples) are ALWAYS visible. The `hint`
+      property surfaces the count next to the tab label.
+  - hop: 3
+    node: odd-platform ts react-component:TermDetailsRoutes
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      TermDetailsRoutes.tsx:19-50 — lazy-imports all five sub-route
+      components via `React.lazy`. The Query-examples sub-route
+      is the ONLY sub-route gated by `WithPermissionsProvider` —
+      with `[QUERY_EXAMPLE_TERM_CREATE, QUERY_EXAMPLE_TERM_DELETE]`.
+      The other four sub-routes (overview, linked-entities,
+      linked-columns, linked-terms) are completely ungated at the
+      UI layer; backend read-collaborative permits.
+  - hop: 4
+    node: odd-platform ts react-component:Overview
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      Overview.tsx:16-21 — on mount fires `useGetTermByID({termId})`
+      independently of the shell-level `fetchTermDetails`. DOUBLE-FETCH
+      shape — TermDetailsView already loaded the term; Overview re-loads
+      via tanstack query. Sibling pattern to LSN-017 (different
+      mechanism — different state stores, same waste). The Overview tab
+      is the default route (`<Route path='' element={<Navigate to='overview' />}` in
+      TermDetailsRoutes.tsx:46) so EVERY page open triggers the
+      double-fetch via the 12-JOIN HOT PATH at
+      `ReactiveTermRepositoryImpl.getTermDetailsDto` (per F-002 batch-N
+      facet `get_term_details_dto_12_join_hot_path_amplification`).
+terminal_side_effect:
+  side_effect_class: page-render
+  description: |-
+    Rendered Term detail page with header (name + DCT entity-type chip +
+    last-update + Edit/Delete CTAs) + tab strip (2-5 tabs depending on
+    counts) + active sub-route content.
+  evidence: |-
+    TermDetails.tsx:55-85 (composition shell);
+    TermDetailsTabs.tsx:48-58 (AppTabs render);
+    TermDetailsRoutes.tsx:26-48 (Routes render).
+  cardinality_per_call: 1 page
+amplification_factor: 2
+amplification_factor_provenance: |-
+  STATIC — confirmed from primary source. Default landing on `/terms/:termId`
+  redirects to `/terms/:termId/overview`; the shell fetches getTermDetails
+  (12-JOIN), the Overview sub-route fetches the SAME data via a separate
+  tanstack-query path. Net = 2 invocations of the 12-JOIN hot path per
+  page open. Cross-link F-002 batch-N
+  `get_term_details_dto_12_join_hot_path_amplification`.
+observed_vs_expected:
+  facets:
+    - facet_id: overview_tab_double_fetch_on_12_join_hot_path
+      drift_class: ui_double_fetch_shell_plus_sub_route_same_hot_path
+      severity: MEDIUM
+      observed: |-
+        TermDetails.tsx:37-45 dispatches `fetchTermDetails({termId})` on
+        mount via Redux thunk. The Overview sub-route (the default
+        landing, per TermDetailsRoutes.tsx:46) fires its own
+        `useGetTermByID({termId})` via tanstack-query (Overview.tsx:19-21).
+        Both endpoints route through
+        `ReactiveTermRepositoryImpl.getTermDetailsDto` — the 12-JOIN +
+        7 jsonArrayAgg + 4 countDistinct HOT PATH (per F-002 batch-N).
+        Every page open on a Term URL hits this query TWICE. Heavily-linked
+        Terms with thousands of relations amplify the latency by 2x with
+        no caching layer in between.
+      expected: |-
+        Either (a) Overview reads from the redux-cached termDetails
+        slice (already loaded by the shell) instead of dispatching its
+        own fetch; OR (b) shell-level state and tanstack-query share
+        the same cache key so the second call is a cache hit; OR (c)
+        document the double-fetch as intentional with the latency
+        contract.
+      evidence:
+        - 'TermDetails.tsx:37-45 (shell-level fetchTermDetails)'
+        - 'Overview.tsx:19-21 (sub-route useGetTermByID)'
+        - 'cross-link F-002 batch-N drift facet
+          get_term_details_dto_12_join_hot_path_amplification'
+      ui_unverified: false
+    - facet_id: tabs_auto_hide_on_zero_count_no_empty_state
+      drift_class: ui_tab_auto_hide_obscures_capability
+      severity: LOW
+      observed: |-
+        TermDetailsTabs.tsx:24, 30, 36 — three tabs (Linked entities,
+        Linked columns, Linked terms) carry `hidden: !termDetails?.entitiesUsingCount`
+        etc. A Term with zero linked entities silently has NO "Linked
+        entities" tab in the strip. Operators new to ODD landing on a
+        Term page cannot tell whether the platform DOES support linking
+        entities — there is no signal until at least one link exists.
+        Discoverability gap. The Query examples tab is ALWAYS shown
+        (no hidden gate) which is the correct discoverability shape;
+        the other three should match.
+      expected: |-
+        Either (a) show all five tabs always, with an empty-state hint
+        ("0 linked entities — click 'Add term to entity' in the
+        DataEntity detail page to link"); OR (b) keep the hidden gate
+        but expose an "Add" affordance from the Overview tab pointing
+        to the linking flow.
+      evidence:
+        - 'TermDetailsTabs.tsx:14-44 (tabs declaration with hidden flags)'
+      ui_unverified: false
+    - facet_id: linked_terms_overview_panel_vs_linked_terms_tab_dual_surface
+      drift_class: ui_dual_surface_same_data_inconsistent_affordances
+      severity: LOW
+      observed: |-
+        The Term Overview tab carries a "TERMS" mini-panel
+        (Overview.tsx:65-72 → TermLinkedTerms component) showing linked
+        terms inline with Add/Delete affordances. The Linked-terms TAB
+        (TermDetailsRoutes.tsx:32 → LinkedTermsList component) shows
+        the SAME linked terms in a paginated table — but with a search
+        input, no Add affordance, and no Delete affordance. Operators
+        looking at the Overview panel + clicking through to the
+        Linked-terms tab see the same data twice with different
+        affordances. Reverse direction confused too — adding a term
+        from the Overview panel doesn't navigate to the tab, but the
+        tab silently inherits the new entry.
+      expected: |-
+        Either (a) consolidate — Overview panel shows summary +
+        "see all" link to the tab; tab carries all affordances; OR
+        (b) document the dual-surface intent (overview = "your most
+        recent linked terms"; tab = "search across all linked terms").
+      evidence:
+        - 'Overview.tsx:65-72 (TermLinkedTerms inline panel)'
+        - 'TermLinkedTermsList.tsx:15-100 (full tab surface)'
+      ui_unverified: false
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+      - TermDetailsView mount-fires fetchTermDetails + fetchResourcePermissions exactly once per termId change
+      - TermDetailsTabs auto-hide logic — assert tab hidden when count == 0; visible when count > 0
+      - Overview double-fetch — assert N=2 invocations of getTermDetailsDto per page open (pin the current shape OR fix and assert 1)
+      - TermDetailsRoutes navigate-to-overview default — assert empty path redirects to /overview
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+      - End-to-end navigation /terms/:termId mount → /overview redirect → sub-route mount → API calls observed
+      - Tab visibility assertion — Term with linked entities renders the tab; Term without does not
+      - Query-examples sub-route permission gate — caller without QUERY_EXAMPLE_TERM_CREATE sees the linked-list but no Add button
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+      - Double-fetch latency pin — measure latency to first interactive on /terms/:termId/overview for a heavily-linked Term (target N=1000 linked entities)
+      - Tab switching latency — assert lazy-route activation time vs eager-mount baseline
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+      - Query-examples sub-route — unauthorized caller bypasses WithPermissionsProvider via direct route hit and observes content
+      - Overview tab linked-terms panel — TERM_UPDATE leak via DOM inspection on the Add-term button visibility
+status: ui-complete
+related_features:
+  - F-002
+  - F-024
+  - F-056
+related_concepts:
+  - term-detail-composition
+  - tab-affordance-gating
+  - lazy-route-loading
+maintainer_curated: false

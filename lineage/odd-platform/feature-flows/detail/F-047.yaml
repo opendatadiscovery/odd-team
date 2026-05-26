@@ -341,5 +341,197 @@ proposed_local_probes:
       verbatim (locks XSS-class).
     type: security
     cost: low
-ui_unverified: true  # the per-column edit panel UI is implicit; exact UI component (Structure tab field-editor) not yet enriched
+ui_unverified: true  # most UI-tier hops resolved via ui-review-2026-05-26 slice K; backend-coupled facets (XSS render path, BULK-REPLACE form, delete-all-then-recreate tags, SecurityConstants wiring) still flagged ui_unverified pending wire-level probe
 maintainer_curated: false
+batch_extensions:
+- batch: ui-review-2026-05-26-K
+  entry_point_added: |-
+    ui-component:DatasetFieldOverview — the per-column right-rail editor
+    composition (DataEntityDetails/DatasetStructure/DatasetStructureOverview/DatasetStructureView/DatasetFieldOverview/DatasetFieldOverview.tsx,
+    93loc, hooks=6). The component reads the SELECTED field from a jotai
+    atom (`selectedFieldIdAtom` hydrated by DatasetStructureOverviewProvider)
+    and renders SIX sub-editors in fixed order: DatasetFieldHeader (business-name
+    via DatasetFieldInternalNameForm), DatasetFieldStats (read-only),
+    DatasetFieldDescription (Edit/Preview Markdown), DatasetFieldTags
+    (TagsEditForm), DatasetFieldOverviewEnums (DatasetFieldEnumsForm),
+    DatasetFieldTerms (AssignFieldTermForm + TermItem delete). Each sub-editor
+    is the UI dispatch point for ONE of the F-047 PUT/POST/DELETE endpoints.
+  contributing_nodes_added:
+  - odd-platform ts react-component component:DatasetFieldOverview
+  - odd-platform ts react-component component:DatasetFieldHeader
+  - odd-platform ts react-component component:DatasetFieldInternalNameForm
+  - odd-platform ts react-component component:DatasetFieldDescription
+  - odd-platform ts react-component component:DatasetFieldDescriptionEdit
+  - odd-platform ts react-component component:DatasetFieldDescriptionPreview
+  - odd-platform ts react-component component:DatasetFieldTags
+  - odd-platform ts react-component component:TagsEditForm
+  - odd-platform ts react-component component:TagsEditFormAutocomplete
+  - odd-platform ts react-component component:DatasetFieldOverviewEnums
+  - odd-platform ts react-component component:DatasetFieldEnumsForm
+  - odd-platform ts react-component component:DatasetFieldEnumsFormItem
+  - odd-platform ts react-component component:DatasetFieldTerms
+  - odd-platform ts react-component component:AssignFieldTermForm
+  - odd-platform ts react-component component:TermItem
+  notes: |-
+    UI-tier confirmation of F-047 per ui-review-2026-05-26 slice K. The
+    per-column edit panel previously marked `ui_unverified: true` is now
+    component-tier resolved — 15 UI components compose the surface; each
+    field-annotation drift facet maps to a specific UI dispatch site. The
+    review surfaces SIX novel UI-tier drift facets that strengthen the
+    existing backend findings + add UI-only concerns:
+
+    (1) **`DatasetFieldDescription` renders Markdown through the shared
+    `<Markdown value={...} />` component (DatasetFieldDescriptionPreview.tsx:14)
+    → MDEditor.Markdown WITHOUT rehype-sanitize** (Markdown.tsx:113-124). The
+    `description_verbatim_storage_no_sanitization_xss_class_at_per_column_surface`
+    backend facet is REAFFIRMED at the UI render path — verbatim DB content
+    flows directly into MDEditor.Markdown's `source` prop. Markdown.tsx has
+    NO `rehypePlugins: [rehypeSanitize]` configuration. The per-column
+    description is the SAME render pipeline as F-004's per-entity description.
+    STRENGTHENS existing facet:
+    `description_verbatim_storage_no_sanitization_xss_class_at_per_column_surface`.
+    NOT a new facet — the UI confirms the existing one. (Severity HIGH — UI
+    confirms storage-side XSS class flows to render unmodified.)
+
+    (2) **NEW UI-TIER DRIFT FACET — `TagsEditForm` resets ALL existing tags
+    on save, never sends a diff** (TagsEditForm.tsx:52-63). The submit
+    handler emits `compact([...data.tagNames.map(tag => tag.name)])` —
+    the FULL set of tags currently in the form state. The backend's
+    `updateDatasetFieldTags` (already documented as
+    `update_dataset_field_tags_delete_all_then_recreate_not_diff`) is
+    therefore matched by a UI-side full-set submission shape. UI MIRRORS
+    the bug: the form does NOT compute a diff, does NOT preserve external
+    tags that were never modifiable in the dialog, and the dialog title
+    "Edit Tags" obscures that pressing Save with zero rows clears every
+    INTERNAL tag. STRENGTHENS existing facet:
+    `update_dataset_field_tags_delete_all_then_recreate_not_diff`.
+    NEW UI-tier drift facet candidate:
+    `tags_edit_form_replace_semantics_no_confirmation_dialog_silently_clears_all_tags_on_empty_save`.
+    (Severity HIGH — same data-loss class with NO confirmation guard.)
+
+    (3) **NEW UI-TIER DRIFT FACET — `DatasetFieldEnumsForm` BULK-REPLACE
+    confirms backend create-named-bulk-replace** (DatasetFieldEnumsForm.tsx:90-105).
+    The submit handler sends ALL items (those WITH `id` AND those WITHOUT)
+    in a single `bulkEnumValueFormData.items[]` array. Backend's
+    `EnumValueServiceImpl` BULK-REPLACE branch then soft-deletes any
+    existing items whose id is not in the submitted list. The UI form
+    PRE-POPULATES with existing items via `defaultValues` (lines 45-60) so
+    a normal Edit cycle re-submits them; but if the operator removes a
+    row via `handleRemove`/"Delete" button (line 111-116) and presses Save,
+    the omitted item is silently soft-deleted server-side — the UI does
+    NOT confirm "this will delete N enum values" nor surface deleted-rows
+    count. STRENGTHENS existing facet:
+    `create_enum_value_named_create_implemented_bulk_replace`. NEW UI-tier
+    drift facet candidate:
+    `enums_form_remove_row_silently_soft_deletes_no_confirmation`.
+    (Severity MEDIUM — same data-loss class, no UI guard.)
+
+    (4) **NEW UI-TIER DRIFT FACET — `DatasetFieldDescription` Add/Edit
+    button is gated by `Permission.DATASET_FIELD_DESCRIPTION_UPDATE` —
+    correct permission name** (DatasetFieldDescription.tsx:66). NO drift
+    against the backend `DATASET_FIELD_DESCRIPTION_UPDATE` SecurityRule.
+    However, `DatasetFieldTags` uses `Permission.DATASET_FIELD_TAGS_UPDATE`
+    (line 41) and `DatasetFieldOverviewEnums` uses
+    `Permission.DATASET_FIELD_ENUMS_UPDATE` (line 79) — both match the
+    documented permissions page. CONTRAST with the SecurityConstants
+    wiring bugs (term-endpoint gated by DATA_ENTITY_ADD_TERM at server
+    line 299, alert-status gated by DATASET_FIELD_ADD_TERM at 295-296):
+    the UI uses the DOCUMENTED permission names while the server WIRES
+    DIFFERENT names, so a Policy admin granting `DATASET_FIELD_ADD_TERM`
+    sees the UI button DISABLED (UI uses `DATASET_FIELD_ADD_TERM` for the
+    Add term button at DatasetFieldTerms.tsx:77 — which the SERVER ALSO
+    requires for the term endpoint per the actual wired permission… but
+    the SecurityConstants.java:299 wiring says the *POST endpoint* gates
+    on `DATA_ENTITY_ADD_TERM`). The UI/server mismatch on TERM endpoint
+    means: granting the documented `DATASET_FIELD_ADD_TERM` enables the
+    UI button BUT the server requires `DATA_ENTITY_ADD_TERM`; pressing
+    the button → 403. STRENGTHENS existing facet:
+    `security_constants_wiring_bug_term_endpoint_gated_by_data_entity_permission`.
+    NEW UI-tier facet:
+    `ui_button_enabled_under_dataset_field_add_term_server_403s_on_data_entity_add_term_mismatch_silent_403`.
+    (Severity HIGH — confused operator: UI says "you can"; server says 403.)
+
+    (5) **NEW UI-TIER DRIFT FACET — `TermItem` delete handler chains a
+    .catch() with EMPTY body** (TermItem.tsx:37-45). The
+    `deleteTerm({ datasetFieldId, termId }).then(...).catch()` empty catch
+    swallows the 204 No Content "success" (per backend's
+    `delete_term_from_dataset_field_filters_description_link_isfalse_survives`
+    finding) AND any actual error. Operator clicks Delete on a term linked
+    via description marker → server returns 204 → UI optimistically removes
+    the row → next reload the term is STILL there (description-link
+    survived). UI has NO toast, NO re-fetch, NO error display. STRENGTHENS
+    existing facet:
+    `delete_term_from_dataset_field_filters_description_link_isfalse_survives`.
+    NEW UI-tier facet:
+    `term_item_delete_empty_catch_no_refetch_description_link_term_reappears_on_next_view`.
+    (Severity MEDIUM — operator-visible "ghost term" UX bug.)
+
+    (6) **NEW UI-TIER DRIFT FACET — `DatasetFieldOverviewEnums`
+    `useEffect` re-dispatches `fetchDataSetFieldEnum` on every selected-field
+    change (lines 35-43)** but does NOT abort the in-flight previous fetch
+    on quick selection switching. Combined with the BULK-REPLACE last-writer-
+    wins backend behaviour
+    (`bulk_replace_enum_value_no_concurrency_control_last_writer_wins`),
+    a fast-clicking operator could mutate one field's enums then before
+    the response lands switch to another field — the response of the first
+    mutation could be displayed alongside the second field's state if the
+    promise resolves out of order. UI does NOT use AbortController. NEW
+    UI-tier facet candidate:
+    `enums_fetch_useeffect_no_abort_signal_promise_race_under_quick_field_switching`.
+    (Severity LOW — race condition is theoretical at the per-column tier.)
+
+    UI hops added to the chain (resolved this batch):
+
+      - hop 0 — UI ROUTE: /dataentities/{id}/structure[/{versionId}] →
+        DatasetStructureOverview reads versionId from useDataEntityRouteParams,
+        dispatches `fetchDataSetStructureLatest` or `fetchDataSetStructure`,
+        on latest-fetch SUCCESS auto-navigates to `datasetStructurePath(id, dataSetVersionId)`
+        with `{replace:true}` (DatasetStructureOverview.tsx:22-39) — silently
+        rewrites the URL with the resolved version_id.
+
+      - hop 0a — UI SELECTION: `selectedFieldIdAtom` (jotai) defaults to
+        `datasetStructureRoot[0].id` (DatasetStructureOverviewProvider.tsx:35-42).
+        DatasetStructureItem.handleRowClick sets the atom
+        (DatasetStructureItem.tsx:71-74); DatasetFieldOverview reads it
+        (DatasetFieldOverview.tsx:23) and conditionally renders. NO permission
+        gating at field-selection level — every field is selectable for view;
+        backend `DatasetFieldResourceExtractor` runs the per-row JOIN ONLY at
+        mutation request time.
+
+      - hop 0b — UI MUTATION DISPATCH: SIX sites, ALL reading the same
+        `field.id` from the selected-row atom:
+          * DatasetFieldInternalNameForm.onSubmit → `useUpdateDatasetFieldInternalName`
+            (PUT /api/datasets/.../fields/{fieldId}/internal_name)
+          * DatasetFieldDescription.handleUpdateDescription via `useTermWiki`
+            → `updateDataSetFieldDescription` Redux thunk
+            (PUT /api/datasets/.../fields/{fieldId}/description)
+          * TagsEditForm.handleSubmit → `updateDataSetFieldTags` Redux thunk
+            (PUT /api/datasets/.../fields/{fieldId}/tags) — FULL SET, no diff
+          * DatasetFieldEnumsForm.handleFormSubmit → `createDataSetFieldEnum`
+            (POST /api/datasets/.../fields/{fieldId}/enum_values) — BULK-REPLACE
+          * AssignFieldTermForm.onSubmit → `useAddDatasetFieldTerm`
+            (POST /api/datasets/.../fields/{fieldId}/terms)
+          * TermItem.handleDelete → `useDeleteDatasetFieldTerm`
+            (DELETE /api/datasets/.../fields/{fieldId}/terms/{termId})
+
+      - hop 0c — RENDER: DatasetFieldDescriptionPreview → `<Markdown
+        value={value} variant='subtitle1' />` →
+        Markdown.tsx:113 → MDEditor.Markdown with NO rehypeSanitize.
+        XSS render-path identical to F-004 (per-entity description).
+        TermItem also renders `term.definition` through the SAME Markdown
+        component (TermItem.tsx:61).
+
+    Coherence sweep STRENGTHENS=4 — F-047 existing facets at the UI tier:
+      - `description_verbatim_storage_no_sanitization_xss_class_at_per_column_surface` —
+        confirmed at UI render path (Markdown.tsx no rehypeSanitize).
+      - `update_dataset_field_tags_delete_all_then_recreate_not_diff` —
+        UI mirrors the backend pattern (TagsEditForm sends full set).
+      - `create_enum_value_named_create_implemented_bulk_replace` — UI
+        confirms (DatasetFieldEnumsForm sends all items including removed).
+      - `delete_term_from_dataset_field_filters_description_link_isfalse_survives` —
+        UI compounds (TermItem empty-catch, no refetch).
+      - `security_constants_wiring_bug_term_endpoint_gated_by_data_entity_permission` —
+        UI uses the DOCUMENTED `DATASET_FIELD_ADD_TERM` permission; server
+        actually requires `DATA_ENTITY_ADD_TERM`. Silent 403 mismatch.
+    SUPERSEDES=0. CONFLICTS=0. NEW=5 (one tag, one enum, one term-403, one
+    term-ghost, one race).

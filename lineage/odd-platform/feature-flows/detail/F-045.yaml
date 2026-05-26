@@ -266,5 +266,138 @@ proposed_local_probes:
       (max(VERSION)) NOT version 3 (max(created_at)).
     type: integration
     cost: medium
-ui_unverified: true  # the Structure tab + Compare tab UI components are not explicitly enumerated in the chain above; verification deferred to UI-axis enrichment
+ui_unverified: true  # backend security facets (cross-dataset version-id leak, asymmetric error model, no SecurityRule) still flagged ui_unverified pending wire-level probe; UI-tier hops resolved this review
 maintainer_curated: false
+batch_extensions:
+- batch: ui-review-2026-05-26-K
+  entry_point_added: |-
+    ui-component:DatasetStructureOverview + ui-component:DatasetStructureHeader
+    — the Structure tab UI surface at `/dataentities/{id}/structure[/{versionId}]`.
+    The view layer reads `dataEntityId` + optional `versionId` from
+    `useDataEntityRouteParams`; on initial mount with NO version_id it
+    dispatches `fetchDataSetStructureLatest({dataEntityId})` and on success
+    REPLACES the URL with `datasetStructurePath(dataEntityId, dataSetVersionId)`
+    via `navigate(..., {replace: true})` (DatasetStructureOverview.tsx:22-39).
+    The header (DatasetStructureHeader.tsx:46-53) re-dispatches
+    `fetchDataSetStructure` on user revision selection AND navigates to
+    the new versionId URL. The "Revision compare" button
+    (DatasetStructureHeader.tsx:69-73) builds the URL via
+    `datasetStructureComparePath(dataEntityId, firstVersionId, secondVersionId)`
+    seeding the diff query with the OLDEST vs NEWEST version IDs
+    (sortedVersions[0] vs sortedVersions[last]).
+  contributing_nodes_added:
+  - odd-platform ts react-component component:DatasetStructureOverview
+  - odd-platform ts react-component component:DatasetStructureView
+  - odd-platform ts react-component component:DatasetStructureHeader
+  - odd-platform ts react-component component:DatasetStructureTypeCounts
+  - odd-platform ts react-component component:DatasetStructureList
+  - odd-platform ts react-component component:DatasetStructureItem
+  - odd-platform ts react-component component:DatasetStructureCompare
+  - odd-platform ts react-component component:DatasetStructureCompareHeader
+  - odd-platform ts react-component component:DatasetStructureCompareList
+  - odd-platform ts react-component component:DatasetStructureCompareListItem
+  notes: |-
+    UI-tier confirmation of F-045 per ui-review-2026-05-26 slice K. The
+    Structure tab and Revision-compare tab UI components previously marked
+    `ui_unverified: true` are now component-tier resolved — 10 UI components
+    compose the revision-history surface; each backend drift facet maps to
+    a specific UI consequence. The review surfaces TWO novel UI-tier drift
+    facets that strengthen the existing backend findings:
+
+    (1) **NEW UI-TIER DRIFT FACET — `DatasetStructureOverview` silently
+    URL-rewrites on latest-fetch SUCCESS** (DatasetStructureOverview.tsx:32-37).
+    On first navigation to `/dataentities/{id}/structure` (no version_id),
+    the component dispatches `fetchDataSetStructureLatest`, then on `.unwrap()`
+    success calls `navigate(datasetStructurePath(dataEntityId, dataSetVersionId), {replace: true})`.
+    The URL silently changes to include the resolved version_id with
+    `replace:true` — the operator's URL bar now carries a version-id they
+    did not type. Combined with the backend
+    `latest_means_max_version_not_max_created_at_silent_divergence_on_replay`
+    facet, an operator on a dataset where a replay produced a version with
+    `max(VERSION) != max(created_at)` gets the URL pinned to the
+    max(VERSION) row WITHOUT any indication this might not be the
+    "most-recent" revision. STRENGTHENS existing facet:
+    `latest_means_max_version_not_max_created_at_silent_divergence_on_replay`.
+    NEW UI-tier facet candidate:
+    `url_replace_on_latest_resolve_silently_pins_max_version_id_no_signal_of_replay_divergence`.
+    (Severity MEDIUM.)
+
+    (2) **NEW UI-TIER DRIFT FACET — `DatasetStructureCompare` swallows
+    backend 500 via `AppErrorPage`** (DatasetStructureCompare.tsx:46-51).
+    The component uses `useDatasetStructureCompare` (React Query) and
+    renders `<AppErrorPage showError={isError} ... error={error as unknown as ErrorState}>`
+    when the diff hook returns an error. Combined with the backend
+    `diff_500_vs_400_asymmetric_error_model` facet, an operator with two
+    cross-dataset version-ids (or one missing version-id) sees an
+    UNDIFFERENTIATED error page — same surface for "platform broken"
+    (500) and "wrong id" (400 typed). The UI does NOT discriminate
+    between 4xx and 5xx; both render the same AppErrorPage. STRENGTHENS
+    existing facet: `diff_500_vs_400_asymmetric_error_model`. NEW UI-tier
+    facet candidate:
+    `compare_error_page_does_not_differentiate_4xx_vs_5xx_operator_cannot_distinguish_wrong_id_from_platform_broken`.
+    (Severity LOW — UX manifestation.)
+
+    (3) **CORROBORATION ONLY — `DatasetStructureCompareHeader` revision
+    pickers** (DatasetStructureCompareHeader.tsx:89-144) read
+    `getDatasetVersions(dataEntityId)` from Redux — version list is the
+    PARENT dataset's `data_entity_id` scope. The picker prevents
+    self-comparison via `disabled={rev.id === +secondVersionId}`/
+    `firstVersionId` (lines 99, 129). HOWEVER, the URL `firstVersionId` +
+    `secondVersionId` query-params are READ from
+    `useQueryParams<StructureCompareQueryParams>` (DatasetStructureCompare.tsx:24-26):
+    a user CAN paste a hand-edited URL with `firstVersionId` and
+    `secondVersionId` belonging to OTHER datasets (the backend's
+    `cross_dataset_version_id_leak_path_component_is_documentation_only`
+    + `cross_dataset_diff_returns_200_with_nonsensical_diff_body` facets
+    will return 200 with a nonsensical diff). UI does NOT validate the
+    query-params against the loaded `datasetVersions` list. STRENGTHENS
+    existing facet:
+    `cross_dataset_diff_returns_200_with_nonsensical_diff_body`.
+
+    (4) **CORROBORATION ONLY — `DatasetStructureCompareListItem`** renders
+    diff per-field via `fieldDiff.states[firstVersionId]` /
+    `[secondVersionId]` (lines 31-32). The component blindly trusts the
+    backend's `structureDiffList` payload — if the backend returns a
+    cross-dataset semantically-nonsense diff (per the leak), the UI
+    renders it AS IF a valid diff. The diff list also passes
+    `showChangesOnly` via a jotai atom (DatasetStructureCompare.tsx:14-22)
+    which is purely a CLIENT-SIDE filter on the array.
+
+    UI hops added to the chain (resolved this batch):
+
+      - hop 0 — UI ROUTE: /dataentities/{id}/structure[/{versionId}] →
+        DatasetStructureOverview (mount; latest-fetch + URL replace).
+        Sibling route /dataentities/{id}/structure/compare?firstVersionId=..&secondVersionId=..
+        → DatasetStructureCompare (mount; useDatasetStructureCompare React-Query
+        hook driving GET /api/datasets/{id}/structure/diff).
+
+      - hop 0a — UI READ DISPATCH: `fetchDataSetStructureLatest({dataEntityId})`
+        → GET /api/datasets/{dataEntityId}/structure
+        (DatasetStructureOverview.tsx:31). The backend path component
+        `data_entity_id` is REQUIRED for the GET URL but NOT enforced
+        against `dataset_version_id` in the latest-variant query
+        (per backend `cross_dataset_version_id_leak_path_component_is_documentation_only`).
+
+      - hop 0b — UI READ DISPATCH: `fetchDataSetStructure({dataEntityId, versionId})`
+        → GET /api/datasets/{dataEntityId}/structure/{versionId}
+        (DatasetStructureHeader.tsx:46-53). Same backend cross-dataset
+        leak applies — UI passes the version_id from URL without validating
+        it belongs to dataEntityId.
+
+      - hop 0c — UI READ DISPATCH: `useDatasetStructureCompare({dataEntityId, firstVersionId, secondVersionId, showChangesOnly})`
+        → GET /api/datasets/{dataEntityId}/structure/diff?first=..&second=..
+        (DatasetStructureCompare.tsx:30-35). UI passes URL-supplied
+        version-ids unchecked.
+
+    Coherence sweep STRENGTHENS=4 — F-045 existing facets at the UI tier:
+      - `cross_dataset_version_id_leak_path_component_is_documentation_only` —
+        UI does NOT validate version_id against datasetVersions; URL-paste
+        attack vector confirmed at compare query-params layer.
+      - `cross_dataset_diff_returns_200_with_nonsensical_diff_body` — UI
+        blindly renders structureDiffList; no client-side validation.
+      - `latest_means_max_version_not_max_created_at_silent_divergence_on_replay` —
+        UI silently URL-replaces with max(VERSION) row; operator unaware.
+      - `diff_500_vs_400_asymmetric_error_model` — UI swallows both as
+        same AppErrorPage; no operator differentiation.
+    SUPERSEDES=0. CONFLICTS=0. NEW=2 (URL-replace silent pin, error-page
+    no 4xx-vs-5xx discrimination).

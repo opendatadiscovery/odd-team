@@ -69,8 +69,115 @@ cross_pillar_relationships:
 batch_origin: T
 created_in_batch: T
 batch_extensions:
-- batch: ZI
+- batch: ui-review-2026-05-26
   entry_point_added: |-
+    ui-component cluster — Directory/Directory/Directory.tsx (level 1
+    grid) + DataSourceList.tsx (level 2 list) + Entities.tsx (level 3+4
+    surface) + EntitiesList.tsx + EntityItem.tsx + EntitiesTabs.tsx +
+    TableHeader.tsx + DirectoryBreadCrumbs.tsx + DirectoryItem.tsx. The
+    UI realisation of all 4 levels of the F-023 drill-down. Previously
+    only the level-1 ROOT component (Directory.tsx) was anchored at hop
+    UI-1 (via batch ZA). The level 2/3/4 UI components are the
+    operator-observable rendering of each subsequent level's API
+    response.
+  contributing_nodes_added:
+    - odd-platform ts react-component:Directory_level2_DataSourceList
+    - odd-platform ts react-component:Entities_level34
+    - odd-platform ts react-component:EntitiesList
+    - odd-platform ts react-component:EntityItem
+    - odd-platform ts react-component:EntitiesTabs
+    - odd-platform ts react-component:TableHeader (Directory-side)
+    - odd-platform ts react-component:DirectoryBreadCrumbs
+    - odd-platform ts react-component:DirectoryItem (Directory-side, level-1 card)
+  notes: |-
+    UI-review-2026-05-26 walks the level 2/3/4 React components.
+    Findings:
+
+    (A) LEVEL-2 — DataSourceList.tsx (128 LOC). The `transformToHeaderCells`
+    function (line 38-60) DYNAMICALLY derives the table column set from
+    the FIRST response's `properties` object — meaning EVERY @PathField-
+    annotated property leaks visually into the table header.
+    PostgreSQL renders {host, database, port, entitiesCount}; Snowflake
+    renders {account, warehouse, entitiesCount}; Kafka adds
+    {cluster, topic}. NO redaction step at the UI tier; the
+    `oddrn_reflection_infrastructure_property_leak` facet from F-023
+    batch T is now CONFIRMED at the UI rendering tier — the leaked
+    properties become COLUMNS in a table the operator browses. The
+    table column order is also data-dependent (uniq of all keys) — UX
+    consequence: two deployments with different first-row data show
+    column orders that differ.
+
+    (B) LEVEL-3 — EntitiesTabs.tsx (44 LOC). Tab list is composed of:
+    one hardcoded "All" tab pointing to `directoryDataSourcePath(prefix,
+    dsId, 'all')` (line 23-27) + dynamic per-type tabs (line 17-21). The
+    `'all'` literal is the load-bearing magic string flagged by F-023
+    batch ZI note (2). EntitiesTabs.tsx:45 sets `handleTabChange={() => {}}`
+    — empty handler — meaning tab CLICKS rely on the `<AppTabs>`
+    component's internal navigation via the `link` field, NOT a state
+    update. The synchronisation between selectedTab state (line 14, 33-37)
+    and the URL is one-way (URL drives selectedTab on mount + URL change,
+    but tab clicks navigate via Link). A regression in AppTabs that
+    triggers handleTabChange before the Link fires would leave the SPA
+    in an inconsistent state.
+
+    (C) LEVEL-4 — Entities.tsx + EntitiesList.tsx + EntityItem.tsx. The
+    EntitiesList uses `react-infinite-scroll-component` (EntitiesList.tsx:46-56)
+    with `size: 30` per page (Entities.tsx:38). The page-vs-count drift
+    flagged by F-023 facet `page_vs_count_predicate_divergence_directory_level_4`
+    surfaces at the UI as `total` (Entities.tsx:50-53) read from
+    `entitiesResponse.pages[0].entities.pageInfo.total` AND the
+    `entities.length` derived from `flatMap(page => page.entities.items)`
+    (line 55). If the backend page query returns MORE rows than the
+    count claims, `total` displays X but the infinite-scroll loads X+N
+    rows — operator sees "30 entities" header but scrolls past 35
+    entries. The `isContentEmpty={!total}` prop (line 85) hides the
+    EmptyContentPlaceholder when `total > 0` — but if `total = 0`
+    while `entities.length > 0` (the page-vs-count divergence direction),
+    the operator sees both the empty placeholder AND populated rows.
+
+    (D) ENTITYITEM CLICK-TARGET — EntityItem.tsx:44
+    (`<Link to={dataEntityDetailsPath(id)}>`). Same path as F-001 hop-1
+    inflation-loop closure point. Clicking ANY Directory level-4 entity
+    fires the F-001 inflation loop: +2 view_count per click. The
+    Directory becomes ANOTHER UI-tier surface that closes the F-001
+    inflation loop — IN ADDITION TO the home-page Popular-strip closure
+    already documented. Operators using Directory to browse the catalog
+    are simultaneously inflating view_count on every entity they open.
+
+    (E) TYPE COLUMN VISIBILITY — TableHeader.tsx:22 + EntityItem.tsx:81.
+    The "Type" column is HIDDEN when `typeId` is set (a specific entity
+    type is selected) and SHOWN when `typeId` is undefined (the "All"
+    tab). Conditional column rendering means the table layout DIFFERS
+    between tabs without a width-stable affordance — Web-Vitals CLS
+    shift on tab change.
+
+    (F) DIRECTORY BREADCRUMBS — DirectoryBreadCrumbs.tsx:13-23. Three-
+    level breadcrumb (`directory / {prefix} / {dataSourceId}`). NO
+    breadcrumb for the level-4 type filter — once the user is on the
+    "Postgres" tab, the URL is `/directory/postgresql/123/45` but the
+    breadcrumb reads only `Directories > PostgreSQL > {dsName}`. The
+    operator cannot navigate "back" to the All-types view via
+    breadcrumb — has to click the All tab. Minor UX gap.
+
+    (G) ROUTE-PARAM NAN GUARD — F-023 batch ZI note (3) already
+    surfaced `useDirectoryRouteParams` lacks isNaN guard on
+    `parseInt(dataSourceId)`. The six consumers (DataSourceList.tsx:27,
+    Entities.tsx:20, DirectoryBreadCrumbs.tsx:13, EntitiesTabs.tsx:13,
+    EntityItem.tsx:40, TableHeader.tsx:13) are now CONFIRMED via
+    direct read — all six call `useDirectoryRouteParams()` and use
+    the returned values WITHOUT guarding. Deep-link with malformed
+    dataSourceId yields NaN propagation across the entire level-3/4
+    UI surface.
+
+    (H) DIRECTORYITEM HIDDEN BRAND DATA — DirectoryItem.tsx:16
+    (`<Link to={prefix}>`). The level-1 card link is RELATIVE — on
+    `/directory` this resolves to `/directory/{prefix}` (correct
+    drilldown). The Overview-side mini Directory at
+    `Overview/Directory/DirectoryItem.tsx` uses the SAME relative link
+    pattern from `/` — yielding `/{prefix}` which is OFF-ROUTE (see
+    F-141 hop 3c). Two implementations of the same component name
+    diverge in semantics depending on the parent route.
+
     ui_route:/directory/* — URL-shape contract module
     `routes/directoryRoutes.ts` (63 lines) exporting `directoryPath()`,
     `directoryDataSourcePath(prefix, dsId?, typeId?)`, and
@@ -188,6 +295,32 @@ batch_extensions:
     the catalog-shape surface alongside lineage's GRAPH-shape;
     F-008/P-10 ingestion-side relationship — Directory exposes what
     Batch Ingestion populates). SUPERSEDES=0. CONFLICTS=0.
+- batch: ui-review-2026-05-26-slice-M-metadata-stale
+  entry_point_added: |-
+    Cross-link to F-208 (Data Entity Staleness Indicator) and F-206
+    (Entity Class Badge). The Directory's level-4 EntityItem rows render
+    BOTH MetadataStale (the orange-clock staleness icon, SHB-001 anchor)
+    AND EntityClassItem + EntityTypeItem (the colour-coded class chip
+    + the type label) per row. These are the cross-cutting metadata
+    widgets that the Directory consumes from the GET /api/directory/...
+    response payloads. Per-row visual semantics: class colour →
+    entity-class taxonomy; type label → entity-type sub-taxonomy;
+    stale icon → ingestion-freshness signal. All three are silently
+    absent when the corresponding fields are unset (per F-208 facet 6
+    and F-206 facet 3).
+  contributing_nodes_added: []
+  notes: |-
+    No new F-023 drift facets. The cross-link makes traceable:
+      - F-206 anchors EntityClassItem + EntityTypeItem at the shared
+        widget primary source; F-023's EntityItem is a primary consumer
+        of both
+      - F-208 anchors MetadataStale + DataEntityStaleDetector; F-023's
+        EntityItem is a primary consumer of MetadataStale
+      - The level-4 Directory page is the densest list-rendering
+        surface in the SPA (paged level-4 entities); any drift in the
+        shared widgets amplifies maximally here
+    Recorded for traceability on the next Directory EntityItem
+    enrichment pass.
 discovered_from_entry_point: rest:GET /api/directory + GET /api/directory/datasources?prefix={...} + GET /api/directory/datasources/{id}/types + GET /api/directory/datasources/{id}?type_id=&page=&size=
 contributing_nodes:
 - odd-platform ts routes route:directory (batch ZI — UI ROUTE hop-0 — /directory/* URL-shape contract; mounted at App.tsx:72 BARE; toolbar tab unconditional; useDirectoryRouteParams NaN-swallowing on dataSourceId)

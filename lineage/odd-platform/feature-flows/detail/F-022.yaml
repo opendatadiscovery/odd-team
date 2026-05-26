@@ -17,6 +17,11 @@ drift_class_summary:
 - six_sidecar_audit_silence_pattern_dq_severity_corroboration
 - read_collaborative_posture_p04_application
 - disabled_mode_anonymous_reach
+- ui_route_hides_dq_test_reports_for_soft_deleted_entities_inconsistent_with_backend_forensic_preservation  # batch UI-L 2026-05-26
+- testreportitem_auto_expand_below_five_tests_hardcoded_threshold_silent_to_operator  # batch UI-L 2026-05-26
+- testreport_severity_dropdown_fires_mutation_on_change_no_confirmation_no_pending_state  # batch UI-L 2026-05-26
+- testreport_details_lazy_chunk_failure_no_error_boundary_spinner_indefinitely  # batch UI-L 2026-05-26
+- testreport_expectation_json_dumped_unredacted_failed_row_samples_leak_class  # batch UI-L 2026-05-26
 cross_pillar_relationships:
 - pillar: P-07
   kind: feeds
@@ -104,6 +109,145 @@ batch_extensions:
     `dataQualityRoutes.ts` URL declaration corroborates the existing
     F-022-vs-F-032 sibling-split framing and adds NO new findings on
     F-022 itself.
+- batch: UI-L-2026-05-26
+  entry_point_added: |-
+    react-component:TestReport (the per-entity test-reports tab UI
+    SHELL) + react-component:TestReportItem (per-suite expandable test
+    list row) + react-component:TestReportDetails (right-pane lazy-
+    loaded detail with Overview / History sub-tabs) +
+    react-component:TestReportDetailsOverview (severity mutation +
+    last-run summary + parameters JSON dump). UI tab mounted at
+    DataEntityDetailsRoutes.tsx:56-69 wrapped in `RestrictedRoute
+    isAllowedTo={!isStatusDeleted}` — when entity status is DELETED
+    the tab redirects to ../overview (consistent with F-022 invariant
+    that DELETED entities preserve DQ history; the UI route, however,
+    HIDES the read path despite the backend allowing it via
+    existsIncludingSoftDeleted — cross-channel inconsistency UI vs
+    backend).
+  contributing_nodes_added:
+  - odd-platform ts react-component component:TestReport
+  - odd-platform ts react-component component:TestReportItem
+  - odd-platform ts react-component component:TestItem
+  - odd-platform ts react-component component:TestReportDetails
+  - odd-platform ts react-component component:TestReportDetailsOverview
+  - odd-platform ts react-component component:TestReportDetailsOverviewParametersModal
+  notes: |-
+    Six refinements + three NEW UI-tier drift facets surface from the
+    TestReport family primary-source walk (slice L DED tabs UI sweep
+    2026-05-26):
+
+    (1) NEW UI-TIER DRIFT FACET — UI ROUTE HIDES DQ READ FOR
+    SOFT-DELETED ENTITIES; BACKEND PRESERVES IT (HIGH,
+    cross-channel inconsistency). DataEntityDetailsRoutes.tsx:56-69
+    wraps the `test-reports/*` route in `<RestrictedRoute
+    isAllowedTo={!isStatusDeleted} redirectTo='../overview'
+    component={TestReport} />`. Operator navigating to the
+    Test reports tab on a SOFT-DELETED entity is silently
+    redirected to Overview. BUT the backend
+    `DataQualityServiceImpl.existsIncludingSoftDeleted` at
+    DataQualityServiceImpl.java:55,67,96 EXPLICITLY preserves DQ
+    visibility for soft-deleted datasets — the
+    soft_delete_inclusive_existence_check facet was framed at the
+    backend tier as "forensic-coverage choice". The UI undoes that
+    forensic preservation for the operator. The
+    REFACTOR-NNN should be either (a) drop the
+    `isAllowedTo={!isStatusDeleted}` gate on the test-reports route
+    OR (b) document the asymmetry. NEW drift facet to add:
+    `ui_route_hides_dq_test_reports_for_soft_deleted_entities_inconsistent_with_backend_forensic_preservation`.
+
+    (2) NEW UI-TIER DRIFT FACET — TestReportItem AUTO-EXPANDS
+    WHEN SUITE HAS FEWER THAN 5 TESTS (LOW, UX inconsistency).
+    TestReportItem.tsx:28-30 — `useEffect(() => { if
+    (dataQATestList.length < 5) setOpen(true); }, [dataQATestList])`.
+    Suites with 5+ tests stay collapsed; the threshold is hardcoded
+    and undocumented. Operators expecting "show all DQ tests by
+    default" or "show none by default" are surprised by a
+    silent 4-vs-5 boundary. Inconsistent with the DataEntityAlerts
+    pagination (size=30) and TestRunsHistory pagination (size=100)
+    which use round numbers. NEW drift facet candidate:
+    `testreportitem_auto_expand_below_five_tests_hardcoded_threshold_silent_to_operator`.
+
+    (3) NEW UI-TIER DRIFT FACET — Severity MUTATION FIRES ON CHANGE
+    NOT ON SUBMIT (MEDIUM, UX surprise). TestReportDetailsOverview.tsx:42-52
+    — `handleSeverityChange` directly dispatches
+    `setDataQATestSeverity({severity})` on every `AppSelect`
+    onChange event. There is NO confirmation, NO save button, NO
+    pending state. An operator opening the dropdown to read the
+    current value who scrolls through options accidentally mutates
+    every intermediate state. The backend
+    `setDataQATestSeverity` is the LONE mutation endpoint in
+    DataQualityController gated by `DATASET_TEST_RUN_SET_SEVERITY`
+    permission (per F-022 chain), but the UI surfaces it as an
+    immediate-effect dropdown — operationally surprising vs the
+    Notification Settings dialog (F-198) which uses a submit-button
+    flow. NEW drift facet candidate:
+    `testreport_severity_dropdown_fires_mutation_on_change_no_confirmation_no_pending_state`.
+
+    (4) UI CONFIRMS F-022 PNG-vs-JSON DOC DRIFT — NO BI ENGAGEMENT
+    SURFACE IN THE UI (LOW, refinement). The TestReport.tsx
+    component does NOT consume the SLA PNG badge endpoint
+    (/api/datasets/{id}/sla) — the badge is for BI tools, the
+    in-platform UI uses redux store + JSON. The
+    `datasetTestReport` selector at TestReport.tsx:29 reads the
+    JSON shape. STRENGTHENS the existing F-022
+    `png_vs_json_doc_drift_BI_audience_targeted` facet from the
+    UI side: the in-platform UI does not consume the doc-named
+    PNG endpoint, so the live-doc reader who follows the page
+    verbatim is operating in a deliberately-narrow BI audience
+    surface the UI itself doesn't model. No UI signal would
+    catch the doc drift.
+
+    (5) PARAMETERS DUMP — JSON.stringify(qualityTest?.expectation,
+    null, 2) WITH NO REDACTION (MEDIUM, info-exposure UX).
+    TestReportDetailsOverview.tsx:54 dumps the full expectation
+    JSON via `JSON.stringify(qualityTest?.expectation, null, 2)`
+    into a S.Params element. Great Expectations / dbt push
+    adapters can emit expectations containing failed-row samples,
+    sensitive column thresholds, or operator-defined regexes —
+    no redaction, no truncation, no copy-control. The "See more"
+    expansion (line 138-145) loads the FULL params modal with
+    the same unredacted text. Pairs with F-040's
+    `status_reason_diagnostic_text_leak_channel` facet — same
+    class of leak at a different DQ surface.
+
+    (6) NEW UI-TIER DRIFT FACET — TestReportDetails LAZY-IMPORT +
+    SUSPENSE + DELETED-ENTITY-REDIRECT COMBO (LOW, perceived
+    latency under failures). TestReportDetails.tsx:24-29 lazy-
+    imports TestReportDetailsOverview + TestReportDetailsHistory.
+    On first click into a test, React.Suspense displays
+    AppCircularProgress while the chunk loads. If the bundle
+    fails to load (network glitch), the Suspense fallback never
+    transitions out — no error boundary. The operator sees a
+    spinner spin indefinitely. NEW drift facet candidate:
+    `testreport_details_lazy_chunk_failure_no_error_boundary_spinner_indefinitely`.
+    ui_unverified=false — verified at TestReportDetails.tsx:88-89
+    (Suspense fallback only handles loading, not error).
+
+    (7) MID-COMPONENT i18n GAP — "Notification settings" / form
+    text uniformly NOT translated at NotificationSettings.tsx but
+    F-022's TestReportDetailsOverview.tsx:71-165 uses `t(...)`
+    consistently for ALL labels (Severity / Last execution /
+    Date / Duration / Status / Status reason / Parameters / See
+    more / Links / Go to page). STRENGTHENS the cross-component
+    i18n-discipline observation already pinned at F-198
+    drift facet 3 — TestReport family is the COMPLIANT example,
+    NotificationSettings is the offender.
+
+    (8) NO TEST COVERAGE NOTED — TestReport.tsx + TestReportItem.tsx
+    + TestReportDetails.tsx + TestReportDetailsOverview.tsx total
+    ~475 lines with extensive useState / useEffect / useMemo /
+    useCallback usage; standard search `find . -name "TestReport*test*"`
+    in the UI source tree yields no matches. STRENGTHENS F-022's
+    existing `audit_export_use_case_uncovered_by_tests`-class
+    framing at the UI tier.
+
+    Coherence sweep STRENGTHENS=3 (F-022 existing
+    `png_vs_json_doc_drift_BI_audience_targeted` reaffirmed from
+    UI angle; F-022 existing
+    `soft_delete_inclusive_existence_check` contradicted by UI
+    route's redirectTo='../overview' — new asymmetry surfaced;
+    F-198 NotificationSettings i18n inconsistency contrasted with
+    TestReport family compliance). SUPERSEDES=0. CONFLICTS=0.
 discovered_from_entry_point: rest:GET /api/datasets/{data_entity_id}/dataqatests + GET /api/datasets/{id}/test_report + GET /api/datasets/{id}/sla (image/png) + GET /api/datasets/{id}/sla_report (application/json) + PUT /api/datasets/{id}/dataqatests/{tid}/severity
 contributing_nodes:
 - odd-platform java DataQualityController controller-class:DataQualityController
@@ -111,6 +255,10 @@ contributing_nodes:
 - odd-platform java repository reactive repository:ReactiveDataQualityRepositoryImpl (referenced from sidecar)
 - odd-platform java service service:SLACalculator (referenced from sidecar)
 - odd-platform java service service:CachingByteArraySLAResourceResolver (referenced from sidecar)
+- odd-platform ts react-component component:TestReport  # batch UI-L 2026-05-26 — per-entity test-reports tab shell; gates DQ visibility for soft-deleted entities via RestrictedRoute
+- odd-platform ts react-component component:TestReportItem  # batch UI-L 2026-05-26 — per-suite collapsible test list; auto-expands below 5-test threshold
+- odd-platform ts react-component component:TestReportDetails  # batch UI-L 2026-05-26 — right-pane lazy detail with Overview/History sub-tabs; no error boundary on lazy chunk failure
+- odd-platform ts react-component component:TestReportDetailsOverview  # batch UI-L 2026-05-26 — severity AppSelect fires mutation on change; expectation JSON dumped unredacted
 description: |-
   The Data Quality controller surfaces P-04's first user-observable
   read+mutate capability: per-dataset DQ test reports, the catalog-wide

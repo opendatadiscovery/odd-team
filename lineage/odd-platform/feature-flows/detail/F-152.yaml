@@ -1,0 +1,213 @@
+feature_id: F-152
+pillar_id: P-06
+pillar_anchored_id: P-06:F-005
+pillar_anchored_feature_name: Term Reverse-Lookup — Linked Terms paginated tab
+feature_name: |-
+  Term Linked-Terms Tab — paginated reverse-lookup of every Term linked
+  to the current Term, with hardcoded error responses, copy-paste empty
+  state, and tanstack-query usage diverging from the redux pattern used
+  elsewhere
+seeded_from: ui-review-2026-05-26
+seeded_at: 2026-05-26
+discovered_from_entry_point: ui_route:/terms/:termId/linked-terms
+primary_subject:
+  - odd-platform ts react-component:LinkedTermsList
+contributing_nodes:
+  - odd-platform ts react-component:LinkedTermsList
+  - odd-platform ts react-component:LinkedTerm
+  - odd-platform java TermController controller-method:getTermLinkedTerms
+  - odd-platform java service service:TermServiceImpl
+  - odd-platform java repository reactive repository:ReactiveTermRepositoryImpl
+chain:
+  - hop: 1
+    node: odd-platform ts react-component:LinkedTermsList
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      LinkedTermsList.tsx:15-100 — `useGetTermLinkedTerms` tanstack-query
+      hook with `{termId, size: 50, query}` fetches the paginated list.
+      Search input updates `query` state but only triggers `refetch()`
+      on Enter or click — no debounce. InfiniteScroll auto-fires
+      `fetchNextPage`. Hardcoded "No linked entities" empty-state copy
+      (line 81 — COPY-PASTE BUG from LinkedEntitiesList; the tab is
+      LINKED TERMS not entities). Hardcoded `status: 500` + URL=`query`
+      in the error display (lines 88-93 — FIXME comment on line 87
+      confirms author awareness).
+  - hop: 2
+    node: odd-platform java TermController controller-method:getTermLinkedTerms
+    sidecar: '(referenced from F-024 TermController chain)'
+    multiplicity_per_trigger: 1
+    evidence: |-
+      TermController.java declares GET /api/terms/{term_id}/term — the
+      paginated reverse-lookup endpoint. Per F-002 batch U facet
+      `term_to_term_no_security_rule_unguarded_linkage` — POST + DELETE
+      on this surface are unguarded; the GET reverse-lookup follows the
+      same SecurityRule absence (verified by F-002 batch U TermController
+      sidecar).
+  - hop: 3
+    node: odd-platform java service service:TermServiceImpl
+    sidecar: odd-platform__java__service__service__TermServiceImpl.md
+    multiplicity_per_trigger: 1
+    evidence: |-
+      TermServiceImpl delegates to ReactiveTermRepositoryImpl. Per F-002
+      batch N — getLinkedTermsByTargetTermId hits one of the 7 read sites
+      that does NOT filter term_to_term.deleted_at IS NULL (lines 198-199);
+      latent regression vector if soft-delete is ever activated on
+      term-to-term.
+terminal_side_effect:
+  side_effect_class: page-render
+  description: |-
+    Paginated table of Linked Term rows (name + namespace). Reverse-lookup
+    surface — every Term whose id appears in term_to_term.linked_term_id
+    matching the current term_id surfaces here.
+  evidence: |-
+    LinkedTermsList.tsx:36-80 (InfiniteScroll + LinkedTerm row map).
+  cardinality_per_call: pageSize=50 rows per fetch
+amplification_factor: 1
+observed_vs_expected:
+  facets:
+    - facet_id: hardcoded_status_500_for_any_error
+      drift_class: ui_synthesises_bogus_error_response
+      severity: MEDIUM
+      observed: |-
+        LinkedTermsList.tsx:85-95 — when `!isLinkedListFetched`, the
+        component renders `<AppErrorPage>` with a SYNTHESISED error
+        object `{status: 500, statusText: error?.message ?? 'Unknown
+        Error', url: query, message: error?.message ?? 'Unknown Error'}`.
+        Three correctness issues: (1) status is hardcoded 500 regardless
+        of actual HTTP code — a 403 from the backend renders as "Internal
+        Server Error", a 404 as "Internal Server Error", confusing both
+        the operator and any error-monitoring tool reading the DOM;
+        (2) `url: query` — the user's SEARCH QUERY string is presented
+        as the URL — incoherent; (3) the error fires WHENEVER not fetched,
+        including on initial mount before the first query completes,
+        producing a brief error flash. The FIXME comment on line 87
+        confirms the author flagged this for cleanup.
+      expected: |-
+        Either propagate the real status from `error` (tanstack-query
+        ResponseError exposes status), OR gate the AppErrorPage on
+        `error != null` not `!isLinkedListFetched`. Match the
+        LinkedEntitiesList pattern at LinkedEntitiesList.tsx:148-152
+        which uses real fetching error state.
+      evidence:
+        - 'LinkedTermsList.tsx:85-95 (hardcoded status:500 + FIXME)'
+      ui_unverified: false
+    - facet_id: copy_paste_empty_state_no_linked_entities_in_linked_terms_view
+      drift_class: ui_copy_paste_label_mismatch
+      severity: LOW
+      observed: |-
+        LinkedTermsList.tsx:81 — `EmptyContentPlaceholder text="No linked
+        entities"` on the LINKED TERMS tab. Likely copy-pasted from
+        LinkedEntitiesList.tsx:144 (which legitimately says "No linked
+        entities"). Operators with zero linked terms see "No linked
+        entities" — semantically wrong, confusing.
+      expected: |-
+        `EmptyContentPlaceholder text={t('No linked terms')}`.
+      evidence:
+        - 'LinkedTermsList.tsx:80-84 (hardcoded "No linked entities")'
+        - 'LinkedEntitiesList.tsx:143-147 (the source of the copy-paste)'
+      ui_unverified: false
+    - facet_id: search_no_debounce_only_on_enter_or_click_refetch
+      drift_class: ui_search_input_no_debounce_explicit_trigger_only
+      severity: LOW
+      observed: |-
+        LinkedTermsList.tsx:44-49 — search input updates `query` state on
+        every keystroke but the `refetch()` only fires when the user
+        clicks the search icon (`handleSearchClick={() => refetch()}`).
+        No debounce on auto-fire; no Enter handler. Operators expecting
+        type-to-search behaviour (the pattern in TermSearch.tsx and
+        LinkedEntitiesList.tsx) are confused — they type and see no
+        response, must click. The pattern is inconsistent with
+        LinkedEntitiesList.tsx:62-70 + LinkedColumnsList.tsx:33-35 which
+        DO fire on Enter (and the broader TermSearch.tsx debounced auto-fire).
+      expected: |-
+        Either add an Enter handler + debounced auto-fire, OR document
+        the explicit-trigger choice in a tooltip. Align with the sibling
+        linked-list tabs.
+      evidence:
+        - 'LinkedTermsList.tsx:42-50 (no debounce, no Enter handler)'
+        - 'LinkedEntitiesList.tsx:62-68 (sibling with Enter handler)'
+      ui_unverified: false
+    - facet_id: term_to_term_reverse_lookup_inherits_security_gap_from_f_002
+      drift_class: ui_renders_unguarded_reverse_lookup_surface
+      severity: MEDIUM
+      observed: |-
+        The reverse-lookup is functional (any authenticated user sees
+        every term-to-term link from any term to any other), confirming
+        the catalog read-collaborative posture. But per F-002 batch U
+        `term_to_term_no_security_rule_unguarded_linkage`, the
+        ADD/DELETE on this relation are also unguarded. The UI
+        surfaces the data but provides no inline affordance for
+        managing it (the "Add term" affordance lives on the Overview
+        tab's TermLinkedTerms panel — see F-151 facet
+        `linked_terms_overview_panel_vs_linked_terms_tab_dual_surface`).
+        Operators viewing the tab see what's linked but cannot manage
+        from this surface.
+      expected: |-
+        Either (a) add inline manage affordances on this tab matching
+        the Overview panel (consistent UX); (b) document the dual-surface
+        split (overview = manage, tab = browse + search).
+      evidence:
+        - 'LinkedTermsList.tsx (no manage affordances)'
+        - 'F-002 batch U term_to_term_no_security_rule_unguarded_linkage'
+      ui_unverified: false
+    - facet_id: divergent_state_pattern_tanstack_query_vs_redux_in_sibling_lists
+      drift_class: ui_pattern_inconsistency_state_management_diverges_within_sibling_tabs
+      severity: LOW
+      observed: |-
+        LinkedTermsList.tsx:20-33 uses tanstack-query
+        (`useGetTermLinkedTerms` infinite-query hook). The sibling
+        LinkedEntitiesList.tsx:37-46 uses redux thunks
+        (`fetchTermLinkedList` + selectors). The third sibling
+        LinkedColumnsList.tsx:22-27 uses tanstack-query
+        (`useGetTermLinkedColumns`). Three sibling tabs implemented in
+        the same parent component (TermDetailsRoutes) use TWO different
+        state-management patterns. State-shape drift, cache-invalidation
+        drift (`@tanstack/react-query` vs redux-slice). The team likely
+        intends a redux → tanstack migration; mid-migration drift is
+        operator-invisible but a maintenance defect.
+      expected: |-
+        Pick one — either complete the redux → tanstack migration
+        (LinkedEntitiesList → tanstack), or roll back the migration
+        (LinkedTermsList → redux). Document the chosen pattern in an
+        ADR.
+      evidence:
+        - 'LinkedTermsList.tsx:20-33 (tanstack-query)'
+        - 'LinkedEntitiesList.tsx:37-46 (redux thunks)'
+        - 'LinkedColumnsList.tsx:22-27 (tanstack-query)'
+      ui_unverified: false
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+      - LinkedTermsList renders "No linked terms" on empty (pin the copy-paste OR fix)
+      - LinkedTermsList error path renders real status from tanstack-query error (pin the hardcoded 500 OR fix)
+      - LinkedTermsList search input — assert refetch fires on Enter as well as on icon click
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+      - End-to-end /terms/:termId/linked-terms with N=51 linked terms — assert infinite-scroll fires page 2 fetch
+      - Cross-user reverse-lookup — user A views user B's term's linked terms; assert read-collaborative posture
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+      - getLinkedTermsByTargetTermId query cost — pin per N linked-term count
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+      - Reverse-lookup data exposure — anonymous user under DISABLED mode reaches /terms/:termId/linked-terms; assert visibility
+status: ui-complete
+related_features:
+  - F-002
+  - F-024
+  - F-056
+  - F-151
+related_concepts:
+  - term-reverse-lookup
+  - term-to-term-linkage
+  - state-management-pattern-drift
+maintainer_curated: false

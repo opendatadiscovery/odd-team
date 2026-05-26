@@ -89,6 +89,7 @@ description: |-
   dataEntityId param only, dataset-field path audits with full before/after
   tag state, term path does NOT audit at all).
 contributing_nodes:
+- odd-platform ts components/shared/elements/TagItem ui-shell-widget:TagItem  # ui-review-2026-05-26 — the cross-cutting tag-chip render primitive
 - odd-platform java repository reactive repository:ReactiveTagRepositoryImpl
 - odd-platform java service service:TagServiceImpl
 - odd-platform java TagController
@@ -1285,6 +1286,246 @@ control_summary: |-
   + two seeded Owners + a collector-mock + curl scripts for the UI-side
   endpoints.
 batch_extensions:
+- batch: ui-review-2026-05-26
+  entry_point_added: |-
+    ui-component:TopTagsList — the HOME-PAGE TAG STRIP that renders
+    the curated tag taxonomy returned by GET /api/tags. The 12-slot
+    chip strip at the top of Overview.tsx (between MainSearch and
+    Domains). Clicking ANY tag chip launches a Search with the tag
+    pre-selected as a filter (cross-pillar feed into F-017). This is
+    the operator-observable READ side of F-018; previously F-018 was
+    anchored on the WRITE side (POST /api/dataentities/{id}/tags).
+  contributing_nodes_added:
+    - odd-platform ts react-component:TopTagsList
+  notes: |-
+    UI-review-2026-05-26 walks TopTagsList.tsx (46 LOC).
+
+    (A) RANKING DRIFT FROM BACKEND — TopTagsList.tsx:24-33 re-sorts the
+    incoming `tags` prop CLIENT-SIDE by `usedCount` DESC, with
+    `important: true` as the secondary sort. This DUPLICATES backend
+    sorting (per F-018 facet
+    `name_behavior_drift_list_most_popular_paginate_inside_cte_yields_oldest_by_id_not_most_popular_by_count`)
+    — the backend's paginate-inside-CTE bug returns the OLDEST tags by
+    ID ASC instead of by count DESC; the client-side re-sort here is
+    a SILENT WORKAROUND. If the backend ranking lie is ever fixed, the
+    client re-sort becomes redundant (and any sort-stability changes
+    surface as user-visible chip reordering). The client sort is
+    defensive against backend ranking incorrectness, but masks the
+    primary defect — operators never see the backend's actual ranking
+    error because the UI silently reorders.
+
+    (B) IMPORTANT FLAG SECONDARY SORT REVERSED — line 31:
+    `return b.important ? 1 : -1`. Both sides reduce to NUMBERS but the
+    semantics are inverted: when `b.important === true`, returns 1
+    meaning "b sorts AFTER a" — i.e. unimportant tags BEFORE important
+    tags. This is the OPPOSITE of the apparent intent ("important tags
+    first when counts tie"). The defect is hidden under the primary
+    sort because counts rarely tie, but on a fresh deployment with few
+    tags the important markers may visually appear at the BOTTOM of
+    the strip.
+
+    (C) CLICK LAUNCHES SEARCH WITH SINGLE-TAG FILTER —
+    TopTagsList.tsx:13-22 `handleTagClick(id, name)` dispatches
+    `createSearch({query: '', filters: {tags: [{entityId, entityName,
+    selected: true}]}})`. ONE click = ONE tag filter; the user cannot
+    select multiple tags from the home strip (would require returning
+    to the strip after the search lands — which means re-rendering
+    with the new search context, losing the multi-select intent).
+    Cross-pillar feed into F-017 (Search Filter Facets). Per F-141
+    facet `home_page_composition_no_skeleton_alignment...`, the
+    TopTagsList is a key search-launcher in the home-page constellation.
+
+    (D) NO IMPORTANT BADGE / VISUAL DIFFERENTIATION — TagItem (the
+    `<TagItem important={tag.important} count={tag.usedCount}>` chip)
+    is the rendering primitive. The `important` flag is passed but
+    the UX consequence depends on TagItem's internal rendering (not
+    walked here). Sidecar enrichment of `TagItem` would resolve;
+    flagged ui_unverified.
+
+    (E) USEDCOUNT NULL FALLBACK — line 28: `(b.usedCount ?? 0) -
+    (a.usedCount ?? 0)`. A tag with `usedCount: null` is sorted as
+    `0` — meaning it could appear ABOVE tags with explicit 0 usedCount
+    only via the important-flag secondary sort, but the inverted
+    secondary sort (B above) means it actually goes to the BOTTOM.
+    The combined effect of (B) + (E) is sort-stability on freshly-minted
+    tags (no usedCount yet) ending up at the bottom of the strip —
+    invisible to operators glancing at the top 12.
+
+    (F) STATIC LIMIT VIA OVERVIEW PARENT — Overview.tsx:20-23
+    `useGetPopularTags({page: 1, size: 30})` requests 30 tags; the
+    strip renders ALL of them (no slice to top-12). The TagsContainer
+    styling (S.TagsContainer) is presumably wrap-based; on a tag-rich
+    deployment the strip may take multiple visual rows, eating
+    above-the-fold real estate. No "show more" / "see all tags" link.
+
+    Coherence sweep STRENGTHENS:
+      - F-018 facet `list_most_popular_globally_scoped_no_per_owner_filter`
+        — confirmed at UI tier (no client-side owner filter on the strip)
+      - F-018 facet `name_behavior_drift_list_most_popular_paginate_inside_cte_yields_oldest_by_id_not_most_popular_by_count`
+        — silently masked by client-side re-sort
+      - F-018 facet `get_popular_tag_list_no_security_rule_open_read_to_any_authenticated_user`
+        — confirmed UI render path is unconditional (no permission gate
+        at TopTagsList; rendered on every Overview mount)
+- batch: ui-review-2026-05-26-slice-M
+  entry_point_added: |-
+    ui-shell-widget:TagItem — the 56-line shared tag-chip render
+    primitive at components/shared/elements/TagItem/TagItem.tsx that
+    every tag-bearing surface threads through (TopTagsList chips,
+    TagsList rows, Search Tag facet chips, entity-detail Tags
+    sub-tabs). RESOLVES the batch ui-review-2026-05-26 point (D)
+    ui_unverified flag on the `important` flag's UX consequence —
+    primary-source confirmed.
+  contributing_nodes_added:
+    - "odd-platform ts components/shared/elements/TagItem ui-shell-widget:TagItem"
+  notes: |-
+    TagItem.tsx primary-source walk (TagItem.tsx:1-60, TagItemStyles for
+    the styled wrapper) — four UI-tier behaviours surfaced:
+
+    (1) IMPORTANT FLAG STYLED-COMPONENT PROP, NOT VISIBLE BADGE — line
+    33-40 — the `important` boolean is passed to the styled S.Container
+    via the `$important` transient prop. The visual differentiation
+    lives in the styled-component (TagItemStyles, not walked at
+    primary source this pass — `ui_unverified` whether the
+    differentiation is colour / border / weight). The `important` flag
+    therefore has NO icon, NO badge, NO accessible label — only a
+    style-only visual cue. RESOLVES batch ui-review-2026-05-26's
+    point (D) on the important-flag UX consequence: TagItem renders
+    important as a STYLE-ONLY signal, no ARIA announcement, no separate
+    badge slot. NEW drift facet candidate.
+
+    (2) REMOVABLE CHIP RENDERS NESTED BUTTON — line 48-55 — when
+    `removable: true` AND NOT `systemTag`, the chip renders a nested
+    `<Button>` with `<ClearIcon>` and an `onRemoveClick` handler. The
+    NESTED-CLICKABLES pattern (parent chip has `onClick`, nested button
+    has its own `onClick` — line 53 onRemoveClick) — if a caller wires
+    BOTH onClick props, clicking the X button propagates to the chip's
+    onClick handler unless the caller calls
+    `event.stopPropagation()`. The widget itself does not stopPropagation;
+    callers must handle this. Bug-class anchor.
+
+    (3) SYSTEM-TAG CHIP NON-REMOVABLE BY DESIGN — line 41-47, 48 —
+    `systemTag` causes `<SystemIcon />` to render AND the removable
+    button is suppressed (the `&& !systemTag` clause). System tags are
+    immutable from the UI. The doc surface does NOT name what
+    constitutes a system tag vs operator-tag (per the F-018 +
+    SecurityConstants gates discussion — `SYSTEM` origin? `external`?
+    TagOrigin.EXTERNAL_STATISTICS?). The widget makes the distinction
+    visible AND visible-only-via-icon; the UX cue is the SystemIcon
+    presence, not a label.
+
+    (4) COUNT NUMERIC SUFFIX — line 43-47 — when `count !== undefined`,
+    the chip appends `count` as a subtitle1 Typography component. This
+    is the surface that TopTagsList uses to show usedCount per tag.
+    With count=0 the suffix still renders (the `!isUndefined(count)`
+    guard accepts 0). On a tag with `usedCount: null` (the F-018
+    TopTagsList facet E), the count slot is absent — visually identical
+    to a tag intentionally without a count, but semantically distinct.
+
+    NEW UI-tier drift facets:
+      - `tag_item_important_style_only_no_aria_no_badge` — important
+        flag lacks accessible affordance (LOW severity, accessibility
+        regression candidate)
+      - `tag_item_nested_click_handlers_no_stop_propagation_burden_on_caller`
+        — the X-button click bubbles to chip onClick unless caller
+        handles it (LOW severity, defensive-coding anchor)
+      - `tag_item_system_tag_distinction_via_icon_only_no_label` —
+        system-tag vs operator-tag distinction is icon-only; the
+        operator UX clarity depends on the SystemIcon being recognisable
+        (LOW severity, UX clarity)
+      - `tag_item_count_zero_rendered_count_null_omitted_silent_semantic_difference`
+        — count=0 renders the suffix; count=null omits it; the visual
+        outcome is identical to "no count tracked" vs "count tracked
+        and is zero" (LOW severity, ux semantic)
+
+    Coherence STRENGTHENS=2 (the batch ui-review-2026-05-26 TopTagsList
+    point D's ui_unverified flag is now RESOLVED — the important flag
+    DOES have a UX consequence at TagItem, but it is style-only with
+    no badge or label; the batch's point B sort-inversion concern
+    therefore has a UI-side amplification: even after sorting,
+    important tags are not visually distinguished beyond the style
+    treatment). SUPERSEDES=0. CONFLICTS=0.
+- batch: ui-review-2026-05-26-slice-M-metadata-stale
+  entry_point_added: |-
+    ui-shell-widget:MetadataStale — the orange-clock staleness indicator
+    widget. Tag-bearing list rows (EntityItem in Directory, ResultItem
+    in Search) render BOTH TagItem AND MetadataStale on the same row;
+    the cross-cutting relationship is documented here as a cross-link
+    to F-208 (the dedicated staleness F-NNN minted in this same slice).
+  contributing_nodes_added: []
+  notes: |-
+    Cross-link to F-208. MetadataStale renders on every list row where
+    TagItem also renders (Search results, Directory entries, Linked
+    Entities lists). The two widgets together form the per-row
+    metadata-encoding surface — TagItem encodes the manual taxonomy,
+    MetadataStale encodes the ingestion-freshness signal. No new F-018
+    drift facets net of F-208's catalog; this entry exists for cross-
+    reference traceability when F-018 sidecars are next enriched.
+- batch: ui-review-2026-05-26-slice-I
+  entry_point_added: |-
+    ui-component:OverviewTags.tsx — the per-entity tag-assign + display
+    surface (Overview tab right column, F-176 composer at lines 127-132).
+    Operator-observable READ-AND-WRITE point at which a tag edit can
+    side-channel-mint a directory row. Lives at
+    `/dataentities/{id}/overview` under the F-176 composer's
+    WithPermissionsProvider gated on DATA_ENTITY_TAGS_UPDATE.
+  contributing_nodes_added:
+  - odd-platform ts react-component:OverviewTags
+  - odd-platform ts react-component:TagsEditForm
+  - odd-platform ts react-component:TagsEditFormAutocomplete
+  notes: |-
+    UI half of F-018's per-entity tag-assign path now traceable. Four
+    new drift facets layered on top of the existing F-018 directory-
+    side audit:
+
+    (1) SLICE-BEFORE-SORT IMPORTANCE ORDER DEFECT (MEDIUM, NEW) —
+    OverviewTags.tsx:54-58 — `tags.slice(0, visibleLimit).sort(tagsCompare).map(...)`.
+    Slice runs before sort; tagsCompare's important-first ordering
+    applies only to the truncated window. An entity with 25 tags
+    where important=true tags sit at indices 22-24 sees NONE of
+    them in the top-20 visible cut. Cross-link F-179 facet
+    `tags_importance_ordering_lost_when_list_exceeds_twenty_important_invisible_below_cut`.
+    NEW drift facet for F-018:
+    `overview_tags_slice_before_sort_important_tags_invisible_when_list_exceeds_twenty`.
+
+    (2) AUTOCOMPLETE → SIDE-CHANNEL MINT VECTOR EXPOSED IN UI (HIGH,
+    STRENGTHENS F-018 HEADLINE) — TagsEditFormAutocomplete.tsx (147 LOC)
+    is the operator-facing surface for the tag side-channel mint
+    catalogued at F-018 facet
+    `data_entity_tags_update_side_channel_into_global_tag_directory`.
+    A user typing a NOVEL tag name and submitting triggers POST
+    /api/dataentities/{id}/tags → DataEntityServiceImpl.upsertTags
+    → TagServiceImpl.updateRelationsWithDataEntity → listByNames +
+    bulkCreate (mints new directory row). The autocomplete OFFERS
+    no warning that creating a new tag adds it to the GLOBAL catalog
+    directory visible to every other user. From the operator's POV,
+    "add a tag to this entity" feels local; the directory-mint
+    side-effect is invisible. STRENGTHENS F-018 with the UI-tier
+    confirmation that the side-channel is NOT signposted at the
+    surface.
+
+    (3) "Add tags" vs "Edit tags" LABEL TOGGLE (LOW, UX-only) —
+    OverviewTags.tsx:43, :106 — button label switches between
+    "Add tags" (no tags exist) and "Edit tags" (at least one tag).
+    Same dialog, same write path. Cross-link F-178 facet
+    `internal_name_button_label_toggles_edit_vs_add_business_name_but_intent_is_same_authoring_flow`.
+
+    (4) VIEW-ALL COLLAPSE unmountOnExit LOSES SCROLL STATE (LOW) —
+    OverviewTags.tsx:68 — `<Collapse in={viewAll} timeout='auto'
+    unmountOnExit>`. Re-opening View All re-mounts the trailing
+    tag list. Cross-link F-179.
+
+    The UI chain composition for the per-entity tag-assign path:
+      Overview tab (F-176)
+        → OverviewTags.tsx (F-018 per-entity UI surface)
+          → TagsEditForm (opens dialog)
+            → TagsEditFormAutocomplete (THE SIDE-CHANNEL MINT vector)
+              → POST /api/dataentities/{id}/tags (F-018 chain hop 1)
+
+    Coherence: STRENGTHENS F-018 headline + the slice-before-sort
+    cross-link to F-179. NO conflicts; NO supersedes. Status: F-018
+    was active; UI inventory now extends to per-entity tag-assign
+    surface (this batch) + home-page tag strip (TopTagsList earlier
+    ui-review batch) + the shared TagItem (slice-M).
 - batch: W
   entry_point_added: |-
     controller-class:TagController — the CONTROLLER-TIER PRIMARY

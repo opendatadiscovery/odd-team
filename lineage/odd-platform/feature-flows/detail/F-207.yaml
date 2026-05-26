@@ -1,0 +1,234 @@
+feature_id: F-207
+pillar_id: P-09
+pillar_anchored_id: P-09:F-008
+pillar_anchored_feature_name: RBAC Frontend Affordance — WithPermissions HOC Context-vs-Gate
+feature_name: |-
+  RBAC frontend affordance pattern — WithPermissions + WithPermissionsProvider
+  HOCs that HIDE-not-disable forbidden controls. The pair is the
+  cross-cutting UI surface where the methodology's LSN-023 trap lives:
+  these HOCs are CONTEXT (UX shape of permission propagation) NOT GATE
+  (backend authorization is enforced server-side); confident
+  `permission_side_door`-class drift readings against the UI alone would
+  recapitulate the LSN-023 false-positive class.
+seeded_from: ui-review-2026-05-26
+seeded_at: '2026-05-26'
+discovered_from_entry_point: |-
+  ui-component:WithPermissions (the 35-line shared HOC at
+  components/shared/contexts/Permission/WithPermissions.tsx) +
+  ui-component:WithPermissionsProvider (the 51-line resource-scoped
+  context provider at WithPermissionsProvider.tsx). Mounted across every
+  RBAC-gated affordance in the SPA — entity-detail action buttons, the
+  Management section route gates, the per-resource tag/description/owner
+  edit affordances. Cross-cuts F-006 (RBAC policy lifecycle), F-105
+  (Management Section Route Gating), and every per-entity-action F-NNN.
+primary_subject:
+  - "odd-platform ts components/shared/contexts/Permission ui-shell-widget:WithPermissions"
+  - "odd-platform ts components/shared/contexts/Permission ui-shell-widget:WithPermissionsProvider"
+contributing_nodes:
+  - node_id: "odd-platform ts components/shared/contexts/Permission ui-shell-widget:WithPermissions"
+    role: per-affordance-hoc
+    note: |-
+      WithPermissions.tsx:11-34 — a 35-line stateless HOC. Three branches:
+      (a) `renderContent` callback receives `{ isAllowedTo }` for
+      explicit-fallback callers; (b) `children + extraCheck !== undefined`
+      branch combines two predicates; (c) default `children` branch
+      returns `hasAccessTo(permissionTo) ? <>{children}</> : null` — the
+      HIDE-NOT-DISABLE contract. The `hasAccessTo` predicate is supplied
+      by the `usePermissions` hook (lib/hooks) which reads from the
+      surrounding PermissionProvider context.
+  - node_id: "odd-platform ts components/shared/contexts/Permission ui-shell-widget:WithPermissionsProvider"
+    role: resource-scoped-context-provider
+    note: |-
+      WithPermissionsProvider.tsx:12-51 — a 51-line wrapper that mounts
+      PermissionProvider with two permission lists
+      (`allowedPermissions: Permission[]`, `resourcePermissions: Permission[]`).
+      Three branches: render-prop (`render`), Component-prop (`Component`),
+      or children. The context dictates what the inner `usePermissions`
+      hook resolves to. The provider is the CONTEXT scope — each Management
+      page (Policies, Roles, Owners, Associations) wraps with its own
+      provider naming the resource-relevant permissions.
+  - node_id: "odd-platform ts lib/hooks usePermissions:usePermissions"
+    role: predicate-source
+    unresolved: true
+    note: |-
+      usePermissions hook (not yet enriched at primary source) — supplies
+      the `hasAccessTo(permissionTo): boolean` predicate the HOC consumes.
+      Cross-refs to PermissionProvider's stored permission set.
+chain:
+  - hop: 1
+    node: "odd-platform ts components/shared/contexts/Permission ui-shell-widget:WithPermissionsProvider"
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      WithPermissionsProvider.tsx:12-51 — mounts at the Management-section
+      route boundary or per-entity-detail action cluster. The wrapped
+      PermissionProvider exposes the allowed/resource permission sets to
+      any descendant `usePermissions()` call.
+    unresolved: false
+  - hop: 2
+    node: "odd-platform ts components/shared/contexts/Permission ui-shell-widget:WithPermissions"
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      WithPermissions.tsx:11-34 — each individual affordance (button,
+      action menu item, edit control) wraps itself with WithPermissions.
+      The HOC returns null when `hasAccessTo(permissionTo)` is false →
+      the affordance is REMOVED FROM THE DOM, not disabled with a tooltip
+      explaining why.
+    unresolved: false
+observed_vs_expected:
+  facets:
+    - facet_id: hoc_is_context_not_gate_lsn023_trap_anchor
+      drift_class: ui_hoc_is_context_not_gate_misreading_as_security_boundary_is_lsn023_class
+      severity: LOW
+      observed: |-
+        WithPermissions.tsx:11-34 returns `null` when the caller lacks
+        permission. The HOC's job is UX shape (hide the button), NOT
+        authorization enforcement. Backend authorization at the controller
+        perimeter (SecurityConstants + @PreAuthorize on @Endpoint methods)
+        is the SOLE gate; the HOC is a courtesy presentation layer. A
+        methodology pass that reads the HOC and concludes "permission
+        enforced at the UI" is wrong on two axes: (a) the UI is not the
+        enforcement boundary; (b) the backend has its own gate that may
+        OR MAY NOT mirror the UI's choice. This is the LSN-023 trap
+        anchor — a UI primitive that looks like a gate but is context.
+      expected: |-
+        Either (a) add a doc comment to WithPermissions.tsx explicitly
+        stating "This HOC is UX context, not a security boundary; backend
+        authorization is enforced separately at the controller
+        perimeter" — so a future ontology pass cannot mis-read it; OR (b)
+        a code-comment-as-architecture-anchor that the LSN-023
+        methodology rule cites by file:line.
+      operator_visible_consequence: |-
+        No direct operator defect. The CONSEQUENCE is methodological — a
+        future scan / audit may emit a false-positive `permission_side_door`
+        finding by reading the HOC as a gate. Cross-link LSN-023:39-44
+        (the original false-positive on F-031.namespace_name).
+      ui_unverified: false
+    - facet_id: hide_not_disable_creates_admin_contact_silence
+      drift_class: ui_hide_not_disable_forbidden_affordances_no_help_text
+      severity: MEDIUM
+      observed: |-
+        The default branch (`return hasAccessTo(permissionTo) ?
+        <>{children}</> : null`) is the dominant pattern across callers.
+        Users without RBAC permissions see a read-only list with NO
+        buttons, no tooltip explaining the missing affordance, no
+        admin-contact CTA. The HOC unconditionally hides; it does not
+        offer a `disabledWithTooltip` mode. Per F-006 batch-Q UI tier
+        finding: PolicyList and RolesList exhibit this pattern; a non-
+        ADMIN sees the list with no controls and may reasonably conclude
+        "no controls exist on this platform."
+      expected: |-
+        Either (a) extend the HOC API with a `whenForbidden:
+        'hide' | 'disable' | 'tooltip'` prop, OR (b) document the
+        platform's UX choice explicitly (the read-collaborative posture
+        ADR-CANDIDATE-003 / REFACTOR-024 family) so operators know what
+        they're missing.
+      operator_visible_consequence: |-
+        New operators encountering a permission-gated page see a
+        seemingly read-only UI with no signal that affordances are
+        hidden. They cannot self-diagnose ("am I missing a permission?")
+        without admin help. The HIDE-NOT-DISABLE convention is platform-
+        wide and undocumented at the operator surface.
+    - facet_id: provider_unconditionally_renders_children_no_top_level_route_gate
+      drift_class: ui_permissions_provider_doesnt_gate_routes_only_announces_context
+      severity: LOW
+      observed: |-
+        WithPermissionsProvider.tsx:12-51 — the provider unconditionally
+        renders its children/Component/render regardless of permission
+        state. It announces a permission context to descendants but does
+        NOT itself gate access. Route-level gating (per F-105 Management
+        Section Route Gating) is a SEPARATE concern handled at the
+        ManagementSkeleton + ManagementRoutes layer; the provider is just
+        the announcement layer. A maintainer assuming the provider also
+        gates the route would mis-model the architecture.
+      expected: |-
+        Either (a) a doc comment naming "this provider announces context;
+        route-gating is enforced separately at ManagementRoutes", OR (b)
+        a sibling `<WithPermissionsRouteGuard>` higher-order route that
+        composes the provider with an actual gate.
+      operator_visible_consequence: |-
+        No direct defect — F-105's Management route gate is the actual
+        boundary. Methodology consequence: an ontology pass that reads
+        WithPermissionsProvider as a route gate would misattribute the
+        gate.
+    - facet_id: permission_resolution_relies_on_unread_hook_ui_unverified
+      drift_class: ui_predicate_resolution_via_hook_not_traced_to_redux_state
+      severity: LOW
+      observed: |-
+        WithPermissions.tsx:17 — `const { hasAccessTo } = usePermissions()`
+        — the predicate comes from a hook whose implementation has not
+        been read at this writing. The hook's behaviour (does it read
+        redux, react-context, both?), its caching, its reactivity to
+        login/logout, the case where PermissionProvider is absent above
+        the consumer, are all unverified. A scan emitting drift on
+        WithPermissions without reading the hook would carry
+        ui_unverified contamination.
+      expected: |-
+        Enrich `usePermissions` at primary source on the next pass.
+        Trace from hook → context provider → redux slice (or whatever the
+        actual source-of-truth is).
+      operator_visible_consequence: |-
+        Methodology-only; no direct operator defect.
+      ui_unverified: true
+      ui_unverified_reason: |-
+        usePermissions hook implementation has not been read at primary
+        source this pass. All drift readings about resolution timing,
+        caching, login/logout reactivity are inferred from the HOC
+        consumer pattern only.
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+      - WithPermissions renders children when hasAccessTo is true
+      - WithPermissions returns null when hasAccessTo is false (HIDE-NOT-DISABLE)
+      - WithPermissions renderContent branch receives isAllowedTo correctly
+      - WithPermissions extraCheck branch combines two predicates correctly
+      - WithPermissionsProvider unconditionally renders children/Component/render
+      - usePermissions returns hasAccessTo bound to the surrounding PermissionProvider scope
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+      - End-to-end Management section route gate (F-105) renders the read-only list for non-ADMIN users with NO buttons
+      - The HIDE-NOT-DISABLE convention applies across every entity-detail action button
+      - Backend authorization holds when an attacker bypasses the UI gate by direct API call (the LSN-023 cross-verification)
+      - PermissionProvider stacks correctly for nested resource scopes (e.g. global TAG_CREATE + per-entity DATA_ENTITY_TAGS_UPDATE)
+  performance:
+    state: N/A
+    covered: []
+    uncovered: []
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+      - LSN-023 false-positive regression-pin — a methodology scan that reads ONLY the UI HOC must NOT conclude `permission_side_door` without reading the backend gate
+      - The HIDE-NOT-DISABLE convention is consistently applied (no rogue `disabled={!hasAccessTo}` affordances elsewhere that contradict the platform's UX posture)
+status: ui-incomplete
+status_reason: |-
+  Composed PRIMARY-SOURCE at the HOC + Provider widget layer
+  (WithPermissions.tsx + WithPermissionsProvider.tsx); UPSTREAM PROVIDER
+  source (usePermissions hook + PermissionProvider context) is referenced
+  by name only — `unresolved: true` chain hop. DOWNSTREAM consumer surface
+  is enormous (every gated affordance in the SPA) and not enumerated this
+  pass; the F-NNN documents the SHAPE of the cross-cutting pattern, not
+  the per-consumer instance graph.
+related_features:
+  - F-006   # RBAC policy lifecycle — the F-006 batch-Q UI tier surfaced WithPermissions for PolicyList / RolesList read-collaborative posture
+  - F-105   # Management Section Route Gating — the route-level gate that composes with WithPermissionsProvider at the Management section root
+  - F-034   # Platform Feature-Flag Exposure — WithFeature is the sibling HOC for feature flags (same hide-not-disable shape, different predicate source)
+  - F-018   # Manual Object Tagging — TagItem / TagsForm action buttons wrap with WithPermissions per the DATA_ENTITY_TAGS_UPDATE pattern
+  - F-004   # Entity description — InternalDescriptionHeader's Edit affordance is WithPermissions-gated on DATA_ENTITY_DESCRIPTION_UPDATE
+  - F-031   # Data Source Lifecycle Management — LSN-023 origin: the F-031 backend-only chain misread namespace_name as permission_side_door; this F-207 is the UI primitive that the methodology must read to avoid the recurrence
+related_concepts:
+  - rbac-frontend-hoc
+  - hide-not-disable-affordance
+  - read-collaborative-posture
+  - permission-context
+  - lsn-023-permission-side-door-class
+related_retrospectives:
+  - LSN-023  # the methodology lesson this F-NNN anchors as a primary-source artefact
+maintainer_curated: false
+batch_origin: ui-review-2026-05-26
+created_in_batch: ui-review-2026-05-26

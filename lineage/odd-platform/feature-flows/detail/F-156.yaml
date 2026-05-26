@@ -1,0 +1,209 @@
+feature_id: F-156
+pillar_id: P-06
+pillar_anchored_id: P-06:F-009
+pillar_anchored_feature_name: Term Tag + Owner Management — Overview right-rail tag chips and ownership list with create/edit/delete affordances
+feature_name: |-
+  Term Overview Right-Rail — Tag chips with importance-sort visible-limit
+  ordering bug, plus Owner ownership list with per-row create/edit/delete
+  affordances gated by TERM_OWNERSHIP_* permissions
+seeded_from: ui-review-2026-05-26
+seeded_at: 2026-05-26
+discovered_from_entry_point: ui_route:/terms/:termId/overview
+primary_subject:
+  - odd-platform ts react-component:OverviewTags
+  - odd-platform ts react-component:OverviewGeneral
+  - odd-platform ts react-component:OwnershipForm (Terms)
+contributing_nodes:
+  - odd-platform ts react-component:OverviewTags
+  - odd-platform ts react-component:OverviewGeneral
+  - odd-platform ts react-component:OwnershipForm
+  - odd-platform ts react-component:TagsEditForm
+  - odd-platform java service service:TermServiceImpl
+  - odd-platform java service service:TermOwnershipServiceImpl
+chain:
+  - hop: 1a
+    node: odd-platform ts react-component:OverviewTags
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      OverviewTags.tsx:15-103 — Tag chip list with importance + alphabetic
+      sort. Slice-then-sort ordering BUG (lines 47-49). "View All"
+      collapsible reveals tags beyond visibleLimit=20. TagsEditForm
+      mounted from the Edit/Add tags affordance, gated by
+      `WithPermissions permissionTo={Permission.TERM_TAGS_UPDATE}`.
+  - hop: 1b
+    node: odd-platform ts react-component:OverviewGeneral
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      OverviewGeneral.tsx:22-110 — Namespace + Created date + Owners list.
+      Per-owner ConfirmationDialog for delete + OwnershipForm for edit,
+      gated by Permission.TERM_OWNERSHIP_UPDATE / DELETE. Add-owner
+      affordance at bottom gated by TERM_OWNERSHIP_CREATE. Triple
+      permission gate (CREATE / UPDATE / DELETE) — fine-grained
+      separation.
+  - hop: 1c
+    node: odd-platform ts react-component:OwnershipForm
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      OwnershipForm.tsx:27-132 — DialogWrapper with OwnerAutocomplete +
+      OwnerTitleAutocomplete (both shared from P-08 management).
+      OwnerAutocomplete carries `disableOwnerCreating={!createOwner}`
+      where `createOwner` is the OWNER_CREATE permission flag — UI
+      gate against an OWNER_CREATE side-channel via Owner.getOrCreate
+      backend pattern (cross-link F-002 batch K
+      `tag_create_bypass_via_upsert_tags` shape — same architectural
+      class for the Owner entity).
+  - hop: 2a
+    node: odd-platform java service service:TermServiceImpl (upsertTags path)
+    sidecar: odd-platform__java__service__service__TermServiceImpl.md
+    multiplicity_per_trigger: 1
+    evidence: |-
+      TermServiceImpl.upsertTags (line 257) — TAG_CREATE bypass via
+      `tagService.getOrCreateTagsByName(names)` (F-002 batch K facet
+      `tag_create_bypass_via_upsert_tags`). The TagsEditForm UI on
+      this surface is the AUTHORING entry point for the bypass.
+  - hop: 2b
+    node: odd-platform java service service:TermOwnershipServiceImpl
+    sidecar: '(referenced from F-002 batch K coupling — owners are P-08 territory)'
+    multiplicity_per_trigger: 1
+    evidence: |-
+      Backend term-ownership CRUD with TERM_OWNERSHIP_CREATE / UPDATE /
+      DELETE permissions. Per F-002 batch U facet
+      `fts_write_path_term_ownership_soft_delete_not_filtered`, the
+      ownership-delete path is HARD-DELETE in practice but lacks the
+      DELETED_AT filter as a latent regression vector.
+    unresolved: true
+terminal_side_effect:
+  side_effect_class: db-write
+  description: |-
+    INSERT / UPDATE / DELETE rows in `tag` + `tag_to_term` (tags path) OR
+    `term_ownership` + `owner` (ownership path). FTS refresh per
+    ReactiveTermSearchEntrypointRepositoryImpl on tag-link change and
+    ownership-link change.
+  evidence: |-
+    OverviewTags.tsx → TagsEditForm.tsx (tag path);
+    OverviewGeneral.tsx → OwnershipForm.tsx (ownership path);
+    TermServiceImpl.upsertTags + TermOwnershipServiceImpl.create/update/delete.
+  cardinality_per_call: 1 link row + N tag/owner rows (0+ if novel)
+amplification_factor: 1
+observed_vs_expected:
+  facets:
+    - facet_id: tags_slice_then_sort_ordering_bug_important_tags_silently_hidden
+      drift_class: ui_slice_before_sort_bug_visible_limit_hides_top_items
+      severity: MEDIUM
+      observed: |-
+        OverviewTags.tsx:47-49 — `tags.slice(0, visibleLimit).sort(tagsCompare)`.
+        The slice is applied BEFORE the sort. The `tagsCompare`
+        function (lines 20-26) sorts by `important` first then
+        alphabetic — so the intent is "show the most important 20 tags".
+        But `.slice(0, 20)` takes the FIRST 20 tags by insertion-order
+        (i.e. `id`-order from the backend payload), THEN sorts those
+        20. If a Term has 50 tags with the 25th-inserted tag being
+        marked `important`, that important tag is silently hidden
+        beneath the "View All" collapse. Operators looking at the
+        Overview right-rail tag chips see what looks like a definitive
+        prioritised list but it's actually 20-arbitrary-then-sorted.
+      expected: |-
+        `[...tags].sort(tagsCompare).slice(0, visibleLimit)` — sort
+        FIRST, then take the top 20. The same bug in the second slice
+        path at line 63 (`?.slice(visibleLimit).sort(tagsCompare)`)
+        should also flip.
+      evidence:
+        - 'OverviewTags.tsx:47-49 (slice then sort — primary bug)'
+        - 'OverviewTags.tsx:62-64 (same bug in the collapsed-tags path)'
+      ui_unverified: false
+    - facet_id: tags_compare_function_recreated_per_render_no_useMemo
+      drift_class: ui_pure_helper_function_recreated_each_render_no_memoisation
+      severity: LOW
+      observed: |-
+        OverviewTags.tsx:20-26 — `tagsCompare` is declared inside the
+        function component, recreated on every render. Passed to
+        `.sort(tagsCompare)` which means every render does a full
+        re-sort with a fresh comparator. Pure function, no captured
+        closure dependencies — safely memoisable with `useCallback` or
+        moved outside the component.
+      expected: |-
+        Move `tagsCompare` outside the component, OR wrap in `useCallback([])`.
+      evidence:
+        - 'OverviewTags.tsx:20-26 (inline declaration)'
+      ui_unverified: false
+    - facet_id: tag_create_bypass_via_tagsEditForm_authoring_entry
+      drift_class: ui_authors_tag_create_bypass_per_f_002_batch_k
+      severity: MEDIUM
+      observed: |-
+        TagsEditForm is the AUTHORING entry point for the F-002 batch K
+        facet `tag_create_bypass_via_upsert_tags`. An operator with
+        TERM_TAGS_UPDATE (but without TAG_CREATE) types a novel tag
+        name in the edit form, submits, and the backend
+        `tagService.getOrCreateTagsByName` silently creates a tag.
+        The UI provides no signal that typing a novel tag name will
+        create a new tag.
+      expected: |-
+        Either (a) the TagsEditForm autocomplete restricts to existing
+        tags + surfaces a "Create new tag" affordance gated by
+        TAG_CREATE; OR (b) the affordance is documented as
+        "TERM_TAGS_UPDATE includes tag-create scope".
+      evidence:
+        - 'TagsEditForm.tsx (the form — full read deferred to next pass)'
+        - 'F-002 batch K tag_create_bypass_via_upsert_tags'
+      ui_unverified: true
+      ui_unverified_reason: |-
+        TagsEditForm not read in this UI walk; the novel-tag-input handling
+        shape determines confirmation OR refinement.
+    - facet_id: ownership_form_resetState_dependency_array_empty_stale_closure
+      drift_class: ui_useCallback_empty_deps_captures_initial_closure
+      severity: LOW
+      observed: |-
+        OwnershipForm.tsx:47-49 —
+        `const resetState = React.useCallback(() => {methods.reset();}, [])`.
+        Empty deps array; `methods` is captured from the initial render.
+        If `methods` is ever re-created across renders (e.g. on dialog
+        open/close cycle), `resetState` uses the stale `methods`
+        reference. Probably not a live bug today (react-hook-form's
+        `useForm` returns stable refs), but a code-smell that future
+        contributors should fix.
+      expected: |-
+        `React.useCallback(() => {methods.reset();}, [methods])` OR
+        drop the useCallback wrapper.
+      evidence:
+        - 'OwnershipForm.tsx:47-49'
+      ui_unverified: false
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+      - OverviewTags slice-then-sort — render 50 tags with the important one at index 25; assert it's silently hidden (pin) OR shown after fix
+      - OverviewTags tagsCompare memoisation — render N times; assert sort runs N times (pin) OR cached
+      - OwnershipForm resetState — re-render scenarios; assert methods.reset() uses fresh methods OR stale (pin)
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+      - End-to-end edit tags — observe upsertTags call with novel tag; assert TAG_CREATE bypass shape (pin per F-002 batch K)
+      - End-to-end ownership update — owner field disabled for non-OWNER_CREATE caller; assert UI affordance gating
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+      - Tag re-sort on render — measure cost for N=100 tags per Term
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+      - TERM_TAGS_UPDATE without TAG_CREATE — silently creates tag via getOrCreate (pin)
+      - TERM_OWNERSHIP_CREATE without OWNER_CREATE — owner-autocomplete-disabled affordance UI gate
+status: ui-complete
+related_features:
+  - F-002
+  - F-024
+  - F-151
+related_concepts:
+  - tag-term-linkage
+  - owner-term-ownership
+  - tag-create-side-channel
+  - owner-create-side-channel
+  - ui-sort-correctness
+maintainer_curated: false

@@ -1,0 +1,182 @@
+feature_id: F-155
+pillar_id: P-06
+pillar_anchored_id: P-06:F-008
+pillar_anchored_feature_name: Term Query-Example Linkage — assign existing Query Example to a Term
+feature_name: |-
+  Term Query-Example Tab — list of Query Examples linked to the Term;
+  permission-gated "Link query" affordance via QueryExamplesAutocomplete;
+  cross-pillar surface combining P-06 Data Glossary + P-02 Data Modelling
+  Query Examples
+seeded_from: ui-review-2026-05-26
+seeded_at: 2026-05-26
+discovered_from_entry_point: ui_route:/terms/:termId/query-examples
+primary_subject:
+  - odd-platform ts react-component:TermQueryExamples
+  - odd-platform ts react-component:AssignTermQueryExampleForm
+contributing_nodes:
+  - odd-platform ts react-component:TermQueryExamples
+  - odd-platform ts react-component:AssignTermQueryExampleForm
+  - odd-platform java QueryExampleController controller-method-cluster (cross-pillar P-02)
+chain:
+  - hop: 1
+    node: odd-platform ts react-component:TermQueryExamples
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      TermQueryExamples.tsx:18-63 — `useGetQueryExamplesByTermId({termId})`
+      tanstack-query hook fetches the linked Query Examples. Rendered
+      via `QueryExamplesListItem` (a shared P-02 component). The route
+      is gated at TermDetailsRoutes.tsx:33-44 by
+      `WithPermissionsProvider` with
+      `[QUERY_EXAMPLE_TERM_CREATE, QUERY_EXAMPLE_TERM_DELETE]` — the
+      ONLY sub-route in TermDetailsRoutes with an explicit
+      permissions wrapper at the route layer.
+  - hop: 2
+    node: odd-platform ts react-component:AssignTermQueryExampleForm
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      AssignTermQueryExampleForm.tsx:19-87 — DialogWrapper with
+      QueryExamplesAutocomplete (a P-02 shared component). Submit fires
+      `useAssignTermQueryExample(termId).mutateAsync` with
+      `{queryExampleTermFormData: {queryExampleId}, termId}`. The mount
+      of the "Link query" button is gated by
+      `WithPermissions permissionTo={Permission.QUERY_EXAMPLE_TERM_CREATE}`
+      (TermQueryExamples.tsx:33). No error-handler on the mutateAsync
+      promise — silent failure on backend reject.
+  - hop: 3
+    node: odd-platform java QueryExampleController (cross-pillar P-02)
+    sidecar: '(referenced from P-02 Data Modelling — out of scope this slice)'
+    multiplicity_per_trigger: 1
+    evidence: |-
+      POST /api/queryexamples/{example_id}/terms or similar — backend
+      controller for query-example-to-term linkage. NOT enriched in
+      this slice (P-02 territory).
+    unresolved: true
+terminal_side_effect:
+  side_effect_class: db-write
+  description: |-
+    INSERT row into the query_example_to_term link table associating
+    a Query Example with a Term. Subject to QUERY_EXAMPLE_TERM_CREATE
+    permission.
+  evidence: |-
+    AssignTermQueryExampleForm.tsx:32-41 (mutateAsync) + the
+    useAssignTermQueryExample hook (cross-pillar P-02).
+  cardinality_per_call: 1 link row per submit
+amplification_factor: 1
+observed_vs_expected:
+  facets:
+    - facet_id: react_key_on_qe_definition_text_potential_collision
+      drift_class: ui_react_key_on_free_text_field_not_id
+      severity: LOW
+      observed: |-
+        TermQueryExamples.tsx:48-55 — the queryExamples map uses
+        `key={qe.definition}` for the React key (line 51). Query Example
+        definition is free-text SQL/Spark/KQL — two query examples with
+        identical SQL text (a legitimate use case for SaaS multi-tenant
+        examples or commonly-pasted snippets) collide. React renders
+        only the first match, silently dropping the duplicate. The
+        usual pattern is `key={qe.id}` — verified by the sibling
+        `EntityClassItem.key={entityClass.id}` shape across the codebase.
+      expected: |-
+        `key={qe.id}` — every Query Example has a stable backend id.
+      evidence:
+        - 'TermQueryExamples.tsx:48-55 (key={qe.definition})'
+      ui_unverified: false
+    - facet_id: no_error_handler_on_assign_query_example_mutation_silent_failure
+      drift_class: ui_mutation_lacks_catch_silent_failure
+      severity: LOW
+      observed: |-
+        AssignTermQueryExampleForm.tsx:32-41 —
+        `mutateAsync({...}).then(_ => {reset();})`. NO `.catch(err)`
+        handler. On backend reject (4xx/5xx) the form silently fails
+        to clear, the dialog stays open, the user has no signal. Same
+        class as F-154 facet
+        `no_error_handler_on_dispatch_chain_silent_failure_on_backend_reject`
+        — pattern across Terms forms.
+      expected: |-
+        `.catch((err) => setError(...))` + render error in the dialog.
+      evidence:
+        - 'AssignTermQueryExampleForm.tsx:32-41 (no catch)'
+      ui_unverified: false
+    - facet_id: query_examples_link_query_button_visible_in_dom_inspection
+      drift_class: ui_permission_gated_cta_visibility_leaks_permission_state
+      severity: LOW
+      observed: |-
+        The "Link query" CTA at TermQueryExamples.tsx:36-43 is gated by
+        `<WithPermissions permissionTo={Permission.QUERY_EXAMPLE_TERM_CREATE}>`
+        — UI-only hide. Platform-wide pattern (cross-link F-024 batch U
+        facet `term_create_cta_dom_inspection_leaks_permission`).
+        Operators inspecting the DOM can infer QUERY_EXAMPLE_TERM_CREATE
+        membership. Aligned with platform stance; recorded for
+        completeness.
+      expected: |-
+        Aligned; no fix required. Document the UI-only-hide convention
+        platform-wide.
+      evidence:
+        - 'TermQueryExamples.tsx:33-44 (WithPermissions gate)'
+      ui_unverified: false
+    - facet_id: cross_pillar_p_02_p_06_shared_component_query_examples_list_item
+      drift_class: cross_pillar_component_sharing_unverified_pattern_drift
+      severity: LOW
+      observed: |-
+        TermQueryExamples renders `QueryExamplesListItem` with
+        `isTerm={true}` + `entityId={termId}` props (lines 49-54). The
+        QueryExamplesListItem component is the P-02 Data Modelling
+        shared list-item; the `isTerm` flag toggles between data-entity
+        context and term context. The shared-component-with-context-flag
+        pattern works but is fragile to future renames — if P-02 ever
+        renames the prop, the Terms surface silently breaks. Component
+        belongs to P-02 sidecar enrichment; flagged for cross-pillar
+        coverage.
+      expected: |-
+        Either type the context as a union discriminator (`context:
+        {kind: 'term', termId} | {kind: 'entity', entityId}`) OR document
+        the dual-mode contract on QueryExamplesListItem.
+      evidence:
+        - 'TermQueryExamples.tsx:48-55 (isTerm + entityId props)'
+      ui_unverified: true
+      ui_unverified_reason: |-
+        QueryExamplesListItem implementation not read in this slice
+        (cross-pillar P-02 territory).
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+      - TermQueryExamples React-key collision — render two query examples with identical definition, assert React warning + only-first-rendered (pin)
+      - AssignTermQueryExampleForm submit on backend reject — assert dialog stays open / error renders (pin or fix)
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+      - End-to-end /terms/:termId/query-examples with N=10 linked examples — assert all 10 render in correct order
+      - End-to-end assign query example — observe POST + state update + dialog close
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+      - Per-term query-examples list latency vs. dataset-context
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+      - QUERY_EXAMPLE_TERM_CREATE bypass — caller without permission reaches /terms/:termId/query-examples direct URL; assert WithPermissionsProvider blocks
+      - Cross-pillar permission bypass — QUERY_EXAMPLE_CREATE differs from QUERY_EXAMPLE_TERM_CREATE; assert correct gate
+status: ui-complete
+cross_pillar_relationships:
+  - pillar_id: P-02
+    kind: shares_data_with
+    via: |-
+      QueryExamplesListItem + QueryExamplesAutocomplete are P-02 Data
+      Modelling shared components reused on the P-06 Term detail page.
+      The query_example_to_term link table joins the two pillars; the
+      query example itself lives in P-02's data model.
+related_features:
+  - F-002
+  - F-151
+related_concepts:
+  - query-example-term-linkage
+  - cross-pillar-shared-components
+  - dom-inspection-permission-leak
+maintainer_curated: false

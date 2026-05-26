@@ -151,11 +151,42 @@ If a behaviour's `test_class` is not declared in a sidecar (pre-rev 2 sidecars),
 
 A feature with `maintainer_curated: true` in `feature-flows.yaml` has its `feature_name`, `description`, `expected_observable`, and any prose fields preserved verbatim across re-runs. The auto-derived fields (`contributing_nodes`, `amplification_factor`, `observed_vs_expected.observed`, `test_matrix`) update on each refresh.
 
+### Rule 8 — Shoebox threads are first-class composition input (rev 10)
+
+Per APPROACH.md §18, `lineage/{repo}/shoebox/detail/SHB-NNN-*.md` is the methodology's note-taking layer for unfinished hypotheses about user-observable features. The methodology's 2026-05-26 case-law (Data Entity Staleness, Compact lineage view-mode) showed that bottom-up call-graph composition misses features anchored on:
+
+- DTO fields imprinted laterally by mappers (e.g. `is_stale` from `DataEntityStaleDetector` — predicate utility on a `@Component`, off the main controller→service→repository chain).
+- UI controls toggled via URL query params (e.g. `full: boolean // full or compact view`) that don't reach a controller.
+- Cross-cutting product claims that decorate multiple flows but are themselves none of those flows' primary subject.
+
+The shoebox is your **first-class input alongside** sidecar `upstream_callers`/`downstream_side_effects`, the substrate edge graph, and `concepts.yaml`. On every run, you read all `shoebox/detail/SHB-*.md` threads BEFORE composing new flows and decide each one's fate (per Step 0 of the workflow). A graduated thread becomes a new feature flow whose frontmatter includes `seeded_from: SHB-NNN`; a merged thread links to its absorbing feature via the thread's `Links.merged_into:`; a clustered set of threads stays in the shoebox until the cluster's evidence is sufficient.
+
+You may also **author new shoebox threads** during composition when you encounter chain-level observations that don't fit any feature you can confidently mint (e.g. a chain that crosses three pillar boundaries with no clear primary owner). Use the same SHB-NNN allocation rule as the file-analyser (Glob `shoebox/detail/` for the highest existing ID, increment, zero-pad).
+
+The shoebox is **not** a backlog. Do not file backlog-shaped items (DOC-NNN, TEST-NNN, REFACTOR-NNN, SEC-NNN, PERF-NNN) there. The shoebox names the *feature hypothesis*; backlog items name *the work to do*. A thread MAY surface a follow-up bug/caveat in its `## Notes` block, but the canonical home for that bug is still the corresponding reducer output.
+
 ### Rule 7 — Local-only execution for any proposed probe / verification action
 
 When you propose Type-7 probes or any dynamic verification activity in `feature-flows.yaml` (e.g. in the `proposed_action` of an uncovered cell, or in a refresh-note recommendation), the action MUST be executable entirely on the maintainer's local workstation. Allowed: local docker-compose / podman-compose stacks (ODD's `trylocally`-shaped setup), Testcontainers + local Postgres, Playwright / Puppeteer for headless-browser probes, k6 / wrk for load injection, WireMock / MockServer for external mocks. Disallowed: remote VMs (EC2 / GCP / Azure / Hetzner / DO), managed databases, cloud-CI runners as part of probe loops, hosted observability backends. The constraint is operationally load-bearing — this is an unfunded OSS project and no recurring infrastructure cost beyond the maintainer's Claude Code subscription + workstation is acceptable. Per APPROACH.md section 9 + rule 12 (rev 2).
 
 ## Workflow (the order you do things)
+
+### 0. Evaluate shoebox threads (mandatory — runs BEFORE composition, per Rule 8 / APPROACH.md §18)
+
+Before composing any new feature flows, read every `lineage/{repo}/shoebox/detail/SHB-*.md` whose `**Category**:` is `open` or `clustering`. For each thread, decide one of the four verdicts and write the decision back to the thread's `## evaluation` block, dated and signed.
+
+The four legal verdicts:
+
+| Verdict | When | What you do |
+|---|---|---|
+| **Graduate to feature** | Evidence list ≥3 refs spanning ≥2 substrate axes (or one axis + one spec/UI surface); hypothesis is falsifiable; product surface is clear from the evidence. | Author `feature-flows/detail/F-NNN.yaml` with `seeded_from: SHB-NNN`, `primary_subject:` populated from the thread's evidence, full test_matrix attempt, and the four standard `related_*` cross-references. Flip the thread's `**Category**:` to `merged` and set `Links.merged_into: F-NNN`. |
+| **Merge into existing feature** | The thread's hypothesis maps to a facet of an existing F-NNN (the hypothesis is essentially a sub-claim of a flow you already composed). | Append the thread's evidence to the existing flow as either `contributing_nodes` additions or an `observed_vs_expected.facets` entry with a fresh `drift_class`. Flip thread to `merged` with `Links.merged_into: F-NNN`. |
+| **Cluster with siblings** | Two-or-more `open` threads share substantial keyword overlap in their hypothesis (≥3 nouns/verbs) or share ≥1 evidence file, AND together they are still below the graduation threshold. | Set each thread's `Links.cluster_with:` to the sibling IDs (bidirectional). Flip each cluster member's `**Category**:` to `clustering`. The next run reconsiders the cluster as a single graduation candidate. |
+| **Leave as note** | Insufficient evidence, ambiguous product surface, or competing graduation candidates — defer. | Append an `## evaluation` line: `feature-flow-builder YYYY-MM-DD: deferred — {one-sentence reason; what evidence would unblock}`. The thread's `**Category**:` stays as-is. Next run reconsiders. |
+
+You may also **mint a new shoebox thread** at this stage when you encounter a chain that doesn't fit any existing feature AND doesn't have enough evidence to be a confident new F-NNN (per Rule 8 last paragraph).
+
+After the shoebox pass, count: `graduated_count`, `merged_count`, `clustered_count`, `deferred_count`. Report these in `batch_refresh_note`.
 
 ### 1. Establish context (mandatory — first 5 minutes)
 
@@ -164,6 +195,7 @@ Read in this order:
 2. `lineage/{repo}/concepts.yaml` frontmatter — get `processed_node_ids` (what's enriched).
 3. `lineage/{repo}/nodes.jsonl` — substrate node IDs by axis. Identify entry-point-class nodes.
 4. If an existing `feature-flows.yaml` exists, capture its `maintainer_curated: true` entries.
+5. `lineage/{repo}/shoebox/detail/SHB-*.md` — every thread. The Step-0 evaluation has already happened by this point; this read confirms the post-evaluation state before composition begins.
 
 ### 2. Enumerate entry-point candidates
 

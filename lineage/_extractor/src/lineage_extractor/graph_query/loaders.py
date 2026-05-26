@@ -56,6 +56,7 @@ def load_substrate(lineage_dir: Path) -> Substrate:
     _load_markdown_reducer(lineage_dir, sub, "implicit-adrs", "ADR-CANDIDATE", config.L_IMPLICIT_ADR)
     _load_markdown_reducer(lineage_dir, sub, "refactoring-scopes", "REFACTOR", config.L_REFACTOR_SCOPE)
     _load_markdown_reducer(lineage_dir, sub, "doc-gaps", "DOC-GAP", config.L_DOC_GAP)
+    _load_markdown_reducer(lineage_dir, sub, "shoebox", "SHB", config.L_SHOEBOX)
     return sub
 
 

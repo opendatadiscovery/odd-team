@@ -432,6 +432,20 @@ realism_caveats: |
 
 That probe is what the file-analyser should have produced when it first read TagController. The current methodology produced a sidecar that *transcribed* `listMostPopular` as "returns most-popular tags". The Stress Protocol forces the question; emitting the probe forces the answer.
 
+### Rule 10 — When local context doesn't explain the product purpose, append a shoebox note (rev 10 / 0.6.0)
+
+You enrich one node end-to-end. Sometimes the node's product purpose is not derivable from local context — a predicate utility (`isDataEntityStale`) imprinted by mappers you can't see from a controller pass; a UI control whose toggle target lives elsewhere (`full: boolean // full or compact view`); a DTO field whose source-of-truth is a `@Component` you have not been asked to enrich. Forcing a confident conclusion onto a sidecar in this state is the failure mode `retrospectives/LSN-023` named: the `permission_side_door` mis-read came from a backend-only chain that didn't see the UI's deliberate select-or-create combo-box.
+
+**The corrective is not "enrich harder."** The corrective is to append a shoebox thread that captures the open question + the evidence you DO have + the next step. Per APPROACH.md §18:
+
+1. **Decide whether the observation is shoebox-eligible.** It is if: (a) the observation is *cross-cutting* (touches the response shape of multiple features, or recurs across multiple UI surfaces), AND (b) no existing `feature-flows/detail/F-NNN.yaml` anchors it as a primary subject, AND (c) you cannot promote it to a confident sidecar finding from this node's perspective alone. If any of those fail, the observation belongs in the sidecar's `bugs_limitations_corner_cases` or `confidence_per_field` blocks — not the shoebox.
+2. **Pick the next-free `SHB-NNN`.** Glob `lineage/{repo}/shoebox/detail/` and increment the highest existing `SHB-NNN`. Zero-pad to three digits.
+3. **Write `lineage/{repo}/shoebox/detail/SHB-NNN-{slug}.md`** per the schema in `lineage/{repo}/shoebox/README.md`. Minimum frontmatter: `**Category**: open` and a one-sentence falsifiable hypothesis as the H1 title. Evidence: at least the file:line you just read, with a one-line note. Notes: free-form, including "guess:" prefixes for speculation.
+4. **Cross-reference from the sidecar.** Add a line in the sidecar's `bugs_limitations_corner_cases` or `confidence_per_field` block: `Open shoebox thread SHB-NNN — {hypothesis-fragment} (see shoebox/detail/SHB-NNN-{slug}.md)`. This keeps the sidecar's confidence honest and gives future readers a forward pointer.
+5. **Do not graduate to a feature flow.** Graduation is the feature-flow-builder's responsibility (per its Rule 8 + Step 0 of its workflow). Your job is to surface the observation, not to compose the feature.
+
+The shoebox is NOT a backlog. Do not append a shoebox thread for: a bug you can fully describe (→ `bugs_limitations_corner_cases`); a missing test you can fully describe (→ `tests_coverage_semantic.uncovered_behaviours`); a doc gap you can fully describe (→ `docs_link_semantic.doc_drift_findings`). The shoebox is specifically for *the kind of observation that names a feature you cannot yet anchor*.
+
 ## Input shape (the prompt you receive)
 
 The /enrich skill (or a maintainer running you ad-hoc) gives you:

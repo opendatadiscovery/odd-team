@@ -71,10 +71,12 @@ L_FEATURE = "Feature"
 L_FEATURE_REFLECTION = "FeatureReflection"
 L_DOC = "Doc"
 L_FINDING = "Finding"
+L_SHOEBOX = "ShoeboxThread"   # rev-10 — unfinished hypotheses (APPROACH.md §18); markdown-loader-backed reducer node.
 
 NODE_LABELS = (
     L_CODE_NODE, L_SIDECAR, L_CONCEPT, L_IMPLICIT_ADR, L_REFACTOR_SCOPE,
     L_DOC_GAP, L_TEST_GAP, L_FEATURE, L_FEATURE_REFLECTION, L_DOC, L_FINDING,
+    L_SHOEBOX,
 )
 
 # --------------------------------------------------------------------------

@@ -934,3 +934,83 @@ The query layer's first surface, the static `query()`, has a measured recall cei
 - `lineage/_extractor/src/lineage_extractor/graph_query/README.md` — build / query / the ephemeral-vs-canonical contract.
 - `feature-anchored-ontology.md` principle 7 — the pre-registered two-stage deferral this layer executes; its "5 MB" threshold is corrected there.
 - `lineage/{repo}/query-gold-set.yaml` — the maintainer-authored maiden-gate gold set.
+
+---
+
+## 18. The shoebox layer — note-first reverse-engineering *(rev 10)*
+
+### 18.1 Why it exists — the missing first stage of sense-making
+
+The 2026-05-26 case-law named two features the methodology had completely missed: **Data Entity Staleness** (a cross-cutting `is_stale` predicate imprinted by `DataEntityMapperImpl` on every response DTO, consumed by ten UI components, with zero feature-flow anchor and zero sidecar) and **Compact lineage view-mode** (a `full: boolean` URL query param toggling rendering across two distinct lineage variants, also unanchored). Both were verified mechanically: required spec fields / UI controls with explicit operator-facing purpose and no F-NNN home. The "97.7% effective coverage" metric reported them as covered because *any* feature flow mentioned the underlying node tangentially.
+
+The diagnosis was not "the composer is broken" or "we need more reducers." It was that the methodology had **no place for unfinished thoughts**. Layers 1-4 each demand a finalized artefact (a sidecar, a concept entry, a feature flow). An observation that names a feature the analyst can't yet anchor — a DTO field whose imprinting class is two hops off-chain; a UI control whose toggle target lives elsewhere; a cross-cutting product claim — has nowhere to go. Either it is forced into a structure prematurely (the `permission_side_door` mis-read in `retrospectives/LSN-023`) or it is dropped on the floor (staleness, compact-lineage, and almost certainly more).
+
+Three converging bodies of work describe the gap precisely:
+
+- **Pirolli & Card sense-making model** *(2005, "The Sensemaking Process and Leverage Points for Analyst Technology")*. Two-loop architecture: information foraging populates a **shoebox** (anything potentially relevant, no close examination yet); selected snippets promote into an **evidence file**; sense-making refines them into **schema → hypothesis → report**. Progress involves much backtracking; top-down and bottom-up mix opportunistically.
+- **Von Mayrhauser & Vans Integrated Comprehension Model** *(1995/96, "Program understanding behavior during debugging of large-scale software")*. Program comprehension is *active, goal-driven, hypothesis-based*; analysts switch between top-down (domain model) and bottom-up (program model) as required, anchored by a Knowledge Base. Three levels: program, situation, top-down.
+- **Votipka et al. — An Observational Investigation of Reverse Engineers' Processes and Mental Models** *(USENIX Security 2020)*. Empirical study of practicing REs: form hypotheses → systematic exploration → **note-taking** is the unit of work.
+
+Our methodology had five of the six Pirolli-Card stages; it was missing the shoebox. The shoebox closes that gap.
+
+### 18.2 What the shoebox is
+
+A flat directory `lineage/{repo}/shoebox/` with one file per investigation thread under `detail/SHB-NNN-{slug}.md`. Minimal frontmatter (`**Category**: open|clustering|merged|dead-end`; optional `**Severity**:`), a one-sentence falsifiable hypothesis as the H1 title, a flat list of `file:line` evidence references with one-line notes, free-form `## Notes` (speculation welcome), `## Next` action list, `## Links` (cluster_with / merged_into / supersedes). Any session may append. Threads accumulate across runs.
+
+Each thread is loaded by the existing `_load_markdown_reducer` machinery (`lineage/_extractor/src/lineage_extractor/graph_query/loaders.py`, registered with `id_prefix="SHB"`, `label=L_SHOEBOX="ShoeboxThread"`) into a `ReducerNodeRecord` whose body becomes the embedding target. Threads are **first-class nodes in the labeled-property-graph projection** and are picked up by `graph-search` semantic queries immediately. The maiden test: queries for `"data entity is stale predicate"` and `"compact lineage view toggle"` return SHB-001 and SHB-002 respectively as the top vector hit (cosine ≥ 0.75).
+
+### 18.3 The four legal statuses (lifecycle)
+
+| Status | Meaning | Transition out |
+|---|---|---|
+| `open` | New observation; ≤3 evidence refs; hypothesis tentative. | → `clustering` when evidence accumulates; → `dead-end` if disproved; → `merged` if discovered to be a facet of an existing F-NNN. |
+| `clustering` | Multiple evidence refs spanning ≥2 substrate axes; hypothesis sharpening; may have cluster-siblings. | → `merged` when the maintainer graduates the thread to `feature-flows/detail/F-NNN.yaml` with `seeded_from: SHB-NNN`. |
+| `merged` | Graduated to a feature flow. File kept for traceability (provenance: this feature was reverse-engineered FROM this thread). | Terminal. |
+| `dead-end` | Investigation refuted the hypothesis (the observation belongs to no user-observable feature, or duplicates a closed thread). `## Notes` records why. | Terminal. |
+
+A `dead-end` thread is **not** deleted — it is part of the methodology's audit trail.
+
+### 18.4 Per-run shoebox evaluation (feature-flow-builder responsibility)
+
+The `feature-flow-builder` agent (`.claude/agents/feature-flow-builder.md`) executes a mandatory **Step 0** at the start of every run, BEFORE composing new feature flows. It reads every `shoebox/detail/SHB-*.md` with `Category: open` or `clustering` and decides one of four verdicts per thread:
+
+- **Graduate to feature** — evidence ≥3 refs spanning ≥2 substrate axes; hypothesis falsifiable; product surface clear. Authors `feature-flows/detail/F-NNN.yaml` with `seeded_from: SHB-NNN`; flips thread to `merged`.
+- **Merge into existing feature** — hypothesis maps to a facet of an existing F-NNN. Appends evidence to that flow as `contributing_nodes` or `observed_vs_expected.facets`; flips thread to `merged` with `Links.merged_into: F-NNN`.
+- **Cluster with siblings** — two-or-more `open` threads share keyword overlap in their hypothesis OR share ≥1 evidence file, AND together are still below the graduation threshold. Sets each thread's `Links.cluster_with` bidirectionally; flips each to `clustering`. Next run reconsiders the cluster as a single graduation candidate.
+- **Leave as note** — insufficient evidence, ambiguous surface, competing candidates — defer. Appends an `## evaluation` entry: `feature-flow-builder YYYY-MM-DD: deferred — {reason; what would unblock}`. Status stays as-is.
+
+The builder reports `graduated_count`, `merged_count`, `clustered_count`, `deferred_count` in `batch_refresh_note`. Multi-run convergence is the norm — a thread may stay `open` for several runs before crossing the graduation threshold. That is the point: hypotheses with thin evidence stay hypotheses until foraging catches up.
+
+### 18.5 Who else writes shoebox threads
+
+- **The `file-analyser` subagent (Rule 10).** When enriching one node, if a piece of the code's product purpose is not derivable from local context — a predicate utility imprinted by mappers off-chain; a UI control whose toggle target lives elsewhere — append a shoebox thread rather than forcing a sidecar conclusion. Cross-reference from the sidecar's `bugs_limitations_corner_cases` or `confidence_per_field` block back to the thread.
+- **The maintainer**, during `/code-walk`, `/enrich`, or casual reading. Whenever a feature is noticed missing from `feature-flows/`, drop SHB-NNN with the initial observation.
+
+The shoebox is NOT a backlog. Bugs go to `refactoring-scopes/` / `doc-gaps/` / `test-map/`; ADR-worthy decisions go to `implicit-adrs/`. The shoebox specifically captures *the kind of observation that names a feature you cannot yet anchor.*
+
+### 18.6 What this layer subtracts
+
+Per the 2026-05-26 design conversation: the alternative proposal — a DTO-field-decomposition reducer + cross-cutting-predicates substrate axis + per-mechanic requirement-reconstruction artefact + clustering composition reducer + new spot-check type + redefined coverage metric — is **withdrawn**. Reverse-engineering is note-taking + hypothesis-running, not richer composition. Adding more abstractions would have made the process *less* stable and *less* traceable.
+
+The shoebox does the same work because hypotheses about DTO fields and lateral predicates are now legal artefacts in flight — they no longer need a special reducer to give them a home. The "anchored vs touched" correction happens naturally: as shoebox threads close into feature flows, real anchoring grows; threads that stay open are the honest gap. The 97.7%-effective vanity metric can stay or go — but the work list is `shoebox/detail/SHB-*.md` with `Category: open` or `clustering`, which is bounded, traceable, and aged by the dated `## evaluation` entries.
+
+### 18.7 Bootstrapping a new project
+
+Per APPROACH §6 ("How to apply this to your project"), the shoebox layer ports verbatim:
+
+1. Create `lineage/{repo}/shoebox/README.md` and `shoebox/detail/`.
+2. The graph_query loader registration is already in place (`config.L_SHOEBOX` + `_load_markdown_reducer(..., "shoebox", "SHB", ...)`); no per-project edit needed.
+3. Add Rule 10 to your `file-analyser` agent contract and Step 0 to your `feature-flow-builder` agent contract. Both are universal — the contracts in this repo are copy-paste templates.
+4. Seed the directory by hand-authoring 2-3 threads as worked examples during the methodology's first walk-through. The directory earns into use; no big-bang seeding required.
+
+### Cross-references
+
+- `lineage/{repo}/shoebox/README.md` — the per-repo contract + the schema + the lifecycle table.
+- `lineage/{repo}/shoebox/detail/SHB-001-data-entity-staleness.md` — the worked example in `clustering` state.
+- `lineage/{repo}/shoebox/detail/SHB-002-compact-lineage-view-mode.md` — the worked example in `open` state.
+- `.claude/agents/file-analyser.md` — Rule 10 (append a shoebox thread when product purpose isn't local-derivable).
+- `.claude/agents/feature-flow-builder.md` — Rule 8 + workflow Step 0 (per-run shoebox evaluation).
+- `lineage/_extractor/src/lineage_extractor/graph_query/config.py` — `L_SHOEBOX = "ShoeboxThread"`.
+- `lineage/_extractor/src/lineage_extractor/graph_query/loaders.py` — `_load_markdown_reducer(... "shoebox", "SHB", config.L_SHOEBOX)` registration.
+- `retrospectives/LSN-023` — the `permission_side_door` mis-read; the shoebox is the corrective for that class of error.
+- Pirolli & Card 2005; Von Mayrhauser & Vans 1995/96; Votipka et al. USENIX Security 2020 — the research grounding (full citations in `shoebox/README.md` §"Why this layer exists").

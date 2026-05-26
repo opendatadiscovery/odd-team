@@ -36,6 +36,12 @@ class AxisState:
     last_built: str | None = None
 
 
+_CANONICAL_KEYS = frozenset({
+    "repo", "last_scan_commit", "last_scan_date", "last_scan_mode",
+    "extractor_version", "axes", "node_count", "edge_count",
+})
+
+
 @dataclass
 class Manifest:
     repo: str
@@ -46,6 +52,11 @@ class Manifest:
     axes: dict[str, AxisState] = field(default_factory=dict)
     node_count: int = 0
     edge_count: int = 0
+    extras: dict[str, Any] = field(default_factory=dict)
+    """Downstream-computed manifest extensions (e.g. `coverage_metrics`
+    written by `lineage/_extractor/registry-shard/coverage.py`). Preserved
+    verbatim across full scans so the extractor never wipes a downstream
+    tool's fields."""
 
     def axis(self, name: str) -> AxisState:
         if name not in self.axes:
@@ -53,7 +64,7 @@ class Manifest:
         return self.axes[name]
 
     def to_dict(self) -> dict[str, Any]:
-        return {
+        out: dict[str, Any] = {
             "repo": self.repo,
             "last_scan_commit": self.last_scan_commit,
             "last_scan_date": self.last_scan_date,
@@ -66,6 +77,12 @@ class Manifest:
             "node_count": self.node_count,
             "edge_count": self.edge_count,
         }
+        # Append unknown (downstream-computed) keys at the end, preserving
+        # their on-disk shape. Never let canonical keys be shadowed.
+        for key, value in self.extras.items():
+            if key not in _CANONICAL_KEYS:
+                out[key] = value
+        return out
 
 
 def load_manifest(path: Path) -> Manifest | None:
@@ -83,6 +100,7 @@ def load_manifest(path: Path) -> Manifest | None:
         )
         for name, a in axes_raw.items()
     }
+    extras = {k: v for k, v in raw.items() if k not in _CANONICAL_KEYS}
     return Manifest(
         repo=repo,
         last_scan_commit=raw.get("last_scan_commit"),
@@ -92,6 +110,7 @@ def load_manifest(path: Path) -> Manifest | None:
         axes=axes,
         node_count=int(raw.get("node_count", 0)),
         edge_count=int(raw.get("edge_count", 0)),
+        extras=extras,
     )
 
 

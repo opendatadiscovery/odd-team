@@ -1,0 +1,90 @@
+gap_id: TEST-GAP-1021
+category: missing-security
+criticality: HIGH
+node_ids:
+  - 'odd-platform ts components/shared/elements/AppErrorPage ui-shell-widget:AppErrorPage'
+pillars_affected: [P-04, P-09]
+surfaced_by:
+  - 'AppErrorPage.md:tests_coverage_semantic.uncovered_behaviours.[4] (Does NOT render error.url or error.message to the DOM — security; HIGH; Pins the no-leak contract. A future maintainer improving the error pane by adding the backend message or the failing URL would silently leak)'
+  - 'AppErrorPage.md:docs_link_semantic.routes_to_finding (the test that should pin the omission)'
+behaviour: |-
+  **AppErrorPage MUST NOT render `error.url` or `error.message` to the
+  DOM, even though both fields are present in the AppError shape
+  passed in by 23 callers.** The current widget only renders
+  `error.status` and `error.statusText` — a deliberate
+  information-disclosure-boundary decision. The implicit ADR per
+  AppErrorPage.md is: status code + status text only; the URL (which
+  may contain ownership / entity-id leakage) and the backend
+  message (which may contain stack-trace fragments or PII) MUST
+  stay invisible to the end user.
+
+  But: no test pins this contract. A maintainer "improving" the
+  error pane by adding `{error.url}` or `{error.message}` for
+  better debugging would silently land a data-disclosure
+  regression. The risk surface includes:
+  (a) error.url leakage — paths like
+  `/api/dataentities/{id}/permissions` reveal entity IDs that the
+  caller does not have permission to view directly; reveal the
+  owner-association URL space; etc.
+  (b) error.message leakage — 5xx responses from the backend may
+  carry stack-trace fragments, query plans, or PII in body.message;
+  4xx auth-failure responses may reveal which permission was
+  missing (a privilege-mapping disclosure).
+
+  The 23 caller sites (DataEntityDetails, TermDetails, Search,
+  Alerts, Activity, Directory, DatasetStructure*, DataEntityAlerts,
+  TestReport, IntegrationPreviewList, Integration, PolicyDetails,
+  OwnerAssociations{Active,New,Resolved}, Term*, HierarchyLineage
+  per AppErrorPage.md upstream_callers) all pass the full
+  4-field AppError envelope; the widget's no-leak contract is the
+  load-bearing boundary.
+
+  Severity HIGH because (i) every callsite is on the platform's
+  primary failure-mode UX, (ii) the leak is silent — the renderer
+  decides what to show, (iii) the "improvement" temptation is
+  realistic — every maintainer's first instinct when debugging
+  a generic 500 is "let me see the backend message".
+
+  This is the F-005 security boundary that TEST-GAP-425 partially
+  covers (via the fetchDataEntityDetails-specific path) but does
+  NOT pin as a cross-cutting widget invariant. This new test pins
+  the widget itself.
+test_class: security
+test_files_existing: []
+test_files_proposed:
+  - path: 'odd-platform-ui/src/components/shared/elements/AppErrorPage/__tests__/AppErrorPage.noLeak.test.tsx'
+    name: 'render_does_NOT_include_error_url_in_dom'
+  - path: 'odd-platform-ui/src/components/shared/elements/AppErrorPage/__tests__/AppErrorPage.noLeak.test.tsx'
+    name: 'render_does_NOT_include_error_message_in_dom'
+  - path: 'odd-platform-ui/src/components/shared/elements/AppErrorPage/__tests__/AppErrorPage.noLeak.test.tsx'
+    name: 'render_includes_only_error_status_and_status_text'
+evidence:
+  - 'AppErrorPage.md says (tests_coverage_semantic.uncovered_behaviours.[4]): "Does NOT render error.url or error.message to the DOM — security; HIGH; Pins the no-leak contract. A future maintainer improving the error pane by adding the backend message or the failing URL would silently leak — see known_security_gaps + P-176."'
+  - 'AppErrorPage.md implicit_adrs (information-disclosure-boundary decision) routes to tests_coverage_semantic.uncovered_behaviours[4]'
+  - 'Glob verified: zero AppErrorPage*.test.* under odd-platform-ui/src (run 2026-05-26)'
+  - 'Primary source verified 2026-05-26: AppErrorPage.tsx renders only error.status and error.statusText (no error.url, no error.message in JSX)'
+cross_references:
+  - 'TEST-GAP-425 (sibling — fetchDataEntityDetails-specific path; less general)'
+  - 'P-176 probe (the leak-regression probe — directly references this gap)'
+  - 'F-005 information-disclosure-boundary family'
+related_pillar_features:
+  - 'P-04:F-001 UI error display'
+  - 'P-09 Authentication and Authorization'
+related_features: []
+proposed_action: |-
+  Three React-Testing-Library tests:
+  (a) Mount AppErrorPage with showError=true and an error envelope
+  carrying url="/api/dataentities/12345/permissions"; assert the URL
+  string is NOT present anywhere in the rendered DOM (no innerHTML
+  match, no attribute match).
+  (b) Mount with error.message="java.lang.NullPointerException at
+  com.foo.Bar.baz(Bar.java:42)"; assert the message string is NOT
+  in the DOM.
+  (c) Mount with error.status=404, error.statusText="Not Found";
+  assert both ARE in the DOM (positive contract).
+  Tests (a) and (b) are GREEN today (current implementation correctly
+  omits). The value is the REGRESSION-PIN — a future change that
+  adds `{error.url}` or `{error.message}` to AppErrorPage.tsx
+  trips these tests immediately.
+maintainer_curated: false
+batch: 2026-05-26-ZJ

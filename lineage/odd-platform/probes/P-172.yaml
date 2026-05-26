@@ -1,0 +1,81 @@
+---
+probe_id: P-172
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__json__locales_translations__i18n-resource__en.md
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: integration
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category B name-vs-behavior drift, applied at the UI
+  routing layer): `ToolbarTabs.tsx:111` has `if (tabs[idx].name === t('Dictionary'))`
+  — a string-equality check between the localized tab name and the
+  literal `t('Dictionary')`. Both sides resolve via i18next, so for the
+  English locale the comparison succeeds (`"Dictionary" === "Dictionary"`).
+  For non-English locales, IF a locale ever translates "Dictionary" to a
+  non-English string (currently none do — natural-keys pattern), the
+  comparison degrades to `"Dictionnaire" === "Dictionnaire"` (still works)
+  unless one side translates and the other does not (race / re-render
+  during locale switch, or i18next initialization timing). The CONCEPTUAL
+  drift remains: the tab label says "Dictionary" while the URL goes to
+  `/termsearch` (`termsSearchPath()`). The DOC-GAP-300/301 family
+  surfaces this exact label-vs-URL drift for the ZH-batch terms route.
+  This probe verifies the URL the user lands on when clicking the
+  "Dictionary" tab across all six locales — confirming the URL never
+  matches the label vocabulary, regardless of locale.
+---
+arrange:
+  - kind: docker-compose-up
+    spec: odd-platform-ui dev server
+act:
+  - kind: dom-probe
+    description: |
+      For each locale (en, es, ch, fr, ua, hy):
+        1. set localStorage.i18nextLng = <locale>; reload.
+        2. read the rendered text of the tab labelled by t('Dictionary').
+        3. click that tab.
+        4. capture the URL the browser navigates to.
+    capture_as: dictionary_tab_url_per_locale
+observe:
+  - kind: comparison
+    description: |
+      For every locale, the URL is /termsearch (or
+      /termsearch/<created-search-id>), NEVER /dictionary, /diccionario,
+      /dictionnaire, /termini, /словник, etc. The label varies (or
+      doesn't, under natural-keys); the URL is locked.
+    capture_as: label_vs_url_witness
+assert:
+  - "dictionary_tab_url_per_locale['en'].startswith('/termsearch')"
+  - "dictionary_tab_url_per_locale['es'].startswith('/termsearch')"
+  - "dictionary_tab_url_per_locale['fr'].startswith('/termsearch')"
+  - "dictionary_tab_url_per_locale['ch'].startswith('/termsearch')"
+  - "dictionary_tab_url_per_locale['ua'].startswith('/termsearch')"
+  - "dictionary_tab_url_per_locale['hy'].startswith('/termsearch')"
+  # The URL never adopts the localized label vocabulary.
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__json__locales_translations__i18n-resource__en
+    - odd-platform__ts__components_shared_elements_AppToolbar__ToolbarTabs
+  retrospectives:
+    - LSN-019
+  doc_gaps:
+    - DOC-GAP-300
+    - DOC-GAP-301
+realism_caveats: |
+  This probe documents the URL-vs-label coupling at the UI shell. The
+  i18n LAYER cannot fix this alone — the URL is hardcoded in the
+  `termsSearchPath()` route helper (`routes/termsRoutes.ts:5`) as
+  `/termsearch`. A genuine fix is either (a) renaming the URL to
+  /dictionary (breaks deep-linked bookmarks), or (b) renaming the i18n
+  key from "Dictionary" to "Term Search" everywhere it is referenced (a
+  single grep across t('Dictionary') call sites — there are 2 in
+  ToolbarTabs.tsx + 1 in termsRoutes — and updating the en.json key
+  accordingly). Both are out of scope for this probe; the probe
+  RECORDS the current state for the layer-4 reducer to compose with
+  the route sidecar and the term-search sidecar.

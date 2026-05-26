@@ -2,8 +2,8 @@ name: <AppErrorPage> as Error Render Surface (Suppressed Toasts on Large Loaders
 canonical_in_docs: false
 canonical_candidate: false
 pillar_affinity:
-- P-01
-- P-05
+  - P-01
+  - P-05
 description: |-
   **NEW INVARIANT, batch 2026-05-19J**. The project's pattern for handling "expected
   failure" loads (large entity payloads — DataEntityDetails, TermDetails, Policy,
@@ -15,56 +15,105 @@ description: |-
   `AppError` payload into `loader.errors[<actionType>]`. **Full-page error surface**:
   the affected components render `<AppErrorPage showError={true}
   error={loader.errors[...]} />` as a full-page banner (e.g. DataEntityDetails.tsx:116-119;
-  HierarchyLineage.tsx:129-133). The banner displays `error.status`, `error.statusText`,
-  `error.url`, and `error.message` from the backend's error response. **The
-  decision shape**: large entity loads' failures are MORE prominent than a
-  transient toast (they take over the full content area), but the user retains
-  the surrounding UI shell (header, navigation). A 404 / 403 / 500 from a detail
-  page is rendered identically. **Generic error fallback**: `AppError.message`
-  falls back to literal `'An error occurred'` when the backend returns a non-JSON
-  body or a body without a `message` field (`lib/errorHandling.tsx:12-26`). A
-  502/504 from the platform process or an intervening proxy with an HTML error
-  body becomes the same opaque banner as a real 404 — operators have no way to
-  tell from the UI whether the entity doesn't exist or the backend is down.
-  **Error-payload reflection**: `AppError.url` carries the request URL into the
-  UI's error banner; for a deployment behind a reverse proxy that strips internal
-  paths this is harmless; for a deployment exposing the platform directly the
-  banner reveals the backend's actual API path.
+  HierarchyLineage.tsx:129-133). **The decision shape**: large entity loads' failures
+  are MORE prominent than a transient toast (they take over the full content area),
+  but the user retains the surrounding UI shell (header, navigation). A 404 / 403 /
+  500 from a detail page is rendered identically. **Generic error fallback**:
+  `AppError.message` falls back to literal `'An error occurred'` when the backend
+  returns a non-JSON body or a body without a `message` field
+  (`lib/errorHandling.tsx:12-26`). A 502/504 from the platform process or an
+  intervening proxy with an HTML error body becomes the same opaque banner as a
+  real 404 — operators have no way to tell from the UI whether the entity doesn't
+  exist or the backend is down.
+
+  ## REFINED — batch ZJ (2026-05-26): the displayed-field contract is 2-of-4, not 4-of-4
+
+  Batch ZJ adds the AppErrorPage.tsx primary-source sidecar
+  (odd-platform__ts__components_shared_elements_AppErrorPage__ui-shell-widget__AppErrorPage.md).
+  The 40-line component file provides the AUTHORITATIVE rendering
+  contract:
+
+  **AppErrorPage renders ONLY `error?.status` (numeric HTTP code,
+  AppErrorPage.tsx:25) and `error?.statusText` (RFC 7231 reason
+  phrase, AppErrorPage.tsx:29).** The remaining two ErrorState
+  fields — `error.url` (the failing API URL) and `error.message`
+  (the backend's body.message text) — are accepted by the type
+  system but NEVER rendered to the DOM. A grep across
+  AppErrorPage/ for `error.message|error.url|error?.message|error?.url`
+  returns ZERO matches.
+
+  **This SUPERSEDES the prior batch 2026-05-19J claim** that the
+  banner displays all 4 fields (`error.status`, `error.statusText`,
+  `error.url`, `error.message`). That claim was inferred from the
+  ErrorState type shape; the actual JSX accesses only 2 of the 4
+  fields. The earlier batch's `notes` recommendation to 'strip
+  AppError.url from the banner in production builds' is therefore
+  ALREADY satisfied by the component (it never rendered the URL
+  to begin with). LSN-018 supersede ref.
+
+  **The `error.message` IS surfaced in a SEPARATE channel** — the
+  `react-hot-toast` 6-second toast emitted by `showServerErrorToast`
+  (`errorHandling.tsx:48-68`) carries the message. The asymmetry
+  is the design: STATUS code stays on page indefinitely, MESSAGE
+  flashes for 6 seconds. (But under `switchOffErrorMessage: true`
+  the toast is also suppressed; the message effectively goes
+  nowhere.)
+
+  **The information-disclosure boundary IS the load-bearing
+  property of this widget**, but is UNDOCUMENTED in the code (no
+  JSDoc, no inline comment defends the omission of `url` and
+  `message`). A future "improvement" PR adding
+  `<Typography>{error.url}</Typography>` (to help operators
+  identify the failing endpoint) or `<Typography>{error.message}</Typography>`
+  (to surface the backend hint) would silently invert the boundary
+  — backend response bodies (which may carry stack-trace fragments,
+  SQL exception text, or echoed PII depending on the backend's
+  error formatter) would land in the DOM. No test exists to catch
+  this regression. Probe P-176 emitted (batch ZJ) to runtime-verify
+  the 2-of-4 contract.
+
+  **AppErrorPage is NOT a React error boundary AND NOT a catch-all
+  route**. The widget is a CONTROLLED render helper rendered by 23
+  caller files via `<AppErrorPage showError={isXxxNotFetched}
+  error={xxxFetchingError}>`. It catches NO synchronous JS render
+  errors. It is NOT mounted on `path='*'` in App.tsx. Captured
+  separately as the `no-react-error-boundary-no-catch-all-route-blank-page-root-cause`
+  invariant (batch ZJ).
+
+  **Error-payload reflection (REVISED)**: `AppError.url` IS still
+  populated upstream (`errorHandling.tsx:23` from `response?.url`)
+  but the widget chooses NOT to render it. The defence is
+  implementation-level, not type-level. The same `url` is exposed
+  to the network observer (DevTools Network tab) and to the toast
+  channel (briefly), but NOT to the persistent on-page error
+  display.
 contributing_files:
-- DataEntityDetails.md
-- fetchDataEntityDetails.md
-- LineageGraph.md
-triangulation_count: 3
-cross_batch: false
+  - DataEntityDetails.md
+  - fetchDataEntityDetails.md
+  - LineageGraph.md
+  - 'odd-platform__ts__components_shared_elements_AppErrorPage__ui-shell-widget__AppErrorPage.md'
+triangulation_count: 4
+cross_batch: true
+cross_batch_refs:
+  - 'batch-J (caller-side pattern across 10 large-loader thunks)'
+  - 'batch-ZJ (AppErrorPage.tsx primary-source — REFINED the displayed-field contract from 4-of-4 to 2-of-4)'
 severity: LOW
 severity_dim: ux
 evidence:
-- 'fetchDataEntityDetails.md:implicit_adrs.[1] Selective error-toast suppression
-  is the project pattern for handling expected failure loads. switchOffErrorMessage:
-  true signals that the detail-page load is one of the loaders whose failure is
-  expected to be communicated by the full-page <AppErrorPage> banner, not by a
-  transient toast. 14 occurrences across 10 thunk files share this stance'
-- 'fetchDataEntityDetails.md:bugs_limitations_corner_cases.[AppError.message falls
-  back to the literal string An error occurred when the backend returns a non-JSON
-  body or a body without a message field — operators have no way to tell from
-  the UI whether the entity does not exist or the backend is down MEDIUM]'
-- 'DataEntityDetails.md:bugs_limitations_corner_cases.[component does not surface
-  backend permission errors to the user — AppErrorPage rendering is generic; a
-  retrofitted auth gate would need UI changes to discriminate 403/404/500]'
-- 'LineageGraph.md:bugs_limitations_corner_cases.[no retry on transient failure —
-  switchOffErrorMessage:true means the thunk silently sets the error state instead
-  of showing a toast; user sees only the AppErrorPage at the end of the chain;
-  no exponential backoff, no automatic retry, no retry button on the error page]'
+  - 'fetchDataEntityDetails.md:implicit_adrs.[1] Selective error-toast suppression is the project pattern for handling expected failure loads. switchOffErrorMessage: true signals that the detail-page load is one of the loaders whose failure is expected to be communicated by the full-page <AppErrorPage> banner, not by a transient toast. 14 occurrences across 10 thunk files share this stance'
+  - 'fetchDataEntityDetails.md:bugs_limitations_corner_cases.[AppError.message falls back to the literal string An error occurred when the backend returns a non-JSON body or a body without a message field — operators have no way to tell from the UI whether the entity does not exist or the backend is down MEDIUM]'
+  - 'DataEntityDetails.md:bugs_limitations_corner_cases.[component does not surface backend permission errors to the user — AppErrorPage rendering is generic; a retrofitted auth gate would need UI changes to discriminate 403/404/500]'
+  - 'LineageGraph.md:bugs_limitations_corner_cases.[no retry on transient failure — switchOffErrorMessage:true means the thunk silently sets the error state instead of showing a toast; user sees only the AppErrorPage at the end of the chain; no exponential backoff, no automatic retry, no retry button on the error page]'
+  - 'AppErrorPage.md:implicit_adrs.[1] (HIGH confidence — Only status and statusText are displayed; url and message are deliberately omitted; the 2-channel design with toast carrying message is the intentional information-disclosure boundary)'
+  - 'AppErrorPage.md:invariants.[Only status and statusText are displayed; url and message from ErrorState are NEVER rendered] (the dominant safety property of the widget per the file walkthrough)'
+  - 'AppErrorPage.md:stress_findings.request_inputs.[error] (TRANSLATES_LEGITIMATELY — the prop is named error: ErrorState; only 2 of 4 fields are rendered; the translation is favourable — an information-disclosure boundary — but undocumented in the code)'
+  - 'AppErrorPage.md:security.known_security_gaps.[0] MEDIUM (the information-disclosure boundary is undocumented in the code — no JSDoc, no inline comment, no test pin)'
+  - 'AppErrorPage.md:stress_findings.probes_emitted P-176'
 mitigations_unimplemented:
-- 'Differentiate 403 / 404 / 500 in AppErrorPage rendering — different error
-  surfaces give different operator signal'
-- 'Add a "Retry" button to AppErrorPage — the user has no client-side affordance
-  for transient backend failures'
-- 'Detect non-JSON error responses (HTML 502/504 from proxies) and surface a
-  distinct message — operators currently see "An error occurred" for backend
-  downtime AND for missing entities'
-- 'Strip AppError.url from the banner in production builds — the URL reflection
-  is a defence-in-depth concern for direct-exposed deployments'
+  - 'Differentiate 403 / 404 / 500 in AppErrorPage rendering — different error surfaces give different operator signal'
+  - 'Add a "Retry" button to AppErrorPage — the user has no client-side affordance for transient backend failures'
+  - 'Detect non-JSON error responses (HTML 502/504 from proxies) and surface a distinct message — operators currently see "An error occurred" for backend downtime AND for missing entities'
+  - '**REVISED batch ZJ** — codify the 2-of-4 information-disclosure boundary: add a JSDoc above the AppErrorPage function explaining "Only error.status and error.statusText are rendered; error.url and error.message are intentionally omitted to bound backend-leak surface. The message is surfaced via showServerErrorToast (6s). DO NOT add url/message rendering here without a security review." Add a regression test asserting the 2-field contract (Glob `**/AppErrorPage.test.tsx` returns nothing today)'
 notes: |-
   New invariant captured in batch 2026-05-19J. The AppErrorPage + switchOffErrorMessage
   pattern is intentional and load-bearing — it embodies the project's "expected
@@ -77,3 +126,21 @@ notes: |-
   Recommended improvement: extend AppErrorPage to discriminate by `error.status`
   + add a Retry button + strip URL in production. Affects 10 large-loader thunks
   consistently.
+
+  **Batch ZJ REFINED**: gap (c) — 'strip URL in production' — was a
+  redundant recommendation; the widget never rendered URL anyway.
+  The actual safety mechanism is implementation-level (the JSX
+  selects 2 of 4 fields) and is the load-bearing security property
+  of the widget. The correct mitigation is to LOCK IT IN with a
+  JSDoc + regression test, not to strip something that was already
+  not rendered.
+
+  Cross-references:
+    - `app-error-page-controlled-render-helper-not-error-boundary`
+      (NEW batch ZJ — the entity definition; the AppErrorPage shape
+      that is NOT a global error pane)
+    - `no-react-error-boundary-no-catch-all-route-blank-page-root-cause`
+      (NEW batch ZJ — the structural architectural absence that
+      causes bare /terms and /master-data blank pages)
+    - LSN-018 (cross-batch coherence — the SUPERSEDES annotation
+      on the 'banner displays url + message' claim from batch J)

@@ -1,0 +1,433 @@
+feature_id: F-042
+pillar_id: P-08
+pillar_anchored_id: P-08:F-012
+pillar_anchored_feature_name: Page-level UI Error Display + Missing-Route Fall-Through
+feature_name: |-
+  Page-level UI Error Display — per-page-component-owned AppErrorPage widget
+  rendering HTTP status + statusText + Home-Page CTA on async-thunk
+  rejection — combined with the absent global catch-all route and absent
+  React error boundary that produce a BLANK PAGE on bare-URL fall-through
+primary_drift_class: ui_error_handling_per_page_owned_no_global_safety_net
+drift_class_summary:
+  - ui_error_handling_per_page_owned_no_global_safety_net
+  - bare_url_fall_through_produces_blank_page_no_route_path_star_catch_all
+  - no_react_error_boundary_anywhere_in_spa_uncaught_throw_unmounts_entire_app
+  - error_url_and_error_message_fields_silently_dropped_information_disclosure_boundary
+  - react_query_error_cast_to_redux_errorstate_undefined_behaviour_at_runtime
+  - no_retry_cta_only_home_page_navigation
+  - unknown_error_fallback_when_showError_passed_without_error_prop
+  - toast_side_channel_carries_message_for_6s_then_lost
+cross_pillar_relationships:
+  - pillar_id: P-08
+    kind: composes
+    via: |-
+      The feature lives inside Management & Administration's UI-shell
+      surface — sibling to F-041 (Application Toolbar). F-041 is the
+      success-path chrome; F-042 is the failure-path widget. Both are
+      cross-cutting affordances rendered by the SPA shell, not tied to
+      any single pillar's domain.
+  - pillar_id: P-01
+    kind: shares_data_with
+    via: |-
+      AppErrorPage is mounted by 23 page-level components across the
+      Discovery pillar (DataEntityDetails, Search/Results, Directory,
+      DataSourceList, Entities, plus the 8 DataEntityDetails sub-tabs
+      Lineage / Structure / Alerts / Activity / TestReport / etc.).
+      Every Discovery page-level fetch error reaches this widget.
+  - pillar_id: P-06
+    kind: shares_data_with
+    via: |-
+      TermDetails, LinkedEntitiesList, LinkedTermsList all mount
+      AppErrorPage on term-fetch rejection. fetchTermDetails has
+      `switchOffErrorMessage: true` — the toast is suppressed, AppErrorPage
+      is the ONLY error surface for /terms/:termId failures.
+  - pillar_id: P-07
+    kind: shares_data_with
+    via: |-
+      Alerts/AlertsList + Activity/ActivityResults + the per-entity
+      DataEntityAlerts and ActivityResults under DataEntityDetails all
+      mount AppErrorPage on fetching-error.
+batch_origin: ZJ
+created_in_batch: ZJ
+discovered_from_entry_point: |-
+  ui_shell:AppErrorPage (the 40-line controlled-render widget mounted by 23
+  page-level components on async-thunk rejection — DataEntityDetails.tsx:116,
+  TermDetails.tsx:80, Search/Results/Results.tsx:168, Alerts/AlertsList.tsx:101,
+  Activity/ActivityResults.tsx:76, Directory.tsx:30, Entities.tsx:60,
+  DataSourceList.tsx:110, TestReport.tsx:111, DataEntityAlerts.tsx:88, ...).
+  ALSO: ui_shell:App.tsx (the route registry whose absence of a `path='*'`
+  catch-all is the structural reason bare /terms and /master-data produce a
+  blank page).
+description: |-
+  Page-level UI Error Display is the SPA's failure-path chrome surface — a
+  40-line stateless React widget (AppErrorPage) rendered by 23 page-level
+  data-loading components on async-thunk rejection. The widget displays:
+  (a) a large HTTP status code (errorCode typography variant, 72px) in the
+  left column, (b) a status-text heading (h1) + "Return to the Home Page"
+  link in the right column, all centered in a viewport-height-clearing grid
+  sized via `calc(100vh - toolbarHeight - offsetTop)`. The widget is a
+  CONTROLLED component — it reads no redux state, no react-query cache; the
+  parent supplies `showError` (boolean) + optional `error` (ErrorState) +
+  optional `offsetTop` (px).
+
+  The widget's information-disclosure boundary is load-bearing: only
+  `error?.status` (line 25) and `error?.statusText` (line 29) are rendered to
+  the DOM. The `error.url` (failing API URL) and `error.message` (backend
+  response body message) fields populated upstream by `getErrorResponse`
+  (errorHandling.tsx:12-26) are NEVER displayed — they would leak backend
+  implementation details (stack traces, SQL exception strings, internal URL
+  paths) if rendered. The `error.message` IS surfaced via `react-hot-toast`
+  for 6 seconds (errorHandling.tsx:48-68 + App.tsx:55 toast duration default)
+  — a separate channel with a short window.
+
+  The feature's load-bearing STRUCTURAL DRIFT is what's NOT here: the SPA
+  has NO global error boundary (Grep `ErrorBoundary|componentDidCatch|getDerivedStateFromError`
+  over odd-platform-ui/src returns ZERO matches) AND NO `<Route path='*'>`
+  catch-all (App.tsx:59-89 declares 11 Route entries, none with path='*').
+  React-Router-DOM v6's no-match behaviour is to render nothing inside
+  <Routes> — visiting bare /terms (parent route declared but no index child)
+  or bare /master-data (no parent route exists) or any unknown URL renders
+  the AppToolbar plus a BLANK pane below. The AppErrorPage is reached ONLY
+  when an async thunk rejects, NEVER when react-router fails to match.
+
+  This is the cross-batch finding with ZH+ZI that observed bare /terms and
+  /master-data produce a blank page. The structural root cause is here:
+  AppErrorPage's scope is per-page-component-owned, and the only thing that
+  could route route-layer fall-through into a visible error pane is a
+  `path='*'` catch-all that does not exist. A 5-line fix (add `<Route path='*'
+  element={<AppErrorPage showError error={{status:404, statusText:'Page Not
+  Found', url:'', message:''}} />} />` to App.tsx:89) would route ALL
+  fall-through to this widget; alternatively the gap should be documented
+  explicitly. Either option closes the operator-surprise; the code fix is
+  preferred.
+
+  The drift surface beyond the structural absence: AppErrorPage has NO retry
+  CTA (only "Return to the Home Page"); the `error` prop is typed `ErrorState`
+  but 2 callers (Integration.tsx, IntegrationPreviewList.tsx) cast react-query
+  errors via `error as ErrorState` — undefined runtime behaviour if the
+  react-query error shape lacks `status`/`statusText`; 8 callers pass
+  `showError` without `error` (OwnerAssociationsActive.tsx and siblings) —
+  the widget falls back to "Unknown Error" with an empty status code column;
+  the information-disclosure boundary (omit `url` + `message`) is
+  undocumented in the code (no JSDoc, no comment) and undocumented on the
+  public docs site (no troubleshooting page mentions error pages or HTTP
+  codes displayed in the UI).
+contributing_nodes:
+  - node_id: odd-platform ts components/shared/elements/AppErrorPage ui-shell-widget:AppErrorPage
+    role: ui-error-display-widget
+    enriched_at_batch: ZJ
+    sidecar: lineage/odd-platform/understanding/odd-platform__ts__components_shared_elements_AppErrorPage__ui-shell-widget__AppErrorPage.md
+  - node_id: odd-platform ts react-component:App.tsx
+    role: route-registry-host
+    unresolved: true
+    note: |-
+      App.tsx:59-89 declares 11 <Route> entries; NO `<Route path='*'>`
+      catch-all; NO React error boundary wrapping the <Routes> block.
+      The structural reason bare URLs produce a blank page.
+  - node_id: odd-platform ts redux/slices loader.slice:loaderSlice
+    role: error-state-redux-source
+    unresolved: true
+    note: |-
+      loader.slice.ts:42-49 — every thunk rejection routes through here;
+      populates errors[type] from rejectWithValue(ErrorState). 23 callers
+      read this via getXxxFetchingError / getXxxFetchingStatuses selectors.
+  - node_id: odd-platform ts redux/lib handleResponseThunk:handleResponseAsyncThunk
+    role: error-shape-source
+    unresolved: true
+    note: |-
+      handleResponseThunk.ts:34-42 wraps every thunk; on catch reads
+      `getErrorResponse(err)` → {status, statusText, url, message} and
+      rejectWithValue's it. The 4-field ErrorState shape that AppErrorPage
+      displays only 2 of.
+  - node_id: odd-platform ts react-component component:DataEntityDetails
+    role: caller-canonical
+    unresolved: true
+    note: |-
+      DataEntityDetails.tsx:116-119 — the canonical caller pattern
+      (`<AppErrorPage showError={isDataEntityDetailsNotFetched}
+      error={dataEntityDetailsFetchingError} />`). One of 23 caller files
+      following the same shape across the SPA.
+  - node_id: odd-platform ts react-component component:TermDetails
+    role: caller-only-error-surface
+    unresolved: true
+    note: |-
+      TermDetails.tsx:80-83. `fetchTermDetails` has `switchOffErrorMessage:
+      true` (terms.thunks.ts:83) — the toast is suppressed; AppErrorPage
+      is the ONLY error surface for /terms/:termId failures.
+  - node_id: odd-platform ts routes route:terms
+    role: bare-url-no-index-route
+    sidecar: lineage/odd-platform/understanding/odd-platform__ts__routes__route__terms.md
+    note: |-
+      termsRoutes.ts declares /terms parent with no `<Route index>` child
+      and no `<Route path='*'>` — visiting bare /terms produces a blank
+      pane below the toolbar. The structural batch-ZH+ZI cross-finding
+      anchored here.
+  - node_id: odd-platform ts routes route:masterData
+    role: bare-url-no-parent-route
+    sidecar: lineage/odd-platform/understanding/odd-platform__ts__routes__route__masterData.md
+    note: |-
+      masterDataRoutes.ts exports only lookupTablesPath() → /master-data/lookup-tables.
+      No /master-data parent. Visiting bare /master-data produces a blank
+      pane below the toolbar.
+chain:
+  - hop: 1
+    node: odd-platform ts react-component:App.tsx
+    sidecar: '(referenced — App.tsx is not yet enriched as a standalone sidecar)'
+    multiplicity_per_trigger: 1
+    evidence: |-
+      App.tsx:59-89 — the route registry mounts <AppToolbar /> at line 56
+      + <Routes> at lines 59-89 with 11 <Route> children. No `path='*'`
+      catch-all; no ErrorBoundary wrapper around the Routes block.
+    unresolved: false
+  - hop: 2a
+    node: odd-platform ts react-component component:DataEntityDetails
+    sidecar: '(referenced from AppErrorPage sidecar upstream_callers — DataEntityDetails not yet standalone-enriched)'
+    multiplicity_per_trigger: 1
+    evidence: |-
+      DataEntityDetails.tsx:116-119 — the canonical async-thunk-rejection
+      caller pattern. 23 caller files follow this shape across the SPA;
+      enumerated in AppErrorPage.upstream_callers.
+    unresolved: false
+  - hop: 3
+    node: odd-platform ts components/shared/elements/AppErrorPage ui-shell-widget:AppErrorPage
+    sidecar: lineage/odd-platform/understanding/odd-platform__ts__components_shared_elements_AppErrorPage__ui-shell-widget__AppErrorPage.md
+    multiplicity_per_trigger: 1
+    evidence: |-
+      AppErrorPage.tsx:13-38 — controlled-component render. Reads
+      `showError`, `error?.status`, `error?.statusText`, `offsetTop`.
+      Returns null when showError=false; renders the error pane
+      otherwise. The information-disclosure boundary is line 24-29 —
+      only status + statusText accessed, never url + message.
+    unresolved: false
+amplification_factor: |-
+  0 for healthy pages (the widget is invisible). 1 page-render +
+  0..1 redirect-issue per error event (the user may click Home Page).
+  Cardinality is bounded by terminal-state semantics — once a fetch has
+  rejected, the user remains on the error pane until they navigate away.
+amplification_note: |-
+  AppErrorPage itself is a cheap render. The blast radius is structural —
+  the absence of a global error boundary OR a path='*' catch-all means
+  fall-through errors produce blank pages (no widget to render). The
+  amplification is in the SILENCE: an uncaught React render error in any
+  route subtree unmounts the entire SPA to the closest boundary; with no
+  boundaries, it unmounts the whole App, leaving the user with a blank page
+  and no recourse short of a hard reload.
+terminal_side_effect:
+  side_effect_class: page-render
+  description: |-
+    page-render — the error pane (viewport-clearing grid with status code +
+    statusText heading + Home-Page CTA) renders ONLY when a parent's async
+    thunk has rejected AND the parent component is mounted on the matched
+    route. Returns null otherwise. The widget contributes no DOM and no
+    whitespace when there is no error. Cardinality: 0 for healthy pages,
+    1 per error event (terminal state until route change). For the
+    fall-through case (bare URLs not matched by any <Route>), the widget
+    is NOT rendered — the page-render is ZERO (the load-bearing structural
+    drift facet).
+  evidence: |-
+    AppErrorPage.tsx:20-37 — the conditional render. 23 caller files
+    enumerated in upstream_callers (the canonical per-page-component-owned
+    pattern). App.tsx:59-89 — the route registry that does NOT mount this
+    widget on `path='*'` (the fall-through case produces a blank page).
+  cardinality_per_call: 0 for healthy pages, 1 per error event
+observed_vs_expected:
+  facets:
+    - facet_id: bare_url_fall_through_produces_blank_page_no_route_path_star_catch_all
+      drift_class: ui_router_no_match_renders_nothing_no_404_widget
+      severity: MEDIUM
+      observed: |-
+        App.tsx:59-89 declares 11 <Route> entries; NO `<Route path='*'>`
+        catch-all. React-Router-DOM v6's NO-MATCH behaviour is to render
+        nothing inside <Routes>. The AppToolbar (line 56) still renders,
+        but the route-body area is empty. Verified by Grep
+        `path=['\"]\\*['\"]|NotFound|Page404|404Page|NoMatch` over
+        odd-platform-ui/src returning ZERO matches.
+      expected: |-
+        Either add a `<Route path='*' element={<AppErrorPage showError
+        error={{status:404, statusText:'Page Not Found', url:'', message:''}}
+        />} />` to App.tsx:89 (the 5-line fix), OR explicitly document
+        bare-URL fall-through as undefined behaviour. Operator-conventional
+        default is the former.
+      operator_visible_consequence: |-
+        Hitting bare /terms, bare /master-data, or any unknown URL produces
+        a blank page below the toolbar. The user sees a working chrome
+        with no content and no error message; the only signal is the
+        address bar. Cross-batch finding with ZH+ZI bare-URL observations.
+    - facet_id: no_react_error_boundary_anywhere_in_spa_uncaught_throw_unmounts_entire_app
+      drift_class: ui_no_error_boundary_uncaught_throw_unmounts_app
+      severity: HIGH
+      observed: |-
+        Grep `ErrorBoundary|componentDidCatch|getDerivedStateFromError`
+        over odd-platform-ui/src returns ZERO matches. The closest thing
+        is AppSuspenseWrapper.tsx:1-23 (Suspense only, no error handling).
+        AppErrorPage.tsx:13-38 is a functional component with no class,
+        no error-boundary lifecycle methods.
+      expected: |-
+        Every production React app wraps its <Routes> in at least one
+        error boundary. Operator-conventional defaults: top-level
+        boundary around the SPA root that renders AppErrorPage on
+        synchronous render-time throws; per-route boundaries for
+        granular recovery.
+      operator_visible_consequence: |-
+        Any synchronous render error in any route subtree (undefined
+        access, type error, thrown component) unmounts the entire
+        component tree to the closest boundary — none exists — so React 18
+        unmounts the whole App, leaving the user with a blank page.
+        Lazy-chunk-load failures (React.lazy at App.tsx:30-41) surface
+        as uncaught promise rejections in dev + indefinitely-pending
+        Suspense fallback in production. AppErrorPage CANNOT catch any
+        of these because it is a sibling within page subtrees, not an
+        ancestor wrapping the Routes.
+    - facet_id: error_url_and_error_message_fields_silently_dropped_information_disclosure_boundary
+      drift_class: ui_information_disclosure_boundary_undocumented_in_code
+      severity: MEDIUM
+      observed: |-
+        AppErrorPage.tsx:24-29 accesses ONLY `error?.status` and
+        `error?.statusText`. The `error.url` (failing API URL) and
+        `error.message` (backend response body) fields populated upstream
+        by `getErrorResponse` (errorHandling.tsx:12-26) are NEVER
+        rendered. The 2-of-4-field display is the load-bearing safety
+        property of the widget. But there is NO JSDoc, NO comment in
+        AppErrorPage.tsx defending the omission, and NO test pinning the
+        contract.
+      expected: |-
+        Either codify the contract with a JSDoc + a regression test (the
+        test class-security uncovered behaviour), OR add the fields with
+        operator-configurable redaction. The current state is "implicit-
+        but-undocumented guard" — a future maintainer "improving" the
+        page by adding the URL or the backend message would silently leak.
+      operator_visible_consequence: |-
+        Today: the boundary holds, no leak observed. Tomorrow: a PR
+        adding `<Typography>{error.message}</Typography>` to surface the
+        backend's hint to operators would land silently — no test
+        catches it, no review checklist names it.
+    - facet_id: react_query_error_cast_to_redux_errorstate_undefined_behaviour_at_runtime
+      drift_class: type_cast_hides_react_query_vs_redux_errorstate_mismatch
+      severity: LOW
+      observed: |-
+        Integration.tsx:33 passes a `useIntegration({integrationId})`
+        react-query error to AppErrorPage — which is NOT a redux
+        ErrorState; the cast works at compile time but produces undefined
+        behaviour at runtime if the react-query error shape doesn't
+        include status/statusText. IntegrationPreviewList.tsx:70 does
+        the same: `error={error as ErrorState}` (explicit cast).
+        AppErrorPage.tsx:10 declares `error?: ErrorState` — the typed
+        parameter.
+      expected: |-
+        Either AppErrorPage accepts a discriminated union (`ErrorState |
+        QueryError`) with a type-narrowing branch, or the two react-query
+        callers map their error to ErrorState explicitly.
+      operator_visible_consequence: |-
+        Today: works because react-query happens to populate status /
+        statusText in practice. Tomorrow: a react-query version upgrade
+        or a different fetch wrapper could change the shape — the
+        AppErrorPage would render an empty status code with "Unknown
+        Error" title for integration-page failures.
+    - facet_id: unknown_error_fallback_when_showError_passed_without_error_prop
+      drift_class: ui_widget_degraded_display_on_partial_caller_inputs
+      severity: LOW
+      observed: |-
+        8 caller files pass `showError={isError}` with NO `error` prop
+        (OwnerAssociationsActive.tsx:99, OwnerAssociationsNew.tsx:95,
+        OwnerAssociationsResolved.tsx:103). The widget's render at line
+        24-26 produces `{error?.status}` — empty when error undefined.
+        Line 29 falls back to `t('Unknown Error')`. The visual outcome:
+        a centered grid with an empty 72px-tall left column and a
+        centered 'Unknown Error' heading.
+      expected: |-
+        Either a lint rule that flags `<AppErrorPage showError>` without
+        `error`, or a default `error={{status:0, statusText:''}}`
+        that produces a cleaner fallback display.
+      operator_visible_consequence: |-
+        Operator sees a degraded display — 'Unknown Error' with no
+        status code, no context. Strictly worse than the normal pane.
+    - facet_id: no_retry_cta_only_home_page_navigation
+      drift_class: ui_error_widget_no_retry_only_home_page_button
+      severity: LOW
+      observed: |-
+        AppErrorPage.tsx:8-13 — no `onRetry` prop. AppErrorPage.tsx:31-32
+        — only 'Return to the Home Page' button (hard-coded `to='/'`).
+        Users hitting a transient backend hiccup must either click
+        Home Page + navigate back manually, OR press browser refresh.
+      expected: |-
+        A 'Try Again' CTA that re-fires the parent's fetching thunk.
+        Operator-conventional default for transient-failure UX.
+      operator_visible_consequence: |-
+        Users encounter a permanent-looking error UI for transient
+        failures (network blip, brief 502). The Home Page navigation
+        loses any in-progress state (form data, filter selections).
+    - facet_id: toast_side_channel_carries_message_for_6s_then_lost
+      drift_class: ui_error_message_short_side_channel_then_lost
+      severity: LOW
+      observed: |-
+        errorHandling.tsx:48-68 emits a toast carrying the backend
+        `message`; the toast duration is App.tsx:55's 6000ms global
+        default. If the user blinks or a second toast dismisses the
+        first, the only place that ever carried the backend's hint is
+        gone. AppErrorPage does NOT recapitulate the message.
+      expected: |-
+        Either the message persists on the page (in a less-prominent
+        affordance — collapsible "Details" disclosure), or the toast
+        duration scales with message length.
+      operator_visible_consequence: |-
+        Asymmetry — message on screen for 6s, status code on screen
+        indefinitely. Users see "Forbidden" or "Not Found" but cannot
+        recover the backend's specific hint after the toast vanishes.
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+      - Renders null when showError=false (the dominant case — the widget is invisible on a healthy page)
+      - Renders the status code from error.status and the status text from error.statusText
+      - Falls back to t('Unknown Error') when error is undefined OR error.statusText is empty
+      - Does NOT render error.url or error.message to the DOM (information-disclosure boundary contract)
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+      - The 'Home Page' button navigates to / via react-router (client-side, not full reload)
+      - The widget renders into viewport-clearing space when a parent's sticky header pushes content down (offsetTop wiring)
+      - Bare /terms, /master-data, and unknown URLs produce a blank page (NOT AppErrorPage) — pins the missing-path-catch-all design decision
+      - Async-thunk rejection at fetchDataEntityDetails produces AppErrorPage with the backend's HTTP status code
+      - Async-thunk rejection at fetchTermDetails produces AppErrorPage (toast is suppressed for terms via switchOffErrorMessage)
+      - react-query error from useIntegration / useIntegrationPreviewList renders sanely through the `error as ErrorState` cast
+  performance:
+    state: N/A
+    covered: []
+    uncovered: []
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+      - The information-disclosure boundary holds — backend error message and failing URL are NOT in the rendered DOM (P-176)
+      - A backend 403 with a stack-trace-laden message renders a clean '403 / Forbidden' page, message confined to the 6s toast
+      - A backend response with a verbose internal URL never reaches the DOM via AppErrorPage
+control_summary: |-
+  0 of 16 cells COVERED — zero tests reference AppErrorPage in the
+  odd-platform-ui repo (Glob `**/*test*` over odd-platform-ui/src/ returns
+  zero files). The widget is in the failure-path critical path; the
+  information-disclosure boundary is undocumented in the code and untested.
+  Highest-leverage probe is P-176 (information-disclosure boundary holds
+  AND bare /terms + /master-data produce blank pane). Local-only per Rule 7
+  — docker-compose ODD platform + Playwright headless-browser probe at the
+  configured DISABLED endpoint; no remote infrastructure needed.
+probes_referenced:
+  - P-176
+related_refactoring_scopes:
+  - REFACTOR-185
+related_doc_gaps: []
+related_features:
+  - F-024
+  - F-026
+  - F-041
+related_concepts:
+  - error-display-widget
+  - error-state-redux-loader
+  - http-status-code-display
+  - react-router-no-fallback
+  - react-router-fall-through-blank-page
+related_retrospectives:
+  - LSN-017
+maintainer_curated: false
+ui_unverified: false

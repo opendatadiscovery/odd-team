@@ -1,0 +1,106 @@
+gap_id: TEST-GAP-1013
+category: missing-integration
+criticality: CRITICAL
+node_ids:
+  - 'odd-platform ts components/shared/elements/AppErrorPage ui-shell-widget:AppErrorPage'
+  - 'odd-platform ts components/shared/elements/AppToolbar ui-shell-widget:AppToolbar'
+pillars_affected: [P-04, P-09]
+surfaced_by:
+  - 'AppErrorPage.md:tests_coverage_semantic.uncovered_behaviours.[6] (Bare /terms, /master-data, and unknown URLs produce a blank page (NOT AppErrorPage); the scope of AppErrorPage is async-thunk-rejection only)'
+  - 'AppErrorPage.md:docs_link_semantic.doc_drift_findings.[1] (App.tsx:59-89 declares NO <Route path=*> catch-all and NO React error boundary; React-Router-DOM v6 NO-MATCH behaviour renders nothing)'
+  - 'F-032.yaml:677 (Data Quality Dashboard — "ErrorBoundary around the dashboard. None exists.")'
+  - 'F-032.yaml:480 (Data Quality Dashboard — recommends ErrorBoundary as fix)'
+behaviour: |-
+  **CRITICAL — no React error boundary exists anywhere in the SPA. ANY
+  uncaught render-time exception in ANY mounted component produces a
+  completely blank page across the WHOLE UI (toolbar + content area
+  both disappear). The user has no recovery affordance except a full
+  manual browser reload.**
+
+  Verified at primary source 2026-05-26: a repo-wide `grep -rn
+  "componentDidCatch|ErrorBoundary|getDerivedStateFromError"` over
+  `odd-platform-ui/src/` returns ZERO matches. There is no global
+  error boundary in `App.tsx`, no per-route error boundary, no
+  per-component error boundary on the dashboard widgets, no fallback
+  UI on the toolbar, and no fallback on the route container.
+  React's default behaviour when a render-time exception bubbles
+  uncaught is to UNMOUNT the entire React tree from the root — i.e.
+  the user sees a blank document.body with no DOM content. The
+  AppErrorPage widget is NOT a React ErrorBoundary; it is a redux-
+  state-keyed presentational banner that depends on the parent
+  component still rendering (e.g. DataEntityDetails.tsx:116-119
+  conditionally renders <AppErrorPage> on a slice-stored
+  fetchDataEntityDetails rejection). If the parent itself throws
+  during render, AppErrorPage is never reached.
+
+  Cross-cutting consequences enumerated by sidecars across batches:
+  (a) Data Quality Dashboard (F-032 lines 480, 677) — a single
+  null-cell crash in the dashboard's render tree blanks the whole UI;
+  the fix recommended in F-032 is "ErrorBoundary around the
+  dashboard" — none exists.
+  (b) DataQualityFilters.tsx:31-39 JSON.parse without try/catch
+  (TEST-GAP-925) — malformed query-param JSON throws SyntaxError
+  during render, blanks the whole UI.
+  (c) AppInfoMenu hover-only menu activation (batch-ZJ
+  uncovered_behaviours.[6]) — if i18n key resolution throws (locale
+  bundle load race during init), the toolbar itself unmounts.
+  (d) Bare /terms or /master-data URLs (batch-ZH/ZI/ZJ) — route
+  fall-through produces a blank page; the OPERATOR cannot distinguish
+  a runtime crash from a missing route fallback.
+
+  This is the SINGLE LARGEST robustness gap in the SPA's shell layer.
+  No test exists for ANY of (i) the absence (current state), (ii) a
+  hypothetical future ErrorBoundary catching a child-render exception
+  and rendering AppErrorPage as fallback (the desired state), (iii)
+  the per-pillar boundaries the dashboards / management surfaces
+  ought to have.
+test_class: integration
+test_files_existing: []
+test_files_proposed:
+  - path: 'odd-platform-ui/src/__tests__/AppRoot.errorBoundary.test.tsx'
+    name: 'currentBehaviour_anyChildRenderException_unmountsEntireReactTree_blankPageRegressionPin'
+  - path: 'odd-platform-ui/src/__tests__/AppRoot.errorBoundary.test.tsx'
+    name: 'desiredState_globalErrorBoundary_catchesChildException_rendersAppErrorPageFallback'
+  - path: 'odd-platform-ui/src/components/dashboards/__tests__/DashboardErrorBoundary.test.tsx'
+    name: 'dataQualityDashboard_nullCellCrash_isolatedByPerDashboardErrorBoundary'
+evidence:
+  - 'AppErrorPage.md says (docs_link_semantic.doc_drift_findings.[1]): "App.tsx:59-89 declares NO <Route path=*> catch-all and NO React error boundary; React-Router-DOM v6 NO-MATCH behaviour renders nothing — neither the AppErrorPage nor any other fallback. The user perceives a blank window."'
+  - 'AppErrorPage.md says (tests_coverage_semantic.uncovered_behaviours.[6]): "Bare /terms, /master-data, and unknown URLs produce a blank page (NOT AppErrorPage); the SCOPE of AppErrorPage is async-thunk-rejection only — integration; MEDIUM"'
+  - 'F-032.yaml:677 says: "ErrorBoundary around the dashboard. None exists."'
+  - 'F-032.yaml:480 says: "OR (c) an ErrorBoundary around the dashboard so a single colour lookup [crash] is isolated"'
+  - 'Primary source verified 2026-05-26: grep -rn "componentDidCatch|ErrorBoundary|getDerivedStateFromError" odd-platform-ui/src/ returns ZERO matches'
+  - 'Glob verified: zero *.test.tsx / *.test.ts referencing ErrorBoundary or componentDidCatch (run 2026-05-26)'
+cross_references:
+  - 'F-032 (Data Quality Dashboard — explicit ErrorBoundary recommendation; closest documented case-law for this gap)'
+  - 'TEST-GAP-925 (DataQualityFilters JSON.parse without try/catch — concrete crash path)'
+  - 'TEST-GAP-1011 (search/{searchId} non-UUID — concrete doomed-call path)'
+  - 'TEST-GAP-1021 (AppErrorPage no-leak — sibling cross-cutting widget contract)'
+  - 'TEST-GAP-1022 (AppErrorPage route fall-through blank page — adjacent missing-fallback)'
+related_pillar_features:
+  - 'P-04:F-001 UI navigation chrome'
+  - 'P-04:F-032 Data Quality Dashboard'
+  - 'P-09:F-001 UI authentication'
+related_features: []
+related_refactor_ids: []
+related_doc_gap_ids: []
+proposed_action: |-
+  Three-test wedge:
+  (a) RED-pin the current behaviour: AppRoot.errorBoundary.test.tsx —
+  mount <App /> with a child component that throws synchronously during
+  render; assert the rendered DOM is empty (no <body>-level content).
+  This is the regression-pin documenting the CURRENT state — every
+  child throw blanks the entire UI.
+  (b) GREEN target state: wrap <App> children in a global
+  ErrorBoundary that catches getDerivedStateFromError and renders an
+  AppErrorPage instance with showError=true and an "Unknown render
+  error" message. Test that mount + throw produces the AppErrorPage
+  fallback with toolbar STILL VISIBLE.
+  (c) Per-dashboard isolation: DashboardErrorBoundary.test.tsx —
+  wrap individual dashboard widgets (DataQualityDashboard, etc.) in
+  their own ErrorBoundary so a single widget crash leaves the rest of
+  the page interactive (the F-032 recommendation).
+  The fix is two files added (one global, one per-widget HOC) plus a
+  ~30-line ErrorBoundary class. This is the single highest-leverage
+  robustness change in the SPA's shell.
+maintainer_curated: false
+batch: 2026-05-26-ZJ

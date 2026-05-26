@@ -2602,3 +2602,34 @@ First batch under the slimmed Phase 3 (commit b8c5dd1): no `rebuild_indexes.py a
 - Coherence-sweep 114227 generic regex candidates (baseline; grows monotonically with corpus size).
 - Graph dry-run today verified 20/20 random nodes trace to ground-truth files (`skipped_files=10` all explained: broken-yaml quarantines + one off-convention ADR filename + ActivityServiceImpl sidecar with unrecognized shape).
 
+
+---
+
+## Batch ZJ — 2026-05-26 (UI shell + i18n)
+
+**Sidecars added** (5/5): AppToolbar + AppInfoMenu + ToolbarTabs + AppErrorPage + en.json. **Coverage 51.4% direct / 97.0% effective (broke 97%).** **43 features.**
+
+### Headline architectural findings
+1. **TEST-GAP-1013 CRITICAL** + REFACTOR-685 HIGH — **no React error boundary anywhere in the SPA.** Repo-wide grep confirms zero matches for `componentDidCatch|ErrorBoundary|getDerivedStateFromError`. Any uncaught render exception blanks the whole UI. AppErrorPage is a *controlled render helper*, not a boundary.
+2. **AppToolbar — DISABLED-mode 'admin' literal username + Logout-404** (REFACTOR-688 HIGH). Default container deployment shows every anonymous user as "admin" and a Logout link that 404s.
+3. **ToolbarTabs unconditional 9-tab visibility** — no permission/role/feature-flag gate; READ_ONLY and ADMIN see identical 9 tabs. Pairs with ZH WithPermissionsProvider non-blocking finding.
+4. **en.json drift quartet** — 14+ code-referenced keys absent from all 6 locales; 3 primary-nav tabs (Data Quality / Data Modelling / Master Data) have NO key in any locale (English works via natural-keys fallback); locale-set size drift (en=418 vs others=414/415); the LSN-020 User-filter label drift is shipped uniformly to all 6 locales via en.json:347.
+5. **AppInfoMenu — 5 link sites missing `rel='noopener noreferrer'`** (broader than ZE F-035 finding which was operator-config-only — REFACTOR-629 strengthened); keyboard-inaccessible (WCAG 2.1.1 violation despite ARIA claims); operator-configured URLs + project version visible to anonymous viewers under DISABLED.
+
+### Phase 2 deltas
+- concept-merger: +13 new + 9 extended; **1 SUPERSEDED** (AppErrorPage prior claim refined to 2-of-4 displayed-fields vs 4-of-4). `withpermissionsprovider-context-seed-not-route-gate` now part of UI-tier closure.
+- adr-archaeologist: **+7 new ADRs (-233..-239)** + 3 strengthened; **+13 new REFACTORs (REFACTOR-685..697)** + 7 strengthened. -685 no error boundary + -688 DISABLED admin/logout + -690 14+ missing i18n keys are the load-bearing HIGH-severity additions.
+- doc-gap-finder: **+5 new DOC-GAPs (307-311)** + 6 strengthens. DOC-GAP-309 i18n missing keys = HIGH; UI-overview live page returns 404.
+- test-coverage-mapper: **+13 new TEST-GAPs (1013-1025)**; **1 CRITICAL** (1013 no error boundary). 3 strengthens with severity bumps (TEST-GAP-634 MEDIUM→HIGH, TEST-GAP-658 LOW→HIGH, TEST-GAP-954 MEDIUM→HIGH).
+- feature-flow-builder: **+3 NEW features** F-041 Application Toolbar (P-08:F-011) / F-042 Page-level UI Error Display + Missing-Route Fall-Through (P-08:F-012) / F-043 Multilingual UI (P-08:F-013) + 5 extended (F-034/F-035/F-021/F-024/F-011). 40 → 43 features.
+
+### Cumulative state after ZJ
+- Direct: 198 → **203/395 (51.4%)**
+- Effective: 374 → **383/395 (97.0%)** ← broke 97%
+- Features: 40 → **43** (+3 P-08 UI-shell-tier features)
+- CRITICAL test-gaps: 167 → **168**
+- Total test-gaps: 1009 → **1022**
+
+### Follow-ups
+- 16 unfixable YAML quarantines unchanged (5 concept + 2 test-map persistent quarantines + 8-9 new from the multi-thousand churn — investigation deferred).
+- Coherence-sweep 120250 generic regex candidates (baseline grows monotonically).

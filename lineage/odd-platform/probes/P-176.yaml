@@ -1,0 +1,184 @@
+---
+probe_id: P-176
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__components_shared_elements_AppErrorPage__ui-shell-widget__AppErrorPage.md
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: null  # AppErrorPage is a cross-cutting shell widget, not feature-scoped
+test_class: security
+verified_against_commit: ede5d277
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Two stress questions confirmed in one probe run:
+
+  Q1 (information-disclosure boundary, security):
+    Confirm AppErrorPage's load-bearing safety property: when an async thunk
+    rejects with a backend response that carries verbose / sensitive content
+    in `body.message` AND a recognisable internal URL in `response.url`,
+    the rendered DOM of the AppErrorPage contains ONLY the HTTP status code
+    (numeric) and the HTTP status text (RFC reason phrase). The DOM does
+    NOT contain the backend's `message` text and does NOT contain the
+    failing API `url`.
+
+    The toast that DOES carry the `message` is a separate channel
+    (`showServerErrorToast` from `errorHandling.tsx:48-68`); it may appear
+    transiently (default 6000ms — App.tsx:55). The probe asserts the toast
+    text is NOT present in the AppErrorPage DOM after the toast vanishes.
+
+    Hypothesis: AppErrorPage renders only `status` + `statusText`. NEVER
+    `url`, NEVER `message`. The 2-of-4-field display is the design.
+
+  Q2 (route-fall-through-blank-page, integration):
+    Visit bare `/terms` and bare `/master-data` (and one made-up URL
+    `/this-route-does-not-exist`). Confirm the user sees a BLANK below-toolbar
+    pane — NOT an AppErrorPage, NOT a 404 page, NOT any fallback. This pins
+    the structural finding from the AppErrorPage sidecar: App.tsx has NO
+    `<Route path='*'>` catch-all, NO React error boundary, so React-Router-DOM v6
+    fall-through produces no DOM content in the route-body region.
+
+    Hypothesis: the below-toolbar `<div>` is empty; the AppErrorPage component
+    is NOT in the DOM tree.
+---
+arrange:
+  - kind: docker-compose-up
+    profile: odd-minimal
+    services: [odd-platform, odd-postgres]
+  - kind: sql
+    description: |
+      Ensure NO term with id=9999 exists, so the backend returns 404 with a
+      verbose body.message. The probe will navigate to /terms/9999 and
+      observe what the AppErrorPage renders.
+    query: |
+      DELETE FROM term WHERE id = 9999;
+  - kind: env
+    description: |
+      Start the platform with auth.type=DISABLED for probe simplicity (no
+      login flow required). The displayed-field contract is identical
+      across auth modes (AppErrorPage has no per-mode branching).
+    vars:
+      AUTH_TYPE: DISABLED
+act:
+  - kind: dom-probe
+    description: |
+      Q1 — Trigger an async-thunk rejection with a verbose backend message.
+      Navigate the headless browser to /terms/9999 (a term ID that does not
+      exist; backend returns 404 with a body.message naming the missing
+      entity).
+    steps:
+      - navigate_to: "http://localhost:8080/terms/9999"
+      - wait_for_dom_stable: 2000ms
+      - capture_dom_text: "div.App"  # the entire below-toolbar tree
+        capture_as: app_dom_text_term_9999
+      - capture_dom_html: "div.App"
+        capture_as: app_dom_html_term_9999
+      - wait_for_toast_to_vanish: 7000ms  # toast TTL = 6000ms; +1s grace
+      - capture_dom_text: "div.App"
+        capture_as: app_dom_text_term_9999_post_toast
+  - kind: dom-probe
+    description: |
+      Q2 — Bare-URL fall-through. Visit three URLs that match NO Route in
+      App.tsx. Capture the below-toolbar DOM and confirm it is empty (no
+      AppErrorPage element, no error code, no Home Page button).
+    steps:
+      - navigate_to: "http://localhost:8080/terms"
+        wait_for_dom_stable: 2000ms
+      - capture_dom_html: "div.App > div"  # the route-body container (after toolbar)
+        capture_as: fall_through_terms_html
+      - navigate_to: "http://localhost:8080/master-data"
+        wait_for_dom_stable: 2000ms
+      - capture_dom_html: "div.App > div"
+        capture_as: fall_through_masterdata_html
+      - navigate_to: "http://localhost:8080/this-route-does-not-exist"
+        wait_for_dom_stable: 2000ms
+      - capture_dom_html: "div.App > div"
+        capture_as: fall_through_unknown_html
+observe:
+  - kind: derived
+    description: "Parse the DOM text for the AppErrorPage signature elements."
+    expressions:
+      - "term_9999_has_404_code: '404' in app_dom_text_term_9999"
+      - "term_9999_has_status_text: ('Not Found' in app_dom_text_term_9999) or ('Unknown Error' in app_dom_text_term_9999)"
+      - "term_9999_has_home_page_button: 'Home Page' in app_dom_text_term_9999"
+      - "term_9999_has_url_leak: '/api/' in app_dom_html_term_9999 or 'localhost:8080/api' in app_dom_html_term_9999"
+      - "term_9999_has_message_leak_post_toast: ('does not exist' in app_dom_text_term_9999_post_toast) or ('term' in app_dom_text_term_9999_post_toast.lower() and '9999' in app_dom_text_term_9999_post_toast)"
+        # Note: 'term 9999' would only appear if the backend message leaked
+        # to the page. After the toast vanishes, the page should show
+        # '404 / Not Found / Home Page' ONLY.
+  - kind: derived
+    description: "Parse fall-through DOM for AppErrorPage absence."
+    expressions:
+      - "terms_fallthrough_has_error_page: 'errorCode' in fall_through_terms_html or 'Home Page' in fall_through_terms_html"
+      - "masterdata_fallthrough_has_error_page: 'errorCode' in fall_through_masterdata_html or 'Home Page' in fall_through_masterdata_html"
+      - "unknown_fallthrough_has_error_page: 'errorCode' in fall_through_unknown_html or 'Home Page' in fall_through_unknown_html"
+      - "terms_fallthrough_is_blank: len(fall_through_terms_html.strip()) < 200"  # roughly empty
+      - "masterdata_fallthrough_is_blank: len(fall_through_masterdata_html.strip()) < 200"
+      - "unknown_fallthrough_is_blank: len(fall_through_unknown_html.strip()) < 200"
+assert:
+  # Q1 — AppErrorPage shows the status + status text + Home Page link
+  - "term_9999_has_404_code == True"
+  - "term_9999_has_status_text == True"
+  - "term_9999_has_home_page_button == True"
+  # Q1 — AppErrorPage does NOT leak the URL or the backend message
+  - "term_9999_has_url_leak == False"
+  - "term_9999_has_message_leak_post_toast == False"
+  # Q2 — Bare URLs produce NO AppErrorPage
+  - "terms_fallthrough_has_error_page == False"
+  - "masterdata_fallthrough_has_error_page == False"
+  - "unknown_fallthrough_has_error_page == False"
+  # Q2 — Bare URLs produce a blank route body
+  - "terms_fallthrough_is_blank == True"
+  - "masterdata_fallthrough_is_blank == True"
+  - "unknown_fallthrough_is_blank == True"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__components_shared_elements_AppErrorPage__ui-shell-widget__AppErrorPage
+  retrospectives: []
+realism_caveats: |
+  Q1 (information-disclosure boundary):
+    The probe pins the CURRENT displayed-field contract: only `status` +
+    `statusText`. If the backend chosen for the test happens to return a
+    `message` that itself happens to contain 'Home Page' or '404', the
+    assertion `term_9999_has_message_leak_post_toast` may produce a false
+    positive. The probe-runner should pick a backend endpoint whose
+    rejection message contains a clearly identifiable substring (e.g. the
+    entity id '9999' or a verbose phrase like 'does not exist') that
+    cannot collide with the static AppErrorPage text.
+
+  Q1 — Toast-vanish wait:
+    The 6000ms TTL is the GLOBAL default; specific toasts may override it.
+    `fetchTermDetails` has `switchOffErrorMessage: true` (terms.thunks.ts:83)
+    — so for /terms/9999 NO toast is emitted at all, and the post-toast
+    capture is identical to the initial capture. This is a happy side
+    effect: the probe's strongest assertion (no message leak) holds
+    regardless of toast TTL for this specific endpoint.
+
+  Q2 (fall-through):
+    The `len(html) < 200` heuristic is approximate — React-Router-DOM v6
+    may inject a small wrapper div, but the route-body region should
+    contain NO substantive content. If the test fails because the wrapper
+    div is larger than 200 chars, refine the assertion to check for the
+    absence of any of: `class*="errorCode"`, `class*="MuiTypography"`,
+    `>Home Page<`. The structural finding — that there is NO `path='*'`
+    catch-all — is determinable statically from App.tsx:59-89 (already
+    verified in the sidecar); the probe converts that static finding into
+    a confirmed runtime observation.
+
+  What this probe does NOT verify:
+    - Whether the toast itself (the brief 6-second carrier of `error.message`)
+      contains the leaked URL or message — that is a separate, pre-existing
+      surface owned by `showServerErrorToast` (errorHandling.tsx:48-68), NOT
+      AppErrorPage. A future probe could audit the toast leak surface
+      separately.
+    - Whether a synchronous JS render error reaches AppErrorPage — it does
+      not (no React error boundary exists; AppErrorPage is not an
+      ancestor of the route). To confirm: induce a render-time throw in
+      a child component and observe a blank tree, not an AppErrorPage.
+      Separate probe.
+    - Whether the lazy-chunk-load failure surfaces a useful pane — the
+      AppSuspenseWrapper has only `fallback`, no errorBoundary, so a
+      chunk-load failure produces an indefinite loading state. Separate
+      probe.

@@ -1,0 +1,95 @@
+---
+probe_id: P-171
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__json__locales_translations__i18n-resource__en.md
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: F-001
+test_class: integration
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category F, LSN-020 instance at the i18n layer): the
+  Activity Feed Filters component (`components/DataEntityDetails/DataEntityActivity/Filters/Filters.tsx:58`)
+  binds the multi-select filter `filterName='userIds'` to the label
+  `name={t('User')}` — which resolves via en.json line 347 to "User"
+  in every locale (the natural-keys pattern means non-English locales
+  also default to "User" unless explicitly translated). Per LSN-020 /
+  DOC-GAP-303, the backend SQL binds `userIds` to
+  `USER_OWNER_MAPPING.OWNER_ID.in(userIds)` (not to `activity.created_by`).
+  The i18n label "User" is therefore operator-misleading at the UI layer:
+  the operator sees "User" filter, expects "filter by who performed the
+  action", gets "filter by owner-of-entity via user-owner-mapping". This
+  probe verifies the rendered label across all six locales and confirms
+  the drift is uniform — i.e. no locale corrects the misleading label.
+---
+arrange:
+  - kind: docker-compose-up
+    spec: odd-platform full stack (odd-platform-api + odd-platform-ui + postgres)
+  - kind: sql
+    query: |
+      INSERT INTO activity (id, event_type, created_by, data_entity_id, created_at)
+      VALUES
+        (9001, 'OWNERSHIP_CREATED', 'alice', 1, NOW()),
+        (9002, 'OWNERSHIP_CREATED', 'bob', 1, NOW()),
+        (9003, 'OWNERSHIP_CREATED', 'alice', 2, NOW())
+  - kind: sql
+    query: |
+      INSERT INTO user_owner_mapping (user_id, owner_id, provider, status)
+      VALUES (100, 10, 'INTERNAL', 'APPROVED')
+act:
+  - kind: dom-probe
+    description: |
+      Open browser headless, navigate to /entity/1/activity, observe the Filters
+      panel User filter label across each locale (en, es, ch, fr, ua, hy).
+    capture_as: user_filter_label_per_locale
+  - kind: rest
+    method: GET
+    path: /api/dataentities/1/activity?userIds=100
+    capture_as: api_response_with_userid_100
+  - kind: sql
+    query: |
+      SELECT a.id, a.created_by FROM activity a
+      LEFT JOIN user_owner_mapping uom ON uom.user_id = ?
+      WHERE uom.owner_id IN (SELECT owner_id FROM user_owner_mapping WHERE user_id = ?)
+    capture_as: expected_owner_filter_rows
+observe:
+  - kind: comparison
+    description: |
+      Compare the label "User" (operator-facing) to what the SQL actually does
+      (filter by owner-of-entity-via-user-owner-mapping, NOT by actor).
+    capture_as: drift_witness
+assert:
+  - "user_filter_label_per_locale['en'] == 'User'"
+  - "user_filter_label_per_locale['es'] == 'User'  # natural-keys fallback, no explicit translation"
+  - "user_filter_label_per_locale['fr'] == 'User'  # same"
+  - "user_filter_label_per_locale['ch'] == 'User'  # same"
+  - "user_filter_label_per_locale['ua'] == 'User'  # same"
+  - "user_filter_label_per_locale['hy'] == 'User'  # same"
+  - "api_response_with_userid_100.items[0].createdBy != 'user-100-actor'  # response is NOT actor-filtered; LSN-020 drift confirmed"
+  - "len(api_response_with_userid_100.items) > 0  # response contains rows authored by OTHER users on entities owned by user_id=100's mapped owner"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__json__locales_translations__i18n-resource__en
+    - odd-platform__java__ActivityController__controller-method__getActivity
+    - odd-platform__ts__routes__route__activity
+  retrospectives:
+    - LSN-020
+  doc_gaps:
+    - DOC-GAP-303
+realism_caveats: |
+  This probe verifies the i18n KEY drift mirrors the SQL drift — the
+  English label "User" promises "filter by who performed the action"
+  AND no locale corrects the misleading label. If a remediation adds an
+  explicit translation in a non-English locale (e.g. fr.json: "User":
+  "Propriétaire" — "Owner") the probe still surfaces the inconsistency
+  because the i18n contract should be that the SAME key carries the SAME
+  semantic across locales. The deeper fix is renaming the KEY itself
+  (e.g. from "User" to "Affected Entity Owner" or "Performed By", with
+  the choice depending on which SQL semantic ODD wants to ship) AND
+  adding a tooltip / admonition in the live doc. This probe records the
+  current state; it does not prescribe the fix.

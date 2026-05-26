@@ -1,0 +1,142 @@
+---
+probe_id: P-175
+emitted_by: file-analyser
+emitted_in_sidecar: odd-platform__ts__components_shared_elements_AppToolbar_ToolbarTabs__ui-shell-widget__ToolbarTabs.md
+emitted_at: 2026-05-26T00:00:00Z
+status: pending-stress-protocol
+feature_id: null
+test_class: security
+verified_against_commit: ede5d277
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Stress question (Category D, Q3 + Category B top-level drift):
+  ToolbarTabs.tsx:34-82 hard-codes 9 tabs with NO permission / role /
+  feature-flag awareness. The Stress Protocol static trace establishes:
+    (a) every authenticated user — regardless of role — sees ALL 9 tabs
+        (Catalog / Directory / Data Quality / Data Modelling / Master Data /
+         Management / Dictionary / Alerts / Activity);
+    (b) downstream gates (e.g. WithPermissionsProvider on /lookup-tables)
+        are page-body-level only, NOT tab-entry-level; the ZH masterData
+        sidecar pins that the wrapper is non-blocking — it lets the page
+        render with reduced UI;
+    (c) Active Features (the F-034 feature-flag system via WithFeature) is
+        NEVER applied to any tab — the tab row does not auto-hide when
+        backend features are disabled.
+
+  Hypothesis to verify at runtime:
+    - A READ_ONLY user (or a user with NO explicit role) and an ADMIN user
+      see the same nav-bar (visually identical, byte-equivalent DOM under
+      the .MuiTabs-root selector).
+    - When the platform is run with auth.type=DISABLED, the same 9 tabs
+      render to the un-permissioned anonymous session that the DISABLED
+      mode produces.
+    - Disabling a backend Active Feature (if reachable via admin endpoint
+      or DB) does NOT remove any tab — feature-flag changes are invisible
+      to the tab row.
+---
+arrange:
+  - kind: docker-compose-up
+    note: "Start odd-platform with auth.type=OAUTH2 + Keycloak side-stack; pre-create three users: admin (role: ADMIN), reader (role: READ_ONLY), no-role (no role assignment)"
+  - kind: sql
+    query: |
+      INSERT INTO role (id, name) VALUES
+        (101, 'probe-admin'),
+        (102, 'probe-reader'),
+        (103, 'probe-no-role')
+      ON CONFLICT (id) DO NOTHING;
+      -- Probe-admin should have full Permission grants; probe-reader has only
+      -- read-class permissions; probe-no-role has no role mappings at all.
+  - kind: env-precondition
+    note: "Ensure Playwright is installed locally and pointed at http://localhost:8080"
+act:
+  - kind: dom-probe
+    description: "Open three browser sessions — one per user — and capture tab labels"
+    sessions:
+      - user: probe-admin
+        login_path: /oauth2/login
+        capture_as: admin_tabs
+        selector: "header [class*='MuiTabs-root'] [class*='MuiTab-root']"
+        attribute: textContent
+      - user: probe-reader
+        login_path: /oauth2/login
+        capture_as: reader_tabs
+        selector: "header [class*='MuiTabs-root'] [class*='MuiTab-root']"
+        attribute: textContent
+      - user: probe-no-role
+        login_path: /oauth2/login
+        capture_as: no_role_tabs
+        selector: "header [class*='MuiTabs-root'] [class*='MuiTab-root']"
+        attribute: textContent
+  - kind: dom-probe
+    description: "Restart odd-platform with auth.type=DISABLED; capture the tab row from an anonymous session"
+    capture_as: disabled_tabs
+    selector: "header [class*='MuiTabs-root'] [class*='MuiTab-root']"
+    attribute: textContent
+  - kind: sql
+    description: "Toggle a backend Active Feature off at the DB level (if no admin endpoint exists)"
+    query: |
+      UPDATE app_info_features SET enabled = false WHERE feature_name = 'DATA_COLLABORATION';
+    follow_up_capture_as: tabs_after_feature_off
+    follow_up_selector: "header [class*='MuiTabs-root'] [class*='MuiTab-root']"
+observe:
+  - kind: var-capture
+    description: "Hypothesis array — what we expect each capture to be (in EN locale)"
+    capture_as: expected_tabs
+    value:
+      - "Catalog"
+      - "Directory"
+      - "Data Quality"
+      - "Data Modelling"
+      - "Master Data"
+      - "Management"
+      - "Dictionary"
+      - "Alerts"
+      - "Activity"
+assert:
+  - "admin_tabs == expected_tabs"
+  - "reader_tabs == expected_tabs"
+  - "no_role_tabs == expected_tabs"
+  - "admin_tabs == reader_tabs == no_role_tabs   # All three sessions byte-equivalent — confirms NO permission gating at tab layer"
+  - "disabled_tabs == expected_tabs              # auth.type=DISABLED still renders the SAME 9 — confirms no auth-mode coupling"
+  - "tabs_after_feature_off == expected_tabs     # Disabling DATA_COLLABORATION did NOT remove any tab — confirms no feature-flag coupling at tab layer"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM role WHERE id IN (101, 102, 103);
+      UPDATE app_info_features SET enabled = true WHERE feature_name = 'DATA_COLLABORATION';
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__components_shared_elements_AppToolbar_ToolbarTabs__ui-shell-widget__ToolbarTabs
+    - odd-platform__ts__react-component__component__AppToolbar
+    - odd-platform__ts__routes__route__masterData
+  retrospectives:
+    - LSN-020
+    - LSN-023
+realism_caveats: |
+  The probe pins the operator-visible CLAIM that tab visibility is
+  unconditional. If all 6 assertions PASS, the sidecar's
+  bugs_limitations_corner_cases.[0] HIGH-severity finding is confirmed
+  and routes to a design discussion (intentional? accidental? worth
+  permission-gating the Management tab specifically?).
+
+  If any assertion FAILS, the static trace missed a gate — re-read the
+  AppToolbar / ToolbarTabs / AppTabs chain looking for a permission-aware
+  branch that the analyser overlooked. Likely-missed sites: a
+  WithPermissionsProvider wrapping AppToolbar mount point (verified
+  absent in App.tsx:56 at this commit, but a future refactor could
+  introduce one), or a permission-aware fork inside AppTabs that
+  consumes AppTabItem.hidden (the capability exists in AppTabs.tsx:17,
+  85, 105 but is dead at the ToolbarTabs caller today).
+
+  Out-of-scope for this probe: the downstream page-level gating (e.g.
+  /management/* permission checks). Those belong in per-route security
+  probes, not this navigation-shell probe.
+
+  The DATA_COLLABORATION feature toggle uses the `app_info_features`
+  table as a placeholder name — the actual table / row schema for the
+  Active Features registry should be verified by the probe-runner against
+  the live schema before execution (the sidecar's static trace did not
+  resolve the WRITE path for feature toggles).

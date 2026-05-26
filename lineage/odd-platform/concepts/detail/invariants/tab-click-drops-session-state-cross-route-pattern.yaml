@@ -23,8 +23,8 @@ description: |-
       `/search/{uuid}` (a session URL) and clicks the Catalog tab,
       the URL bar becomes `/search` (no UUID). `Search.tsx:37-42`
       sees no `routerSearchId` and dispatches
-      `createDataEntitiesSearch(...)` → `POST /api/search` → a NEW
-      `search_facets` row → navigates to `/search/{new-uuid}`. The
+      `createDataEntitiesSearch(...)` -> `POST /api/search` -> a NEW
+      `search_facets` row -> navigates to `/search/{new-uuid}`. The
       previous session UUID is dropped; the previous row stays in
       the database (orphaned until the 30-day TTL housekeeping
       reaper deletes it per
@@ -66,7 +66,7 @@ description: |-
   names for one feature.
 
   **Cross-tab consistency observation**: the Activity tab does NOT
-  do the same NAME drift (`t('Activity')` ↔ `/activity` URL ↔ Activity
+  do the same NAME drift (`t('Activity')` ~ `/activity` URL ~ Activity
   Feed feature name) — the names align. The Search/Catalog tab is
   the only top-nav tab in batch ZI with this triple name divergence.
 
@@ -97,13 +97,67 @@ description: |-
   first cross-batch evidence; recommend a maintainer triage on the
   canonical name. The "drop session on tab click" pattern is NOT
   documented at the doc-product level.
+
+  ## STRENGTHENED — batch ZJ (2026-05-26)
+
+  Batch ZJ adds the ToolbarTabs.tsx primary-source sidecar
+  (odd-platform__ts__components_shared_elements_AppToolbar_ToolbarTabs__ui-shell-widget__ToolbarTabs.md)
+  with the IMPLEMENTATION-SHAPE evidence:
+
+  **Two of the nine tabs have non-trivial onClick handlers** that
+  fire CREATE thunks before navigation, generating a new session UUID
+  for EACH click:
+
+    - 'ToolbarTabs.tsx:121-123' — Catalog click dispatches
+      `createDataEntitiesSearch(initialParams)` via useCreateSearch,
+      mints a server-side searchId, then navigates.
+
+    - 'ToolbarTabs.tsx:111-119' — Dictionary click dispatches
+      `createTermSearch`, mints a server-side termSearchId, then
+      navigates to `/termsearch/<id>`.
+
+  **The orphan-id consequence is multiplicative**: every click of
+  Catalog OR Dictionary mints a new server-side row, then drops the
+  previous session's row. The ToolbarTabs sidecar's
+  resource_boundaries.idempotency block explicitly records 'Clicking
+  Catalog 5 times in 2 seconds creates 5 orphaned search-id rows
+  server-side' — the housekeeping reaper recovers but the visibility
+  of the orphan is the steady-state result of normal use.
+
+  **The silent-failure surface is wider than batch ZI named**: both
+  create-thunk-then-navigate handlers call `.unwrap().then(...)`
+  WITHOUT a `.catch(...)` ('ToolbarTabs.tsx:112-117' for Dictionary
+  + 'useCreateSearch.ts:14-19' for Catalog). If the thunk rejects
+  (backend unavailable, 5xx on the search-create POST), the user
+  clicks the tab and NOTHING happens. No error toast (the toolbar
+  itself has no showServerErrorToast surface), no navigation, no
+  state change. Silent failure on a primary nav action — exactly
+  the failure-mode class LSN-019 / LSN-020 documented for the
+  backend ordering / user-filter respectively. Captured separately
+  as `toolbar-create-thunk-no-catch-silent-failure` invariant
+  (batch ZJ).
+
+  **Cross-tab consistency (corrected)**: ALL nine tabs render
+  unconditionally; ONLY TWO of nine (Catalog, Dictionary) carry the
+  mint-new-id-on-click pattern. The other seven (Directory, Data
+  Quality, Data Modelling, Master Data, Management, Alerts, Activity)
+  are pure `<Link to=...>` navigations. The mint-on-click subset is
+  precisely the one with backend session state to manage. The
+  homecoming pattern is therefore TWO-SHAPED:
+    - Catalog + Dictionary: full session reset (drop URL +
+      mint new server-side id);
+    - Activity: parameter-default reset (drop URL query string,
+      apply defaults at module-eval time);
+    - Other six: no session state to drop (pure navigation).
 vocabulary_status: codebase-anchored
 axes_present:
   - ui_routes
   - react_components
+  - ui_shell
 nodes:
   - odd-platform ts routes route:search
   - odd-platform ts routes route:activity
+  - odd-platform ts components/shared/elements/AppToolbar/ToolbarTabs ui-shell-widget:ToolbarTabs
 contributors:
   - |-
     search route batch ZI:
@@ -113,6 +167,12 @@ contributors:
     activity route batch ZI:
       understanding[The route is mounted at App.tsx:65 as <Route path={activityPath()} element={<Activity />} />; the global Activity tab in ToolbarTabs.tsx:77 deep-links via activityPath(activityQueryString) where activityQueryString is derived from defaultActivityQuery];
       bugs_limitations_corner_cases[The route does not implement a redirect from /activity (bare) to /activity?<defaults> — visiting /activity directly relies on the consumer calling useQueryParams<ActivityQuery>(defaultActivityQuery) which fills in defaults at the React-state layer but does NOT push them into the URL; sharing the URL with a colleague then surfaces the same default 6-day window relative to THEIR `now`, not the original visitor's `now` — silent semantic drift]
+  - |-
+    ToolbarTabs batch ZJ (ui-shell-widget primary source):
+      concepts.operations[Handle Catalog click + Handle Dictionary click — dispatch createDataEntitiesSearch / createTermSearch then navigate; ToolbarTabs.tsx:107-126];
+      bugs_limitations_corner_cases.[5] MEDIUM (silent-failure surface on create-thunk-then-navigate handlers — both .unwrap().then(...) without .catch());
+      stress_findings.resource_boundaries.idempotency (5 clicks in 2s -> 5 orphaned search-id rows);
+      implicit_adrs.[2] HIGH (Catalog and Dictionary tabs create fresh search state on every click — search-id minting before navigation)
 evidence:
   - |-
     search.md:bugs_limitations_corner_cases.[2] (Catalog tab DROPS the current
@@ -127,6 +187,9 @@ evidence:
     activity.md:bugs_limitations_corner_cases.[default-window time-relative
     URL share] MEDIUM (defaults recomputed at module-eval time, not
     URL-stamped — silent semantic drift across share-time)
+  - 'ToolbarTabs.md:implicit_adrs.[2] HIGH (Catalog + Dictionary tabs mint fresh server-side session-id on every click; the explicit createTermSearch + createDataEntitiesSearch pattern at lines 107-126)'
+  - 'ToolbarTabs.md:bugs_limitations_corner_cases.[5] MEDIUM (Both create-thunk-then-navigate handlers call .unwrap().then(...) WITHOUT a .catch(...) — silent failure on backend rejection)'
+  - 'ToolbarTabs.md:stress_findings.resource_boundaries (5 rapid clicks of Catalog mint 5 orphaned search-id rows server-side; no de-bounce, no in-flight guard)'
 security_aggregate:
   overall: HIGH
   auth_modes_relevant: []
@@ -156,10 +219,17 @@ security_aggregate:
     - |-
       The Search/Catalog tab carries a NAME DIVERGENCE: tab label,
       URL, and doc feature name are three different strings.
+    - |-
+      Silent-failure surface on Catalog + Dictionary tab clicks —
+      both .unwrap().then() chains lack a .catch(); a backend hiccup
+      on the search-create POST leaves the user on the previous page
+      with NO error feedback. Operator-visible no-op click on a
+      primary nav action (MEDIUM — batch ZJ)
   cross_file_inconsistencies: []
   contributing_files:
     - odd-platform__ts__routes__route__search.md
     - odd-platform__ts__routes__route__activity.md
+    - 'odd-platform__ts__components_shared_elements_AppToolbar_ToolbarTabs__ui-shell-widget__ToolbarTabs.md'
   evidence: []
 performance_aggregate:
   overall: MEDIUM
@@ -179,15 +249,22 @@ performance_aggregate:
       switching by a single user accumulates orphan rows at a rate
       proportional to tab clicks — bounded by the 30-day TTL but
       visible as housekeeping job work.
+    - |-
+      Each Dictionary-tab click produces an unconditional INSERT
+      into the term_search session table — same orphan-id pattern.
+      Bounded by the same housekeeping reaper but visible as
+      double-counted housekeeping work. (batch ZJ)
   cross_file_inconsistencies: []
   contributing_files:
     - odd-platform__ts__routes__route__search.md
     - odd-platform__ts__routes__route__activity.md
+    - 'odd-platform__ts__components_shared_elements_AppToolbar_ToolbarTabs__ui-shell-widget__ToolbarTabs.md'
   evidence: []
-triangulation_count: 2
-cross_batch: false
+triangulation_count: 3
+cross_batch: true
 cross_batch_refs:
-  - batch-ZI (search + activity route sidecars — primary sources)
+  - batch-ZI (search + activity route sidecars — primary sources for the URL-side observation)
+  - batch-ZJ (ToolbarTabs primary source — implementation-shape evidence: create-thunk-then-navigate pattern; silent failure on rejection; orphan-id multiplicative cost)
 severity: LOW
 severity_dim: ux
 related_features:
@@ -221,4 +298,10 @@ notes: |-
   Worth a future audit: do other pillar tabs (DataModelling, DataQuality,
   Management) drop session state on tab click? The pattern is likely
   uniform but only the Search + Activity tabs are confirmed in batch ZI.
+
+  Batch ZJ confirms via ToolbarTabs primary source that ONLY TWO of
+  the nine tabs carry the mint-new-id pattern; the other seven are
+  pure navigation. The homecoming posture is therefore TWO-SHAPED:
+  full-session-reset (Catalog + Dictionary) vs parameter-default-reset
+  (Activity) vs pure-nav (the other six). Future audit can close.
 maintainer_curated: false

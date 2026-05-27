@@ -1,4 +1,73 @@
-# Last updated 2026-05-27 — `/scan scanners/docs/coverage/undocumented-features.md batch=batch-11` — **MODE-B ITERATION COMPLETE (113/113 features scanned; ALL 11 PILLARS FULLY CLOSED)**
+# Last updated 2026-05-27 — `/triage findings/docs-coverage-undocumented-features/2026-05-27-batch-11.md` — **MODE-B ITERATION TRIAGE COMPLETE**: 5 new DOC backlog items (DOC-260..264) + 8 new PLT upstream issue drafts (PLT-090..097) from the final mode-B batch
+
+`/triage` converted the 36 findings from batch-11 (scanner-feed log `2026-05-27-SR-20260527T2330Z.yaml`, verification_class `fully-corroborated`) into 5 atomic DOC backlog items and 8 paste-ready PLT upstream issue drafts. The 10 features consumed: F-017, F-023, F-147, F-148, F-176, F-177, F-178, F-179, F-206, F-208 (the final P-01 search / directory / detail-header cluster — pillar fully closed). After this triage, the entire mode-B iteration (113 of 113 features) is converted into actionable artefacts — backlog + issues + substrate write-backs.
+
+## Findings → backlog mapping (with merge decisions)
+
+Merge rule: one backlog item per affected doc page (one item = one PR-ready atomic commit). Upstream code-side fixes are filed as separate paste-ready PLT drafts so each upstream conversation is bounded. CCO-4 consolidation (one umbrella page for the per-entity detail surface across F-176/F-177/F-179/F-206) is the second-largest cross-feature consolidation after DOC-042 (Integrations).
+
+| Finding(s) | → Item | Affected page(s) / target | Severity (after rev-13 lift) |
+|---|---|---|---|
+| F-017a + F-017b + F-017c + F-017e + F-147a + F-148a (Search 6-pack: session-UUID URL + cross-owner facet enumeration + tsquery operator-injection persistent DoS + Filters.tsx size:100 + row-click view_count amplification + 9-tab class strip) | **DOC-260** | `data-discovery/search.md` (modify — extend + new "Result-class tabs" sub-section) | **CRITICAL** (HIGH×3 → CRITICAL on session URL + cross-owner enumeration + tsquery DoS; MED×3 → HIGH on Filters truncation + row-click amplification + class-tab strip) |
+| F-023b + F-023c + F-023d (Directory 3-pack: `'all'` magic string + level-4 page-vs-count divergence + ODDRN reflection infra-property leak) | **DOC-261** | `data-discovery/directory.md` | **CRITICAL** (HIGH → CRITICAL on infra-property leak; MED → HIGH on page-vs-count) |
+| F-178a + F-178b + F-178c + F-178d (Detail-header authoring 4-pack: DELETED-state edit hiding + Edit/Add label toggle + read-only status badge + Share-to-Slack feature-flag silent) | **DOC-262** | `data-discovery/statuses.md` | **HIGH** (MED → HIGH on DELETED-state; LOW×3 → MED on labels + silent badge + Slack flag) |
+| F-176a + F-176b + F-176c + F-176d + F-177a + F-177b + F-177c + F-179a + F-179b + F-179c + F-206a + F-206b (Entity detail page composition: 12-panel + per-class panel matrix + class/type badge encoding + sidebar truncation + permission map) | **DOC-263** | NEW `data-discovery/entity-detail-page.md` + `SUMMARY.md` + `data-discovery.md` | **HIGH** (CCO-4 consolidation — ONE umbrella page replaces 4 per-feature DOCs) |
+| F-208a + F-208b + F-208c + F-208d + F-208e (Stale indicator 5-pack: silent-default footgun LSN-001 family + never-ingested semantic + globally-silent widget + global threshold + ingestion-write forgery) | **DOC-264** | `data-discovery/metadata-stale.md` | **CRITICAL** (HIGH → CRITICAL on silent-default LSN-001/LSN-002 family + UI-tier closure) |
+| F-017a + F-017b + F-017c (Search security epic) | **PLT-090** | upstream Search subsystem | HIGH security |
+| F-017e + F-147a + F-147b + F-147c (Search UX cluster) | **PLT-091** | upstream UI/UX | MEDIUM |
+| F-148b + F-148c (SearchResultsTabs i18n + reducer encoding clarity) | **PLT-092** | upstream | LOW adjustment |
+| F-023b + F-023c + F-023d (Directory hardening) | **PLT-093** | upstream Directory subsystem | HIGH security |
+| F-176b + F-176c + F-176d + F-177a + F-177b + F-177c + F-206a + F-206b (Entity taxonomy UX cluster) | **PLT-094** | upstream UI/UX | MEDIUM |
+| F-178a + F-178c + F-178d (Detail-header UX cluster) | **PLT-095** | upstream UI/UX | MEDIUM |
+| F-179a + F-179b + F-179c (Overview sidebar truncation defects) | **PLT-096** | upstream | MEDIUM (driven by F-179a semantic bug) |
+| F-208a + F-208b + F-208c (DataEntityStaleDetector hardening — LSN-001 family) | **PLT-097** | upstream | HIGH config-trust |
+
+## Rev-13 priority-lift application
+
+All 36 findings sourced from `Ontology[F-NNN:...]` clues (mode-B = ontology-fed). Per the rev-13 rule, every finding back-links to a feature-flow clue source → lift fires by one tier. Distribution after lift:
+
+- **CRITICAL**: 3 of 5 DOC items (DOC-260, DOC-261, DOC-264).
+- **HIGH**:     2 of 5 DOC items (DOC-262, DOC-263).
+- **MEDIUM/LOW**: 0 (no batch-11 DOC item lands below HIGH after lift).
+
+The dense critical concentration reflects the P-01 catalog-front-door focus: the search surface (DOC-260), the directory surface (DOC-261), and the entity-level freshness signal (DOC-264) are all load-bearing on operator-trust and multi-tenant boundaries. CLAUDE.md's "wrong docs > missing docs" priority bar applies — three caveats meet the published-mistake threshold and ship as load-bearing operator warnings ahead of the upstream PLT fixes.
+
+## Cross-batch dedup observations
+
+No cross-batch PLT duplicates detected this triage. The closest near-collisions:
+
+- **PLT-097 LSN-001 family overlap**: joins **DOC-250 / PLT-083** (housekeeping TTL=0 from batch-7), **DOC-259 / PLT-089** (advisory-lock blocks forever from batch-7), **PLT-074 / PLT-080** (prior batches). FIVE LSN-001-class artefacts now in flight; the `@PostConstruct` fail-fast pattern is becoming load-bearing — methodology observation: extract a shared `RequiredConfigValidator` aspect across the platform (future epic, not blocking).
+- **PLT-090 + PLT-093 cross-owner read-collaborative-posture overlap**: joins **DOC-251 Caveat 2 / DOC-GAP-008 / DOC-GAP-252 META** from prior batches. The Read-Collaborative Posture cluster now spans: Search (DOC-260) + Directory (DOC-261) + Owners (DOC-251) + Catalog Overview home-page sub-surfaces (DOC-GAP-253 / DOC-GAP-254). Five doc-side caveats + two PLT epics — operator-trust posture is the workspace's largest cross-feature theme.
+- **DOC-263 CCO-4 consolidation**: ONE umbrella page replaces what would have been 4 per-feature DOCs (F-176 + F-177 + F-179 + F-206) — the largest single-batch consolidation since DOC-042 (Integrations).
+
+## Substrate write-backs (executed by scan; cross-referenced here for traceability)
+
+The scanner already wrote:
+- 10 `scanner_reviews:` blocks appended to F-017 / F-023 / F-147 / F-148 / F-176 / F-177 / F-178 / F-179 / F-206 / F-208 (APPEND-ONLY).
+- 1 corroboration block appended to `lineage/odd-platform/doc-gaps/detail/DOC-GAP-252.md` (F-023a NaN-route-hook closure dimension).
+- 1 new shoebox entry at `lineage/odd-platform/shoebox/detail/SHB-183-f017-housekeeping-clarification.md` (Category: open — F-017's grep-scoped "last_accessed_at NEVER READ" assertion factually incorrect at HEAD).
+
+## File-conflict notes (for `/implement` scheduling)
+
+- **`data-discovery/search.md`** hosts DOC-260 alone (no other batch-11 item).
+- **`data-discovery/directory.md`** hosts DOC-261 alone.
+- **`data-discovery/statuses.md`** hosts DOC-262 alone.
+- **`data-discovery/metadata-stale.md`** hosts DOC-264 alone.
+- **NEW `data-discovery/entity-detail-page.md`** is created by DOC-263; the same item also modifies `SUMMARY.md` + `data-discovery.md` (subsections list + Where-to-next). Recommend `/implement DOC-263` be a single commit covering all three files (the new-page + the two cross-link sites).
+- **No cross-item file conflict.** Each of the 5 DOC items operates on a distinct page; the only multi-file item is DOC-263 and it owns its 3 files end-to-end.
+
+## Next phases
+
+1. `/implement DOC-260` (or any of DOC-261..264) — batch-start; per CLAUDE.md "Autonomous Execution and Batching", treat as the head of a doc-quality batch. Per-page commits; one PR per repo per batch.
+2. Substrate refresh: F-017 facet amendments per SHB-183 (remove the stale `dead_column` + `session_state_accumulates_forever` sub-claims; cross-link to F-010 housekeeping TTL surface).
+3. SHB-183 graduation candidate watch: if one more grep-scope-drift finding surfaces in a future axis-cross-check pass, SHB-183 graduates to LSN with the case-law lesson "scoped greps age poorly when implementation moves between files; assert codebase-wide before claiming X is unreferenced."
+4. CCO-2 axis-4 methodology extension: extend the mode-A `ui_shell` axis to include "primary-route page-root child components" beyond toolbar widgets. Future scan runs of i18n / a11y class probes will catch surfaces like `SearchResultsTabs.tsx` without waiting for a mode-B pass.
+
+---
+
+## (PRIOR ENTRY — preserved for chronological context)
+
+# Earlier: 2026-05-27 — `/scan scanners/docs/coverage/undocumented-features.md batch=batch-11` — **MODE-B ITERATION COMPLETE (113/113 features scanned; ALL 11 PILLARS FULLY CLOSED)**
 
 The eleventh and final mode-B batch (`SR-20260527T2330Z`) landed at 2026-05-27T23:30Z, covering the 10 remaining P-01 search / directory / detail-header features (F-017, F-023, F-147, F-148, F-176, F-177, F-178, F-179, F-206, F-208). Findings file: `findings/docs-coverage-undocumented-features/2026-05-27-batch-11.md` (36 findings: 12 HIGH + 16 MEDIUM + 8 LOW; verification_class fully-corroborated). Scanner-feed log: `lineage/odd-platform/scanner-feed/2026-05-27-SR-20260527T2330Z.yaml`.
 

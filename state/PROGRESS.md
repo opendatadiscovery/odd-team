@@ -14,7 +14,24 @@ Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critica
 
 ## Driver state
 
-Plan YAML: batches 13a-e flipped `status: done`. Next pending batch: **13f** (NEW PAGE audit-trail-scope — 1 large item DOC-246). The next loop iteration will pick it up.
+Plan YAML: batches 13a-f flipped `status: done`. **Original batch-13 SPLIT COMPLETE — all 12 critical security items shipped across 6 sub-batches.** Next pending batch: **14** (Platform configuration on odd-platform.md — 6 items DOC-197, 241, 242, 250, 257, 259). The next loop iteration will pick it up.
+
+## Iteration 6 (batch-13f, 1 NEW page shipped on sweep branch)
+
+| Item | Files | Commit | What |
+|---|---|---|---|
+| **DOC-246** | NEW `enable-security/audit-trail-scope.md` + SUMMARY + activity-feed.md + authorization/README.md | `b8a8909` | Compliance-facing landing — names the schema-rooted bifurcation (positive half = activity + owner_association_request_activity; negative half = RBAC + Owner + Term + Namespace + Datasource + Collector lifecycle has NO recoverable audit trail); explains the architectural reason (NOT NULL FK + 27-value data-entity-scoped enum); enumerates compensating controls (pgaudit, K8s ingress audit) with operator-side hardening recommendations. SUMMARY entry, activity-feed back-link (warning admonition naming scope limit), and authorization/README Related references section. |
+
+## Batch-13 cluster summary (sub-batches 13a-f → 12 critical security items shipped)
+
+| Sub-batch | Items | Sweep commit(s) | Theme |
+|---|---|---|---|
+| 13a | DOC-168, 194, 228 | 9c309d9 | Ingestion auth — deployment matrix + statistics write-shape |
+| 13b | DOC-234, 238, 245 | 7003aaf, af3a9b7 | LOGIN_FORM + LDAP + cross-mode auth-bleed |
+| 13c | DOC-235, 236 | 47dc01a, ac83342 | OAuth admin matrix + logout cluster |
+| 13d | DOC-172, 239 | 24818f5, fdb57f4 | DISABLED + S2S caveats |
+| 13e | DOC-237 | ca23ae2 | NEW PAGE admin-promotion landing |
+| 13f | DOC-246 | b8a8909 | NEW PAGE audit-trail-scope landing |
 
 ## Iteration 5 (batch-13e, 1 NEW page shipped on sweep branch)
 

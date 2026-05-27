@@ -10,7 +10,6 @@ drift_class_summary:
   - disabled_mode_bypass
   - unbounded_pagination_at_every_layer
   - side_effect_update_on_every_get
-  - session_state_accumulates_forever
   - search_session_no_user_binding
   - workaround_doc_silent_on_facet_count_scoping
   - catalog_wide_count_design_my_objects_not_a_boundary
@@ -133,12 +132,15 @@ batch_extensions:
       silence on the URL semantics is the user-visible surface of the
       backend's no-user-binding shape.
 
-      Probe emitted by the sidecar: P-168 pins whether `search_facets`
-      rows are cleaned up by any background job, TTL, or reaper —
-      pinning the bookmark-fragility consequence to a concrete TTL
-      value (or its absence — extending F-017's existing
-      `session_state_accumulates_forever` facet with the deep-link
-      semantics).
+      Probe emitted by the sidecar: P-168 pins the EXACT TTL value
+      enforced by `SearchFacetsHousekeepingJob.java:23-27` (default per
+      F-010's `housekeepingTTLProperties.searchFacetsDays`) — pinning
+      the bookmark-fragility consequence to a concrete number of days.
+      Amended 2026-05-27 per SHB-183 — the original probe framing
+      hypothesised an ABSENT TTL referencing the now-deleted
+      `session_state_accumulates_forever` facet; the TTL DOES exist
+      (F-017d ontology-drift finding). The probe is still useful — it
+      pins the value, not the existence.
 
       Coherence sweep STRENGTHENS=3 (F-017 existing facets reaffirmed at
       UI tier; F-001 Detail-page view tracking — related discovery
@@ -371,7 +373,7 @@ description: |-
   the facet endpoints are a SECOND invocation site for the same bug
   shape.
 facets_summary: |-
-  10 substantive drifts: cross-owner facet enumeration (catalog-wide
+  9 substantive drifts: cross-owner facet enumeration (catalog-wide
   counts expose cardinality across all owners — REFACTOR-024 family
   extension to the facet surface) + bearer-token-shaped session UUIDs
   (search_facets schema has no user binding; URL leak = session hijack)
@@ -381,12 +383,23 @@ facets_summary: |-
   OpenAPI + repository layers (size=1M triggers single jOOQ query
   bounded only by Postgres / network buffers) + side-effect UPDATE of
   last_accessed_at on every GET (GET is not idempotent + row contention
-  under concurrent UI tabs) + session-state accumulates forever (no
-  TTL eviction, no archive policy — V0_0_1 TODOs acknowledge the gap
-  but no migration fixes it) + workaround doc silent on facet count
-  scoping (operators may assume My Objects toggles facet counts —
-  it does not) + catalog-wide count is by design (myObjectsCount is
-  EXTRA scope, NOT a boundary) + zero test coverage at any layer.
+  under concurrent UI tabs — the column IS consumed by
+  SearchFacetsHousekeepingJob.java:23-27 per F-010 TTL, eviction at
+  housekeeping.ttl.searchFacetsDays cadence; the side-effect is the
+  GET-is-a-write + row-lock posture, not a dead-column observation)
+  + workaround doc silent on facet count scoping (operators may assume
+  My Objects toggles facet counts — it does not) + catalog-wide count
+  is by design (myObjectsCount is EXTRA scope, NOT a boundary) + zero
+  test coverage at any layer.
+
+  Amendment 2026-05-27 (batch-11 scan SR-20260527T2330Z + SHB-183):
+  the prior 10th facet `session_state_accumulates_forever` was REMOVED —
+  factually incorrect at HEAD. SearchFacetsHousekeepingJob.java:23-27
+  evicts rows past housekeepingTTLProperties.searchFacetsDays. The
+  `side_effect_update_on_every_get` facet was also amended to drop the
+  "dead column" sub-claim. Original SHB-016 evidence-cite mis-scoped the
+  grep to V0_0_52__introduce_housekeeping.sql alone — the Java
+  housekeeping policy was missed. Lesson captured at SHB-183.
 chain:
   - hop: 0
     node: odd-platform ts routes route:search
@@ -692,41 +705,32 @@ observed_vs_expected:
         on every read. Implications: (a) `GET /api/search/{search_id}`
         is NOT idempotent at the storage layer; (b) the UPDATE acquires
         a row lock; concurrent UI tabs hitting the same session
-        simultaneously stall on lock contention; (c) the `last_accessed_at`
-        field is updated but is NEVER READ by any housekeeping job (verified
-        by `grep search_facets V0_0_52__introduce_housekeeping.sql` —
-        zero matches). The field is dead — written but unused. No comment,
-        annotation, or surrounding code defends the side-effect read
-        posture as intentional.
+        simultaneously stall on lock contention. The `last_accessed_at`
+        column IS consumed downstream by `SearchFacetsHousekeepingJob`
+        (TTL eviction at `housekeeping.ttl.searchFacetsDays` — F-010
+        owns the TTL surface); the side-effect-write posture is the
+        cost paid for that eviction signal. No comment / annotation /
+        surrounding code defends the choice to do the touch on the read
+        path rather than via a background worker.
       expected: |-
-        Either: (a) remove the side-effect UPDATE and use a TTL-on-create
-        OR background touch via worker; OR (b) keep the UPDATE and add a
-        housekeeping policy that consumes `last_accessed_at` for eviction.
+        Either: (a) move the touch off the read path (background worker
+        or TTL-on-create with periodic refresh), OR (b) document the
+        GET-is-a-write posture explicitly so operators understand the
+        idempotency and lock-contention consequences.
       drift_class: side_effect_update_on_every_get
       provenance: |-
         STATIC — primary-source in batch-M SearchController.facets sidecar
         bugs_limitations_corner_cases[6] +
         ReactiveSearchFacetRepositoryImpl.java:99-106 +
-        V0_0_1__init.sql:206-207 (TTL TODO) +
-        V0_0_52__introduce_housekeeping.sql (no policy). Severity: LOW.
-    - facet: session-state accumulates forever
-      observed: |-
-        Every `POST /api/search` creates a row via
-        `searchFacetRepository::create` (SearchServiceImpl.java:80); no
-        TTL eviction, no row deletion on user logout, no archive policy.
-        Operators on long-running platforms see the table grow forever.
-        Combined with the no-user-binding posture, the table is an
-        indefinitely-growing pool of bearer-token-shaped session state
-        with full filter history retained as jsonb.
-      expected: |-
-        Add a housekeeping policy that evicts session rows older than
-        N days (consume `last_accessed_at` which is already populated).
-      drift_class: session_state_accumulates_forever
-      provenance: |-
-        STATIC — primary-source in batch-M SearchController.facets sidecar
-        bugs_limitations_corner_cases[7] + SearchServiceImpl.java:75-82
-        + V0_0_1__init.sql:204-211 (no TTL column or trigger). Severity:
-        LOW (storage cost).
+        SearchFacetsHousekeepingJob.java:23-27 (verified 2026-05-27 by
+        batch-11 scan — eviction policy IS wired; the column is NOT dead).
+        Severity: LOW.
+        AMENDMENT 2026-05-27 (batch-11 scan SR-20260527T2330Z + SHB-183):
+        the original observation included a "dead column — written but
+        unused" sub-claim cited from a grep scoped to V0_0_52__introduce_housekeeping.sql
+        alone (zero matches). That cite was misleading at codebase scope —
+        SearchFacetsHousekeepingJob.java reads the column. Sub-claim removed;
+        GET-is-a-write + row-lock-contention observations remain valid.
     - facet: workaround doc silent on facet count scoping
       observed: |-
         The live Search and Filtering page (WebFetched 2026-05-19 status
@@ -959,6 +963,8 @@ related_refactoring_scopes:
   - REFACTOR-024
 related_test_gaps: []
 related_doc_gaps: []
+related_features:
+  - F-010  # Housekeeping TTL — owns the `housekeeping.ttl.searchFacetsDays` knob that evicts search_facets via SearchFacetsHousekeepingJob.java:23-27 (the consumer of the last_accessed_at column F-017 side-effect-writes on every GET). Cross-link added 2026-05-27 per SHB-183 substrate-hygiene amendment.
 related_concepts:
   - Search Filter Facets
   - Faceted Search
@@ -975,28 +981,35 @@ merge_candidate_with:
 shoebox_merged_facets:
   - batch: 2026-05-26-shoebox-slice-A
     seeded_from: SHB-016
-    drift_class: search_session_side_effect_read_update_dead_column_no_ttl
+    drift_class: search_session_side_effect_read_update_persistent_query_text
     description: |-
-      SHB-016 surfaces FOUR operational drift facets on the search-session
+      SHB-016 surfaces TWO operational drift facets on the search-session
       surface that F-017's bearer-token observation doesn't fully
       enumerate. (1) GET IS A WRITE — every read of a session row writes
       last_accessed_at. Concurrent UI tabs on the same session contend
-      for the row lock; read replicas cannot serve these reads. (2) DEAD
-      COLUMN — last_accessed_at is updated but never read by any policy;
-      the implied eviction job has never landed (TODO at
-      V0_0_1__init.sql:207 acknowledges this). (3) UNBOUNDED TABLE
-      GROWTH — every POST /api/search adds a row; no TTL eviction; no
-      row deletion on logout; no archive policy. (4) PERSISTENT QUERY
-      TEXT TRAIL — query_string varchar(255) stores the raw user query
-      verbatim. PII / employee names / customer IDs / GDPR-protected
-      identifiers leave a DB trail readable by anyone with DB access.
+      for the row lock; read replicas cannot serve these reads. (2)
+      PERSISTENT QUERY TEXT TRAIL — query_string varchar(255) stores the
+      raw user query verbatim. PII / employee names / customer IDs /
+      GDPR-protected identifiers leave a DB trail readable by anyone
+      with DB access.
+    amendment_2026-05-27: |-
+      Per batch-11 scan SR-20260527T2330Z + SHB-183, the original SHB-016
+      enumeration also listed (2-orig) DEAD COLUMN and (3-orig) UNBOUNDED
+      TABLE GROWTH — both INCORRECT at HEAD. SearchFacetsHousekeepingJob.java:23-27
+      DOES consume `last_accessed_at` to evict rows past
+      `housekeepingTTLProperties.searchFacetsDays` (the F-010 TTL surface).
+      The "grep search_facets V0_0_52__introduce_housekeeping.sql returns
+      ZERO matches" evidence-cite was misleading at codebase scope — the
+      Java housekeeping policy lives outside the migration file. Both
+      stale sub-facets REMOVED from the merge. The GET-is-a-write +
+      persistent-query-text observations remain valid.
     evidence:
-      - "odd-platform-api/src/main/resources/db/migration/V0_0_1__init.sql:204-211 (search_facets table + TWO TODOs: uuid generation, TTL)"
+      - "odd-platform-api/src/main/resources/db/migration/V0_0_1__init.sql:204-211 (search_facets table + TWO TODOs: uuid generation, TTL — the TTL TODO is HISTORICAL; SearchFacetsHousekeepingJob now fulfils it)"
       - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveSearchFacetRepositoryImpl.java:99-106 (get(UUID id) is an UPDATE search_facets SET last_accessed_at = currentOffsetDateTime() RETURNING — every GET is a write)"
+      - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/housekeeping/job/SearchFacetsHousekeepingJob.java:23-27 (CONSUMES last_accessed_at — deletes rows past housekeepingTTLProperties.searchFacetsDays; verified 2026-05-27)"
       - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/search/SearchServiceImpl.java:75-82 (search creates row; does NOT capture principal)"
       - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/search/SearchServiceImpl.java:80 (persisted row carries full FacetStateDto with getQuery())"
       - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/search/SearchServiceImpl.java:157-160 (fetchFacetState raw UUID lookup; no ownership check)"
-      - "odd-platform-api/src/main/resources/db/migration/V0_0_52__introduce_housekeeping.sql (grep search_facets returns ZERO matches — housekeeping has NO search_facets policy)"
       - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/SearchController.java:30-47 (no @PreAuthorize on getSearchFacetList or getFiltersForFacet)"
     severity: MEDIUM
     cross_cutting_note: |-
@@ -1005,11 +1018,12 @@ shoebox_merged_facets:
       same session-UUID pattern. The bug-class is platform-wide — fixing
       one session implementation should fix all four (/api/search,
       /api/terms/search, /api/queryexample/search, /api/referencedata/search).
+      Cross-link with F-010 (Housekeeping TTL surface) for the eviction
+      policy that consumes search_facets.last_accessed_at.
     fix_shape_options:
       - "Add owner_id to search_facets; predicate every read/update on caller-principal match (closes bearer-token issue)"
-      - "Drop the side-effect UPDATE from the read path (make GET idempotent) — OR implement the TTL eviction job the column implies"
+      - "Move the touch off the read path — background worker OR per-session refresh — to make GET idempotent without losing the eviction signal"
       - "Column-level redaction for query_string (hash + truncate persisted version)"
-      - "Implement housekeeping.ttl.search_facets_days (default 30 like others); add search_facets policy to V0_0_52"
 shoebox_evaluation_log:
   - batch: 2026-05-26-shoebox-slice-A
     agent: feature-flow-builder

@@ -136,6 +136,20 @@ record what the code DOES; `doc_drift_findings` flags where the two diverge. You
 do NOT use a doc claim as the source of truth for a code behaviour. If the doc
 says X and the code does Y, write Y as the truth + flag X as drift.
 
+### Rule 7.5 — Absence-of-evidence claims need codebase-wide grep (rev 14 / SHB-183)
+
+**When you assert in any sidecar field that "X is not referenced anywhere," "no consumer exists for Y," "Z is a dead column / dead method / dead config key," or any equivalent absence-of-evidence claim, the grep MUST cover ALL relevant code tiers, not just the file or directory where the closest evidence lives.** The cited grep command must include enough scope that a future reader can re-run it and reproduce the absence. For ODD-platform this means at minimum cross-tier coverage:
+
+- **SQL-claim absences**: when claiming "no migration / no schema policy / no DDL for X exists," the grep must cover BOTH `src/main/resources/db/migration/` (SQL) AND `src/main/java/.../` (the Java code that might own the policy outside the migration file). Many policies live in Java classes — e.g. `housekeeping/job/*HousekeepingJob.java` — that operate on tables without touching migrations.
+- **Java-claim absences**: when claiming "no consumer / no caller / no @Value reader of X exists," grep across BOTH `src/main/java/.../` AND `src/main/resources/` (YAML config, application.yml, query templates, Spring XML wiring) — and where applicable across the matching test directory.
+- **Frontend-claim absences**: when claiming "no React consumer / no hook reader of X exists," grep across BOTH `odd-platform-ui/src/components/` AND `odd-platform-ui/src/redux/` AND any generated-sources or shared-lib directories.
+
+Cite the EXACT scope you searched in the sidecar evidence, not just the hit count. **"grep returns ZERO matches" without naming the search root is unsafe — name the root explicitly so a future reader can spot scope-drift.**
+
+The lesson is captured at `lineage/odd-platform/shoebox/detail/SHB-183-f017-housekeeping-clarification.md`: F-017 (Search Filter Facets) sidecar's `side_effect_update_on_every_get` facet contained the claim "the `last_accessed_at` field is updated but is NEVER READ by any housekeeping job (verified by `grep search_facets V0_0_52__introduce_housekeeping.sql` — zero matches)." The grep was scoped to ONE migration file. The actual eviction policy lives at `odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/housekeeping/job/SearchFacetsHousekeepingJob.java:23-27` — invisible to that grep, but immediately visible to `grep -r SEARCH_FACETS /odd-platform-api/src/main/java/`. The resulting "dead column" sub-claim and the derived `session_state_accumulates_forever` facet were factually incorrect at HEAD. Both were retroactively amended; the F-010 cross-link was missing because the consumer wasn't discovered.
+
+**Operational consequence**: in your sidecar, every absence-of-evidence assertion records the search root verbatim in its `evidence:` field. If you can name only ONE tier (e.g. "grep in migration files returns zero"), word the claim narrowly — "no SQL migration policy was found" — not "no policy exists anywhere." If the broader assertion is what you mean, do the broader grep. This rule is reductive: do less weak-claim work, not more grep work; assertions are cheap, retraction is expensive.
+
 ### Rule 8 — Local-only execution (rev 2)
 
 **Every part of the methodology runs on the maintainer's workstation.** No remote

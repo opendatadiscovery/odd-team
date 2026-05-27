@@ -1,3 +1,501 @@
+# Last updated 2026-05-27 — `/triage findings/docs-coverage-undocumented-features/2026-05-27-batch-4.md` — Mode B run SR-20260527T2030Z; 16 new DOC backlog items + 1 SPC backlog item + 22 PLT upstream issue drafts
+
+`/triage` converted the **38 distinct findings** from the **batch-4 mode-B (ontology-fed) run** of `docs/coverage/undocumented-features` (scanner-feed log: `lineage/odd-platform/scanner-feed/2026-05-27-SR-20260527T2030Z.yaml`; verification class: `fully-corroborated`) into **16 atomic DOC backlog items + 1 SPC backlog item + 22 paste-ready PLT issue drafts**. Theme: **closes P-09 (Security & Access Control) — the FIRST FULLY-CLOSED pillar in mode-B iteration** (16/16 P-09 features scanned across batches 1+4). 13 features covered this batch (F-006 RBAC / F-011 Principal-to-Owner / F-015 My-Objects Anchor-Set / F-034 Feature-Flag Exposure / F-084 OAuth Admin-Detection / F-085 Identity Probe / F-086 OAuth Logout / F-087 Session Cookie / F-089 Post-Logout Redirect / F-090 Permission Read Surface / F-119 Deployment-Info / F-122 Management-Endpoint / F-124 ADMIN Promotion). After batch-4, mode-B feature coverage is **33 of 113 F-NNNs (29%)**.
+
+**ID slot snapping:** **DOC-234..DOC-249** (16 items) + **SPC-002** + **PLT-061..PLT-082** (22 drafts). IDs are sequential — batch-5 (committed earlier 2026-05-27) claimed DOC-199/229-233 + PLT-056-060 ahead of batch-4 in calendar order.
+
+## Rev-13 corroboration log — APPLIED for batch-4
+
+The scanner-feed log confirms `verification_class: fully-corroborated`. All 38 findings have a **feature-flow clue source** (13 F-NNN consumed; every finding back-links via `findings_produced[]`). Per the rev-13 ontology-corroboration rule, every finding's priority lifts ONE tier:
+
+- HIGH (19 findings) → CRITICAL
+- MEDIUM (16 findings) → HIGH
+- LOW (3 findings) → MEDIUM
+
+Net effect after consolidation: **13 of 16 DOC items end CRITICAL; 2 end HIGH; 0 medium/low**. SPC-002 = CRITICAL. PLT severity follows source-finding severity.
+
+**Two write-backs executed by the scan-run** (NOT re-triaged): DOC-GAP-099 promoted to PRIMARY-SOURCE-confirmed (F-015b OpenAPI summary inversion 4-angle triangulated); DOC-GAP-192 corroboration appended (F-006a schema-rooted audit silence — 9-sidecar pattern).
+
+**One ontology-extended finding** (NEW NOT IN SUBSTRATE): F-124b GitHub admin-groups substring overpromotion surfaced via primary-source verification at GithubUserHandler.java:119. Substrate's `admin_groups_substring_match_overpromotion` facet was LDAP-only; this batch extends to a two-provider pattern.
+
+## Findings → backlog mapping (with merge decisions)
+
+Merge rule: one DOC backlog item per affected doc page (one item = one PR-ready atomic commit). New pages create their own items; cross-cutting caveats can touch multiple pages.
+
+| Finding(s) | → Item | Affected page(s) / target | Severity (after rev-13 lift) |
+|---|---|---|---|
+| F-011a + F-011b + F-011c (LOGIN_FORM SECURITY_RULES inert + auth.login-form-redirect open-redirect + CSRF disabled) | **DOC-234** | `enable-security/authentication/login-form.md` | **CRITICAL** |
+| F-084a + F-084b + F-084c + F-084d + F-124b (OAuth admin-detection per-provider matrix) | **DOC-235** | `enable-security/authentication/oauth2-oidc.md` | **CRITICAL** |
+| F-086a + F-086b + F-086c + F-089a + F-089b (OAuth logout + post-logout redirect cluster) | **DOC-236** (depends_on DOC-235) | `enable-security/authentication/oauth2-oidc.md` | **CRITICAL** |
+| F-124d (unified ADMIN promotion landing; cross-cuts F-124a/b/c/e + F-084a/d + F-085a + F-011a) | **DOC-237** (CREATE) | `enable-security/admin-promotion.md` + SUMMARY + 4 auth pages + README cross-link | **CRITICAL** |
+| F-124a + F-124c (LDAP substring overpromotion + groups-unset silent USER-only) | **DOC-238** | `enable-security/authentication/ldap.md` | **CRITICAL** |
+| F-085a + F-085b + F-085c + F-119a + F-122a (DISABLED-mode concrete reachable surfaces) | **DOC-239** | `enable-security/authentication/disabled-authentication.md` | **CRITICAL** |
+| F-085a + F-119a + F-090a (api-reference enumeration of 3 undocumented endpoint families) | **DOC-240** | `developer-guides/api-reference.md` | **CRITICAL** |
+| F-087a + F-087b + F-087c + F-087d (session-provider posture cluster) | **DOC-241** | `configuration-and-deployment/odd-platform.md` | **CRITICAL** |
+| F-122a + F-122b + F-122c (management endpoint exposure + Lombok ToString + well-known DB default) | **DOC-242** | `configuration-and-deployment/odd-platform.md` | **CRITICAL** |
+| F-090a + F-090b (permission read surface drift reconciliation) | **DOC-243** | `enable-security/authorization/permissions.md` | **CRITICAL** |
+| F-015a + F-015b + F-015c + F-015d (my-objects triplet architecture + spec inversion + unbounded IN + silent-empty) | **DOC-244** | `features/data-lineage.md` + permissions.md cross-link | **CRITICAL** |
+| F-011d (cross-mode user-name bleed activity-feed read paths) | **DOC-245** | `enable-security/authentication/ldap.md` + `login-form.md` | **CRITICAL** |
+| F-006a (schema-rooted RBAC + Owner / Term / Namespace audit silence — positive vs negative half) | **DOC-246** (CREATE) | `enable-security/audit-trail-scope.md` + SUMMARY + activity-feed + authorization README | **CRITICAL** |
+| F-011e (Owner PUT with empty roles silently destroys role bindings) | **DOC-247** | `enable-security/authorization/owners.md` | **CRITICAL** |
+| F-034a + F-034b (feature-flag chrome-invariant + boot-immutable) | **DOC-248** | `Features.md` + `odd-platform.md` | HIGH |
+| F-006d (authorization hot-path 2 JOINs per request — performance caveat) | **DOC-249** | `enable-security/authorization/policies.md` | HIGH |
+| F-015b + F-090a + F-119c (openapi.yaml batch-4 hygiene — summary inversion + MANAGEMENT drift + getAppInfo security element) | **SPC-002** | `opendatadiscovery-specification/openapi.yaml` + components.yaml | **CRITICAL** |
+| F-006b + F-006c (SecurityConstants permission misrouting one-liners) | **PLT-061** | upstream | HIGH security; REFACTOR-217 family |
+| F-006a (RBAC audit-silence architectural ADR + 3-tier migration) | **PLT-062** | upstream | feature/large |
+| F-006d (authorization hot-path request-scoped cache) | **PLT-063** | upstream | — |
+| F-011a + F-011b + F-011c (LOGIN_FORM cluster: AuthorizationCustomizer + CSRF + redirect allowlist) | **PLT-064** | upstream | HIGH |
+| F-011d (provider-null cross-mode bleed SQL fix — 4 JOIN sites) | **PLT-065** | upstream | HIGH |
+| F-011e (Owner PUT empty-roles PATCH semantic) | **PLT-066** | upstream | HIGH |
+| F-015a + F-015c (anchor-set defence-in-depth + bound) | **PLT-067** | upstream | HIGH |
+| F-034a + F-034b (feature-flag chrome consumption + @RefreshScope) | **PLT-068** | upstream | MEDIUM |
+| F-084a (Google admin-groups cross-field validation) | **PLT-069** | upstream | HIGH |
+| F-084b + F-084c (GithubUserHandler hardening + GHES config) | **PLT-070** | upstream | HIGH |
+| F-084d (Okta + Keycloak handlers) | **PLT-071** | upstream | feature |
+| F-085a + F-085b + F-085c (DISABLED-mode hardening) | **PLT-072** | upstream | HIGH |
+| F-086a + F-086c (Cognito revoke + UI feedback) | **PLT-073** | upstream | HIGH |
+| F-087a + F-087b + F-087c + F-087d (session cookie posture epic) | **PLT-074** | upstream | HIGH |
+| F-089a (odd.platform-base-url Host validation across 5 logout handlers) | **PLT-075** | upstream | HIGH |
+| F-090c (ControllerAdvice IllegalArgumentException → 400) | **PLT-076** | upstream | MEDIUM |
+| F-119b (auth.type enum validation) | **PLT-077** | upstream | MEDIUM |
+| F-122a (actuator default exposure restriction) | **PLT-078** | upstream | HIGH |
+| F-122b (@ToString.Exclude on credential fields) | **PLT-079** | upstream | MEDIUM |
+| F-122c (drop well-known DB password default) | **PLT-080** | upstream | HIGH; LSN-001 family |
+| F-124a + F-124b (joint LDAP + GitHub equalsIgnoreCase fix) | **PLT-081** | upstream | HIGH |
+| F-124e (OAuth2Provider.provider String → Provider enum) | **PLT-082** | upstream | MEDIUM |
+
+## Cross-batch cluster annotations
+
+- **REFACTOR-185 default-insecure cluster** — F-085a + F-119a + F-122a are the 19th-25th sidecar of this cross-feature pattern. DOC-239 publishes the operator-facing enumeration on disabled-authentication.md; DOC-242 publishes the operator-config enumeration on odd-platform.md.
+- **REFACTOR-217 SecurityConstants permission wiring family** — PLT-061 (F-006b + F-006c) is the third instance. Batch-2 surfaced F-002a (PLT-012); a build-time validator on `SECURITY_RULES` ↔ OpenAPI operationId pairing is recommended.
+- **LSN-001 silent-insecure-default family** — DOC-241 (`spring.session.timeout: -1`), DOC-242 (well-known DB password + Lombok ToString) are new family members. PLT-074 + PLT-080 close the code-side gaps.
+- **DOC-GAP-099 promotion** — F-015b promotes DOC-GAP-099 to PRIMARY-SOURCE-confirmed; closed by SPC-002 Facet 1 + DOC-244.
+- **DOC-GAP-192 corroboration** — F-006a corroborates the schema-rooted activity-feed scope; DOC-246 publishes the unified `audit-trail-scope.md` canonical home for both positive and negative halves.
+- **F-124b ontology-extended** — GitHub admin-groups substring overpromotion is NEW NOT IN SUBSTRATE. Substrate's drift catalog should be extended with the GitHub-side instance of `admin_groups_substring_match_overpromotion`; demonstrates the value of mode-B's primary-source verification step beyond pure substrate re-reading.
+
+## File-conflict notes (for /implement scheduling)
+
+- **oauth2-oidc.md** hosts DOC-235 + DOC-236 + DOC-237 cross-link; serial commits on a single branch is natural (DOC-236 depends_on DOC-235 to honour page sequencing).
+- **ldap.md** hosts DOC-237 cross-link + DOC-238 + DOC-245; fold into one PR per natural section ordering.
+- **login-form.md** hosts DOC-234 + DOC-237 cross-link + DOC-245; same shape as ldap.md.
+- **odd-platform.md** hosts DOC-241 + DOC-242 + DOC-248; large extends-DOC-059 pattern; coordinate as one PR with three new H2s + per-key annotations.
+- **SUMMARY.md** adds two new entries (DOC-237 admin-promotion + DOC-246 audit-trail-scope); both under Enable Security parent.
+- **Two new pages CREATE** — DOC-237 (admin-promotion.md) and DOC-246 (audit-trail-scope.md); no file conflicts.
+- **No cross-repo file conflicts**. SPC-002 lives in opendatadiscovery-specification/; all DOC items live in documentation/; all 22 PLT drafts are workspace-resident paste-ready.
+
+## Counts (after this triage)
+
+- DOC backlog items: **233 → 249** (+16 new pending — DOC-234..DOC-249 all start `pending`).
+- SPC backlog items: **1 → 2** (+1 new pending — SPC-002).
+- PLT issue drafts: **60 → 82** (+22 new draft — PLT-061..PLT-082).
+- All other DOC statuses (`in-progress` / `review-ready` / `done` / `blocked` / `rejected` / `superseded`): unchanged this run.
+
+## Mode-B coverage signal
+
+After batch-4: **33 of 113 F-NNNs (29%) scanned**. P-09 (Security & Access Control) is the FIRST FULLY-CLOSED pillar (16/16 features). Single-file-fix density is high in this batch: 6 of 38 findings are one-config-change or one-line code fixes (F-006b, F-006c, F-122b, F-122c, F-124a, F-124b) — making P-09 a prime candidate for a coordinated security-hardening PR after triage.
+
+## Hand-off
+
+- **Next `/implement` candidate**: any of the 13 CRITICAL DOC items. Recommend fast-tracking **DOC-246** (audit-trail-scope NEW PAGE — closes DOC-GAP-192 + cross-links the architectural PLT-062), **DOC-239** (disabled-authentication enumeration — direct operator security framing), and **DOC-237** (admin-promotion landing NEW PAGE — anchors operator decision-making across six provider paths).
+- **Upstream PLTs ready to file** (paste-ready; deliberate human action per `issues/README.md`): all 22 of PLT-061..PLT-082. Recommend filing the single-line fixes first (PLT-061 SecurityConstants permission misrouting + PLT-081 equalsIgnoreCase joint fix + PLT-076 ControllerAdvice IllegalArgumentException + PLT-079 @ToString.Exclude); the LOGIN_FORM cluster (PLT-064) + Lombok / session / DB defaults (PLT-079 + PLT-074 + PLT-080) are higher-leverage but require larger PRs.
+- **Editorial audit** is mandatory on `/review`, not on `/triage`. No editorial findings surfaced here.
+
+---
+
+# Prior batch (kept for reference)
+
+# Previously last updated 2026-05-27 — `/triage findings/docs-coverage-undocumented-features/2026-05-27-batch-5.md` — Mode B run SR-20260527T1800Z; 6 new DOC backlog items + 1 TST item + 5 PLT upstream issue drafts
+
+`/triage` converted the **33 distinct findings (5 corroborations folded as write-backs at scan time)** from the **batch-5 mode-B (ontology-fed) run** of `docs/coverage/undocumented-features` into **6 atomic DOC backlog items + 1 TST item + 5 paste-ready PLT issue drafts**. Theme: **closes P-02 Data Modelling + P-03 Master Data Management + P-06 Data Glossary cluster** — 12 features total (F-037 / F-056 / F-058 / F-059 / F-131 / F-132 / F-151 / F-152 / F-153 / F-154 / F-155 / F-156). After batch-5, mode-B feature coverage is **32 of 113 F-NNNs (28%)**.
+
+**IDs are non-consecutive** due to high parallel-triage concurrency in this session window — multiple other triages claimed DOC-188..198 + DOC-200..228 + PLT-022..055 between this triage's planning pass and write-time. Final slot snapping: **DOC-199 + DOC-229..233 + TST-001 + PLT-056..060**.
+
+## Rev-13 corroboration log — APPLIED for batch-5
+
+The scanner-feed log at `lineage/odd-platform/scanner-feed/2026-05-27-SR-20260527T1800Z.yaml` confirms `verification_class: fully-corroborated`. All 33 findings have a **feature-flow clue source** (12 F-NNN consumed; every finding back-links to one of them via `findings_produced[]`). Per the rev-13 ontology-corroboration rule, every finding's priority lifts ONE tier (medium → high, high → critical). Net effect: 4 of 6 DOC items end CRITICAL; 1 ends HIGH; the TST item is HIGH; PLT severity follows the source-finding severity. Three write-backs were executed inline by the scan-run (annotation-only on DOC-177; extension framing for DOC-182 Caveat 3 and DOC-183 Caveat 3) and are NOT re-triaged here.
+
+## Findings → backlog mapping (with merge decisions)
+
+Merge rule: one DOC backlog item per affected doc page (one item = one PR-ready atomic commit, even where the page already has other pending items extending it). Upstream code-side fixes are filed as separate paste-ready PLT drafts so each upstream conversation is bounded.
+
+| Finding(s) | → Item | Affected page(s) | Severity (after rev-13 lift) |
+|---|---|---|---|
+| F-037a + F-037b + F-037c + F-037d + F-037e + F-037f + F-037g (Target column copy-paste + no auth gate cross-tenant enum + row-click routing drift + search scope + ?type= no validation + relationship_id semantic alias) | **DOC-229** | `data-modelling/relationships.md` | **CRITICAL** (HIGH → CRITICAL ×4; MED → HIGH ×1; LOW → MED ×2) |
+| F-056a + F-056b + F-056c (cross-time drain + is_description_link UI symmetry + XSS staging 7th surface) | **DOC-230** (depends_on DOC-177) | `data-glossary/business-glossary.md` | **CRITICAL** (HIGH → CRITICAL ×2; MED → HIGH ×1) |
+| F-058a + F-059b (listing 30-row cap + rename audit silence) | **DOC-231** (depends_on DOC-182) | `master-data-management/lookup-tables.md` | **CRITICAL** (HIGH → CRITICAL on F-058a; MED → HIGH on F-059b) |
+| F-131a + F-131b + F-131c + F-132a (authoring-time XSS + dirty-form data loss + mode-mismatch + Query Example Details page tab navigation composite) | **DOC-232** (depends_on DOC-183) | `data-modelling/query-examples.md` | HIGH (MED → HIGH ×2; LOW → MED ×2) |
+| F-151a + F-151b + F-151c + F-153a (Overview double-fetch + auto-hide tabs + dual-surface asymmetry + LinkedColumnsList noop pagination LSN-024-class) | **DOC-233** (depends_on DOC-177) | `data-glossary/business-glossary.md` | **CRITICAL** (HIGH → CRITICAL on F-153a; MED → HIGH on F-151a; LOW → MED ×2) |
+| F-154a + F-154b + F-154c + F-154d + F-154e + F-156b (TermsForm 5-defect + TagsEditForm tag-create bypass) | **DOC-199** (depends_on DOC-177) | `data-glossary/business-glossary.md` | **CRITICAL** (HIGH → CRITICAL on F-154d; MED → HIGH ×5) |
+| F-058b (Lookup Tables zero test coverage on pillar P-03's SOLE UI surface) | **TST-001** (depends_on PLT-057) | `odd-platform-ui/.../LookupTablesList.test.tsx` (create) | HIGH (MED → HIGH) |
+| F-056-corroborates-DOC-177 (description-edit auto-link + cross-namespace pollution) | (no new item — annotation on DOC-177) | — | — |
+| F-059a (rename cascade LSN-001-class operator-action-layer framing) | (no new item — extension of DOC-182 Caveat 3) | — | — |
+| F-131a authoring-time framing | (no new item — embedded in DOC-232 Caveat 5; DOC-183 extension) | — | — |
+| F-037 code one-liner + ?type= validate + relationship_id alias + cross-tenant RBAC | **PLT-056** | upstream | CRITICAL |
+| F-058a code one-liner + F-059b ActivityEvent emission | **PLT-057** | upstream | CRITICAL |
+| F-151 + F-152 + F-153 Term Detail UI epic (8 defects) | **PLT-058** | upstream | CRITICAL |
+| F-154 TermsForm hardening (5 defects) | **PLT-059** | upstream | CRITICAL |
+| F-155 + F-156 Term Query Examples + Overview Right-Rail hardening (4 defects) | **PLT-060** | upstream | HIGH |
+
+## Dedup write-backs (executed at scan time per scanner-feed log)
+
+The scanner-feed log records three write-backs executed during the scan-run (not this triage):
+
+- **DOC-177** — `corroborated_by_scanner: docs/coverage/undocumented-features@2026-05-27 (batch-5, SR-20260527T1800Z, F-056)` annotation appended for F-056-corroborates-DOC-177 (Caveats 2 + 3 already in DOC-177's base text; F-056a/b/c land in NEW DOC-230 as net-new dimensions).
+- **DOC-182 Caveat 3** — `extends with LSN-001-class operator-action-layer framing` from F-059a; the DOC-182 implementer integrates the LSN-001 cross-link into Caveat 3's body. NO new DOC item created for F-059a (extension is doc-side authorial; F-058a + F-059b are NEW dimensions in DOC-231).
+- **DOC-183 Caveat 3** — `extends with authoring-time XSS intervention point framing` from F-131a; the DOC-183 implementer carries through to DOC-232 Caveat 5 (which is the new doc-side framing for the authoring-time dimension).
+
+## File-conflict notes (for `/implement` scheduling)
+
+- **DOC-199 + DOC-230 + DOC-233** all touch `data-glossary/business-glossary.md` under DOC-177's "Known operator caveats" H2. All three depend on DOC-177. Recommend ONE PR covering DOC-177 + the 13-new-H3-sub-points extension (3 from DOC-230 + 4 from DOC-233 + 6 from DOC-199). Section length is tractable if each caveat stays ≤ 10 lines; if it exceeds reader budget, consider splitting into Security / UX / RBAC bypass sub-H3 groups.
+- **DOC-231** depends on DOC-182 (also pending; same page). Fold into the DOC-182 PR if DOC-182 hasn't shipped — same H2, same review pass per CLAUDE.md velocity.
+- **DOC-232** depends on DOC-183 (also pending; same page). Transitive dependency on DOC-046 (blocked) is captured in DOC-232 Context.
+- **DOC-229** is standalone (`data-modelling/relationships.md`); no dependencies.
+- **TST-001** ships into the odd-platform repo's UI test directory; can be authored as a `.skip()`-marked test pre-PLT-057 and unskipped after the fix lands. Pair with PLT-057's PR if the upstream team prefers code+test in one PR.
+- No cross-repo file conflicts. All 5 PLT drafts are paste-ready for deliberate filing into the odd-platform GitHub Issues tracker per `issues/README.md`.
+
+## Counts (after this triage)
+
+- DOC backlog items: prior + 6 NEW pending — DOC-199, DOC-229, DOC-230, DOC-231, DOC-232, DOC-233.
+- TST backlog items: 0 → 1 — TST-001 is the first TST item in the backlog.
+- PLT issue drafts: prior + 5 — PLT-056, PLT-057, PLT-058, PLT-059, PLT-060.
+- All 6 DOC items start `pending`; TST-001 starts `pending`; all 5 PLT drafts start `draft`.
+
+## Mode-B coverage signal
+
+Scanner-feed log records `verification_class: fully-corroborated` for this scan-run. Per the scanner-ontology-fusion ADR, this run counts toward "feature audited" status for the 12 F-NNNs consumed. After batch-5, coverage is **32 of 113 F-NNNs (28%)**. Pillars touched: P-02 → 3 (was 1); P-03 → 3 (was 1); P-06 → 8 (was 2). All 11 pillars have ≥1 F-NNN scanned. Remaining 81 F-NNNs queued for ~7-8 more batches of similar size.
+
+## Cross-batch cluster references
+
+- **F-004 stored-XSS family 7th surface** (F-056c unhandled-mention staging tables — extends the 6-surface family anchored at DOC-187).
+- **LSN-024-class silent-empty** (F-153a noop pagination — UI promises hasMore but next is noop; same shape as DOC-141..145 cluster).
+- **LSN-001-class operator-action-layer default-footgun** (F-059a ALTER TABLE rename — captured by scanner-feed dedup_action: extends_DOC-182_Caveat_3, NOT a separate item).
+- **Cross-pillar audit-asymmetry pattern** (F-059b LOOKUP_TABLE_RENAMED + F-057 DQ severity audit silence + F-025a.4 Query Examples audit silence — third occurrence of the pattern).
+- **Soft-create on read-binding RBAC bypass** (F-154e NamespaceAutocomplete + F-156b TagsEditForm — both same architectural family from F-002 batch K; PLT-059 + PLT-060 land the upstream split).
+
+## Hand-off
+
+- **Next `/implement` candidate**: any of the 4 CRITICAL items. Recommend fast-tracking **DOC-231 + PLT-057 + TST-001** as a tightly-coupled trio — the F-058a one-line code fix + the regression-anchor test + the doc-side caveat ship in coordinated PRs; pillar P-03's SOLE UI surface unblocks for every tenant with >30 lookup tables. Alternative: **DOC-229 + PLT-056** (relationships page — six-caveat ship, single-PR; closes the most operator-visible drift in the batch). DOC-230 + DOC-233 + DOC-199 should be one combined PR with DOC-177 (the same H2 grows from 3 → 16 caveats).
+- **PLT drafts ready to file** (paste-ready, requires deliberate human action per `issues/README.md`): all 5 of PLT-056..060. Recommend filing PLT-057 first (one-line UI fix on pillar P-03's sole surface, highest operator-volume impact); PLT-056 second (security-critical Target column + cross-tenant enum).
+- **Editorial audit** is mandatory on `/review`, not on `/triage`. No editorial findings surfaced here.
+- **F-058b** as the first TST item in the backlog signals the workspace is starting to graduate to test-coverage territory per CLAUDE.md's "Once the documentation baseline is solid, the focus broadens to test coverage" mission stage.
+
+---
+
+# Last updated 2026-05-27 — `/triage findings/docs-coverage-undocumented-features/2026-05-27-batch-3.md` — Mode B run SR-20260527T2000Z; 7 new DOC backlog items + 11 PLT upstream issue drafts
+
+`/triage` converted the **32 distinct findings + 8 corroborations** from the **batch-3 mode-B (ontology-fed) run** of `docs/coverage/undocumented-features` into **7 atomic DOC backlog items + 11 paste-ready PLT issue drafts**. Theme: **closes P-07 Active Platform Features (8 features) + P-04 Data Quality extension (2 features)** — 10 features total (F-014 / F-030 / F-032 / F-038 / F-057 / F-064 / F-126 / F-196 / F-197 / F-198).
+
+**IDs are non-consecutive** due to extremely high parallel-triage concurrency in this session window — at least 4 other concurrent triages claimed DOC-186..199 + DOC-207..228 + PLT-022..029 + PLT-035..046 between this triage's planning pass and write-time. Final slot snapping: DOC-200..206 + PLT-030..034 + PLT-050..055.
+
+## Rev-13 corroboration log — MISSING for batch-3
+
+The scanner-feed log slot `SR-20260527T2000Z` was claimed by the parallel **batch-4** run (P-09 Security closure); no batch-3 scanner-feed log exists. Per the rev-13 protocol, the findings file's self-declared `verification_class: fully-corroborated` is the highest-confidence signal available — every finding has a primary-source code citation verified at scan time + 8 fresh WebFetches at status 200 against the live `docs.opendatadiscovery.org` site. The programmatic priority-lift (feature-flow corroboration → +1 tier) **could not be applied** because the scanner-feed clue back-link is unavailable; priorities reflect the findings file's authored severity. Re-run not recommended (the substrate evidence is comprehensive); the gap is a parallel-batch coordination artefact, not a coverage defect.
+
+## Findings → backlog mapping
+
+| Finding(s) | → Item | Severity | Doc-side |
+|---|---|---|---|
+| F-014a + F-014c framing + F-126c framing + F-126d framing | **DOC-200** | HIGH | Alerting page workaround-completeness caveats |
+| F-126a + F-126b + F-198a + F-198b | **DOC-201** | MEDIUM | Alerting page UX hazards |
+| F-030a + F-030b doc + F-030c doc + F-030e + F-030f | **DOC-202** | HIGH | Create Metrics Ingestion sub-page + landing add + 2 caveats on configuration-and-deployment + sibling-uncovered enumeration extension |
+| F-032b doc + F-032e | **DOC-203** | HIGH | Quality Dashboard LSN-019 disclosure + category ordering note |
+| F-038b doc + F-038c + F-038d doc + F-038f | **DOC-204** | HIGH | Data Collaboration page — 4 security/reliability caveats |
+| F-057a doc | **DOC-205** | HIGH | DQ test severity audit-silence caveat on `sla-statuses.md` |
+| F-064a + F-064b doc + F-064c + F-196a + F-196c doc | **DOC-206** | HIGH | Activity Feed page rewrites — My Objects re-add + LSN-020 User filter correction + onboarding gap + per-entity asymmetry + soft-delete posture |
+| F-064b code | **PLT-030** | HIGH | Activity Feed User filter axis correction |
+| F-196c code | **PLT-031** | MEDIUM | Per-entity Activity tab gate + soft-delete posture |
+| F-197a + F-197b | **PLT-032** | LOW | Discussions tab visibility + Thread silent-nav |
+| F-014b | **PLT-033** | MEDIUM | AlertItem post-action permission anti-pattern |
+| F-014d | **PLT-034** | MEDIUM | WithPermissions wrapper context-not-gate refactor (SYSTEMIC) |
+| F-014c + F-126a + F-126b + F-126c + F-126d | **PLT-050** | MEDIUM | Alerts UX cluster |
+| F-030b + F-030c + F-030d | **PLT-051** | HIGH | Metrics Ingestion hardening (auth gate + tenant_id + ODDRN existence validation) |
+| F-032a + F-032b code + F-032c + F-032d | **PLT-052** | HIGH | Quality Dashboard hardening |
+| F-198a + F-198b + F-198c | **PLT-053** | MEDIUM | Notification Settings concurrency + Resolve confirmation + i18n |
+| F-038b code + F-038d code + F-038e + F-038f code | **PLT-054** | HIGH | Slack hardening — HMAC verification + dedup + filter + cache |
+| F-057a code | **PLT-055** | HIGH | DQ test severity activity event emission |
+
+## State-update observations (informational, no backlog item)
+
+- **F-038a STATE UPDATE**: `/features/active-platform-features/data-collaboration` was 404 at 2026-05-25 substrate authoring; live WebFetch 2026-05-27 returns 200 OK with rich content. The substrate facet `active_platform_features_data_collaboration_feature_page_404_live_doc` is OBSOLETE; substrate write-back action required on `feature-flows/detail/F-038.yaml` + `doc-gaps/detail/DOC-GAP-035.md` (legacy URL still 404, canonical URL now lives). DOC-204 ships the residual caveats now-needed at the live canonical URL.
+- **F-064a STATE UPDATE (regression)**: Live Activity Feed page no longer mentions "My Objects" view-mode at all (substrate evidence said partially-documented at 2026-05-20). Doc REGRESSION — DOC-206 ships the re-addition.
+- **F-197a STATE UPDATE (partial)**: Live data-collaboration page NOW acknowledges the "Discussions tab visible when feature disabled" UX bug as "currently"-class operator caveat. PLT-032 ships the structural fix; once shipped, a small follow-up updates the doc to remove the "currently" framing.
+
+## Dedup write-backs
+
+Per the findings file, 11 STRENGTHEN actions targeted existing ontology shards (NOT triage actions — scanner-feed records these write-backs against `doc-gaps/index.md` shards): DOC-GAP-032 (F-038b HMAC dimension), DOC-GAP-035 (F-038a state-update), DOC-GAP-038 (F-030c sibling), DOC-GAP-082 META (F-030b asymmetric-feature-by-storage-backend dimension), DOC-GAP-083 META + DOC-GAP-149 META (F-057a audit-silence), DOC-GAP-142 + DOC-GAP-149 (F-064a live-state regression), DOC-GAP-157 (F-014a pagination + soft-delete + cross-owner). Plus 8 CORROBORATE actions on DOC-GAP-263..272 confirming F-032 facet cluster still in scope at the 2026-05-27 live doc state.
+
+## Cross-batch coherence
+
+Four cross-batch clusters surface from batch-3:
+
+1. **LSN-020 doc-side amplifier** (F-064b + F-196b → DOC-206 + PLT-030). FIRST live-doc-tier confirmation of LSN-020 at the operator's primary entry point. Sibling instance: DQ Title filter (DOC-GAP-264).
+2. **Silent-empty cross-feature** (F-064c + F-126b → DOC-206 + PLT-050 + PLT-031). Every "My" view (Activity / Alerts / future Owned-Entities) routes through `fetchAssociatedOwner()`; unmapped users see uniform silent degradation. Structural fix is a global "missing association" widget; doc-side is multi-page.
+3. **Audit-silence on permission-gated mutations** (F-057a → DOC-205 + PLT-055). Joins F-019 (Owner lifecycle), F-013 (custom metadata), F-021 (Activity Feed scope). The schema-tier `activity.data_entity_id NOT NULL` constraint (DOC-GAP-192) is the structural source; DQ severity DOES have a data_entity_id so emission unblocked — only `@ActivityLog` annotation missing.
+4. **WithPermissions-as-context-not-gate** (F-014d → PLT-034). NAME implies render-block; BEHAVIOR is permission-context provider. Cross-cutting across Alerts, Activity, Discussions. Linus-bar: structural fix at the wrapper closes the class; no DOC item for the systemic UI flash (operator caveat about a UI flash is not load-bearing).
+
+---
+
+# Last updated 2026-05-27 — `/triage findings/docs-coverage-undocumented-features/2026-05-27-batch-6.md` — Mode B run SR-20260527T1700Z; 9 new DOC backlog items + 7 PLT upstream issue drafts
+
+`/triage` converted the **24 distinct findings** from the **batch-6 mode-B (ontology-fed) run** of `docs/coverage/undocumented-features` (scanner-feed log: `lineage/odd-platform/scanner-feed/2026-05-27-SR-20260527T1700Z.yaml`; verification_class: **fully-corroborated**) into **9 atomic DOC backlog items + 7 upstream PLT issue drafts**. Zero rejections as false positives — every finding has a feature-flow clue source (9 F-NNNs consumed: F-016 / F-054 / F-055 / F-094 / F-095 / F-096 / F-097 / F-098 / F-186). Theme: **closes P-05 (Data Lineage) + P-10 (Integrations & Ingestion alternative endpoints) + P-11 (Platform API / Developer Surface)** to full graduated-F-NNN coverage.
+
+## Findings → backlog mapping (with merge decisions)
+
+One DOC backlog item per affected doc page (sibling findings on the same page merge into one PR-ready atomic commit). Upstream code-side fixes are filed as separate paste-ready PLT drafts so each upstream conversation is bounded. **IDs are non-consecutive** because 8 other concurrent triages claimed DOC-190..193 + DOC-199..224 + PLT-022..034 + PLT-037..041 in the same session window; this batch's items snapped to the next-free slots (DOC-194..198 mid-cycle + DOC-225..228 at the tail; PLT-035/036 mid-cycle + PLT-042..046 at the tail).
+
+| Finding(s) | → Item | Affected page(s) / target | Severity (after rev-13 lift) |
+|---|---|---|---|
+| F-016a + F-016b + doc-silent-on-read-collaborative-posture (DEG-lineage sibling endpoint asymmetry + parameter absence + pillar-page) | **DOC-225** | `developer-guides/api-reference/lineage.md` + `features/data-lineage.md` + `features/data-lineage/data-objects.md` | **CRITICAL** (F-016a HIGH → CRITICAL) |
+| F-054a + F-054b (microservices access model + payload-fields silently dropped — ontology-doc-mitigation on substrate's primary facet) | **DOC-226** | `features/data-lineage/microservices.md` | **CRITICAL** (F-054a HIGH → CRITICAL) |
+| F-055a + F-055b (lineage-depth UI-presentation-only cap + click-through bypasses cap — LSN-001-shape) | **DOC-227** (depends_on DOC-167) | `features/data-lineage/data-objects.md` + `developer-guides/api-reference/lineage.md` | **CRITICAL** (F-055a HIGH → CRITICAL) |
+| F-094a + F-094b (YAML-side caveat absence + 80-cell deployment matrix — ontology-doc-mitigation partial) | **DOC-228** (depends_on DOC-168) | `configuration-and-deployment/enable-security/README.md` + `configuration-and-deployment/odd-platform.md` | HIGH (MED → HIGH ×2) |
+| F-095a + F-095b (cross-dataset write surface — unauthenticated, no parent validation + replay-tag silent destruction) | **DOC-194** (depends_on DOC-168) | `configuration-and-deployment/enable-security/README.md` (extends "Ingestion paths the filter does not cover" subsection) | **CRITICAL** (F-095a HIGH → CRITICAL — data-integrity attack surface) |
+| F-096a + F-096b + F-096c (3 client-errors → 5xx collector retry-storm + row-lock serialisation + zero structured logging) | **DOC-195** | `integrations/README.md` + `developer-guides/api-reference.md` | **CRITICAL** (F-096a HIGH → CRITICAL) |
+| F-097d (Swagger UI per-auth-mode reachability matrix; F-097a/b/c covered by SPC-001) | **DOC-196** (depends_on SPC-001) | `developer-guides/api-reference.md` | HIGH (MED → HIGH) |
+| F-098a + F-098b (Slack at-least-once delivery no dedup + drop unused incoming-webhook scope from manifest) | **DOC-197** | `configuration-and-deployment/odd-platform.md` | HIGH (MED → HIGH; LOW → MED) |
+| F-186a + F-186b (Compact/Full toggle documentation + DEG-membership entry point hidden in Compact mode) | **DOC-198** | `features/data-lineage/data-objects.md` + `features/data-lineage.md` | HIGH (MED → HIGH ×2) |
+| F-055a/b upstream (controller @Max(20) + UI click-through Math.min) | **PLT-042** | upstream | HIGH |
+| F-094a upstream (application.yml inline-comment naming narrow scope) | **PLT-043** | upstream | MED |
+| F-095a/b upstream (cross-dataset write fix + replay-tag merge-semantics) | **PLT-044** | upstream | HIGH (security/data-integrity) |
+| F-096a/b/c upstream (structured error responses + lock scope + logging) | **PLT-045** | upstream | HIGH |
+| F-097d upstream (auth.swagger.enabled toggle) | **PLT-046** | upstream | MED |
+| F-098a upstream (UNIQUE constraint + ON CONFLICT on createMessageEvent INSERT) | **PLT-035** | upstream | MED (data-integrity) |
+| F-016a upstream (align DEG-read endpoint shape on empty-DEG) | **PLT-036** | upstream | MED |
+
+## Rev-13 priority-lift application
+
+Per the rev-13 ontology-corroboration rule: every finding's `findings_produced` is back-linked to a `feature-flow` clue source in the scanner-feed log (per `clues_consumed`). The lift fires for ALL 24 findings → every backlog item is **HIGH or CRITICAL**. Distribution after lift:
+
+- CRITICAL: 6 of 9 DOC items (DOC-225, DOC-226, DOC-227, DOC-194, DOC-195, plus partial criticality on others)
+- HIGH: 3 of 9 DOC items (DOC-228, DOC-196, DOC-197, DOC-198)
+- MEDIUM / LOW: 0 — the rev-13 lift moved every batch-6 finding above MEDIUM.
+
+The critical concentration in this batch reflects the security/data-integrity composition: F-095a (cross-dataset write — anonymous data-integrity attack), F-054a (cross-owner enumeration on operational telemetry), F-016a (operator-debug-surprising sibling-endpoint asymmetry), F-055a (LSN-001-shape 4-layer absent-validation on a recursive-CTE walker), F-096a (collector retry-storm shape). CLAUDE.md's "wrong docs > missing docs" priority bar applies in full.
+
+## Ontology-doc-mitigation findings (NEW class this batch)
+
+Two F-NNNs surface a new class of finding: **substrate-claimed-silent-but-live-doc-now-disclosed**:
+
+1. **F-054** — substrate framing **reclassified to ontology-confirmed-positive**. The microservices-doc page now EXPLICITLY ACKNOWLEDGES the substrate's `microservices_lineage_indistinguishable_from_data_object_lineage_no_class_aware_ui` facet ("same UI surface as Data Objects Lineage" + "Microservices appear in the catalog as MICROSERVICE-class transformer entities"). Substrate shoebox correction queued. **DOC-226 ships the RESIDUAL gaps** (access model + payload fields) that remain missing.
+2. **F-094** — substrate `property_name_misdirection_narrow_scope` facet **downgraded HIGH → MEDIUM** at the live-doc surface. Live `/configuration-and-deployment/odd-platform` AND `/configuration-and-deployment/enable-security` now warn about the narrow scope. The residual gap (closed by **DOC-228** + **PLT-043**) is the YAML-side comment absence + the operator-facing 80-cell matrix absence.
+
+These are the FIRST instances in the mode-B catalogue where a substrate-claimed doc gap is found to have been partially/fully doc-mitigated since substrate authoring. Mitigation direction is positive (docs improved); substrate-shoebox update is the next-action item per scanner-feed `write_backs.shoebox`.
+
+## Dedup write-backs
+
+The scanner-feed log records 4 corroboration write-backs **executed** during the scan-run (NOT this triage):
+
+- `DOC-GAP-124` (inner-DEG suppression — F-016) — corroboration appended
+- `DOC-GAP-133` (microservices same-canvas — F-054) — corroboration appended
+- `DOC-GAP-165` (DEG-lineage bidirectional edge filter — F-016) — corroboration appended
+- `DOC-GAP-290` (Slack-events webhook signature absence — F-098) — corroboration appended (full primary-source re-verification)
+
+Deferred write-backs (next /enrich or doc-gap-finder pass): DOC-GAP-038, DOC-GAP-074-META, DOC-GAP-087, DOC-GAP-105, DOC-GAP-159, DOC-GAP-163, DOC-GAP-164, DOC-GAP-178, DOC-GAP-239, DOC-GAP-240, plus per-feature `scanner_reviews:` appends to all 9 F-NNNs.
+
+## File-conflict notes (for `/implement` scheduling)
+
+- **`enable-security/README.md`** touched by 3 items: pre-existing DOC-168 (CRITICAL pending) + DOC-194 + DOC-228. Authoring order: DOC-168 (foundation) → DOC-228 (matrix table) → DOC-194 (per-endpoint write-shape caveat). Single PR encouraged.
+- **`features/data-lineage/data-objects.md`** touched by 3 items: DOC-225, DOC-227, DOC-198. Different sub-sections; fold into one commit.
+- **`features/data-lineage.md`** touched by 2 items: DOC-225 + DOC-198. Different paragraphs; fold.
+- **`developer-guides/api-reference/lineage.md`** touched by 2 items: DOC-225 (DEG-lineage entry) + DOC-227 (lineage_depth contract). Fold.
+- **`developer-guides/api-reference.md`** touched by 2 items: DOC-195 + DOC-196. Different sections.
+- **`configuration-and-deployment/odd-platform.md`** touched by 2 items: DOC-228 (minor) + DOC-197 (Slack-related — separate section). Co-ship.
+- **No cross-repo file conflicts**. PLT-035/036/042..046 are workspace-resident drafts (paste-ready for upstream filing).
+
+## Counts (after this triage)
+
+- DOC backlog items: **201 → 210** (+9 new pending — DOC-225, DOC-194..198, DOC-226..228; my batch's net adds — other concurrent triages added their own).
+- PLT issue drafts: **41 → 48** (+7 new draft — PLT-035, PLT-036, PLT-042..046).
+- `pending` (DOC + PLT counts): +9 + +7 respectively — all start `pending` / `draft`.
+- All other DOC statuses (`in-progress` / `review-ready` / `done` / `blocked` / `rejected` / `superseded`): unchanged this run.
+
+## Mode-B coverage signal
+
+Scanner-feed log records `verification_class: fully-corroborated` for this scan-run. Per the scanner-ontology-fusion ADR, this run counts toward "feature audited" status for the 9 F-NNNs consumed. **Coverage after batch-6: 29 of 113 F-NNNs (25.6%)**. Pillars at FULL closure of their graduated F-NNNs:
+
+- **P-04** (F-022 + F-040 + dataset-stats path via F-095)
+- **P-05** Data Lineage (F-005 + F-016 + F-054 + F-055 + F-186) ← closed this batch
+- **P-09** (F-088 from batch 1)
+- **P-10** Integrations & Ingestion (F-008 + F-094 + F-095 + F-096 + F-098) ← closed this batch
+- **P-11** Platform API & Developer Surface (F-029 + F-097) ← closed this batch
+
+Pillars remaining: P-01 / P-02 / P-03 / P-06 / P-07 / P-08 — assigned to batches 3, 5, 7, 8, 9, 10, 11 per `state/coverage/docs-coverage-undocumented-features.yaml#mode_b_iteration.batch_assignments`.
+
+## Substrate-coverage gaps surfaced (next /enrich pass)
+
+- `spring.codec.max-in-memory-size` (the 20MB request cap mentioned in F-056 from 2026-05-08 axis-pass) — the ONLY remaining config-prefixes-axis surface without a graduated F-NNN. Recommendation: enrich `WebFluxCodecConfig` (or equivalent) in the next /enrich pass.
+
+## Hand-off
+
+- **Next `/implement` candidates**: any of the 6 CRITICAL items. Recommended fast-track: **DOC-194 + DOC-228** as a coordinated PR with DOC-168 (foundation) on `enable-security/README.md` — the highest-stakes operator-facing surface this batch (data-integrity attack vector + auth coverage matrix). Then **DOC-225 + DOC-227 + DOC-198** as a single PR on `features/data-lineage/*` + `developer-guides/api-reference/lineage.md` (depends_on DOC-167; co-ship encouraged).
+- **Upstream PLTs ready to file** (paste-ready, requires deliberate human action per `issues/README.md`): all 7 of PLT-035/036/042..046. Recommend filing **PLT-044 first** (one-line repo-query fix, highest urgency — closes the cross-dataset data-integrity attack surface) and **PLT-035 second** (Slack dedup — Flyway + ON CONFLICT; clean isolated change).
+- **Editorial audit** is mandatory on `/review`, not on `/triage`. No editorial findings surfaced here; the triage's job is conversion-of-findings.
+
+---
+
+# Last updated 2026-05-27 — `/triage findings/docs-coverage-undocumented-features/2026-05-27-batch-9.md` — Mode B run SR-20260527T1900Z; 18 new DOC backlog items + 5 PLT upstream issue drafts
+
+`/triage` converted the **26 distinct findings** from the **batch-9 mode-B (ontology-fed) run** of `docs/coverage/undocumented-features` (scanner-feed log: `lineage/odd-platform/scanner-feed/2026-05-27-SR-20260527T1900Z.yaml`; verification_class: **fully-corroborated**) into **18 atomic DOC backlog items + 5 upstream PLT issue drafts**, with **5 STRENGTHENS-EXTENDS** corroboration write-backs deferred to the next `doc-gap-finder` refresh and **2 PROBE candidates** queued for `/probe-define` scaffolding. Zero rejections as false positives — every finding has a feature-flow clue source (10 F-NNNs consumed: F-074 / F-075 / F-076 / F-141 / F-142 / F-163 / F-171 / F-172 / F-173 / F-174). Theme: **User-Owner Identity Lifecycle** — `user-owner-association.md`, `permissions.md`, `management.md`, `catalog-overview.md`.
+
+## Findings → backlog mapping (with merge decisions)
+
+Single backlog item per atomic doc edit. 11 batch-9 items concentrate on `user-owner-association.md` — fold into one coordinated rewrite PR with authoring order documented in `state/file-registry.yaml`. Five upstream code-side fixes are filed as separate paste-ready PLT drafts.
+
+| Finding(s) | → Item | Affected page(s) / target | Severity (after rev-13 lift) |
+|---|---|---|---|
+| F-074a (read-collaborative posture on 7 Management read endpoints undocumented) | **DOC-207** | `permissions.md` | **CRITICAL** (HIGH → CRITICAL — default-deploy security leak) |
+| F-075a (DIRECT_OWNER_SYNC auto-approve branch undocumented; Branch B) | **DOC-208** | `user-owner-association.md` | **CRITICAL** (HIGH → CRITICAL) |
+| F-075b (DIRECT_OWNER_SYNC self-mint composition hazard via OwnerService.getOrCreate side-door) | **DOC-209** | `permissions.md` | **CRITICAL** (HIGH → CRITICAL — privilege escalation surface) |
+| F-075c (Admin workflow MIS-DESCRIBED — actively misleading) | **DOC-210** | `user-owner-association.md` | **CRITICAL** (HIGH → CRITICAL — actively misleading per CLAUDE.md tier) |
+| F-076a (Owner/Namespace/DataSource cascade-block caveats undocumented) | **DOC-211** | `management.md` | **HIGH** (MEDIUM → HIGH) |
+| F-141a (Catalog Overview OwnerAssociation 4-branch state machine undocumented) | **DOC-212** | `catalog-overview.md` | **HIGH** (MEDIUM → HIGH) |
+| F-141c (Directory widget conditional flag undocumented) | **DOC-213** | `catalog-overview.md` | **MEDIUM** (LOW → MEDIUM) |
+| F-142a (freeSolo Owner-name → unbounded directory accretion) | **DOC-214** | `user-owner-association.md` | **HIGH** (MEDIUM → HIGH — data hygiene) |
+| F-142b (Declined banner dismissable-but-not-persisted UX) | **DOC-215** | `user-owner-association.md` | **MEDIUM** (LOW → MEDIUM) |
+| F-142c (No-revoke / no-re-request lifecycle) | **DOC-216** | `user-owner-association.md` | **HIGH** (MEDIUM → HIGH — user can't self-recover) |
+| F-142d (Modal-vs-inline section framing drift) | **DOC-217** | `user-owner-association.md` | **MEDIUM** (LOW → MEDIUM) |
+| F-163c (Token-regenerate operational caveat on permissions descriptions) | **DOC-218** | `permissions.md` | **HIGH** (MEDIUM → HIGH — operational consequence) |
+| F-171a (Operator triage workflow UX undocumented) | **DOC-219** | `user-owner-association.md` + `management.md` (cross-link) | **HIGH** (MEDIUM → HIGH — ops discoverability) |
+| F-172a (Admin direct-bind Branch C undocumented; 3rd write-path invisible) | **DOC-220** | `user-owner-association.md` | **CRITICAL** (HIGH → CRITICAL — security write-path invisible) |
+| F-172c (OWNER_RELATION_MANAGE description MIS-DESCRIBED — load-bearing security permission) | **DOC-221** | `permissions.md` | **CRITICAL** (HIGH → CRITICAL — actively misleading on load-bearing security permission) |
+| F-173a (Active-tab Remove affordance undocumented) | **DOC-222** | `user-owner-association.md` | **HIGH** (MEDIUM → HIGH — admin-recovery path) |
+| F-173d (Unbind consequences for user My-views silent-empty) | **DOC-223** | `user-owner-association.md` | **MEDIUM** (LOW → MEDIUM) |
+| F-174a (History tab undocumented — audit surface) | **DOC-224** | `user-owner-association.md` | **HIGH** (MEDIUM → HIGH — audit discoverability) |
+| F-076b upstream code fix (NamespaceServiceImpl.delete non-atomic + TOCTOU; 3-surface uniform pattern) | **PLT-037** | upstream — `@ReactiveTransactional` + row-lock / advisory-lock + race-window integration test | MEDIUM |
+| F-171b upstream UX adjustment (triage dialog text + "be map" → "be mapped" + consequence disclosure) | **PLT-038** | upstream — `NewAssociationRequest.tsx:70-104` + ActiveAssociationRequest.tsx parallel | LOW (adjustment) |
+| F-172b upstream code fix (admin direct-bind form lacks oidcUsername validation + IdP existence check) | **PLT-039** | upstream — client format validation + async existence query + backend defensive validation | MEDIUM |
+| F-173b upstream code fix (UI ↔ backend permission gate MISMATCH — HIGH) | **PLT-040** | upstream — `ActiveAssociationRequest.tsx:91` swap OWNER_ASSOCIATION_MANAGE → OWNER_RELATION_MANAGE | HIGH |
+| F-174c upstream adjustment (RequestStatus.tsx silent unknown-enum + casing + i18n) | **PLT-041** | upstream — switch with explicit default + i18n keys + normalize casing | LOW (adjustment) |
+
+## Rev-13 priority-lift application
+
+Per the rev-13 ontology-corroboration rule: every finding's `findings_produced` back-links to a `feature-flow` clue source in the scanner-feed log (see `clues_consumed` block). The lift fires for ALL 26 findings → **6 CRITICAL + 8 HIGH + 4 MEDIUM** in the merged backlog. Distribution within batch-9 backlog items:
+
+- CRITICAL: 6 of 18 (DOC-207, DOC-208, DOC-209, DOC-210, DOC-220, DOC-221 — all are security-adjacent + actively-misleading-or-undocumented-security-surface)
+- HIGH: 8 of 18 (DOC-211, DOC-212, DOC-214, DOC-216, DOC-218, DOC-219, DOC-222, DOC-224)
+- MEDIUM: 4 of 18 (DOC-213, DOC-215, DOC-217, DOC-223 — originally LOW lifted to MEDIUM)
+
+The dense CRITICAL concentration on the User-Owner Identity Lifecycle reflects the slice's nature: every finding either (a) actively MIS-DESCRIBES a load-bearing security permission or workflow (DOC-210 + DOC-221), or (b) leaves an undocumented write-path or composition surface that operators cannot enumerate from the doc (DOC-207 read-collaborative; DOC-208 + DOC-209 DIRECT_OWNER_SYNC composition; DOC-220 admin direct-bind invisible). CLAUDE.md's "wrong docs > missing docs" priority bar applies cleanly.
+
+## Dedup / STRENGTHENS-EXTENDS write-backs (deferred)
+
+The scanner-feed log explicitly defers the following corroboration appends to the next `doc-gap-finder` reducer refresh (no established pattern in `lineage/odd-platform/doc-gaps.md` for inline corroboration entries yet):
+
+- DOC-GAP-129 ← F-141b (auth.type=DISABLED catalog-overview branch — corroboration only; existing doc-gap remains the canonical entry)
+- DOC-GAP-186 ← F-074b (Management top-nav tab visibility — adds per-LIST-ENDPOINT dimension to existing AppToolbar dimension)
+- DOC-GAP-189 ← F-074c (WIRE-fingerprint exposure dimension) + F-163a (DataSources tab cross-surface dimension) + F-163b (no-grace-period symmetric extension)
+- DOC-GAP-083 META + DOC-GAP-192 ← F-174b (audit-emission probe-needed; STRENGTHENS the audit-silence pattern + the activity-feed scope-constraint META)
+
+The doc-gap-finder's next refresh consumes the scanner-feed `findings_dedup_corroborated` block + `doc_gaps` comment and writes the inline corroboration entries.
+
+## Probe candidates (queued for /probe-define)
+
+Two findings are PROBE-NEEDED and were NOT triaged into standalone backlog items — the right next-step is dynamic verification:
+
+- **P-NNN-A (F-173c)** — One-to-one DB constraint on `user_owner_mapping`. Bootstrap deployment with two users + one owner; admin direct-binds both via F-172 form; admin clicks Remove on one row; observe DB-side outcome (one row deleted vs. all rows for that owner_id deleted). Confirms or refutes the verbatim `/user-owner-association:26` "User-owner relation is one-to-one relation" claim.
+- **P-NNN-B (F-174b)** — Audit-emission on direct-bind + unbind. Admin direct-binds via F-172; admin unbinds via F-173; observe whether the History tab surfaces the events (consume `owner_association_request_activity` rows post-action). Resolves the DOC-224 "Known incompleteness" caveat about audit completeness on Branch C + unbind paths.
+
+DOC-224 carries a probe-pending caveat that will be resolved either by amendment (caveat removed if probe shows full emission) or hardening (forward-pointer to REFACTOR-NNN added if probe confirms missing channel).
+
+## Cross-batch coverage status (post-batch-9)
+
+- Mode B `scanned_features`: 31 → 41 of 113 (36%; batch-9 added 10 features to the scanned set: F-074..F-076, F-141..F-142, F-163, F-171..F-174).
+- Pillars with ≥1 F-NNN scanned: all 11.
+- P-08 (Owner-Association cluster) is now near-complete with 6 features scanned in batch-9 (F-074, F-075, F-076, F-163, F-171, F-172, F-173, F-174 — 8 of the cluster's 10 features).
+- P-01 (Catalog Overview composition) gains F-141 + F-142 to the existing 12 features.
+
+## File-conflict notes for /implement scheduling
+
+- `permissions.md` is touched by 4 batch-9 items (DOC-207, DOC-209, DOC-218, DOC-221) — fold into ONE permissions sweep PR. Cross-batch with batch-10 items DOC-187..DOC-193 (per-row link additions); ideally batch-10 ships first.
+- `user-owner-association.md` is touched by 11 batch-9 items — MUST fold into ONE coordinated rewrite PR. Authoring order: (1) DOC-210 establishes three-branch backbone → (2) DOC-208 + DOC-220 add Branches B + C → (3) DOC-214..217 add caveats → (4) DOC-219 + DOC-222 + DOC-224 add operator-workflow subsections → (5) DOC-223 hangs off DOC-222.
+- `management.md` touched by DOC-211 + DOC-219 (small cross-link). DOC-219 ships with the user-owner-association.md PR.
+- `catalog-overview.md` touched by DOC-212 + DOC-213 — one commit.
+
+**Recommended batches**:
+- **Batch A** (permissions sweep): DOC-207 + DOC-209 + DOC-218 + DOC-221 — four permission-row edits in one PR
+- **Batch B** (User-Owner Association rewrite): all 11 user-owner-association.md items + DOC-219's cross-link on management.md
+- **Batch C** (Catalog Overview): DOC-212 + DOC-213 + DOC-211 (management.md cascade-block; can fold into Batch B if cohesion preferred)
+
+## Sidecar ontology-drift corrections noted (out of scope; next feature-flow-builder pass)
+
+- F-172 sidecar: inferred path `/api/user_owner_mapping` is INCORRECT — actual canonical endpoint is `/api/owners/mapping`.
+- F-173 sidecar: inferred path `/api/user_owner_mapping/{ownerId}` is INCORRECT — actual is `/api/owners/mapping/{owner_id}`.
+
+---
+
+# Prior triage entries (chronological — most recent first)
+
+# 2026-05-27 — `/triage findings/docs-coverage-undocumented-features/2026-05-27-batch-10.md` — Mode B run SR-20260527T2200Z; 8 new DOC backlog items + 8 PLT upstream issue drafts
+
+`/triage` converted the **32 distinct findings** from the **batch-10 mode-B (ontology-fed) run** of `docs/coverage/undocumented-features` (scanner-feed log: `lineage/odd-platform/scanner-feed/2026-05-27-SR-20260527T2200Z.yaml`; verification_class: **fully-corroborated**) into **8 atomic backlog items + 8 upstream issue drafts**. All 32 findings were ACCEPTED — zero rejections as false positives — because the scanner-feed log confirms every finding has a feature-flow clue source (11 F-NNNs consumed this batch: F-003 / F-004 / F-012 / F-013 / F-018 / F-044 / F-045 / F-046 / F-047 / F-191 / F-192). Theme: **P-01 Data Entity detail — metadata / status / schema / tagging / description**.
+
+## Findings → backlog mapping (with merge decisions)
+
+Merge rule: one backlog item per affected doc page or paired write/read sub-system (one item = one PR-ready atomic commit). Upstream code-side fixes are filed as separate paste-ready PLT drafts so each upstream conversation is bounded.
+
+| Finding(s) | → Item | Affected page(s) / target | Severity (after rev-13 lift) |
+|---|---|---|---|
+| F-003a + F-003b (EXCLUDE_FROM_SEARCH 9-list-shape inconsistency + PopularStrip is 4th column of OwnerEntitiesList) | **DOC-186** | `data-discovery/catalog-overview.md` + `data-discovery/search.md` | **CRITICAL** (HIGH → CRITICAL on F-003a; MED → HIGH on F-003b) |
+| F-004a + F-004b (entity description undocumented + 6-surface XSS class admonition) | **DOC-187** (CREATE) | `data-discovery/entity-description.md` (new) + SUMMARY + permissions | **CRITICAL** (HIGH → CRITICAL ×2) |
+| F-012a + F-012b + F-012c (DEG membership undocumented + write-collaborative + idempotence asymmetry) | **DOC-188** | `data-discovery/groups-domains.md` (extend) + activity-feed + permissions | **CRITICAL** (HIGH → CRITICAL ×2; LOW → MED) |
+| F-013a + F-013b + F-013c + F-046a + F-046b (custom metadata missing-page + UPSERT lies + ACTIVE→NULL + pageInfo theatre + no read perm) | **DOC-189** (CREATE; paired write+read) | `data-discovery/custom-metadata.md` (new) + SUMMARY + permissions + activity-feed | **CRITICAL** (HIGH → CRITICAL; MED → HIGH ×4) |
+| F-018a + F-018b + F-018c (listMostPopular OLDEST-by-id LSN-019 + 5 side-channel mints REFACTOR-223 + 3-way audit asymmetry) | **DOC-190** | `data-discovery/tagging.md` (extend) + activity-feed + permissions | **CRITICAL** (HIGH → CRITICAL ×2; MED → HIGH) |
+| F-044a + F-044b (SHB-004 30-day TTL never fires — verbatim doc-vs-code contradiction + no per-tick batch cap) | **DOC-191** | `data-discovery/statuses.md` (extend) + odd-platform.md cross-ref | **CRITICAL** (HIGH → CRITICAL — the headline paragraph of batch-10) |
+| F-045a + F-045b + F-045c + F-191a + F-191b (cross-dataset version-id leak + 500-vs-400 asymmetric error + max(version) vs max(created_at) + UI URL-paste + AppErrorPage swallow) | **DOC-192** | `data-discovery/schema-diff.md` (extend) + permissions | **CRITICAL** (HIGH → CRITICAL on F-045a; MED → HIGH ×3; LOW → MED) |
+| F-047a + F-047b + F-047c + F-192a + F-192b (TWO SecurityConstants wiring bugs + BULK-REPLACE named CREATE + delete-all tags + composer unsaved-changes + split state mgmt) | **DOC-193** (CREATE; paired backend+UI) | `data-discovery/per-column-annotation.md` (new) + SUMMARY + permissions | **CRITICAL** (HIGH → CRITICAL ×3; MED → HIGH; LOW → MED) |
+| F-003a upstream code fix | **PLT-022** | upstream — cteDataEntitySelect predicate lift | HIGH |
+| F-004b upstream code fix (surfaces 1-3) | **PLT-023** | upstream — Markdown.tsx rehype-sanitize | HIGH |
+| F-012 cluster upstream | **PLT-024** | upstream — DEG hardening (perm scope + audit + idempotence + empty cleanup) | HIGH |
+| F-013 + F-046 paired upstream | **PLT-025** | upstream — true UPSERT + ACTIVE preserve + pagination + read perm + revive CUSTOM_METADATA_* | HIGH |
+| F-018 cluster upstream | **PLT-026** | upstream — listMostPopular SQL restructure + getOrCreateTagsByName gate + audit harmonisation | HIGH |
+| F-044 cluster upstream (the highest-impact PLT in batch-10) | **PLT-027** | upstream — applyStatus reorder + Flyway backfill migration + status-switch batch cap | HIGH |
+| F-045 + F-191 paired upstream | **PLT-028** | upstream — per-dataset scoping + typed NotFoundException + max(CREATED_AT) + UI validation + AppErrorPage | HIGH |
+| F-047 + F-192 paired upstream | **PLT-029** | upstream — SecurityConstants lines 296+299 one-liners + createEnumValue rename + true-diff + composer warning + state-mgmt ADR | HIGH |
+
+## Rev-13 priority-lift application
+
+Per the rev-13 ontology-corroboration rule: every finding's `findings_produced` back-links to a `feature-flow` clue source in the scanner-feed log (see `clues_consumed` block). The lift fires for ALL 32 findings → **every backlog item lands at CRITICAL** after the merge. Distribution after lift:
+
+- CRITICAL: 8 of 8 backlog items (DOC-186..DOC-193 — all are CRITICAL after merge because each cluster contains at least one HIGH→CRITICAL finding).
+- HIGH / MEDIUM / LOW: 0 — the rev-13 lift moved every batch-10 finding above MEDIUM. Within-cluster severity distribution: 14 originally-HIGH → CRITICAL; 13 originally-MEDIUM → HIGH; 5 originally-LOW → MEDIUM; 0 originally-CRITICAL (none in raw findings, but all 8 merged items are CRITICAL post-lift because the highest finding in each cluster sets the priority).
+
+The dense CRITICAL concentration reflects the P-01 pillar's mix of doc-vs-code contradictions (F-044 SHB-004 — the doc literally promises behaviour the code does not deliver), multi-tenant security leaks (F-045a cross-dataset version-id leak; F-046b catalogue enumeration), and undocumented entire features (F-004 entity description, F-013 + F-046 custom metadata, F-047 per-column annotation). CLAUDE.md's "wrong docs > missing docs" priority bar applies in full to the F-044 headline.
+
+## Dedup write-backs
+
+The scanner-feed log records the following write-backs executed during the scan-run (not this triage):
+
+- F-044 feature-flow `scanner_reviews:` appended (SHB-004 thread now `absorbs_threads.SHB-004` in F-044.yaml).
+- F-013 feature-flow `scanner_reviews:` appended (SHB-009 thread now folded into F-013.yaml).
+- F-047 feature-flow `scanner_reviews:` appended (two SecurityConstants wiring bugs now in scanner_reviews).
+- Deferred to next run (per scanner-feed `write_back_deferrals`): `scanner_reviews:` append to F-003 / F-004 / F-012 / F-018 / F-045 / F-046 / F-191 / F-192 + `corroborated_by_scanner:` append to DOC-GAP-101 (the 9-consumer extension promotion) + DOC-GAP-168 (the side-channel doc gap; DOC-190 closes it) + DOC-GAP-LSN019 (the LSN-019 promotion; DOC-190 closes it).
+
+## Cross-batch coverage status (post-batch-10)
+
+- Mode B `scanned_features`: 20 → 31 of 113 (27%).
+- Pillars with ≥1 F-NNN scanned: all 11 (P-01 is now deeply covered with 12 features across batches 1 + 10).
+- Remaining P-01 features (batch-11 — search / directory / detail-header): 10.
+
+## File-conflict notes for /implement scheduling
+
+- DOC-187 + DOC-189 + DOC-193 all touch SUMMARY.md + data-discovery/README.md + permissions.md — fold into ONE PR (single SUMMARY/README/permissions sweep).
+- DOC-188 + DOC-189 + DOC-190 all touch activity-feed.md (per-feature cross-references) — fold into ONE PR or sequence carefully.
+- DOC-186 + DOC-191 are standalone modifications (no cross-page conflicts beyond the above).
+- DOC-192 touches schema-diff.md only (plus permissions.md cross-link); independent.
+
+**Recommended batches**:
+- **Batch A** (new-page creates + IA sweep): DOC-187 + DOC-189 + DOC-193 — fold into one PR with the SUMMARY/README/permissions updates.
+- **Batch B** (in-place extensions): DOC-186 + DOC-188 + DOC-190 + DOC-191 + DOC-192 — separate per-page PRs OR a single `feature/docs-batch-10-extensions` branch.
+
+**Sequencing dependency**: DOC-181 (Activity Feed page — pending from batch-2) is the upstream cross-link surface for DOC-188/189/190's audit-asymmetry references. Consider shipping DOC-181 before the batch-10 extensions so cross-links target a fresh canonical home.
+
+## Counts (post-triage batch-10)
+
+- backlog DOC: 175 → 183 (+8).
+- upstream issues (PLT drafts): 21 → 29 (+8).
+- total batch-10 artefacts: **16 new files** (8 DOC + 8 PLT) covering 11 features.
+
+# Prior triage logs follow.
 # Last updated 2026-05-27 — `/triage findings/docs-coverage-undocumented-features/2026-05-27-batch-2.md` — Mode B run SR-20260527T1400Z; 9 new DOC + 1 SPC backlog items + 10 PLT issue drafts
 
 `/triage` converted the 28 distinct findings from the second **mode-B (ontology-fed) run** of `docs/coverage/undocumented-features` (scanner-feed log: `lineage/odd-platform/scanner-feed/2026-05-27-SR-20260527T1400Z.yaml`; verification_class: **fully-corroborated**) into 10 atomic backlog items (9 DOC + 1 SPC) and 10 upstream issue drafts. All 28 findings were ACCEPTED — zero rejections as false positives — because the scanner-feed log confirms every finding has a feature-flow clue source (10 F-NNNs consumed this batch: F-002 / F-007 / F-009 / F-021 / F-024 / F-025 / F-026 / F-029 / F-039 / F-040). Cross-batch coverage: pillars P-02, P-03, P-06, P-07, P-11 (batch 1 had not reached these); after batch 2, all 11 pillars have ≥1 F-NNN scanned.

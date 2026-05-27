@@ -14,7 +14,13 @@ Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critica
 
 ## Driver state
 
-Plan YAML: batches 13a-d flipped `status: done`. Next pending batch: **13e** (NEW PAGE admin-promotion landing — 1 large item DOC-237). The next loop iteration will pick it up.
+Plan YAML: batches 13a-e flipped `status: done`. Next pending batch: **13f** (NEW PAGE audit-trail-scope — 1 large item DOC-246). The next loop iteration will pick it up.
+
+## Iteration 5 (batch-13e, 1 NEW page shipped on sweep branch)
+
+| Item | Files | Commit | What |
+|---|---|---|---|
+| **DOC-237** | NEW `enable-security/admin-promotion.md` + SUMMARY + 4 auth-mode pages + enable-security README | `ca23ae2` | Unified ADMIN promotion landing — 10-row matrix covering every auth mode + provider; 8 provider-specific gotchas with cross-links; migration-mode notes for DISABLED→production / LOGIN_FORM→OAUTH2/LDAP / LDAP→OAUTH2 / +S2S; decision guide for choosing a provider on a new deployment. SUMMARY entry, enable-security README cross-link, and back-links from oauth2-oidc / ldap / login-form / disabled-authentication shipped in the same commit per GitBook fallback-cache discipline. |
 
 ## Iteration 4 (batch-13d, 2 items shipped on sweep branch)
 

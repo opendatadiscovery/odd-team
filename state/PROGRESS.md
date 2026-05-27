@@ -1,8 +1,23 @@
-# Last updated 2026-05-28 — `/implement pending DOC items` — **autonomous doc-sweep iteration 25; batch-20e (NEW PAGE active-platform-features/metrics-ingestion.md + landing/SUMMARY/odd-platform.md wiring) shipped on sweep branch — 64 of 88 items shipped, 32 sweep commits — BATCH 20 CLUSTER COMPLETE**
+# Last updated 2026-05-28 — `/implement pending DOC items` — **autonomous doc-sweep iteration 26; batch-21a (Lineage data-objects — Compact/Full toggle + UI-vs-API depth contract + pillar/api-ref cross-refs) shipped on sweep branch — 67 of 88 items shipped, 33 sweep commits**
 
 `/loop`-driven autonomous sweep of the remaining 88 pending DOC items into one long-lived branch in the documentation repo (`feature/docs-pending-sweep-2026-05-27`). The plan YAML at `state/doc-batch-plan-2026-05-27.yaml` is the source of truth — each loop iteration picks the first batch with `status: pending`, fires `/implement` on its items, marks the batch `done`, and ScheduleWakeup-fires the next iteration. Sweep ends when no pending batches remain — at that point the loop pushes the branch and emits the PR-creation URL.
 
 Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critical items spanning 8+ files including 2 NEW pages; split into 13a-f sub-batches in the plan to preserve Quality Bar per iteration. Batch-13a shipped 3 items (DOC-168 ingestion auth extension + DOC-194 dataset-stats cross-dataset write + DOC-228 deployment matrix) all extending `enable-security/README.md` plus cross-link augments on `odd-platform.md` and `s2s.md`. Single commit `9c309d9` on the sweep branch. Gate 11 audience-isolation grep returns zero hits.
+
+## Iteration 26 (batch-21a, 3 items shipped on sweep branch — Lineage data-objects cluster)
+
+Single commit `5775783` across 3 files covers 3 items:
+
+| Item | What |
+|---|---|
+| **DOC-198** | data-objects.md new View-mode toggle (Compact / Full) H2: DEG re-layouts (spinner + animation) vs Hierarchy re-renders (positions static); WARNING on dense-graph overlap; paragraph on Compact mode hiding the DEG-Items drill-in button. Pillar cross-link added on data-lineage.md. |
+| **DOC-167 + DOC-227** | data-objects.md new "Lineage depth — UI control vs API contract" H2 (folded — same root cause): 1-20 dropdown is UI-presentation-only; UI sends d=1 on initial fetch; URL ?d= parsed unclamped; controller @Min(1) but no @Max. Two amplification patterns: click-through depth compounding + URL-edited depth bypassing the cap. Framed as same class as attachment-storage silent-default risk. api-reference/lineage.md lineage_depth row extended with no-maximum framing + cross-link. |
+
+Gate 11 audience-isolation grep returns zero hits.
+
+## Driver state (post-iteration-26)
+
+Plan YAML: batches 13a-f + 14a + 14b + 15a + 15b + 15c + 16 + 17 + 18a + 18b + 18c + 18d + 19a + 19b + 19c + 20a + 20b + 20c + 20d + 20e + 21a flipped `status: done`. **Batch 21 split into 21a (done) + 21b (microservices + DEG API ref) + 21c (my-objects triplet).** Next pending batch: **21b**.
 
 ## Iteration 25 (batch-20e, 1 item shipped on sweep branch — NEW PAGE Metrics Ingestion sub-page)
 

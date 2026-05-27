@@ -14,7 +14,15 @@ Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critica
 
 ## Driver state
 
-Plan YAML: batches 13a-f + 14a + 14b flipped `status: done`. **Batch-14 split complete (14a + 14b shipped, 6 items total).** Next pending batch: **15** (Authorization — owners + permissions + policies + roles + README, 9 items DOC-176, 243, 247, 249, 251, 258, 267, 268, 269). The next loop iteration will pick it up.
+Plan YAML: batches 13a-f + 14a + 14b + 15a flipped `status: done`. **Batch-15 split into 15a/15b/15c.** Next pending batch: **15b** (Authorization permissions + policies caveats — 3 items DOC-243, 249, 258). The next loop iteration will pick it up.
+
+## Iteration 9 (batch-15a, 3 items shipped on sweep branch — owners.md cluster)
+
+| Item | File(s) | Commit | What |
+|---|---|---|---|
+| **DOC-267** | rewrite `enable-security/authorization/owners.md` | `efcf940` | 9-line stub → 110-line Owner-model reference: catalog identity distinct from auth identity, three creation paths, Owner-name accretion + hygiene guidance, Owner roles + supersede precedence, Owners on data entities, Where to next. |
+| **DOC-251** | extends `owners.md` + cross-links `permissions.md` | `efcf940` | "Lifecycle and known caveats" section with 4 caveats: forensic silence (cross-link to audit-trail-scope), GET ungated (verb-vs-permission table), three service-tier side-doors (owner_association_request + dataentities/ownerships + terms/ownerships), empty-roles PUT destruction. Permissions.md OWNER_CREATE/UPDATE/DELETE rows extended with caveat back-links + no-OWNER_READ admonition. |
+| **DOC-247** | folded into `owners.md` Caveat 4 | `efcf940` | DANGER admonition + safe-pattern fetch-modify-write curl example for direct-API consumers performing rename. |
 
 ## Iteration 8 (batch-14b, 3 items shipped on sweep branch — odd-platform.md operational cluster)
 

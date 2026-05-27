@@ -1,8 +1,23 @@
-# Last updated 2026-05-27 — `/implement pending DOC items` — **autonomous doc-sweep started; batch-13 split into 13a-f for tractability; batch-13a (ingestion auth cluster, 3 items) shipped on sweep branch**
+# Last updated 2026-05-28 — `/implement pending DOC items` — **autonomous doc-sweep iteration 15; batch-18b (DQ dashboard cluster, 2 items) shipped on sweep branch — 43 of 88 items shipped, 22 sweep commits**
 
 `/loop`-driven autonomous sweep of the remaining 88 pending DOC items into one long-lived branch in the documentation repo (`feature/docs-pending-sweep-2026-05-27`). The plan YAML at `state/doc-batch-plan-2026-05-27.yaml` is the source of truth — each loop iteration picks the first batch with `status: pending`, fires `/implement` on its items, marks the batch `done`, and ScheduleWakeup-fires the next iteration. Sweep ends when no pending batches remain — at that point the loop pushes the branch and emits the PR-creation URL.
 
 Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critical items spanning 8+ files including 2 NEW pages; split into 13a-f sub-batches in the plan to preserve Quality Bar per iteration. Batch-13a shipped 3 items (DOC-168 ingestion auth extension + DOC-194 dataset-stats cross-dataset write + DOC-228 deployment matrix) all extending `enable-security/README.md` plus cross-link augments on `odd-platform.md` and `s2s.md`. Single commit `9c309d9` on the sweep branch. Gate 11 audience-isolation grep returns zero hits.
+
+## Iteration 15 (batch-18b, 2 items shipped on sweep branch — DQ Dashboard cluster)
+
+Single commit `4aabba3` on `data-quality/dashboard.md` covers 2 items:
+
+| Item | Section | What |
+|---|---|---|
+| **DOC-203** | Three breakdown rings + Six anomaly-class metrics | Reworded "Test Results Breakdown" bullet from "test runs broken down by status" to "tests by their latest run's status"; new warning admonition spelling out the counts-tests-not-runs consequence (test failing 100× shows "1 failed" not "100"); compliance/audit framing; cross-link to test-run-history.md (ships in batch-18d). Alphabetical category-ordering note added to the Six anomaly-class metrics intro. |
+| **DOC-173** | Filtering | New warning admonition: filter state is per-page-mount and lives in the URL query string; browser back / bookmarked / shared URLs preserve filters; top-nav "Data Quality" click goes to bare `/data-quality` and resets the filter row. Internal terms (jotai, Provider, atoms) kept out of the published page; same-pattern cross-feature mention (Owner Associations, DEG lineage canvas, Dataset Structure compare) at the end of the admonition. |
+
+Gate 11 audience-isolation grep returns zero hits.
+
+## Driver state (post-iteration-15)
+
+Plan YAML: batches 13a-f + 14a + 14b + 15a + 15b + 15c + 16 + 17 + 18a + 18b flipped `status: done`. Next pending batch: **18c** (Data Discovery statuses + schema-diff — 2 items DOC-191 + DOC-192).
 
 ## Shipped this iteration (batch-13a → review-ready, awaiting `/review` post-sweep)
 

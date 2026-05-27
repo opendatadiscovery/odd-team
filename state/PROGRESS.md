@@ -1,6 +1,90 @@
-# Last updated 2026-05-27 — `/triage findings/docs-coverage-undocumented-features/2026-05-27.md` — Mode B pilot run SR-20260527T000000Z; 11 new DOC backlog items + 1 PLT issue draft
+# Last updated 2026-05-27 — `/triage findings/docs-coverage-undocumented-features/2026-05-27-batch-2.md` — Mode B run SR-20260527T1400Z; 9 new DOC + 1 SPC backlog items + 10 PLT issue drafts
 
-`/triage` converted the 19 distinct findings from the first **mode-B (ontology-fed) run** of `docs/coverage/undocumented-features` (scanner-feed log: `lineage/odd-platform/scanner-feed/2026-05-27-SR-20260527T000000Z.yaml`; verification_class: **fully-corroborated**) into 11 atomic backlog DOC items + 1 upstream issue draft. All 19 findings were ACCEPTED — zero rejections as false positives — because the scanner-feed log confirms each finding has a feature-flow clue source (10 F-NNNs consumed: F-001 / F-005 / F-008 / F-022 / F-043 / F-088 / F-104 / F-105 / F-146 / F-207).
+`/triage` converted the 28 distinct findings from the second **mode-B (ontology-fed) run** of `docs/coverage/undocumented-features` (scanner-feed log: `lineage/odd-platform/scanner-feed/2026-05-27-SR-20260527T1400Z.yaml`; verification_class: **fully-corroborated**) into 10 atomic backlog items (9 DOC + 1 SPC) and 10 upstream issue drafts. All 28 findings were ACCEPTED — zero rejections as false positives — because the scanner-feed log confirms every finding has a feature-flow clue source (10 F-NNNs consumed this batch: F-002 / F-007 / F-009 / F-021 / F-024 / F-025 / F-026 / F-029 / F-039 / F-040). Cross-batch coverage: pillars P-02, P-03, P-06, P-07, P-11 (batch 1 had not reached these); after batch 2, all 11 pillars have ≥1 F-NNN scanned.
+
+## Findings → backlog mapping (with merge decisions)
+
+Merge rule: one backlog item per affected doc page (one item = one PR-ready atomic commit). Upstream code-side fixes are filed as separate paste-ready PLT drafts so each upstream conversation is bounded.
+
+| Finding(s) | → Item | Affected page(s) / target | Severity (after rev-13 lift) |
+|---|---|---|---|
+| F-002a + F-002b + F-002c (silent term-link auth bypass + auto-link side-channel + cross-namespace pollution) | **DOC-177** | `data-glossary/business-glossary.md` | **CRITICAL** (HIGH → CRITICAL on F-002a; merged carries CRITICAL) |
+| F-024a + F-024b + F-024c (Dictionary tab faceted-search UX + debouncer broken + session-UUID-share) | **DOC-178** (depends_on DOC-177) | same `business-glossary.md` (different section) | HIGH (MED → HIGH; LOW → MED) |
+| F-007a + F-007b + F-007c (AlertManager unauth + forge-and-display + URL XSS + idempotency missing) | **DOC-179** | `active-platform-features/alerting.md` | **CRITICAL** (HIGH → CRITICAL ×2; MED → HIGH) |
+| F-009a (Notification subsystem 7 footguns including Slack mrkdwn injection broadcast) | **DOC-180** | `active-platform-features/notifications.md` | **CRITICAL** (HIGH → CRITICAL) |
+| F-021a + F-021b + F-021c + F-021d (Activity Feed structural scope + 27/20 enum drift + cross-owner read + DISABLED null actor) | **DOC-181** | `active-platform-features/activity-feed.md` | **CRITICAL** (HIGH → CRITICAL on F-021a; corroborates DOC-GAP-192 — write-back shipped this run) |
+| F-026a + F-026b + F-026c + F-026d (Lookup Tables NO_CONTEXT RBAC + cascade orphan + rename breaks + XSS) | **DOC-182** (depends_on DOC-081) | `master-data-management/lookup-tables.md` | **CRITICAL** (HIGH → CRITICAL ×2; MED → HIGH ×2) |
+| F-025a (Query Examples 4-facet — RBAC split + 10 unscoped + XSS + audit silence) | **DOC-183** (depends_on DOC-046) | `data-modelling/query-examples.md` | **CRITICAL** (HIGH → CRITICAL) |
+| F-039a + F-039b (GenAI platform-to-user posture + SSRF on genai.url) | **DOC-184** | `active-platform-features/genai.md` | **CRITICAL** (HIGH → CRITICAL; MED → HIGH) |
+| F-040a + F-040b + F-040c + F-040d (NEW DQ test-run-history page + RUNNING 500 + cross-owner status_reason + NULL end_time ordering) | **DOC-185** (CREATE) | `data-quality/test-run-history.md` + `SUMMARY.md` + `data-quality.md` | **CRITICAL** (HIGH → CRITICAL ×3; MED → HIGH) |
+| F-029a + F-029b + F-029c (openapi.yaml hygiene — securitySchemes / 201-vs-200 / title rename) | **SPC-001** | `opendatadiscovery-specification/openapi.yaml` (+ `components.yaml`) | HIGH (MED → HIGH ×2; LOW → MED) |
+| F-029d (REFACTOR-217 cross-link only — same defect as F-002a) | (no SPC) | cross-link only; spec is correct (plural); fix is at SecurityConstants → PLT-012 | — |
+| F-002a one-line code fix | **PLT-012** | upstream | HIGH security |
+| F-002b + F-002c upstream | **PLT-013** | upstream | MEDIUM |
+| F-007a + F-007b + F-007c upstream epic | **PLT-014** | upstream | HIGH |
+| F-009 Slack mrkdwn injection (security one-liner) | **PLT-015** | upstream | HIGH security |
+| F-009 6 other footguns (operational hardening epic) | **PLT-016** | upstream | MEDIUM |
+| F-024b debouncer fix | **PLT-017** | upstream | MEDIUM UI bug |
+| F-025a 4-facet hardening epic | **PLT-018** | upstream | HIGH |
+| F-026a-d hardening epic | **PLT-019** | upstream | HIGH |
+| F-039a-b security epic | **PLT-020** | upstream | HIGH |
+| F-040b + F-040d (RUNNING 500 + NULL end_time) | **PLT-021** | upstream | HIGH (F-040c is platform-wide RBAC — doc-only) |
+
+## Rev-13 priority-lift application
+
+Per the rev-13 ontology-corroboration rule: every finding's `findings_produced` is back-linked to a `feature-flow` clue source in the scanner-feed log (per `clues_consumed`). The lift fires for ALL 28 findings → every backlog item is **HIGH or CRITICAL**. Distribution after lift:
+
+- CRITICAL: 8 of 10 backlog items (DOC-177, DOC-179, DOC-180, DOC-181, DOC-182, DOC-183, DOC-184, DOC-185)
+- HIGH: 2 of 10 backlog items (DOC-178, SPC-001)
+- MEDIUM / LOW: 0 — the rev-13 lift moved every single batch-2 finding above MEDIUM.
+
+The dense critical concentration in this batch reflects two facts: (a) batch 2's pillar mix is security/auth/posture-heavy (P-06 / P-07 / P-09-adjacent surfaces) where doc-vs-code drift means operators following published guidance get bypassed authorization or stored-XSS surfaces — LSN-001/002 published-mistake threshold; (b) the F-009 notification subsystem alone produced a 7-facet cluster with broadcast-attack potential. CLAUDE.md's "wrong docs > missing docs" priority bar applies in full.
+
+## Dedup write-backs
+
+The scanner-feed log records the following write-backs executed during the scan-run (not this triage):
+
+- `DOC-GAP-192` — corroboration appended at `lineage/odd-platform/doc-gaps/detail/DOC-GAP-192-2026-05-27-scanner-append.md` (F-021a corroborates the schema-rooted scope; F-021b/c/d extend with NEW sibling-findings). Maintainer-side counterpart that ships the doc revision = **DOC-181**.
+- `F-002` feature-flow `scanner_reviews:` appended (pilot demonstration on the spec/code cross-link).
+- Deferrals to next run (per scanner-feed `write_back_deferrals`): `scanner_reviews:` append to F-007 / F-009 / F-021 / F-024 / F-025 / F-026 / F-029 / F-039 / F-040 + `corroborated_by_scanner:` append to DOC-GAP-191 (the activity-feed 27-vs-20 enum drift sibling — DOC-181 closes it).
+
+## File-conflict notes (for `/implement` scheduling)
+
+- **DOC-177 + DOC-178** both touch `data-glossary/business-glossary.md` (different sections — F-002 = Term-link operation; F-024 = Dictionary tab). DOC-178 has `depends_on: DOC-177` to enforce sequencing. One branch / one PR with two commits is the natural shape.
+- **DOC-182 depends_on DOC-081** — the Lookup Tables page was relocated to `master-data-management/lookup-tables.md` by DOC-081 (review-ready). DOC-182 implementation begins only after DOC-081 lands and inline-link rewires settle. If DOC-081 stays blocked, re-target the historical path `docs/lookup-tables.md`.
+- **DOC-183 depends_on DOC-046** — the Query Examples page is at `data-modelling/query-examples.md` (file exists per find; DOC-046 is marked `blocked` in the file registry — see DOC-183 Context for the conditional coordination).
+- **DOC-185 multi-file CREATE pattern** — new sub-page + SUMMARY entry + parent data-quality.md cross-link; ordinary new-feature-page shape.
+- **No cross-repo file conflicts**. SPC-001 is in `opendatadiscovery-specification/`; all DOC items are in `documentation/`; PLT-012..021 are workspace-resident drafts (paste-ready for upstream filing).
+
+## Counts (after this triage)
+
+- DOC backlog items: **176 → 185** (+9 new pending — DOC-177..185).
+- SPC backlog items: **0 → 1** (+1 new pending — SPC-001).
+- PLT issue drafts: **11 → 21** (+10 new draft — PLT-012..021).
+- `pending` (DOC + SPC): +10 — DOC-177..DOC-185 + SPC-001 all start `pending`.
+- All other DOC statuses (`in-progress` / `review-ready` / `done` / `blocked` / `rejected` / `superseded`): unchanged this run.
+
+## Mode-B coverage signal
+
+Scanner-feed log records `verification_class: fully-corroborated` for this scan-run. Per the scanner-ontology-fusion ADR, this run counts toward "feature audited" status for the 10 F-NNNs consumed. After batch 2, coverage is **20 of 113 F-NNNs (18%)**. Remaining 93 F-NNNs queued for ~9 more batches of similar size. All 11 pillars now have ≥1 F-NNN scanned (batch 2 picked up P-02, P-03, P-06, P-07-extension, P-11 which batch 1 missed).
+
+## Substrate-coverage gaps surfaced for next /enrich pass
+
+(Carried forward from batch 1, plus batch-2 additions per scanner-feed log)
+
+- `springdoc:` YAML namespace still has no F-NNN — mint candidate during next /enrich pass.
+- `spring.codec.max-in-memory-size` already a 2026-05-08 F-056 finding but not graduated to F-NNN.
+- `session.provider` (`SessionConfiguration`) has F-119 / F-120 / F-122 references in catalogue but is not deeply enriched — operator-facing knob with caveat-class implications.
+- `management.*` Spring Boot Actuator namespace — F-054 finding from 2026-05-08 axis-pass (env exposure security caveat); no F-NNN.
+
+## Hand-off
+
+- **Next `/implement` candidate**: any of the 8 CRITICAL items. Recommend fast-tracking **DOC-179** (AlertManager forge-and-display compound + Slack-broadcast compound via PLT-015) and **DOC-181** (Activity Feed structural scope corroborating DOC-GAP-192 — write-back already shipped this scan-run). DOC-185 (NEW DQ test-run-history page) is the largest item by effort but reader-facing critical.
+- **Upstream PLTs ready to file** (paste-ready, requires deliberate human action per `issues/README.md`): all 10 of PLT-012..021. Recommend filing PLT-012 first (one-line fix, highest urgency) and PLT-015 second (Slack injection — security-critical, low risk-of-regression).
+- **Editorial audit** is mandatory on `/review`, not on `/triage`. No editorial findings surfaced here; the triage's job is conversion-of-findings.
+- **Doc-gap-finder reducer**: scanner-feed `methodology_observations` note recommends a `/doc-gap-check` pass after batch 3 or 4 to consolidate the new DOC-NNN candidates — defer for now.
+
+---
 
 ## Findings → backlog mapping (with merge decisions)
 

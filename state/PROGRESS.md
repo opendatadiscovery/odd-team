@@ -1,8 +1,23 @@
-# Last updated 2026-05-28 — `/implement pending DOC items` — **autonomous doc-sweep iteration 15; batch-18b (DQ dashboard cluster, 2 items) shipped on sweep branch — 43 of 88 items shipped, 22 sweep commits**
+# Last updated 2026-05-28 — `/implement pending DOC items` — **autonomous doc-sweep iteration 16; batch-18c (Data Discovery statuses + schema-diff, 2 critical items) shipped on sweep branch — 45 of 88 items shipped, 23 sweep commits**
 
 `/loop`-driven autonomous sweep of the remaining 88 pending DOC items into one long-lived branch in the documentation repo (`feature/docs-pending-sweep-2026-05-27`). The plan YAML at `state/doc-batch-plan-2026-05-27.yaml` is the source of truth — each loop iteration picks the first batch with `status: pending`, fires `/implement` on its items, marks the batch `done`, and ScheduleWakeup-fires the next iteration. Sweep ends when no pending batches remain — at that point the loop pushes the branch and emits the PR-creation URL.
 
 Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critical items spanning 8+ files including 2 NEW pages; split into 13a-f sub-batches in the plan to preserve Quality Bar per iteration. Batch-13a shipped 3 items (DOC-168 ingestion auth extension + DOC-194 dataset-stats cross-dataset write + DOC-228 deployment matrix) all extending `enable-security/README.md` plus cross-link augments on `odd-platform.md` and `s2s.md`. Single commit `9c309d9` on the sweep branch. Gate 11 audience-isolation grep returns zero hits.
+
+## Iteration 16 (batch-18c, 2 CRITICAL items shipped on sweep branch — Data Discovery statuses + schema-diff)
+
+Single commit `a5f7e5a` covers 2 items across 4 files:
+
+| Item | Files | What |
+|---|---|---|
+| **DOC-191** | `data-discovery/statuses.md` + `configuration-and-deployment/odd-platform.md` cross-ref | DANGER admonition: 30-day soft-delete TTL silently does not fire — mapper-side guard always false, status_updated_at never written, housekeeping NULL-vs-cutoff comparison never matches; DELETED entities + ~25 cascading child tables persist forever; compliance / storage planning / audit consequences spelled out; SQL manual-cleanup recipe using status_switch_time as the proxy timestamp (with DataEntityStatusDto id mapping table). WARNING admonition: scheduled DRAFT/DEPRECATED → DELETED auto-flip has no per-tick LIMIT (10-min cadence × 9-min ShedLock × unbounded SELECT); bulk operation triggers single transaction that can exceed lock window; stagger status_switch_time mitigation. Cross-ref on odd-platform.md housekeeping bullet noting the key has no effect today. |
+| **DOC-192** | `data-discovery/schema-diff.md` + `enable-security/authorization/permissions.md` cross-ref | DANGER admonition: dataset-version reads have NO per-dataset scoping — repository query filters on dataset_version.id only; controller {data_entity_id} consumed and dropped by service; any authenticated caller enumerating version_ids reads any dataset's schema; under DISABLED anonymously; UI compare viewer passes URL query string params straight to fetch hook without verifying they belong to the open dataset → pasted URL with foreign version-ids renders semantically nonsense diff. WARNING admonition: error-model asymmetry (500 missing-id vs 400 identical-ids; AppErrorPage swallows both); SRE-debugging consequences. INFO admonition: "Latest version" means max(VERSION) not max(CREATED_AT); collector replay diverges. Cross-ref new "Surfaces without per-resource permission gating today" subsection on permissions.md enumerating /api/datasets/*/structure* endpoints. |
+
+Gate 11 audience-isolation grep returns zero hits. Both items were "critical" priority — the SHB-004 mapper bug + the cross-dataset version-id leak are the canonical "code does X, doc says Y, operator suffers" class.
+
+## Driver state (post-iteration-16)
+
+Plan YAML: batches 13a-f + 14a + 14b + 15a + 15b + 15c + 16 + 17 + 18a + 18b + 18c flipped `status: done`. Next pending batch: **18d** (NEW PAGE — DQ Test Run History sub-page, DOC-185).
 
 ## Iteration 15 (batch-18b, 2 items shipped on sweep branch — DQ Dashboard cluster)
 

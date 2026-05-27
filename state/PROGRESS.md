@@ -14,7 +14,15 @@ Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critica
 
 ## Driver state
 
-Plan YAML: batches 13a-f + 14a + 14b + 15a flipped `status: done`. **Batch-15 split into 15a/15b/15c.** Next pending batch: **15b** (Authorization permissions + policies caveats — 3 items DOC-243, 249, 258). The next loop iteration will pick it up.
+Plan YAML: batches 13a-f + 14a + 14b + 15a + 15b flipped `status: done`. Next pending batch: **15c** (Authorization README + roles small fixes — 3 items DOC-176, 268, 269). The next loop iteration will pick it up.
+
+## Iteration 10 (batch-15b, 3 items shipped on sweep branch — permissions + policies caveats)
+
+| Item | File | Commit | What |
+|---|---|---|---|
+| **DOC-243** | `permissions.md` | `7cd3737` | New H2 "Permission read surface (two-endpoint orchestration)" — table comparing `/api/resource/{type}/{id}/permissions` vs `/api/identity/whoami → Identity.permissions`; warning admonition on PermissionResourceType.MANAGEMENT spec-vs-runtime drift (HTTP 400 USR001); five-categories-vs-four-resource-types reconciliation. |
+| **DOC-258** | `policies.md` | `7cd3737` | Cross-links on `dataEntity:owner:title` + `term:owner:title` condition rows; new H2 "Title vocabulary caveat for :owner:title conditions" with case-sensitivity warning + no-Management-UI-for-Titles info admonition. |
+| **DOC-249** | `policies.md` | `7cd3737` | New H2 "Performance characteristics" — 2 JOIN roundtrips per authenticated request, R2DBC pool sizing heuristic (4-5 concurrent JOINs per peak req/s + headroom), no-cache-knob caveat. |
 
 ## Iteration 9 (batch-15a, 3 items shipped on sweep branch — owners.md cluster)
 

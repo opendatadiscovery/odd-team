@@ -38,3 +38,20 @@ Sources:
 ```
 
 Legacy `Consumer-read:` footers on older commits remain valid; new commits use the richer `Sources:` form. The full SoT table for each claim class lives in `pillars/documentation/gates.md` Gate 9.
+
+## Audience isolation — published docs are operator-facing, not workspace-internal *(2026-05-27)*
+
+**Every sentence you write into `../documentation/docs/**/*.md` is read by an ODD operator on `docs.opendatadiscovery.org` who has never opened this workspace.** They have not read `pillars/`, `playbooks/`, `retrospectives/`, `adrs/`, or any methodology artefact. They do not know what "Cornerstone 5", "Gate 7", "LSN-023", "shoebox", or "feature-flow-builder" means — and they shouldn't have to.
+
+The full rule + banned-term registry + exception list + mechanical check command lives at **`pillars/documentation/gates.md` Gate 11 (Audience isolation)**. Before committing any change to a published doc page:
+
+1. Run the Gate 11 grep command on your staged diff:
+   ```bash
+   git diff --staged --name-only -- '../documentation/docs/**/*.md' | xargs -r grep -nE 'Cornerstone [0-9]+|Gate [0-9]+|\bLSN-[0-9]+\b|\bSHB-[0-9]+\b|\bREFACTOR-[0-9]+\b|feature-flow-builder|feature-reflector|doc-gap-finder|concept-merger|odd-sme|Stress Protocol|Quality Bar|Pre-authoring stance'
+   ```
+2. For each hit, **rewrite in operator language** (name the underlying user-observable concept directly), **delete** (often the right call — internal references frequently signal the maintainer talking to themselves through the doc), or **move** to an internal artefact.
+3. Re-grep until zero hits.
+
+Workspace-internal docs (this file, `gates.md`, `cornerstones.md`, any `pillars/`, `playbooks/`, `retrospectives/`, `adrs/`, `state/`, `backlog/`, `issues/`, `lineage/`, `scanners/` file, plus `APPROACH.md` + `CLAUDE.md`) are **exempt** — they speak the methodology's own vocabulary freely. Only the published doc tree is subject to Gate 11.
+
+Case-law: `retrospectives/LSN-026-workspace-vocabulary-leaked-to-published-doc.md` — the 2026-05-27 incident where "Cornerstone 5 holds" shipped to `docs.opendatadiscovery.org/features/data-discovery/tagging` despite the editorial-read stance being in place. The fix: mechanical complement to the stance.

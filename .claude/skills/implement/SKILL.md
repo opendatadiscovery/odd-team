@@ -49,7 +49,15 @@ Repeat per item.
 
 5. **Follow-up auto-logging** → run `playbooks/follow-up-on-disk.md` for every out-of-scope discovery. Grep the backlog first; classify scope (trivial-fold / small-batch-item / larger-deferred / upstream-issue). Never write "noted as follow-up" without the file on disk.
 
-6. **Pillar authoring rules** — for `target_repo: documentation`, hold `pillars/documentation/authoring.md` (no GitBook `"mention"` links; ship page + SUMMARY + index together; in-page TOC sync; `Sources:` footer format).
+6. **Pillar authoring rules** — for `target_repo: documentation`, hold `pillars/documentation/authoring.md` (no GitBook `"mention"` links; ship page + SUMMARY + index together; in-page TOC sync; `Sources:` footer format; **Gate 11 audience isolation** — the mechanical grep below).
+
+6.5. **Gate 11 audience-isolation grep** *(2026-05-27; mandatory for `target_repo: documentation`)* — before committing any change to `../documentation/docs/**/*.md`, run the banned-term grep on your staged diff. The full rule + registry + exceptions live in `pillars/documentation/gates.md` Gate 11.
+   ```bash
+   git diff --staged --name-only -- '../documentation/docs' \
+     | grep -E '\.md$' \
+     | xargs -r grep -nE 'Cornerstone [0-9]+|Gate [0-9]+|\bLSN-[0-9]+\b|\bSHB-[0-9]+\b|\bREFACTOR-[0-9]+\b|\bTEST-GAP-[0-9]+\b|\bDOC-GAP-[0-9]+\b|\bADR-CANDIDATE-[0-9]+\b|feature-flow-builder|feature-reflector|doc-gap-finder|concept-merger|odd-sme|adr-archaeologist|methodology-reviewer|graph-retriever|file-analyser|probe-runner|domain-extractor|Stress Protocol|Quality Bar|Pre-authoring stance|claim-inventory|consumer-read|unset-parameter audit'
+   ```
+   For every hit: rewrite in operator language (name the underlying user-observable concept directly) OR delete (often the right call — internal references frequently signal the maintainer talking to themselves through the doc) OR move to an internal artefact. Re-grep until zero hits. **Do not commit a doc change with any banned-term hit.** Case-law: `retrospectives/LSN-026`.
 
 7. **Verify locally** — every acceptance criterion met; every Quality Bar gate has citable evidence; outbound URLs verified per `playbooks/claim-inventory.md` step 3; tests pass.
 

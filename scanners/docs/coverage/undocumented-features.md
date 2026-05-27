@@ -6,6 +6,35 @@ estimated_items: 10-30
 chunking: Can likely fit in one session (enumerate features from routes + API)
 depends_on: []
 priority: medium
+ontology_feed:
+  # Rev-13 pilot opt-in — mode B (ontology-fed).
+  # Rationale: this scanner already enumerates from code (5 axes per "Method" below);
+  # ontology's feature-flows IS an enumeration. Mode B replaces the per-axis re-grep
+  # with iteration over the ontology's catalog of named features. The cross-reference
+  # half (SUMMARY.md presence) stays unchanged.
+  enabled: true
+  substrate_repo: odd-platform
+  primary_investigation_target: feature-flows   # per Rule 21 (literal value)
+  feature_scope_filter:
+    target_repo_overlap: documentation+odd-platform  # any feature whose pillar maps to the docs IA
+  clue_sources:                                 # ordered = consumption order; feature-flows ALWAYS first
+    - feature-flows/detail/F-*.yaml             # PRIMARY (per Rule 21)
+    - lineage/odd-platform/concepts/index.yaml  # canonical vocabulary (non-canonical-term detection)
+    - lineage/odd-platform/shoebox/detail/SHB-*.md  # open hypotheses to verify opportunistically
+    - lineage/odd-platform/doc-gaps/            # DEDUP/PRIORITY HINT ONLY — never coverage signal
+  verification_requirements:
+    - "every clue cited as Source: Ontology[F-NNN] must be independently verified against file:line"
+    - "no scanner finding may repeat a chain[].evidence string verbatim — re-state from the re-opened file"
+    - "per-feature pseudo-protocol per APPROACH.md §20.3 — read F-NNN end-to-end, derive expected doc, run ladder, emit findings, write back"
+  consultation_budget:
+    graph-retriever: 5
+    feature-reflector: 3
+    odd-sme: 2
+  write_back:
+    enabled: true
+    targets: [feature-flows, sidecars, doc-gaps, shoebox]
+  staleness_threshold_commits: 50
+  staleness_action: warn
 ---
 
 ## Purpose
@@ -14,7 +43,11 @@ Identify platform features that have no corresponding documentation page or sect
 
 ## Method
 
-Enumeration must run **all** of the following axes. Route + controller + OpenAPI axes alone are blind to cross-cutting capabilities (the i18n-class miss; see `retrospectives/LSN-013-research-punted-on-substrate-draft.md` and `adrs/drafts/code-lineage-substrate.md`):
+**Mode B (ontology-fed) is the rev-13 default for this scanner** (per the `ontology_feed:` frontmatter). The mode-B per-feature pseudo-protocol (APPROACH.md §20.3) replaces the per-axis enumeration: iterate `lineage/odd-platform/feature-flows/detail/F-*.yaml`, derive expected doc path per F-NNN, fetch live URL, emit findings, write-back annotation. The 5 enumeration axes below are retained as the **fallback / coverage-corroboration step**: any feature surface enumerated below that does NOT have a corresponding F-NNN in the ontology IS itself a substrate-coverage gap (per Rule 20 + LSN-025) and gets logged as `coverage_gap_for_scan:` in the scanner-feed.
+
+The 5 axes (kept for mode-A standalone runs AND mode-B coverage cross-check):
+
+Route + controller + OpenAPI axes alone are blind to cross-cutting capabilities (the i18n-class miss; see `retrospectives/LSN-013-research-punted-on-substrate-draft.md` and `adrs/drafts/code-lineage-substrate.md`):
 
 1. **UI routes axis** — `odd-platform-ui/src/routes/` (each route = potential feature).
 2. **Controllers / OpenAPI axis** — REST controllers + top-level OpenAPI endpoint groups in `odd-platform-specification/openapi.yaml`.

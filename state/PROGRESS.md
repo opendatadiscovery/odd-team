@@ -14,7 +14,15 @@ Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critica
 
 ## Driver state
 
-Plan YAML: batches 13a-f flipped `status: done`. **Original batch-13 SPLIT COMPLETE — all 12 critical security items shipped across 6 sub-batches.** Next pending batch: **14** (Platform configuration on odd-platform.md — 6 items DOC-197, 241, 242, 250, 257, 259). The next loop iteration will pick it up.
+Plan YAML: batches 13a-f + 14a flipped `status: done`. **Batch-14 split into 14a + 14b for tractability.** Next pending batch: **14b** (Platform config operational cluster — 3 items DOC-250, 257, 259 on odd-platform.md). The next loop iteration will pick it up.
+
+## Iteration 7 (batch-14a, 3 items shipped on sweep branch — odd-platform.md security cluster)
+
+| Item | Section | Commit | What |
+|---|---|---|---|
+| **DOC-242** | new H3 under existing "Security" H2 + datasource bullet extension | `fe9a19f` | "Management endpoint exposure and credential hygiene" — anonymous `/actuator/**` reach + mitigation table (separate management port / firewall / restricted exposure); shipped DB password well-known default; Lombok `@Data` credential leak in `toString()`. |
+| **DOC-241** | IN_MEMORY caveats extension + 2 new H3s under "Select session provider" | `c0f1104` | IN_MEMORY collector-id NPE symptom on multi-replica; "Cookie attributes (Secure, SameSite, HttpOnly)" with nginx proxy-cookie-path example; "Java-serialised session attributes under INTERNAL_POSTGRESQL" with defence-in-depth recommendations. |
+| **DOC-197** | Data Collaboration section: manifest scope drop + new H3 "Known limitations" | `e7ccd33` | Dropped unused `incoming-webhook` bot scope from manifest + caveat sentence; at-least-once delivery dedup-absence caveat (duplicate Discussions messages); signature-verification absence caveat with operator-side mitigation. |
 
 ## Iteration 6 (batch-13f, 1 NEW page shipped on sweep branch)
 

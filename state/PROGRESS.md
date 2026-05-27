@@ -14,7 +14,11 @@ Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critica
 
 ## Driver state
 
-Plan YAML: batches 13a-f + 14a + 14b + 15a + 15b + 15c + 16 flipped `status: done`. Next pending batch: **17** (Business Glossary cluster — 5 items DOC-177, 178, 199, 230, 233). The next loop iteration will pick it up.
+Plan YAML: batches 13a-f + 14a + 14b + 15a + 15b + 15c + 16 + 17 flipped `status: done`. Next pending batch: **18** (Data Quality cluster — 8 items DOC-169, 170, 173, 185, 191, 192, 203, 205). The next loop iteration will pick it up.
+
+## Iteration 13 (batch-17, 5 items shipped on sweep branch — Business Glossary cluster, 13 caveats)
+
+Single commit `b8df76a` on business-glossary.md covers 5 items consolidated into a 13-caveat "Known operator caveats" H2 organised into 4 sub-H3 groups (Security and RBAC bypasses; Visibility and cross-tab UX; Correctness and UX defects; Performance characteristics). Plus in-place fixes to the Dictionary-tab framing (faceted-search session UI) and the namespace-scoping prose (cross-namespace enumeration). Gate 11 zero hits.
 
 ## Iteration 12 (batch-16, 7 items shipped on sweep branch — Catalog Overview + Entity Detail)
 

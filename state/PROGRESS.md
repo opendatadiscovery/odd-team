@@ -1,8 +1,22 @@
-# Last updated 2026-05-28 — `/implement pending DOC items` — **autonomous doc-sweep iteration 22; batch-20b (Activity Feed cluster — structural scope + My Objects setup + User filter correction + per-entity tab + cross-channel posture) shipped on sweep branch — 59 of 88 items shipped, 29 sweep commits**
+# Last updated 2026-05-28 — `/implement pending DOC items` — **autonomous doc-sweep iteration 23; batch-20c (Notifications — 7 operational footguns on the WAL-driven dispatcher) shipped on sweep branch — 60 of 88 items shipped, 30 sweep commits**
 
 `/loop`-driven autonomous sweep of the remaining 88 pending DOC items into one long-lived branch in the documentation repo (`feature/docs-pending-sweep-2026-05-27`). The plan YAML at `state/doc-batch-plan-2026-05-27.yaml` is the source of truth — each loop iteration picks the first batch with `status: pending`, fires `/implement` on its items, marks the batch `done`, and ScheduleWakeup-fires the next iteration. Sweep ends when no pending batches remain — at that point the loop pushes the branch and emits the PR-creation URL.
 
 Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critical items spanning 8+ files including 2 NEW pages; split into 13a-f sub-batches in the plan to preserve Quality Bar per iteration. Batch-13a shipped 3 items (DOC-168 ingestion auth extension + DOC-194 dataset-stats cross-dataset write + DOC-228 deployment matrix) all extending `enable-security/README.md` plus cross-link augments on `odd-platform.md` and `s2s.md`. Single commit `9c309d9` on the sweep branch. Gate 11 audience-isolation grep returns zero hits.
+
+## Iteration 23 (batch-20c, 1 CRITICAL item shipped on sweep branch — Notifications 7-footgun consolidation)
+
+Single commit `88fdc65` on `active-platform-features/notifications.md` ships a new "Known operational caveats" section with 7 admonitions:
+
+| Item | What |
+|---|---|
+| **DOC-180** | 7 admonitions: DANGER on poison-message WAL replay (NotificationSubscriber has no try/catch around messageProcessor.process; LSN advance only after normal return; persistent-bad row pins the slot forever; mitigate via pg_replication_slots lag monitoring); WARNING on cross-channel abort (EmailNotificationSender wraps SMTP failures as RuntimeException bypassing dispatcher's typed catch; iteration-order-dependent silent skip of Slack + webhook); INFO on empty-senders DB cost (translator runs recursive downstream-lineage walk on every WAL event even with zero channels configured); WARNING on no-idempotency / no-DLQ / no-audit (void return from per-sender send(); no partial-failure record); WARNING on PII passthrough (owner list + downstream lineage flow verbatim to every channel); DANGER on Slack mrkdwn injection (alert chunk descriptions embedded verbatim into markdownText; <!channel>/<!here>/fake-link payloads render; compound with AlertManager unauthenticated webhook = unauthenticated cross-tenant Slack-broadcast surface — cross-link to batch-20a's alerting caveat); WARNING on webhook unsigned (plain POST, no Authorization / no HMAC; receivers cannot verify origin). |
+
+Gate 11 audience-isolation grep returns zero hits.
+
+## Driver state (post-iteration-23)
+
+Plan YAML: batches 13a-f + 14a + 14b + 15a + 15b + 15c + 16 + 17 + 18a + 18b + 18c + 18d + 19a + 19b + 19c + 20a + 20b + 20c flipped `status: done`. Next pending batch: **20d** (Data Collaboration + GenAI — DOC-161 + DOC-184 + DOC-204).
 
 ## Iteration 22 (batch-20b, 2 items shipped on sweep branch — Activity Feed cluster: structural scope + rewrites)
 

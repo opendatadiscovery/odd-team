@@ -1,0 +1,246 @@
+feature_id: F-096
+feature_name: |-
+  Ingestion Batch Atomicity & Error Contract — `POST /ingestion/entities`
+  returns Void on a single-transaction-per-batch pipeline with no partial
+  success, no per-item error report, no DLQ
+pillar_id: P-10
+pillar_anchored_id: P-10:F-004
+pillar_anchored_feature_name: |-
+  Ingestion batch atomicity contract surfaced to custom-collector authors —
+  Mono<ResponseEntity<Void>> on success or 5xx-with-generic-body on any
+  failure; one bad entity rolls back all entities + every downstream effect
+seeded_from: SHB-127
+seeded_at: 2026-05-26
+batch_origin: 'batch-shoebox-graduation 2026-05-26 — slice G'
+
+discovered_from_entry_point: |-
+  rest:POST /ingestion/entities → IngestionController.postDataEntityList
+  → IngestionServiceImpl.ingest (@ReactiveTransactional)
+
+primary_subject:
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/ingestion/IngestionServiceImpl.java"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/ingestion/IngestionController.java"
+  - "odd-platform-specification/specification/odd_api.yaml"
+  - "odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/BaseIngestionTest.java"
+
+contributing_nodes:
+  - "controller:IngestionController#postDataEntityList"
+  - "service:IngestionServiceImpl#ingest"
+  - "test:BaseIngestionTest"
+  - "spec:openapi:postDataEntityList"
+
+chain:
+  - hop: 1
+    node: "controller:IngestionController#postDataEntityList"
+    sidecar: unresolved
+    evidence: |-
+      odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/ingestion/IngestionController.java:38-45
+      — returns `Mono<ResponseEntity<Void>>`. Void body shape: a 5xx
+      carries only the default Spring reactive error-handler payload.
+    multiplicity_per_trigger: 1
+  - hop: 2
+    node: "service:IngestionServiceImpl#ingest"
+    sidecar: unresolved
+    evidence: |-
+      odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/ingestion/IngestionServiceImpl.java:65-74
+      — @ReactiveTransactional. Entire chain (datasource lookup → entity
+      upsert → 14-processor chain → OTLP export) in ONE Postgres transaction;
+      one failure anywhere rolls back EVERYTHING. line 86 uses
+      `Collectors.toMap(DataEntityIngestionDto::getOddrn, identity())` with
+      default throwing merger — duplicate ODDRN in batch throws
+      IllegalStateException → 5xx.
+    multiplicity_per_trigger: 1
+  - hop: 3
+    node: "data_source row-lock"
+    sidecar: unresolved
+    evidence: |-
+      odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/ingestion/IngestionServiceImpl.java:68
+      — getIdByOddrnForUpdate holds the data_source row lock for the FULL
+      pipeline duration. Concurrent ingestions targeting the SAME datasource
+      serialise on the lock; loser may timeout → 5xx-no-detail.
+    multiplicity_per_trigger: 1
+
+terminal_side_effect:
+  side_effect_class: header-set
+  description: |-
+    HTTP response shape to the collector — `Mono<ResponseEntity<Void>>` on
+    success (no body); generic Spring 5xx error envelope on failure
+    (`{"status":500,"error":"Internal Server Error","path":"/ingestion/entities"}`)
+    with no per-item failure breakdown. A 5xx tells the collector author
+    NOTHING about WHICH item failed; only the application log on the platform
+    side carries the discriminator.
+  evidence: |-
+    odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/ingestion/IngestionController.java:38-45
+    (Void body) + odd-platform-specification/specification/odd_api.yaml:23-25
+    (spec declares 201 Created, impl returns 200 — drift).
+
+observed_vs_expected:
+  facets:
+    - facet: all-or-nothing transaction, no partial-success contract
+      observed: |-
+        @ReactiveTransactional on `ingest(...)` wraps datasource lookup +
+        14-processor chain + OTLP export in ONE transaction. One failure
+        anywhere rolls back EVERY entity in the batch + every downstream
+        side-effect (FTS recompute, alert raising, OTLP export). The HTTP
+        response is binary: 200 OK or 5xx. No 207 Multi-Status, no per-entity
+        error payload, no DLQ, no async-accept (202) mode, no idempotency key.
+      expected: |-
+        Either (a) documented all-or-nothing contract at the OpenAPI spec
+        AND on the live S2S docs page so collector authors don't write
+        retry-with-backoff logic blindly, OR (b) per-entity transaction
+        isolation with partial-success response shape (207 Multi-Status
+        with per-item status array).
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/ingestion/IngestionServiceImpl.java:65-74"
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/ingestion/IngestionController.java:38-45"
+      drift_class: batch_atomicity_without_signal
+      provenance: |-
+        STATIC — SHB-127 evidence; also surfaces as F-008's existing
+        `batch_atomicity_without_signal` facet. F-096 elevates the
+        OPERATOR-FACING SYMPTOM (custom-collector author has no
+        machine-readable error shape) as a standalone feature, distinct
+        from F-008's destruction-narrative.
+    - facet: spec-vs-impl response code drift (201 vs 200)
+      observed: |-
+        OpenAPI spec at odd_api.yaml:23-25 declares 201 Created as the
+        success response. Implementation returns 200 OK. Collector author
+        following the spec expects 201; receives 200; may treat as anomaly
+        and re-attempt.
+      expected: |-
+        Either bring impl to 201 (preferred — body Void anyway, so safe),
+        OR update spec to 200. ADR-level decision.
+      evidence:
+        - "odd-platform-specification/specification/odd_api.yaml:23-25"
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/ingestion/IngestionController.java:38-45"
+      drift_class: spec_says_201_impl_returns_200
+      provenance: STATIC — SHB-127 + cross-link to existing postDataEntityList sidecar.
+    - facet: duplicate-ODDRN-in-batch throws 500 not 400
+      observed: |-
+        Line 86 uses `Collectors.toMap(DataEntityIngestionDto::getOddrn, identity())`
+        with the default throwing merger; a payload containing two items
+        sharing the same ODDRN throws IllegalStateException: Duplicate key →
+        5xx. The platform's `AbstractIngestionFilter.filter` only catches
+        AccessDeniedException; this exception surfaces as a generic 500.
+        Collector author cannot distinguish "you sent me duplicates" from
+        "platform crashed".
+      expected: |-
+        Change the merger to throw BadUserRequestException
+        ("Duplicate ODDRN in batch: {oddrn}") → caller sees 400 with a
+        precise diagnostic.
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/ingestion/IngestionServiceImpl.java:83-86"
+      drift_class: client_error_surfaces_as_5xx
+      provenance: STATIC — SHB-127 evidence.
+    - facet: unknown-datasource also 5xx
+      observed: |-
+        getIdByOddrnForUpdate raises NotFoundException for an unknown
+        `data_source_oddrn`; the exception is not caught by an
+        @ExceptionHandler on the ingestion path, surfaces as 5xx instead
+        of 404. Collector author treats configuration error
+        indistinguishably from transient platform crash.
+      expected: |-
+        Add @ExceptionHandler(NotFoundException) on the ingestion controller
+        returning 404 with a precise diagnostic.
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/ingestion/IngestionServiceImpl.java:68"
+      drift_class: client_error_surfaces_as_5xx
+      provenance: STATIC — SHB-127 evidence.
+    - facet: no 413 contract for oversized payload
+      observed: |-
+        Oversized payload surfaces as 5xx (`DataBufferLimitException`)
+        instead of 413 Payload Too Large. Collector author may not realise
+        they need to split.
+      expected: |-
+        Catch DataBufferLimitException at the controller advice level;
+        return 413 Payload Too Large with the configured limit value.
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/ingestion/IngestionServiceImpl.java:53"
+      drift_class: client_error_surfaces_as_5xx
+      provenance: STATIC — SHB-127 evidence.
+    - facet: zero service-tier logging on destructive paths
+      observed: |-
+        @Slf4j annotation at line 53; verified ZERO `log.*` call in the file.
+        Even at DEBUG level, the operator has no service-tier diagnostic on
+        the destruction paths or on the rollback paths. SRE looking at
+        collector logs sees only "HTTP 500"; needs platform-side access to
+        the application log to find the actual exception.
+      expected: |-
+        Add structured logging at WARN level on every rollback path with
+        the batch's tag (e.g. collector-id + dataset_oddrn + entity count).
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/ingestion/IngestionServiceImpl.java:53"
+      drift_class: silent_failure_no_log
+      provenance: STATIC — SHB-127 + cross-link to existing IngestionService sidecar known_security_gaps.
+    - facet: serialisation-under-data_source-row-lock + retry-storm shape
+      observed: |-
+        getIdByOddrnForUpdate holds the data_source row lock for the FULL
+        pipeline duration. Concurrent ingestions targeting the SAME
+        datasource serialise on the lock; the loser may timeout → 5xx-no-detail.
+        A collector that emits a problematic payload retries on 5xx, hits
+        the same crash, retries again — meanwhile the row lock blocks other
+        concurrent collectors. No backoff signal, no DLQ to drain the bad
+        payload into.
+      expected: |-
+        Either (a) shorten the row-lock scope to the datasource-resolve
+        step only, OR (b) ship a 429 Too Many Requests with Retry-After
+        when the row lock is contended, OR (c) document the contention
+        contract on the S2S live docs page.
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/ingestion/IngestionServiceImpl.java:68"
+      drift_class: serialisation_under_pessimistic_lock_no_signal
+      provenance: STATIC — SHB-127 evidence.
+
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+      - "Collectors.toMap with duplicate ODDRN — assert BadUserRequestException not IllegalStateException"
+      - "Unknown data_source_oddrn — assert NotFoundException surface mapped to 404"
+  integration:
+    state: PARTIAL
+    covered:
+      - "Happy-path 200 OK"
+    uncovered:
+      - "5xx-on-bad-batch: single bad entity in 100-entity payload — confirm ALL rolled back"
+      - "Concurrent ingestion against the same datasource — measure serialisation latency, retry storm"
+      - "Oversized payload — confirm 5xx (current contract) OR 413 (proposed contract)"
+      - "Spec-vs-impl response code: assert 201 (spec) OR 200 (impl)"
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+      - "data_source row-lock contention under N concurrent ingestions: latency p99, timeout rate"
+      - "Retry-storm collapse: collector retries × 5 with no backoff hits the same crash N times"
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+      - "Information-leak via 5xx body — generic Spring envelope reveals path; intentional? document or sanitize"
+
+control_summary: |-
+  1 of 4 cells PARTIAL (integration happy-path only; the 5xx-on-bad-batch
+  contract is invisible to the test suite). Evidence is mature: 6 file:line
+  refs spanning service / controller / test / spec. The OPERATOR-VISIBLE
+  CONTRACT (response shape, retry semantics, DLQ absence, per-item errors
+  absence) is distinct from F-008's destruction-narrative — this is a
+  standalone feature.
+
+related_refactoring_scopes: []
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+  - "Ingestion (External Webhook)"
+  - "Single-Transaction-Per-Batch Ingestion"
+
+related_features:
+  - F-008  # Same single-transaction pipeline; F-008 covers the destruction angle, F-096 covers the error-contract angle
+  - F-094  # Ingestion auth coverage matrix — F-094's unauthenticated endpoints surface ZERO-INFO 5xx the same way
+
+related_retrospectives:
+  - LSN-017
+  - LSN-002  # silent SDK default — class signature of "spec says X, impl does Y"
+
+status: active
+ui_unverified: false
+maintainer_curated: false

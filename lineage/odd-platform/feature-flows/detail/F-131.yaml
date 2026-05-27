@@ -1,0 +1,182 @@
+feature_id: F-131
+feature_name: |-
+  Query Example Authoring Dialog — Create + Edit form-modal with embedded
+  Markdown editor for `query` field; client-side validation limited to
+  presence + trim
+pillar_id: P-02
+pillar_anchored_id: P-02:F-001
+pillar_anchored_feature_name: Query Examples Authoring Surface
+seeded_from: ui-review-2026-05-26
+seeded_at: 2026-05-26
+discovered_from_entry_point: |-
+  ui-component:QueryExampleForm — both create-from-list (Add button at
+  QueryExamples.tsx:36-46) and edit-from-details (Edit button at
+  QueryExampleDetailsContainerActions.tsx:40-51) ROUTE THROUGH the same
+  `QueryExampleForm` dialog component. Render site is wrapped by
+  `<WithPermissions permissionTo=QUERY_EXAMPLE_CREATE>` (list page) or
+  `<WithPermissions permissionTo=QUERY_EXAMPLE_UPDATE>` (details page).
+primary_subject:
+- odd-platform ts react-component component:QueryExampleForm
+- odd-platform ts react-component component:QueryExamples
+- odd-platform ts react-component component:QueryExampleDetailsContainerActions
+contributing_nodes:
+- odd-platform ts react-component component:QueryExampleForm
+- odd-platform ts react-component component:QueryExamples
+- odd-platform ts react-component component:QueryExampleDetailsContainerActions
+- odd-platform ts shared-element component:Markdown
+- odd-platform ts shared-element component:DialogWrapper
+- odd-platform java QueryExampleController controller-class:QueryExampleController  # create + update endpoints
+chain:
+- hop: 1
+  node: odd-platform ts react-component component:QueryExampleForm
+  sidecar: unresolved
+  evidence: |-
+    QueryExampleForm.tsx:19-145 — react-hook-form-based dialog component.
+    Two fields: `definition` (line 79-89, plain `<Input>`) and `query`
+    (line 90-113, `<Markdown editor height=200>` — switches Markdown.tsx
+    to MDEditor preview='edit' mode). Both fields validated only with
+    `rules={{ required: true, validate: value => !!value.trim() }}` —
+    presence + non-empty-after-trim. NO length cap, NO allowlist, NO
+    pattern check. Submit fires `addQueryExample` (line 61) or
+    `updateQueryExample` (line 57) based on presence of
+    `queryExampleDetails` prop; post-submit navigates to
+    `queryExamplesPath(qe.id)` (line 65 — the details URL).
+  multiplicity_per_trigger: 1
+- hop: 2
+  node: odd-platform ts shared-element component:Markdown
+  sidecar: unresolved
+  evidence: |-
+    Markdown.tsx:103-111 (editor mode) — wraps `<MDEditor>` from
+    `@uiw/react-md-editor`, preview='edit'. Renders a textarea with
+    spellcheck enabled (line 96-101 useEffect). NO client-side
+    sanitisation of the input value; the value flows back to the form
+    state on every change. The `wrapperElement: { 'data-color-mode':
+    'light' }` and `previewOptions: { wrapperElement, disableCopy }` are
+    cosmetic.
+  multiplicity_per_trigger: 1
+- hop: 3
+  node: odd-platform java QueryExampleController controller-class:QueryExampleController
+  sidecar: odd-platform__java__QueryExampleController__controller-class__QueryExampleController.md
+  evidence: |-
+    QueryExampleController.java:26-32 createQueryExamples (gated by
+    QUERY_EXAMPLE_CREATE) + lines 35-42 updateQueryExample (gated by
+    QUERY_EXAMPLE_UPDATE). NO server-side allowlist on `definition` or
+    `query`; per F-025 facet, V0_0_84__create_query_example.sql:5 stores
+    `query text NOT NULL` with no length cap.
+  multiplicity_per_trigger: 1
+- hop: 4
+  node: odd-platform java QueryExampleServiceImpl
+  sidecar: not-yet-enriched
+  evidence: |-
+    QueryExampleServiceImpl.java:166-167 — updateQueryExampleVectors
+    materialises the FTS search vector on create + update. The
+    user-authored body is indexed verbatim.
+  multiplicity_per_trigger: 1
+terminal_side_effect:
+  side_effect_class: db-write
+  description: |-
+    INSERT or UPDATE query_example with verbatim user-authored `definition`
+    + `query` text bodies; INSERT/UPDATE query_example_search_entrypoint
+    materialises FTS vector.
+  evidence: QueryExampleController.java:26-42 + QueryExampleServiceImpl.java:40-92, 166-167
+  cardinality_per_call: 1
+amplification_factor: 1
+amplification_factor_provenance: |-
+  STATIC — confirmed from primary source. Single create or update per
+  dialog submission; no per-keystroke debouncer-recreate observed at the
+  form layer. The Markdown editor onChange callback updates form state
+  in-place via `field.onChange(value)` (line 107); react-hook-form
+  manages the re-render shape internally.
+observed_vs_expected:
+  facets:
+  - drift_class: query_example_form_no_client_side_length_cap_or_allowlist_on_definition_or_query_authoring_xss_chain_first_intervention_point_uncaptured
+    description: |-
+      QueryExampleForm.tsx accepts arbitrary Markdown / HTML / inline
+      JavaScript via the `definition` Input and the `query` Markdown
+      editor. The only client validation is `required: true, validate:
+      value => !!value.trim()` (lines 83, 94). Authoring is the FIRST
+      point in the XSS chain where an allowlist could intervene cheaply;
+      the form passes raw user input straight to the API. Companion to
+      F-025's existing
+      `markdown_render_no_sanitisation_xss_surface_extension_f_004_4th`
+      facet — the F-025 facet is RENDER-time; this one is AUTHORING-time.
+      The defence-in-depth gap is the same.
+    evidence:
+    - QueryExampleForm.tsx:83 (definition required + non-empty validation)
+    - QueryExampleForm.tsx:94 (query required + non-empty validation)
+    - QueryExampleForm.tsx:105-111 (Markdown editor renders user input verbatim)
+    - Markdown.tsx:103-111 (editor mode = MDEditor preview='edit' — no input sanitization)
+    ui_unverified: false
+    severity: MEDIUM
+  - drift_class: query_example_form_post_submit_navigates_to_details_url_no_optimistic_invalidation_visible_to_caller_unless_react_query_invalidates_list_cache
+    description: |-
+      QueryExampleForm.tsx:63-66 post-submit calls `reset(); navigate(
+      queryExamplesPath(qe.id))` — the form resets and the user lands on
+      the details page. The QueryExamplesList component (the list view)
+      caches via react-query; if the create hook does NOT invalidate the
+      list query key, a user navigating back via browser-Back sees the
+      stale list without the new example. Unverified — depends on
+      `useCreateQueryExample` hook contract (NOT read in this slice;
+      ui_unverified=true).
+    evidence:
+    - QueryExampleForm.tsx:63-66 (post-submit navigation pattern)
+    ui_unverified: true
+    severity: LOW
+  - drift_class: query_example_form_edit_mode_no_dirty_check_warning_dialog_closes_silently_on_navigation
+    description: |-
+      The DialogWrapper at QueryExampleForm.tsx:128-141 has no
+      `handleNavigationWarning` or dirty-form-detection. A user in the
+      middle of authoring a query example who clicks outside or hits
+      Escape (per DialogWrapper default behaviour) loses their draft
+      silently. No autosave, no draft persistence in localStorage. For
+      a Markdown body of moderate size this is a UX paper-cut; for a
+      long custom SQL snippet it's a real loss.
+    evidence:
+    - QueryExampleForm.tsx:128-141 (DialogWrapper has no dirty-form warning hook)
+    ui_unverified: true  # depends on DialogWrapper internals not read in this slice
+    severity: LOW
+  - drift_class: query_example_form_definition_is_plain_input_not_markdown_inconsistent_render_will_render_definition_as_markdown
+    description: |-
+      QueryExampleForm.tsx:85-87 renders `definition` as a plain
+      `<Input>` — NOT a Markdown editor. But the render site
+      QueryExampleDetailsOverview.tsx:19 renders `definition` through
+      `<Markdown value={definition} />` — Markdown-rendered. An author
+      typing `**bold**` into the Definition field sees plain text in
+      the form preview; on the details page they see rendered bold.
+      Mode-mismatch between authoring and render UX. Either the form
+      should use a Markdown editor for definition (matching render) OR
+      the render should be plain (matching authoring). Cross-link to
+      F-025's `markdown_render_no_sanitisation` facet — the same
+      asymmetry creates a footgun for XSS payloads typed naively into
+      a "plain" field.
+    evidence:
+    - QueryExampleForm.tsx:85-87 (definition is plain Input)
+    - QueryExampleDetailsOverview.tsx:19 (definition is rendered through Markdown)
+    ui_unverified: false
+    severity: LOW
+test_matrix:
+  unit: GAP
+  integration: GAP
+  performance: GAP
+  security: GAP
+status: ui-complete
+batch_origin: ui-review-2026-05-26
+created_in_batch: ui-review-2026-05-26
+related_features:
+- F-025  # parent — Query Examples CRUD + Faceted Search; this is the authoring sub-feature
+- F-004  # XSS family — authoring-time intervention point for the 4th surface
+related_concepts:
+- Query Example
+- Markdown Rendering Pipeline
+- Read-collaborative Catalog Posture
+maintainer_curated: false
+batch_origin_note: |-
+  2026-05-26 ui-review batch — minted from slice-B DataModelling UI
+  primary-source walk. The Query Example Authoring surface anchors a
+  distinct operator-observable feature (a dialog modal with embedded
+  Markdown editor + react-hook-form validation) that the F-025
+  controller-anchored feature does not enumerate at the UI layer.
+  Particular operator-relevance: this is the AUTHORING-TIME XSS-chain
+  intervention point — adding a client-side allowlist + length cap here
+  would close the 4th F-004 surface at the SOURCE rather than at the
+  render-time site.

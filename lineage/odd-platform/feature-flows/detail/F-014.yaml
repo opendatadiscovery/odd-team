@@ -14,6 +14,9 @@ drift_class_summary:
 - workaround_doc_silent_on_pagination_and_scoping
 - cross_channel_leak_soft_deleted_entity_alerts
 - audit_export_use_case_uncovered_by_tests
+- alertitem_post_action_permission_discovery_button_enabled_until_click_reveals_no_access  # batch UI-A 2026-05-26
+- dataentityalerts_size_30_hardcoded_no_filter_ui_no_status_filter_ux  # batch UI-A 2026-05-26
+- notification_settings_with_permissions_is_context_not_render_block  # batch UI-A 2026-05-26 — cross-cuts with F-021 batch-ZL systemic finding
 discovered_from_entry_point: rest:GET /api/dataentities/{id}/alerts
 contributing_nodes:
 - odd-platform java DataEntityController controller-method:getDataEntityAlerts
@@ -22,6 +25,9 @@ contributing_nodes:
 - odd-platform java ReactiveDataEntityRepositoryImpl
 - odd-platform java SecurityConstants
 - odd-platform java AuthorizationCustomizer
+- odd-platform ts react-component component:DataEntityAlerts (batch UI-A 2026-05-26 — the per-entity Alerts tab UI; hardcoded size=30 page; halt-config affordance via NotificationSettings is permission-context-wrapped at line 53 but the context-wrapper does NOT block render — only descendants consult it; surfaces the Resolve/Reopen control via AlertItem)
+- odd-platform ts react-component component:AlertItem (batch UI-A 2026-05-26 — shared row render between global Alerts list and per-entity Alerts tab; post-action permission discovery anti-pattern at lines 48-70; renders status history collapsibly)
+- odd-platform ts react-component component:NotificationSettings (batch UI-A 2026-05-26 — halt-config UI for per-entity alerts; gated by DATA_ENTITY_ALERT_CONFIG_UPDATE via WithPermissions; cited as the F-007 halt-toggle UI surface — verification deferred, ui_unverified=true)
 cross_pillar_relationships:
 - pillar: P-01
   kind: shares_data_with
@@ -108,6 +114,50 @@ description: |-
   read/write asymmetry as intentional — the absence of permission
   gates on GET endpoints is a class-wide convention but the convention
   itself has no inline justification.
+
+  (6) **UI tier — per-entity Alerts tab review (batch UI-A 2026-05-26)** —
+  the React component `DataEntityAlerts.tsx` (93 lines) is the UI
+  consumer of `GET /api/dataentities/{id}/alerts`. Mounted on each
+  Data Entity detail page; fetches with hardcoded `size=30`
+  (line 31) and infinite-scroll pagination at line 69-77. The
+  halt-config affordance (NotificationSettings) IS wrapped in a
+  `<WithPermissions permissionTo={Permission.DATA_ENTITY_ALERT_CONFIG_UPDATE}>`
+  block at line 53 — gating the visibility of the halt-config UI
+  on resource permissions. NEW UI-tier drift facets surface:
+  (a) The WithPermissions wrapper is a CONTEXT, not a render-block
+  (per F-021 batch-ZL note #6 systemic finding) — visible to
+  descendants but the wrapped Button is unconditionally rendered.
+  In this case the wrapped child is just the halt-config Button;
+  the WithPermissions check IS effective for HIDING the button
+  itself because the descendant (NotificationSettings → the dialog
+  it opens) consults the same permission context — but the
+  current rendering relies on the wrapper short-circuiting the
+  Button render, NOT on the dialog gating mutation paths. A bug
+  in the WithPermissions wrapper (e.g. permission context not
+  hydrated yet on first render) would briefly show the Button
+  to unprivileged users until they clicked, surfacing the
+  AlertItem post-action permission discovery anti-pattern.
+  (b) AlertItem.tsx (shared between global Alerts list and this
+  per-entity tab) implements POST-ACTION permission discovery
+  at lines 48-70: clicking "Resolve" fires
+  `fetchResourcePermissions(...).unwrap().then(({permissions}) => ...)`
+  — the permission check happens AFTER the user clicks, then
+  conditionally calls `dispatchUpdateAlertStatus()` OR sets
+  `disableResolve=true` and renders a small "No access!"
+  caption inline. Bad UX: the button is enabled until the
+  user discovers via click that they cannot use it. The user-
+  observable promise is "actionable button"; the reality is
+  "speculative button". NEW drift facet candidate to add to
+  drift_class_summary —
+  `alertitem_post_action_permission_discovery_button_enabled_until_click_reveals_no_access`.
+  (c) The size=30 hardcoded constant has no operator-facing UI
+  to adjust; deep alert histories require infinite-scroll
+  walking through many round-trips. No filter UI for status
+  (OPEN / RESOLVED / RESOLVED_AUTOMATICALLY) on the per-entity
+  tab. STRENGTHENS the existing F-014 facet
+  `no_alert_status_filter_asymmetric_with_sibling_counts` —
+  the asymmetry surfaces at the UI consumer tier too (the tab
+  has no UX for the status filter the backend cannot accept).
 facets_summary: |-
   9 substantive drifts: cross-owner per-entity alert read (REFACTOR-024
   family extension to per-entity surface) + soft-delete-inclusive
@@ -166,6 +216,34 @@ chain:
     DOES apply `addSoftDeleteFilter(...)` — the naming pair encodes the
     intent: "soft-deleted entities remain readable for audit /
     housekeeping use cases".
+  unresolved: false
+- hop: 0-ui
+  node: odd-platform ts react-component component:DataEntityAlerts
+  sidecar: unresolved
+  multiplicity_per_trigger: 1
+  evidence: |-
+    DataEntityAlerts.tsx:33-35 — useEffect fires
+    `fetchDataEntityAlerts({dataEntityId, page: 1, size: 30})` on
+    dataEntityId change. Infinite-scroll at line 69-77 advances
+    page on scroll-end (`fetchNextPage` line 46-49). Halt-config
+    UI wrapped in `<WithPermissions permissionTo={Permission.DATA_ENTITY_ALERT_CONFIG_UPDATE}>`
+    at line 53 — the F-007 halt-toggle UI surface mounts here.
+    No client-side status filter, no size selector, no sort
+    control. Source batch: UI-A 2026-05-26.
+  unresolved: false
+- hop: 0-ui-item
+  node: odd-platform ts react-component component:AlertItem
+  sidecar: unresolved
+  multiplicity_per_trigger: 1
+  evidence: |-
+    AlertItem.tsx:48-70 — Resolve/Reopen Button onClick fires
+    `dispatch(fetchResourcePermissions({resourceId: dataEntity.id,
+    permissionResourceType: DATA_ENTITY}))` then conditionally
+    `dispatchUpdateAlertStatus()` OR sets `disableResolve=true`
+    + renders "No access!" caption. Post-action permission
+    discovery: the button is rendered enabled until clicked.
+    The same component is shared with the global Alerts list at
+    AlertsList.tsx:95-97. Source batch: UI-A 2026-05-26.
   unresolved: false
 terminal_side_effect:
   side_effect_class: page-render
@@ -384,6 +462,102 @@ observed_vs_expected:
       security.known_security_gaps[2] + AlertServiceImpl.java:327-335 +
       ReactiveDataEntityRepositoryImpl.java:150-155 + WebFetch alerting
       page 2026-05-19 (silent on soft-delete behaviour). Severity: LOW.
+  - facet: AlertItem Resolve/Reopen — post-action permission discovery
+    observed: |-
+      AlertItem.tsx:48-70 — the Resolve/Reopen Button is rendered
+      unconditionally enabled (`disabled={disableResolve}` where
+      disableResolve starts as `false`). On click, `handleResolve`
+      fires `fetchResourcePermissions(...)` and ONLY THEN evaluates
+      whether the caller has DATA_ENTITY_ALERT_RESOLVE. If absent,
+      the button transitions to disabled and a small "No access!"
+      caption appears inline. User-observable promise: actionable
+      button. User-observable reality: speculative button —
+      the permission check happens after click. Shared component
+      across the global Alerts list AND the per-entity Alerts tab,
+      so the anti-pattern surfaces on both surfaces. Bad UX —
+      users learn permissions by clicking, not by visual cue.
+    expected: |-
+      Either (a) pre-fetch permission state for visible alerts on
+      list-mount + render the button as disabled-with-tooltip for
+      unprivileged users, OR (b) eagerly stamp the AlertList payload
+      with a per-row `canResolve: boolean` field (backend computes
+      once), OR (c) explicit empty-state when no permission with
+      "you can view these alerts but cannot resolve them" framing.
+    drift_class: alertitem_post_action_permission_discovery_button_enabled_until_click_reveals_no_access
+    provenance: |-
+      STATIC PRIMARY-SOURCE — AlertItem.tsx:48-70 (handleResolve
+      flow) + line 35 (disableResolve state init false) + line 166
+      ("No access!" caption render). Severity: MEDIUM (UX class —
+      misleads users into clicking until they discover the gate).
+      Source batch: UI-A 2026-05-26.
+      ui_unverified: false
+  - facet: DataEntityAlerts per-entity tab — no filter UI, hardcoded size=30
+    observed: |-
+      DataEntityAlerts.tsx:31 hardcodes `size = 30`; lines 78-80
+      render the alert list with no filter UI, no sort control,
+      no status selector. The sibling counts endpoint
+      `GET /api/dataentities/{id}/alerts/counts` accepts a
+      `status` query param (per F-014's
+      `no_alert_status_filter_asymmetric_with_sibling_counts`
+      facet) but the listing endpoint doesn't — AND the UI
+      doesn't expose either path. A user wanting only OPEN
+      alerts on a specific entity scrolls through the full
+      history. The audit-export workaround use case
+      (per F-014's existing facets) is also unsupported by
+      the UI tab — no download button, no "export" affordance.
+    expected: |-
+      Either (a) add a status-filter dropdown wiring the
+      `status` query param to the listing call when backend
+      adds support, OR (b) add an "Export" button that
+      exercises the API workaround documented on the alerting
+      page, OR (c) explicit doc text framing the tab as
+      "alert history viewer" with operator-facing instructions
+      for the API-driven workaround.
+    drift_class: dataentityalerts_size_30_hardcoded_no_filter_ui_no_status_filter_ux
+    provenance: |-
+      STATIC PRIMARY-SOURCE — DataEntityAlerts.tsx:31, 78-80 +
+      WebFetch /features/active-platform-features/alerting
+      anchor #auto-cleanup-of-resolved-alerts (operator-facing
+      workaround docs name the API but not a UI shortcut).
+      Severity: LOW (UX completeness). Source batch: UI-A 2026-05-26.
+      ui_unverified: false
+  - facet: NotificationSettings — WithPermissions is a context, not a render-block
+    observed: |-
+      DataEntityAlerts.tsx:53 wraps the halt-config Button in
+      `<WithPermissions permissionTo={Permission.DATA_ENTITY_ALERT_CONFIG_UPDATE}>`.
+      Per F-021 batch-ZL note #6, WithPermissions.tsx:12-49 has
+      all three render branches unconditionally render the
+      child — the wrapper is a PERMISSION CONTEXT, not a gate.
+      The descendant `<NotificationSettings />` consumes the
+      permission context to decide its own affordance — but if
+      the descendant does not consult the context (or if the
+      context is not hydrated on first render), the halt-config
+      Button briefly appears to unprivileged users. The
+      pattern depends on the descendant's defensive coding;
+      the visible promise to the operator is
+      "halt-config visible iff you have permission" — the
+      reality is "halt-config visible if the descendant cooperates".
+    expected: |-
+      Either (a) rename `WithPermissions` to make the
+      context-vs-gate distinction explicit (e.g.
+      `<PermissionContext>` for the context shape and
+      `<RequirePermission>` for a true render-block), OR
+      (b) refactor WithPermissions to short-circuit render
+      when permission absent, OR (c) explicit JSDoc on the
+      wrapper documenting the context-not-gate semantics so
+      operators consuming the codebase know they need a
+      defensive consult downstream.
+    drift_class: notification_settings_with_permissions_is_context_not_render_block
+    provenance: |-
+      STATIC PRIMARY-SOURCE — DataEntityAlerts.tsx:53 +
+      WithPermissions.tsx:12-49 (per F-021 batch-ZL note #6
+      systemic finding cross-reference). Severity: MEDIUM
+      (security-UX class — the wrapper's NAME implies a
+      gate that does not exist). Cross-link: F-021 batch ZL
+      cited the same systemic finding for the Activity surface
+      (no permission gate at any layer). Source batch: UI-A
+      2026-05-26.
+      ui_unverified: true   # WithPermissions semantics confirmed via cross-ref to F-021 batch ZL; the NotificationSettings descendant's own permission consultation pattern is not directly verified in this batch
   - facet: audit-export use case has zero test coverage
     observed: |-
       `find <odd-platform> -path '*test*' -name 'DataEntityController*'`

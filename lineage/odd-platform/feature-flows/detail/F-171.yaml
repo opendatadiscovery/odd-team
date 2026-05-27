@@ -1,0 +1,226 @@
+feature_id: F-171
+pillar_id: P-08
+pillar_anchored_id: P-08:F-016
+pillar_anchored_feature_name: Operator-Facing Owner-Association Triage Workflow (approve/decline pending requests)
+feature_name: |-
+  Operator-Facing Owner-Association Triage Workflow — the Management →
+  Associations UI's "New requests" tab lists every PENDING
+  OwnerAssociationRequest (status = PENDING) with per-row Accept / Reject
+  affordances gated by Permission.OWNER_ASSOCIATION_MANAGE. The
+  operator-USE side of F-075's two-step branch (A): an admin reviews
+  newly-submitted self-requests and confirms or rejects them via a
+  ConfirmationDialog → PUT /api/owner_association_request/{id} with
+  status APPROVED or DECLINED. Distinct from F-075 (the user-self-CREATE
+  surface), F-172 (the admin direct-bind that bypasses the request flow),
+  and F-173 (the unbind operation on already-approved associations).
+seeded_from: ui-review-2026-05-26
+seeded_at: 2026-05-26
+discovered_from_entry_point: |-
+  ui_route:/management/associations/new
+  ui-component:OwnerAssociationsNew
+  ui-component:NewAssociationRequest
+primary_subject:
+  - "odd-platform ts react-component component:OwnerAssociationsNew"
+  - "odd-platform ts react-component component:NewAssociationRequest"
+  - "odd-platform java OwnerAssociationRequestController controller-method:updateOwnerAssociationRequest"
+  - "odd-platform java OwnerAssociationRequestServiceImpl service-method:updateRequest"
+contributing_nodes:
+  - "odd-platform ts react-component component:OwnerAssociations (route composition root)"
+  - "odd-platform ts react-component component:OwnerAssociationsTabs (3-tab nav)"
+  - "odd-platform ts react-component component:OwnerAssociationsNew (PENDING list)"
+  - "odd-platform ts react-component component:NewAssociationRequest (per-row Accept/Reject)"
+  - "odd-platform ts react-component component:OwnerAssociationsHeader (search input atop list)"
+  - "odd-platform java OwnerAssociationRequestController"
+  - "odd-platform java OwnerAssociationRequestServiceImpl"
+chain:
+  - hop: 1
+    node: "ui_route:/management/associations/new"
+    sidecar: unresolved
+    evidence: |-
+      OwnerAssociations.tsx:11-13, 22-67 — route composition: <Route
+      path='new' element={<OwnerAssociationsNew size={size} />} />
+      (line 63), wrapped in OwnerAssociationsAtomProvider + an outer
+      WithPermissionsProvider on OWNER_RELATION_MANAGE (line 49)
+      around the Header (NOT the list — list is reachable to any
+      authenticated user, cross-link F-074).
+    multiplicity_per_trigger: 1
+  - hop: 2
+    node: "ui-component:OwnerAssociationsNew (PENDING list)"
+    sidecar: unresolved
+    evidence: |-
+      OwnerAssociationsNew.tsx:28-33 — useGetOwnerAssociationRequestList
+      ({query: debouncedQuery, size, status: OwnerAssociationRequestStatusParam.PENDING}).
+      Renders InfiniteScroll over the paginated PENDING items
+      (lines 67-89). Each item becomes NewAssociationRequest with
+      id/roles/ownerName/provider/username.
+    multiplicity_per_trigger: 1
+  - hop: 3
+    node: "ui-component:NewAssociationRequest (Accept/Reject affordances)"
+    sidecar: unresolved
+    evidence: |-
+      NewAssociationRequest.tsx:33-49 — two callbacks
+      handleAccept/handleReject call useUpdateAssociationRequest mutation
+      with ownerAssociationRequestId + status: APPROVED|DECLINED.
+      Both buttons live behind a ConfirmationDialog (lines 70-104) and
+      are .disabled when !hasAccessTo(Permission.OWNER_ASSOCIATION_MANAGE)
+      — UI gates HIDE-or-DISABLE (mirrors batch-Q OwnersList finding;
+      cross-link F-019 batch-Q facet).
+    multiplicity_per_trigger: 1
+  - hop: 4
+    node: "rest:PUT /api/owner_association_request/{id}"
+    sidecar: unresolved
+    evidence: |-
+      hook useUpdateAssociationRequest — naming suggests PUT or POST
+      onto the OwnerAssociationRequestController resolve endpoint.
+      Backend chain target: OwnerAssociationRequestController +
+      OwnerAssociationRequestServiceImpl.updateRequest. Cross-link
+      F-075 chain hop 6 (userOwnerMappingService.createRelation on
+      auto-approve) — this is the MANUAL-approve sibling of that path.
+    multiplicity_per_trigger: 1
+    ui_unverified: true
+    ui_unverified_reason: |-
+      The hook implementation (useUpdateAssociationRequest in
+      lib/hooks/api/ownerAssociationRequest.ts) was not Read in slice H
+      (access blocked at file-read level). The exact HTTP verb + path
+      shape is inferred from naming + the generated-sources
+      OwnerAssociationRequestStatusFormData payload. Defer to a backend
+      read pass.
+  - hop: 5
+    node: "service:OwnerAssociationRequestServiceImpl.updateRequest"
+    sidecar: unresolved
+    evidence: |-
+      F-075 batch establishes the service surface; the APPROVED branch
+      writes to user_owner_mapping via UserOwnerMappingService.createRelation
+      (F-075 hop 6 evidence: OwnerAssociationRequestServiceImpl.java:184-190).
+      The DECLINED branch updates status only — no user_owner_mapping
+      side-effect.
+    multiplicity_per_trigger: 1
+terminal_side_effect:
+  side_effect_class: db-write
+  description: |-
+    APPROVED path: status update on owner_association_request row +
+    user_owner_mapping INSERT (per F-075 hop 6 evidence).
+    DECLINED path: status update only.
+    Both paths emit to owner_association_request_activity (per F-075
+    drift facet mint_path_audit_silent_on_self_mint — the request
+    activity is recorded, isManual=true for this branch since the
+    operator clicked Accept/Reject).
+  evidence: "F-075 chain hops 5-6 + OwnerAssociationRequestServiceImpl"
+observed_vs_expected:
+  facets:
+    - drift_class: triage_ui_no_request_context_preview_only_username_owner_role_provider
+      description: |-
+        The NewAssociationRequest row shows ONLY username / ownerName /
+        roles / provider — there is no preview of the request's submission
+        context (when was it submitted? who submitted it from where? was
+        it a SELF-request or did an admin file it on behalf? is there any
+        attached justification?). The operator approves blind on identity
+        + role + provider strings alone. Compare to typical access-review
+        UIs where the requester's prior history, the requester's stated
+        reason, and the timestamp are surfaced inline.
+      evidence:
+        - "NewAssociationRequest.tsx:52-68 (4 visible columns + 2 action buttons; no `requestedAt`, no `requestedBy` differentiated, no justification field)"
+        - "OwnerAssociationsNew.tsx:52-66 (table header — same 4 columns: User name / Owner name / Role / Provider)"
+      ui_unverified: true
+      ui_unverified_reason: |-
+        The OwnerAssociationRequest DTO (generated-sources) may carry
+        additional fields not surfaced by the UI — verifying
+        intent-vs-implementation requires reading the OpenAPI schema +
+        the OwnerAssociationRequest type. Slice H read only the
+        components; cross-pillar to backend.
+    - drift_class: confirm_dialog_text_no_irreversibility_warning_no_undo_path
+      description: |-
+        Both Accept and Reject ConfirmationDialogs name the action ("User
+        X will be map to owner Y" / "Association request to map user X to
+        owner Y will be rejected") but neither states irreversibility OR
+        identifies the undo path. The actual semantics: APPROVED creates
+        a user_owner_mapping row + is reversible via the Active tab's
+        Remove affordance (cross-link F-173); DECLINED is a status update
+        — the request becomes invisible from the Pending tab + visible
+        in History (cross-link F-174). Operator does not learn this from
+        the dialog text.
+      evidence:
+        - "NewAssociationRequest.tsx:70-104 (both dialog actionText strings)"
+      ui_unverified: false
+    - drift_class: positive_finding_confirm_dialog_present_for_both_accept_and_reject
+      description: |-
+        Positive finding (UX-symmetry): both Accept and Reject affordances
+        require a ConfirmationDialog before firing. Contrast with the
+        F-019 batch-Q empty-roles-destructive-update finding where the
+        more-irreversible action had NO confirmation. Here the Accept
+        path (which creates a user_owner_mapping = state change) and the
+        Reject path (which is a status update) are SYMMETRICALLY gated.
+      evidence:
+        - "NewAssociationRequest.tsx:70-87 (Accept ConfirmationDialog) + 88-104 (Reject ConfirmationDialog)"
+      ui_unverified: false
+    - drift_class: permission_gate_disables_button_but_does_not_hide_row
+      description: |-
+        Operators without OWNER_ASSOCIATION_MANAGE see the full PENDING
+        list (no row-level filtering — the list endpoint is in the
+        catch-all-auth read posture per F-074) but the Accept/Reject
+        buttons render DISABLED rather than hidden (NewAssociationRequest.tsx:84,
+        101). Mixed posture vs F-019 batch-Q OwnersList finding (HIDE
+        not DISABLE) — Owner-Association takes the DISABLE posture
+        which is the user-friendlier choice (operator can see what they
+        can't act on; the affordance discoverable). Cross-link doc-gap:
+        the live permissions doc does not name OWNER_ASSOCIATION_MANAGE
+        explicitly as a gate; the operator cannot Google the permission
+        from the disabled state.
+      evidence:
+        - "NewAssociationRequest.tsx:84 (Accept button disabled gate) + :101 (Reject disabled gate)"
+        - "Cross-link F-074 — list endpoint reachable to any authed user"
+      ui_unverified: false
+    - drift_class: tab_switch_resets_search_query_to_empty_no_persistence
+      description: |-
+        On tab change (New ↔ Active ↔ History) the OwnerAssociationsTabs
+        `onTabChange` callback calls `setQuery('')` and invalidates the
+        `ownerAssociationRequestList` query key (OwnerAssociationsTabs.tsx:44-47).
+        An operator searching "alice" in PENDING then clicking Active
+        loses the search term. The Provider scope (OwnerAssociationsAtomProvider)
+        is outside the tabs so the atom itself persists across tab switches
+        — the reset is INTENTIONAL via the explicit setQuery(''). Mirror of
+        F-104's jotai-Provider paradigm-split observation, EXTENDS the
+        finding: in this feature the reset is EXPLICIT not just structural.
+      evidence:
+        - "OwnerAssociationsTabs.tsx:44-47 (onTabChange explicitly resets query + invalidates rq cache)"
+        - "OwnerAssociationsStore/OwnerAssociationsAtoms.ts:3 (queryAtom = atom(''))"
+        - "OwnerAssociationsProvider.tsx:4-7 (Provider scope wraps the entire route)"
+      ui_unverified: false
+test_matrix:
+  unit: GAP
+  integration: GAP
+  performance: GAP
+  security: GAP
+related_features:
+  - F-075  # User-self-request (the create-side of this triage workflow)
+  - F-019  # Owner Lifecycle — the requesting user's target Owner row
+  - F-172  # Admin Direct-Bind UserOwnerMapping Create — bypasses this triage flow entirely
+  - F-173  # Active-tab Remove UserOwnerMapping — reverses the APPROVED outcome of this flow
+  - F-174  # History audit-trail consumer surface
+  - F-074  # Management-Tab Read-Collaborative Posture — list endpoint reachable to any authed user
+  - F-104  # jotai-Provider state-management paradigm split — OwnerAssociations is one of the four instances
+  - F-064  # User-Owner Association Discoverability — silent-empty pattern that pairs with this triage surface
+related_retrospectives:
+  - LSN-023  # ui-incomplete — UI hop4 (PUT endpoint hook impl) ui_unverified
+status: ui-incomplete
+maintainer_curated: false
+batch_origin: ui-review-2026-05-26
+created_in_batch: ui-review-2026-05-26-slice-H
+notes: |-
+  Minted from ui-review-2026-05-26 slice H (Management/OwnerAssociations,
+  11 components). The triage UX is the OPERATOR-side companion to F-075's
+  user-self-request flow — operationally distinct because (a) different
+  audience (admin vs end-user), (b) different HTTP verb (PUT vs POST),
+  (c) different downstream side-effect (state change on existing row +
+  optional user_owner_mapping insert vs new row creation), (d) different
+  UI tree (Management → Associations vs identity/profile cluster).
+
+  Hop-4's HTTP shape is ui_unverified because the hook implementation
+  (useUpdateAssociationRequest) was not Read in slice H — access to
+  lib/hooks/api/ was blocked at the file-read level. A future ui-review
+  or backend-read pass refines.
+
+  The four drift facets at this layer are all UI-anchored and
+  operator-observable; three are ui_unverified=false (directly
+  observable in the .tsx) and one is ui_unverified=true (depends on
+  the DTO schema which is generated-sources content).

@@ -1,0 +1,283 @@
+feature_id: F-046
+pillar_id: P-01
+pillar_anchored_id: P-01:F-010
+pillar_anchored_feature_name: Custom Metadata Field Catalogue
+feature_name: |-
+  Custom Metadata Field Catalogue — global non-deleted INTERNAL-origin
+  field registry surfaced via GET /api/metadata/fields autocomplete on
+  every per-entity Metadata edit form. The catalogue grows monotonically
+  as a side-effect of `createMetadata` calls (getOrCreateMetadataFields)
+  with no read permission, no pagination (pageInfo theatre), no
+  ordering contract, and no documentation
+seeded_from: SHB-008
+seeded_at: 2026-05-26
+status: active
+primary_drift_class: pageinfo_theatre_no_pagination_unbounded_return
+drift_class_summary:
+  - pageinfo_theatre_no_pagination_unbounded_return
+  - catalogue_unbounded_growth_no_delete_no_rate_limit
+  - no_read_permission_full_deployment_vocabulary_enumeration
+  - case_sensitive_partial_unique_index_allows_cost_centre_vs_Cost_centre_duplicates
+  - no_order_by_heap_scan_order_surfaces_as_ui_flicker
+  - feature_undocumented_no_live_doc_page
+  - auto_create_side_effect_grows_catalogue_without_explicit_user_action
+  - type_column_documentation_only_no_validation_at_write_time
+companion_to:
+  - feature_id: F-013
+    relationship: catalogue-read-paired-with-value-write
+    note: |-
+      F-013 anchors the WRITE surface (PUT
+      /api/dataentities/{id}/metadata/{field_id} — silent UPDATE-not-UPSERT,
+      no type validation, EXTERNAL overwrite, etc.). F-046 anchors the
+      READ surface (the catalogue the user picks a field name from
+      BEFORE writing). Together they form the complete Custom Metadata
+      feature flow.
+discovered_from_entry_point: |-
+  rest:GET /api/metadata/fields — paired with rest:POST
+  /api/dataentities/{id}/metadata which mutates the catalogue as a side
+  effect via MetadataFieldServiceImpl.getOrCreateMetadataFields.
+  UI entry-point: MetadataCreateFormItem.tsx autocomplete (debounced
+  500ms; freeSolo; called on focus + each keystroke).
+primary_subject:
+  - odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/MetadataFieldController.java
+  - odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/MetadataFieldServiceImpl.java
+  - odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveMetadataFieldRepositoryImpl.java
+  - odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/mapper/MetadataFieldMapperImpl.java
+  - odd-platform-api/src/main/resources/db/migration/V0_0_1__init.sql
+  - odd-platform-ui/src/components/DataEntityDetails/Metadata/MetadataCreateForm/MetadataCreateFormItem/MetadataCreateFormItem.tsx
+contributing_nodes:
+  - odd-platform java MetadataFieldController controller-class:MetadataFieldController
+  - odd-platform java service:MetadataFieldServiceImpl
+  - odd-platform java repository reactive repository:ReactiveMetadataFieldRepositoryImpl
+  - odd-platform java mapper:MetadataFieldMapperImpl
+  - odd-platform ts react-component:MetadataCreateFormItem
+chain:
+  - hop: 1
+    node: ui react-component:MetadataCreateFormItem
+    sidecar: unresolved
+    multiplicity_per_trigger: "unresolved (focus + each keystroke; debounce 500ms)"
+    evidence: |-
+      MetadataCreateFormItem.tsx:24-89 — freeSolo Autocomplete dispatches
+      `searchMetadata({query: searchText})` on focus + each keystroke.
+      Debounce: 500ms.
+    unresolved: true
+  - hop: 2
+    node: rest controller-class:MetadataFieldController
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      MetadataFieldController.java:18-23 — single-method controller;
+      getMetadataFieldList(query) delegates to
+      metadataFieldService.listInternalMetadata(query).
+  - hop: 3
+    node: service:MetadataFieldServiceImpl.listInternalMetadata
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      Pass-through to repository.
+  - hop: 4
+    node: repository reactive:ReactiveMetadataFieldRepositoryImpl.listInternalMetadata
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      ReactiveMetadataFieldRepositoryImpl.java:44-56 — SELECT FROM
+      metadata_field WHERE origin = INTERNAL AND deleted_at IS NULL
+      [AND LOWER(name) LIKE LOWER('%query%')]. No LIMIT, no OFFSET,
+      no ORDER BY. Returns the entire filtered set.
+  - hop: 5
+    node: mapper:MetadataFieldMapperImpl
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      MetadataFieldMapperImpl.java:29-33 — new PageInfo().total((long) pojos.size()).hasNext(false).
+      total = items.length always; hasNext = false always. PageInfo is theatre.
+terminal_side_effect:
+  side_effect_class: page-render
+  description: |-
+    HTTP 200 response carrying the FULL non-deleted INTERNAL-origin
+    catalogue (no LIMIT) plus a hard-coded PageInfo block that lies
+    about pagination. The catalogue is rendered into the
+    MetadataCreateFormItem autocomplete dropdown — every modal-open
+    materialises the entire vocabulary on the client.
+  evidence: |-
+    ReactiveMetadataFieldRepositoryImpl.java:44-56 (no LIMIT);
+    MetadataFieldMapperImpl.java:29-33 (pageInfo theatre);
+    components.yaml:2111-2120 (OpenAPI schema embeds PageInfo →
+    SDK clients assume pagination that doesn't exist).
+observed_vs_expected:
+  observed: |-
+    Authenticated user opens an entity's Metadata edit modal. The UI
+    fetches /api/metadata/fields with no query → server returns the
+    ENTIRE non-deleted INTERNAL-origin catalogue in one response,
+    regardless of which entity the user is editing or which fields
+    they have permission to read. PageInfo claims total = items.length
+    and hasNext = false on every response. Under auth.type=DISABLED
+    the enumeration is anonymous. The catalogue grows monotonically
+    as users + collectors mint new field names; no delete path
+    exists in the UI; the case-sensitive partial unique index allows
+    `cost_centre` and `Cost_centre` to coexist as separate rows.
+  expected: |-
+    A custom-metadata catalogue with proper pagination (real LIMIT,
+    accurate `total`, truthful `hasNext`), a CUSTOM_METADATA_FIELD_READ
+    permission (or scope by parent-entity visibility), case-folded
+    uniqueness, and operator-facing documentation describing how the
+    autocomplete works and what `type` does. The MetadataFieldType
+    enum value should be enforced at write time.
+  facets:
+    - drift_class: pageinfo_theatre_no_pagination_unbounded_return
+      description: |-
+        OpenAPI declares pageInfo with total + has_next; implementation
+        returns total = items.length, hasNext = false on every response,
+        and the SQL has no LIMIT/OFFSET. SDK clients building "load
+        more" infinite-scroll cannot detect overflow.
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveMetadataFieldRepositoryImpl.java:44-56"
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/mapper/MetadataFieldMapperImpl.java:29-33"
+        - "odd-platform-specification/components.yaml:2111-2120"
+      severity: MEDIUM
+      seeded_from: SHB-008
+    - drift_class: catalogue_unbounded_growth_no_delete_no_rate_limit
+      description: |-
+        No UI delete path, no rate-limit on auto-create, no normalisation.
+        A typo'd field name persists forever. Combined with
+        case-sensitive uniqueness (next facet) the vocabulary inflates
+        over deployment lifetime.
+      evidence:
+        - "MetadataFieldController.java — no DELETE endpoint exists"
+        - "MetadataFieldServiceImpl.java:43-59 — getOrCreateMetadataFields auto-creates on miss"
+      severity: MEDIUM
+      seeded_from: SHB-008
+    - drift_class: no_read_permission_full_deployment_vocabulary_enumeration
+      description: |-
+        SecurityConstants.java has no /api/metadata/fields entry → falls
+        through to catch-all .authenticated(). No CUSTOM_METADATA_FIELD_READ
+        permission exists; every authenticated user enumerates the entire
+        deployment's vocabulary. Under DISABLED mode the call is anonymous.
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/util/SecurityConstants.java (no /api/metadata/fields entry)"
+        - "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions (verified 2026-05-25 status 200) — lists CREATE/UPDATE/DELETE only"
+      severity: MEDIUM
+      seeded_from: SHB-008
+    - drift_class: case_sensitive_partial_unique_index_allows_cost_centre_vs_Cost_centre_duplicates
+      description: |-
+        V0_0_1__init.sql:238-244 enforces ix_unique_internal_name on
+        `name` WHERE origin = INTERNAL — case-sensitive. cost_centre and
+        Cost_centre coexist as separate rows. The auto-create-on-miss
+        diff in MetadataFieldServiceImpl.getOrCreateMetadataFields treats
+        them as distinct (per F-013's batch-R analysis).
+      evidence:
+        - "odd-platform-api/src/main/resources/db/migration/V0_0_1__init.sql:238-244"
+        - "MetadataFieldServiceImpl.java:43-59"
+      severity: LOW
+      seeded_from: SHB-008
+    - drift_class: no_order_by_heap_scan_order_surfaces_as_ui_flicker
+      description: |-
+        listInternalMetadata has no ORDER BY clause. Postgres heap-scan
+        order is not stable across vacuum cycles; the autocomplete
+        dropdown can re-order between sessions.
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveMetadataFieldRepositoryImpl.java:44-56 (no ORDER BY)"
+      severity: LOW
+      seeded_from: SHB-008
+    - drift_class: feature_undocumented_no_live_doc_page
+      description: |-
+        WebFetch attempts at /active-platform-features/metadata and
+        /active-platform-features/custom-metadata returned 404. The
+        Permissions page lists only write-side permissions. A
+        load-bearing feature with zero operator documentation.
+      evidence:
+        - "https://docs.opendatadiscovery.org/active-platform-features/custom-metadata (404)"
+        - "https://docs.opendatadiscovery.org/features/data-discovery/custom-metadata (does not exist)"
+      severity: MEDIUM
+      seeded_from: SHB-008
+    - drift_class: auto_create_side_effect_grows_catalogue_without_explicit_user_action
+      description: |-
+        MetadataFieldServiceImpl.getOrCreateMetadataFields silently
+        auto-creates an INTERNAL row when the typed name doesn't exist.
+        The "create" action is buried inside a write-value flow; the
+        operator may not realise they minted a directory entry.
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/MetadataFieldServiceImpl.java:43-59"
+      severity: LOW
+      seeded_from: SHB-008
+    - drift_class: type_column_documentation_only_no_validation_at_write_time
+      description: |-
+        The catalogue surfaces a `type` field per row
+        (BOOLEAN/INTEGER/FLOAT/STRING/DATETIME/ARRAY/JSON/UNKNOWN) but
+        the WRITE side (F-013) doesn't validate values against the type.
+        The catalogue's `type` column is documentation-only at the
+        application layer.
+      evidence:
+        - "odd-platform-specification/components.yaml — MetadataFieldType enum"
+        - "F-013 facet: no_type_validation_against_metadata_field_type"
+      severity: MEDIUM
+      seeded_from: SHB-008
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+      - "Assert getMetadataFieldList returns paginated response with truthful total + hasNext."
+      - "Assert getOrCreateMetadataFields case-folds before lookup."
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+      - "Catalogue read returns paginated response not unbounded list."
+      - "Auto-create vs lookup: cost_centre vs Cost_centre — first writer wins (after fix)."
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+      - "Catalogue size 10K: response latency + payload size."
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+      - "Anonymous DISABLED-mode enumeration (currently allowed, after CUSTOM_METADATA_FIELD_READ permission lands rejected)."
+      - "Owner-association-less user — should they read the catalogue?"
+control_summary: |-
+  0/4 cells COVERED. The catalogue is a load-bearing feature with
+  pageInfo theatre at the contract level (SDK clients lied to),
+  no read scoping (full deployment vocabulary enumerable by any
+  authenticated user), no docs, and three smaller defects (case
+  sensitivity, no ORDER BY, no auto-create rate-limit). F-013
+  covers the WRITE half; F-046 covers the READ half — together
+  they describe the Custom Metadata feature end-to-end.
+related_refactoring_scopes: []
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+  - custom-metadata-field
+  - read-collaborative-posture
+  - openapi-pageinfo-pagination-lie
+related_features:
+  - F-013  # Custom Metadata Field Editing — the WRITE half of the same feature (per-value upsert)
+  - F-008  # Batch Ingestion — collectors create EXTERNAL-origin fields via ingestMetadataFields
+  - F-018  # Manual Object Tagging — tag-directory has the SAME "no read permission, side-channel mint" shape
+  - F-017  # Search Filter Facets — search-facets has a similar global-vocabulary surface
+related_pillar_features: []
+proposed_local_probes:
+  - id: P-shb-008-001
+    description: |-
+      Local stack: insert 10K INTERNAL metadata fields directly; call
+      GET /api/metadata/fields; assert payload size + latency.
+      Bonus: assert hasNext = false even though total > 1000.
+    type: performance
+    cost: low
+  - id: P-shb-008-002
+    description: |-
+      Local stack: anonymous (DISABLED-mode) request to
+      /api/metadata/fields — assert 200 with full vocabulary (locks
+      the no-read-permission posture).
+    type: security
+    cost: low
+  - id: P-shb-008-003
+    description: |-
+      Local stack: POST /api/dataentities/X/metadata with field name
+      `Cost_Centre`; then POST same with `cost_centre`; assert both
+      mint distinct rows (locks the case-sensitivity bug).
+    type: integration
+    cost: low
+ui_unverified: false  # UI hop is enumerated (MetadataCreateFormItem.tsx); UI behaviour around freeSolo + debounce is concrete
+maintainer_curated: false

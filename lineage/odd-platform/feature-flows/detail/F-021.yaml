@@ -769,6 +769,112 @@ batch_extensions:
     headless visiting /activity with seeded users having varied
     user-owner mappings + Postgres assertion on the resulting
     USER_OWNER_MAPPING.OWNER_ID-bound queries.
+- batch: UI-A-2026-05-26
+  entry_point_added: |-
+    react-component:ActivityTabs + react-component:ActivityItem +
+    react-component:Activity (shell). UI-tier review for the
+    cross-pillar UI sweep — adds the two missing primary-source UI
+    nodes to the F-021 contributing_nodes set + surfaces two new
+    UI-tier drift facets at the tabs + item render layers. The
+    Activity shell (Activity.tsx, 19-line two-column wrapper) was
+    already referenced via batch-ZL but is now explicitly anchored
+    as the route element handed to App.tsx:65.
+  contributing_nodes_added:
+  - odd-platform ts react-component component:ActivityTabs
+  - odd-platform ts react-component component:ActivityItem
+  notes: |-
+    Two NEW UI-tier drift facets + three refinements surface from
+    the ActivityTabs + ActivityItem primary-source walk
+    (session-2026-05-26 UI-A, cross-pillar UI sweep slice A):
+
+    (1) NEW UI-COMPONENT-TIER DRIFT FACET — UNKNOWN `type` QUERY-PARAM
+    SILENTLY DEFAULTS TO ALL (MEDIUM, structural). ActivityTabs.tsx:54-56
+    `setSelectedTab(type ? tabs.findIndex(tab => tab.value === type) : 0)`
+    — if `type` is present but unrecognized (e.g. a hand-crafted URL
+    `?type=BOGUS` or a future-enum value the UI bundle hasn't been
+    rebuilt against), `findIndex` returns -1, `selectedTab=-1`, and
+    the AppTabs renders no highlighted tab while the backend
+    ActivityServiceImpl.fetchAllActivities path (the default for
+    unrecognized types per the controller dispatch) returns the ALL
+    feed. Operator sees the cross-owner ALL feed with no tab
+    selected — visually ambiguous. NEW drift facet candidate to
+    add to drift_class_summary:
+    `activity_tabs_unknown_type_param_renders_unselected_tabs_backend_returns_all_feed_silent_default`.
+    ui_unverified=false — verified directly from ActivityTabs.tsx:54-56.
+
+    (2) NEW UI-COMPONENT-TIER DRIFT FACET — `activity.systemEvent`
+    FLAG IS UI-RENDERED BUT NOT WRITE-PATH-WIRED (HIGH, semantics).
+    ActivityItem.tsx:71-79 renders `<GearIcon />` when
+    `activity.systemEvent` is truthy, else `<UserIcon /> + createdBy
+    name`. F-021's existing `ingestion_attribution_null_created_by_no_is_system_event_flag_disambiguator`
+    facet observed that the WRITE PATH (ActivityServiceImpl.java:46-49
+    + ActivityCreateEvent.java:13) accepts a `systemEvent: boolean`
+    field but the mapper does not appear to set `is_system_event`
+    column from it. This UI is the OPERATOR-VISIBLE CONSEQUENCE:
+    the GearIcon-vs-UserIcon discriminator depends on a column the
+    WRITE PATH may leave as schema-default (false) for ingestion +
+    scheduler-flow rows, AND on `createdBy` resolution which is
+    LEFT JOIN orphaned for null-username rows. The UI renders the
+    GearIcon for system events correctly when the write path sets
+    the flag (per V0_0_48__add_activity.sql:8 the column is
+    NOT NULL with default false) — BUT for ANONYMOUS DISABLED-mode
+    mutations, `createdBy` is null AND `systemEvent` is also false
+    (the user mutated, not the system) — the UI renders
+    `<UserIcon /> + createdBy?.owner?.name || identity.username` =
+    empty-text-UserIcon, visually distinct from system but with
+    NO ACTOR NAME — a third visual state the UI does not
+    explicitly handle. STRENGTHENS the existing F-021 facet with
+    the UI render confirmation. NEW drift facet candidate
+    `activityitem_render_three_visual_states_systemevent_real_user_anonymous_disabled_third_state_unhandled`.
+    ui_unverified=false — verified at ActivityItem.tsx:71-79.
+
+    (3) ACTIVITY SHELL EXPLICIT-ANCHOR REFINEMENT (LOW). Activity.tsx
+    is a 19-line wrapper composing `<Filters />` (xs=3) +
+    `<ActivityResults />` (xs=9) inside `S.MainContainer +
+    S.ContentContainer`. No state, no hooks, no permission gate.
+    Confirms the route-mounted element from App.tsx:65 has no
+    intermediate logic — every drift facet observed at Filters /
+    ActivityResults / ActivityTabs surfaces uniformly through this
+    shell. Cross-link: batch ZL referenced this component
+    implicitly; batch UI-A makes the shell-vs-tabs-vs-item
+    decomposition explicit so future sidecar enrichment hits
+    the correct node.
+
+    (4) ACTIVITYITEM PAGINATION-AWARE DATE-GROUPING REFINEMENT
+    (LOW). ActivityResults uses `activitiesByDate` selector which
+    groups by date. The grouping happens client-side after fetch
+    (`getActivitiesByDateByType` redux selector). Activity rows from
+    different SECOND-truncated cursor pages — particularly across
+    the cursor-pagination second-boundary observed in F-021 facet
+    `cursor_pagination_truncate_to_second_skip_under_high_write_rate`
+    — could render with duplicate-date-group headers OR missing
+    rows within the same date. The UI does not visually flag the
+    boundary. Surface refinement — no NEW drift facet, just an
+    operator-impact extension of the existing cursor-pagination
+    facet to the UI render layer.
+
+    (5) ACTIVITYITEM EXTERNALNAME-FALLBACK PATTERN (LOW). Line 53
+    + Line 119 in two other components reads
+    `dataEntity.externalName || dataEntity.internalName` — when
+    an entity's external name is empty (collector did not populate
+    it on ingest), the UI falls back to internalName. Internal
+    names are typically opaque (`postgres://host:5432/db/schema/table`)
+    and the link target via `dataEntityDetailsPath(activity.dataEntity.id)`
+    works regardless. Cross-pillar note (P-01 Discovery): the
+    fallback pattern is uniform across the platform — not a
+    drift facet here, but pinned for cross-feature consistency
+    audit if a future feature changes one site without the others.
+
+    Coherence sweep STRENGTHENS=2 (F-021's
+    ingestion_attribution_null_created_by facet confirmed at
+    ActivityItem render tier; F-021's
+    doc_silence_on_visibility_type_filter_pagination_ordering_partition_lifecycle
+    extended with the type-param-silent-default finding).
+    SUPERSEDES=0. CONFLICTS=0.
+
+    No new probe candidates — both new drift facets are statically
+    observable from the .tsx; the dynamic surface is already
+    covered by P-190 / P-018 / P-019 / P-022 / P-023.
 
 discovered_from_entry_point: rest:GET /api/activity (+ per-entity tab GET /api/activity?data_entity_id={id})
 contributing_nodes:
@@ -783,6 +889,8 @@ contributing_nodes:
 - odd-platform java service service:AlertServiceImpl (the system-event write-path caller)
 - odd-platform java service activity handler:ActivityHandler (snapshot-differ dispatch interface — VAL-LSN-019-B primary-source)
 - odd-platform ts react-component component:Activity (batch ZL — component-layer root /activity; primary-source confirmation of the LSN-020 t('User') filter at Filters.tsx:93-98 + the 5-DB-query-per-filter-twiddle hot path at ActivityResults.tsx:47-50 + the 7-ActivityEventType client-side-only exclusion at Filters.tsx:34-42 + the Filters params.size=100 datasource/namespace dropdown truncation; closes the OPERATOR-VISIBLE half of F-021 at the component tier)
+- odd-platform ts react-component component:ActivityTabs (batch UI-A 2026-05-26 — the 4-tab axis ALL/MY_OBJECTS/DOWNSTREAM/UPSTREAM; surfaces NEW drift `unknown_type_param_silent_default_to_all` at ActivityTabs.tsx:54-56)
+- odd-platform ts react-component component:ActivityItem (batch UI-A 2026-05-26 — the per-row render; surfaces NEW drift `three_visual_states_systemevent_real_user_anonymous_disabled_third_state_unhandled` at ActivityItem.tsx:71-79; renders `dataEntity.externalName || internalName` fallback at line 53)
 description: |-
   The Activity Feed is the audit-trail consumer surface of the platform
   — the user-observable history of data-entity-scoped lifecycle and

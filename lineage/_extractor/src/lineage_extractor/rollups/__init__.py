@@ -11,6 +11,7 @@ from lineage_extractor.nodes import Edge, Node
 from lineage_extractor.rollups.config_prefixes_rollup import write_config_prefixes_rollup
 from lineage_extractor.rollups.controllers_rollup import write_controllers_rollup
 from lineage_extractor.rollups.openapi_tags_rollup import write_openapi_tags_rollup
+from lineage_extractor.rollups.ui_components_rollup import write_ui_components_rollup
 from lineage_extractor.rollups.ui_routes_rollup import write_ui_routes_rollup
 from lineage_extractor.rollups.ui_shell_rollup import write_ui_shell_rollup
 
@@ -19,6 +20,7 @@ _ROLLUP_REGISTRY = {
     "controllers": write_controllers_rollup,
     "openapi_tags": write_openapi_tags_rollup,
     "ui_routes": write_ui_routes_rollup,
+    "ui_components": write_ui_components_rollup,
     "config_prefixes": write_config_prefixes_rollup,
 }
 

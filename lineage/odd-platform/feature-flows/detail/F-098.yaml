@@ -1,0 +1,240 @@
+feature_id: F-098
+feature_name: |-
+  Slack Events Webhook Inbound Integration Security — `POST /api/slack/events`
+  accepts forged events from any internet host because Slack signing-secret
+  HMAC verification is not implemented
+pillar_id: P-10
+pillar_anchored_id: P-10:F-005
+pillar_anchored_feature_name: |-
+  Slack Events inbound integration receiver — the platform's inbound boundary
+  for the Slack Events API integration (sister to the alert-OUTBOUND Slack
+  webhook). Whitelisted from auth in every supported mode; no
+  X-Slack-Signature HMAC verification; no `(provider, event_id)` uniqueness
+  for at-least-once delivery dedup
+seeded_from: SHB-129
+seeded_at: 2026-05-26
+batch_origin: 'batch-shoebox-graduation 2026-05-26 — slice G'
+
+discovered_from_entry_point: |-
+  rest:POST /api/slack/events → EventApiController.handle → SlackEventParser.parse
+  → message_provider_event INSERT → downstream message materialiser. In
+  SecurityConstants.WHITELIST_PATHS — anonymously reachable in every supported
+  auth mode.
+
+primary_subject:
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/EventApiController.java"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/datacollaboration/SlackEventParser.java"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/utils/SecurityConstants.java"
+  - "odd-platform-api/src/main/resources/db/migration/V0_0_59__data_collaboration.sql"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveMessageRepositoryImpl.java"
+
+contributing_nodes:
+  - "controller:EventApiController"
+  - "service:SlackEventParser"
+  - "security-constants:SecurityConstants.WHITELIST_PATHS"
+  - "migration:V0_0_59__data_collaboration.sql"
+  - "repository:ReactiveMessageRepositoryImpl"
+
+chain:
+  - hop: 1
+    node: "rest:POST /api/slack/events"
+    sidecar: unresolved
+    evidence: |-
+      odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/EventApiController.java:22-27
+      — deserialises raw body straight from `@RequestBody Mono<String>`;
+      never reads any header. No @PreAuthorize, no programmatic auth check.
+    multiplicity_per_trigger: 1
+  - hop: 2
+    node: "service:SlackEventParser#parse"
+    sidecar: unresolved
+    evidence: |-
+      odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/datacollaboration/SlackEventParser.java:22-23
+      — `parse(final String rawJson)` takes only the raw body string; no
+      headers, no timestamp, no signature.
+    multiplicity_per_trigger: 1
+  - hop: 3
+    node: "WHITELIST_PATHS contains /api/slack/events"
+    sidecar: unresolved
+    evidence: |-
+      odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/utils/SecurityConstants.java:95-96
+      — WHITELIST_PATHS contains `/api/slack/events` (verified per
+      EventApiController sidecar known_security_gaps[1]); consumed by
+      AuthorizationCustomizer.java:22-23 (OAUTH2/LDAP) and
+      LoginFormSecurityConfiguration.java:49-51 (LOGIN_FORM).
+      DisabledAuthSecurityConfiguration permits everything anyway.
+    multiplicity_per_trigger: 1
+  - hop: 4
+    node: "db-write:message_provider_event INSERT"
+    sidecar: unresolved
+    evidence: |-
+      odd-platform-api/src/main/resources/db/migration/V0_0_59__data_collaboration.sql:25-39
+      — `message_provider_event` table has NO unique constraint on
+      `(provider, event_id)`.
+      odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveMessageRepositoryImpl.java:136-155
+      — INSERT is plain; no `ON CONFLICT` clause. Duplicate Slack deliveries
+      (at-least-once) cause duplicate rows; downstream processor materialises
+      N child `message` rows for one logical event.
+    multiplicity_per_trigger: "1..N (Slack at-least-once delivery; no dedup)"
+
+terminal_side_effect:
+  side_effect_class: db-write
+  description: |-
+    `message_provider_event` row inserted (whether genuine or forged); the
+    downstream materialiser processes the event and inserts a child `message`
+    row on the affected Discussions thread (visible to UI users on the
+    data-entity Discussions tab). For URL-verification challenge events,
+    the platform echoes back the challenge value with 200 OK — no DB write
+    but enables endpoint-existence enumeration.
+  evidence: |-
+    EventApiController.java:22-27 + SlackEventParser.java:22-23 +
+    ReactiveMessageRepositoryImpl.java:136-155 +
+    db/migration/V0_0_59__data_collaboration.sql:25-39.
+
+observed_vs_expected:
+  facets:
+    - facet: Slack signing-secret HMAC verification not implemented
+      observed: |-
+        The entire codebase contains ZERO matches for X-Slack-Signature,
+        signing.secret, signingSecret, verifySignature, or HMAC.SHA256.
+        Slack mandates that receivers validate `X-Slack-Signature`
+        HMAC-SHA256 over `v0:{X-Slack-Request-Timestamp}:{raw body}` using
+        the app's signing-secret. The implementation does none of this.
+        Any internet host can forge Slack events.
+      expected: |-
+        Add config property `datacollaboration.slack-signing-secret`. Mount
+        a Spring WebFilter scoped to `/api/slack/events` that validates
+        `X-Slack-Signature` HMAC-SHA256; reject 401 on mismatch. ~50 LOC.
+        The Slack signing-secret is provided by Slack in the Apps UI
+        alongside the bot OAuth token; operators copy both at deployment.
+      evidence:
+        - "https://api.slack.com/authentication/verifying-requests-from-slack (Slack's published requirement)"
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/EventApiController.java:22-27 (the controller's only signature handling — none)"
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/datacollaboration/SlackEventParser.java:22-23 (parser only takes rawJson)"
+      drift_class: inbound_webhook_signature_unverified
+      provenance: STATIC — SHB-129 evidence; mechanism verified across 6 file:line refs.
+    - facet: endpoint in WHITELIST_PATHS — unauthenticated in every mode
+      observed: |-
+        `/api/slack/events` is in SecurityConstants.WHITELIST_PATHS line 95-96;
+        consumed by AuthorizationCustomizer (OAUTH2/LDAP) and
+        LoginFormSecurityConfiguration. DisabledAuthSecurityConfiguration
+        permits everything anyway. The endpoint is reachable anonymously
+        regardless of the operator's auth-type choice.
+      expected: |-
+        Document the whitelisting + the threat model on the live docs
+        page (`configuration-and-deployment/odd-platform#enable-data-collaboration`)
+        and ship the signing-secret filter as the load-bearing defence.
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/utils/SecurityConstants.java:95-96"
+      drift_class: unauthenticated_under_every_supported_configuration
+      provenance: STATIC — SHB-129 evidence; same class as F-094, F-095, F-097.
+    - facet: no `(provider, event_id)` uniqueness — Slack retries duplicate downstream
+      observed: |-
+        `message_provider_event` table has NO unique constraint on
+        `(provider, event_id)`. Slack at-least-once delivery semantics
+        + missing dedup → duplicate `message_provider_event` rows on
+        retries; downstream processor materialises N child `message` rows
+        for one logical event. Operator-observable: same message appears
+        twice in the thread.
+      expected: |-
+        Either (a) add `UNIQUE(provider, event_id)` via a new Flyway
+        migration, OR (b) add `ON CONFLICT DO NOTHING` on the
+        ReactiveMessageRepositoryImpl INSERT at line 136-155.
+      evidence:
+        - "odd-platform-api/src/main/resources/db/migration/V0_0_59__data_collaboration.sql:25-39"
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveMessageRepositoryImpl.java:136-155"
+      drift_class: at_least_once_delivery_no_dedup
+      provenance: STATIC — SHB-129 evidence.
+    - facet: no audit log — forged-vs-real indistinguishable post-incident
+      observed: |-
+        `message_provider_event` rows lack `created_by_caller_ip` /
+        `created_by_signature_valid` flags. Post-incident analysis cannot
+        distinguish forged from real after the fact; operators have no
+        forensic trail.
+      expected: |-
+        Add `created_by_caller_ip` + `signature_valid_at_receipt` columns
+        on `message_provider_event` (or a separate audit table). Capture
+        from request context at controller-tier; persist with the row.
+      evidence:
+        - "odd-platform-api/src/main/resources/db/migration/V0_0_59__data_collaboration.sql:25-39"
+      drift_class: no_forensic_trail_on_inbound_webhook
+      provenance: STATIC — SHB-129 inference.
+    - facet: forged URL-verification challenge enables endpoint enumeration
+      observed: |-
+        An attacker reaching the platform's HTTP port can forge a Slack
+        URL-verification challenge → platform echoes back the `challenge`
+        value with 200 OK. No harm to the platform, but the 200-on-challenge
+        confirms the endpoint exists, distinguishes ODD installations from
+        non-ODD HTTP hosts at scale.
+      expected: |-
+        Validate the `X-Slack-Signature` signature BEFORE responding to
+        URL-verification challenges (Slack's own requirement). 401 on
+        unsigned challenge.
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/EventApiController.java:22-27"
+      drift_class: endpoint_existence_enumeration_via_unsigned_challenge
+      provenance: STATIC — SHB-129 inference.
+    - facet: "`incoming-webhook` bot scope unused"
+      observed: |-
+        The Slack app manifest published in the live docs requests
+        `incoming-webhook` bot scope, but it is UNUSED by the code (verified
+        per EventApiController sidecar doc_drift_findings[1]) — historical
+        copy-paste from a Slack example manifest. Operators following the
+        docs grant a privilege the platform does not exercise.
+      expected: |-
+        Tighten the manifest to drop the unused scope. Operators see the
+        platform request only the scopes it actually uses.
+      evidence:
+        - "https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform#enable-data-collaboration (manifest)"
+      drift_class: requested_scope_unused
+      provenance: STATIC — SHB-129 + EventApiController sidecar doc_drift_findings[1].
+
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+      - "SlackEventSignatureFilter: assert that valid signature → pass; invalid signature → 401"
+      - "SlackEventParser: assert URL-verification challenge response shape (echo `challenge`)"
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+      - "Forged event lands in message_provider_event under bundled defaults — confirm the attack reaches the table"
+      - "At-least-once delivery duplication — two POSTs with same (provider, event_id) → confirm 2 rows OR 1 row depending on dedup decision"
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+      - "Forged-event volume DoS: fill message_provider_event at attacker rate, measure processor backlog growth"
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+      - "Probe: forged `message` event with `thread_ts` matching a known tracked thread → confirm forged message appears in Discussions tab"
+      - "Probe: forged URL-verification challenge → confirm platform echoes 200"
+      - "Probe: same event_id posted twice → confirm duplicate downstream messages OR dedup behaviour"
+
+control_summary: |-
+  0 of 4 cells PROBED. Evidence is rich (7 file:line refs across controller
+  / parser / WHITELIST / migration / repository); operator-facing symptom
+  (forged messages in Discussions tab) is one probe away from confirmed.
+  This is a DISTINCT angle from F-038 (which covers the Data Collaboration
+  product feature); F-098 anchors the inbound-webhook receiver security.
+
+related_refactoring_scopes: []
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+  - "Slack Events Webhook"
+  - "Data Collaboration"
+
+related_features:
+  - F-038  # Data Collaboration — F-098 elevates the INBOUND WEBHOOK SECURITY angle as distinct from F-038's product-feature angle
+  - F-094  # Ingestion auth coverage matrix — F-098 is the same `unauthenticated_under_every_supported_configuration` shape on a different endpoint
+  - F-097  # Swagger UI surface — exposes `/api/slack/events` in the spec, enabling discoverability of this attack surface
+
+related_retrospectives: []
+
+status: active
+ui_unverified: false
+maintainer_curated: false

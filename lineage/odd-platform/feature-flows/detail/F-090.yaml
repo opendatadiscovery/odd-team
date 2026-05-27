@@ -1,0 +1,226 @@
+feature_id: F-090
+feature_name: |-
+  Permission Read Surface — Contextual vs Non-Contextual Split: the
+  OpenAPI spec exposes `PermissionResourceType.MANAGEMENT` as a valid
+  value on `/api/resource/{type}/{id}/permissions`, but the runtime
+  service rejects MANAGEMENT with HTTP 400 USR001 because management-
+  scope permissions live on a separate endpoint (whoami → Identity.permissions)
+pillar_id: P-09
+pillar_anchored_id: P-09:F-011
+pillar_anchored_feature_name: Permission Read Surface — Contextual vs Non-Contextual Split
+seeded_from: SHB-113
+seeded_at: 2026-05-26
+discovered_from_entry_point: |-
+  controller-method:GET /api/resource/{permission_resource_type}/{resource_id}/permissions
+  (PermissionController.java:19-25, single-method controller) — the
+  spec-driven endpoint a third-party integrator compiling from
+  openapi.yaml believes accepts all four PermissionResourceType enum
+  values, plus the COMPLEMENTARY read surface at
+  GET /api/identity/whoami → Identity.permissions (the
+  non-contextual MANAGEMENT-scope half).
+primary_subject:
+  - odd-platform-specification components.yaml:3381-3387 (PermissionResourceType enum — 4 values incl. MANAGEMENT)
+  - odd-platform-specification openapi.yaml:3681-3702 (the /api/resource/.../permissions operation)
+  - odd-platform-api java controller:PermissionController (lines 19-25)
+  - odd-platform-api java service:PermissionServiceImpl (lines 24-27 MANAGEMENT-reject; lines 47-48 IllegalArgumentException)
+  - odd-platform-api java service:PermissionService (interface: 2 methods — contextual + non-contextual)
+  - odd-platform-api java service:IdentityServiceImpl (consumes getNonContextualPermissionsForCurrentUser)
+  - odd-platform-api java config:PolicyTypeDto (hasContext discriminator: DATA_ENTITY/TERM/QUERY_EXAMPLE = true, MANAGEMENT = false)
+  - odd-platform-ui ts redux/selectors/profile.selectors.ts:17-20 (UI reads BOTH halves)
+contributing_nodes:
+  - odd-platform java controller:PermissionController
+  - odd-platform java service:PermissionServiceImpl
+  - odd-platform java service:PermissionService
+  - odd-platform java service:IdentityServiceImpl
+  - odd-platform java config:PolicyTypeDto
+  - odd-platform-specification components.yaml
+chain:
+  - hop: 1
+    node: odd-platform-specification components.yaml
+    sidecar: unresolved
+    evidence: |-
+      components.yaml:3381-3387 — PermissionResourceType enum declares
+      FOUR values: DATA_ENTITY, TERM, QUERY_EXAMPLE, MANAGEMENT. OpenAPI
+      spec implies all four are valid for the getResourcePermissions
+      operation at openapi.yaml:3681-3702.
+    multiplicity_per_trigger: 1
+  - hop: 2
+    node: odd-platform java controller:PermissionController
+    sidecar: unresolved
+    evidence: |-
+      PermissionController.java:19-25 — single-method controller is
+      type-agnostic; accepts every PermissionResourceType value the spec
+      allows and forwards to the service. The discriminator runs at
+      service tier.
+    multiplicity_per_trigger: 1
+  - hop: 3
+    node: odd-platform java service:PermissionServiceImpl
+    sidecar: unresolved
+    evidence: |-
+      PermissionServiceImpl.java:24-27 — `PolicyTypeDto.valueOf(resourceType.name())`
+      then `if (!policyTypeDto.isHasContext()) throw new
+      BadUserRequestException("Resource type " + resourceType + " does
+      not have context")`. PolicyTypeDto.java:8-12 — DATA_ENTITY/TERM/QUERY_EXAMPLE
+      have hasContext=true; MANAGEMENT has hasContext=false. MANAGEMENT
+      call → HTTP 400 USR001.
+    multiplicity_per_trigger: 1
+  - hop: 4
+    node: odd-platform java service:IdentityServiceImpl
+    sidecar: unresolved
+    evidence: |-
+      IdentityServiceImpl (consumes getNonContextualPermissionsForCurrentUser)
+      → populates Identity.permissions in the whoami response. The
+      whoami response is the ONLY API surface where MANAGEMENT-scope
+      permissions are reachable. UI reads via profile.selectors.ts:17-20.
+    multiplicity_per_trigger: 1
+terminal_side_effect:
+  side_effect_class: page-render
+  description: |-
+    The endpoint returns either (a) HTTP 200 + ResourcePermissions array
+    (contextual half — DATA_ENTITY / TERM / QUERY_EXAMPLE), or (b)
+    HTTP 400 USR001 with body `"Resource type MANAGEMENT does not have
+    context"` (MANAGEMENT call). The OTHER half (whoami) returns
+    Identity.permissions including MANAGEMENT-scope values. Both
+    surfaces participate in the SPA's WithPermissionsProvider.
+  evidence:
+    - "PermissionServiceImpl.java:24-27 (MANAGEMENT-reject)"
+    - "IdentityServiceImpl whoami population"
+observed_vs_expected:
+  facets:
+    - drift_class: openapi_spec_management_valid_runtime_rejects_400_usr001
+      description: |-
+        Third-party client compiled from openapi.yaml believes MANAGEMENT
+        is a valid PermissionResourceType for getResourcePermissions
+        and expects HTTP 200 with management-scope permission list.
+        Runtime returns HTTP 400 USR001 `"Resource type MANAGEMENT
+        does not have context"`. Integrator must read source + IdentityServiceImpl
+        chain + whoami response shape to discover the actual mechanism.
+        Spec-vs-runtime drift.
+      evidence:
+        - "components.yaml:3381-3387 (4-value enum)"
+        - "PermissionServiceImpl.java:24-27 (3-of-4 rejection)"
+      ui_unverified: false
+    - drift_class: contextual_non_contextual_split_undocumented_two_endpoints_one_concept
+      description: |-
+        Permission read surface is bisected:
+        - Contextual half: GET /api/resource/{type}/{id}/permissions
+          (DATA_ENTITY / TERM / QUERY_EXAMPLE only)
+        - Global half: GET /api/identity/whoami → Identity.permissions
+          (MANAGEMENT-scope only; whoami is also covered by F-085)
+        Live `/authorization/permissions` docs WebFetched 2026-05-25
+        document NEITHER endpoint, NEITHER the PermissionResourceType
+        enum, NEITHER the split. The UI consumes BOTH halves via
+        WithPermissionsProvider; the integrator-facing API contract
+        requires reading source.
+      evidence:
+        - "PermissionService.java:7-12 (two interface methods)"
+        - "profile.selectors.ts:17-20 (UI reads both halves)"
+        - "live docs /authorization/permissions WebFetched 2026-05-25"
+      ui_unverified: false
+    - drift_class: live_docs_five_permission_categories_code_four_resource_types_lookup_table_in_management
+      description: |-
+        Live `/authorization` docs claim FIVE permission categories:
+        Data Entity / Term / Query Example / Lookup Table / Management.
+        Code enum exposes FOUR PermissionResourceType values
+        (Lookup Table folded into Management per PolicyPermissionDto.java:80-88).
+        Integrator reading docs builds 5-way switch over documented
+        categories; runtime mismatch with 4-way enum. Lookup Table
+        permissions are reachable only via the Management half (whoami →
+        Identity.permissions carrying LOOKUP_TABLE_* values).
+      evidence:
+        - "live docs /authorization WebFetched 2026-05-25"
+        - "components.yaml:3381-3387 (4-value enum)"
+        - "PolicyPermissionDto.java:80-88 (LOOKUP_TABLE_* lives in Management)"
+      ui_unverified: false
+    - drift_class: illegalargumentexception_on_missing_extractor_5xx_not_400
+      description: |-
+        A NEW PolicyTypeDto value with hasContext=true added without a
+        corresponding ContextualPermissionExtractor bean raises
+        IllegalArgumentException("No extractor for resource type %s") at
+        PermissionServiceImpl.java:47-48. IllegalArgumentException has
+        NO dedicated handler in ControllerAdvice.java:23-66; catch-all
+        surfaces it as HTTP 500 with body "Internal Server Error" —
+        losing the specific message. Maintainer adding a new resource
+        type AND forgetting the extractor sees 500 not 400. Latent
+        regression.
+      evidence:
+        - "PermissionServiceImpl.java:47-48"
+        - "ControllerAdvice.java:23-66 (no IllegalArgumentException handler)"
+      ui_unverified: false
+    - drift_class: ui_consumes_both_halves_no_central_permission_catalogue_endpoint
+      description: |-
+        UI's WithPermissionsProvider consults BOTH endpoints
+        (whoami for global, /api/resource/.../permissions for contextual).
+        Backend has NO central permission-catalogue endpoint that
+        returns all permissions in one call; the UI orchestrates the
+        two halves. An integrator wanting a single "tell me everything
+        I can do" call cannot get it.
+      evidence:
+        - "PermissionProvider.tsx (SHB-105 evidence)"
+        - "PermissionController.java:19-25 (single method, contextual only)"
+      ui_unverified: true   # UI consumption pattern primary-source-cited but not live-probed
+    - drift_class: spec_correctness_vs_architectural_split_pollution
+      description: |-
+        The split is structurally correct — contextual permissions need
+        a resource_id to evaluate policy conditions (e.g.
+        DATA_ENTITY_INTERNAL_NAME_UPDATE for entity 42 — does the
+        policy's `owner=self` predicate match?); MANAGEMENT permissions
+        are global. Architectural anchor: PolicyTypeDto.hasContext. The
+        OpenAPI shape DOES NOT mirror the discriminator — the 4-value
+        enum collapses both categories into one type, then the service
+        rejects half. Either tighten the spec (remove MANAGEMENT from
+        PermissionResourceType) OR add a separate operationId
+        getNonContextualPermissions.
+      evidence:
+        - "PolicyTypeDto.java:8-12 (hasContext discriminator)"
+        - "components.yaml:3381-3387 (4-value enum that ignores discriminator)"
+      ui_unverified: false
+test_matrix:
+  unit: GAP
+  integration: GAP
+  performance: GAP
+  security: GAP
+test_matrix_notes: |-
+  No test coverage of the MANAGEMENT-rejection invariant or the
+  two-endpoint orchestration. Integration target: curl
+  /api/resource/MANAGEMENT/0/permissions → expect 400 USR001 with body
+  containing "does not have context"; curl /api/identity/whoami →
+  expect Identity.permissions includes MANAGEMENT-scope values when
+  authorised.
+related_refactoring_scopes:
+  - REFACTOR-435  # the phantom getPolicyPermissions candidate per batch P
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+  - permission_resource_type_spec_runtime_drift
+  - authorization_read_surface_two_endpoint_split
+related_features:
+  - F-006  # RBAC policy lifecycle — F-006 covers WRITE-side; F-090 is READ-side complement
+  - F-026  # Lookup Tables — F-026 anchors no-context-scoped-permissions for LookupTable; F-090
+           # anchors the READ-side complement (how UI discovers LookupTable permissions via global half)
+  - F-085  # Identity Probe — whoami is the global-half endpoint; F-085 owns the whoami surface
+  - F-029  # Platform Public API Contract (P-11) — spec drift is also a Platform API contract issue;
+           # CROSS-PILLAR enrichment candidate (do not modify F-029 from this slice; flag)
+status: active
+ui_completeness_note: |-
+  UI consumption side (PermissionProvider consuming BOTH halves) is
+  file:line cited from SHB-105 + SHB-113 evidence but NOT live-probed.
+  Facet `ui_consumes_both_halves_no_central_permission_catalogue_endpoint`
+  carries ui_unverified:true.
+maintainer_curated: false
+proposed_action: |-
+  Local docker-compose probe: curl -H "Authorization: <token>"
+  "https://<deployment>/api/resource/MANAGEMENT/0/permissions" — confirm
+  HTTP 400 USR001 with body containing "Resource type MANAGEMENT does
+  not have context". Then curl /api/identity/whoami and confirm
+  identity.permissions contains MANAGEMENT-scope values (POLICY_CREATE,
+  OWNER_CREATE, etc.) for an admin / under DISABLED.
+notes: |-
+  Genuinely new feature shape — the READ-SIDE complement to F-006's
+  WRITE-side RBAC policy lifecycle. F-029 (Platform Public API Contract,
+  P-11) is the upstream pillar that owns OpenAPI-spec-vs-implementation
+  drift in general; F-090 instantiates the pattern for the
+  PermissionResourceType enum specifically. Cross-pillar enrichment of
+  F-029 is a candidate but Slice F should NOT modify F-029 directly
+  (rule: "Slice F should not touch cross-pillar P-11 features"); flagged
+  as cross-pillar candidate for maintainer triage.

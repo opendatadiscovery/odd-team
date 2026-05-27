@@ -1,0 +1,318 @@
+feature_id: F-163
+pillar_id: P-08
+pillar_anchored_id: P-08:F-019
+pillar_anchored_feature_name: One-Shot Token Reveal Affordance Pattern
+feature_name: |-
+  Cross-Management one-shot token reveal pattern — the shared UX
+  shape used by DataSourceItemToken AND CollectorItemToken to handle
+  "ONE-SHOT" plaintext-then-masked credential display. Both
+  components use the IDENTICAL substring-prefix detection
+  (`token.value.substring(0, 6) === '******'`) at lines 26-27 to
+  decide between Regenerate (masked state) and Copy (plaintext state),
+  and BOTH parent items (DataSourceItem.tsx:110-121 +
+  CollectorItem.tsx:87-98) render an InfoItem warning banner ("Save
+  token in a secure location. You will not be able to retrieve it
+  again.") when the token is hidden=false. The pattern is a coherent
+  cross-Management UX feature distinct from each lifecycle feature's
+  own surface (F-020 / F-031) AND distinct from the backend
+  plaintext-everywhere claim — F-163 anchors the UI affordance pattern
+  itself: how the operator perceives the reveal-once contract, what
+  copy / rotate / warning UX is shared across both surfaces, and
+  where the pattern's fragility surfaces.
+seeded_from: ui-review-2026-05-26
+seeded_at: '2026-05-26'
+discovered_from_entry_point: |-
+  Two parallel UI surfaces sharing the identical token-reveal pattern:
+   - ui-component:components/Management/DataSourcesList/DataSourceItem/DataSourceItemToken/DataSourceItemToken.tsx
+   - ui-component:components/Management/CollectorsList/CollectorItem/CollectorItemToken/CollectorItemToken.tsx
+  Both mount one-per-row inside their parent list items.
+primary_subject:
+  - "odd-platform ts components/Management/DataSourcesList/DataSourceItem/DataSourceItemToken/DataSourceItemToken.tsx react-component:DataSourceItemToken"
+  - "odd-platform ts components/Management/CollectorsList/CollectorItem/CollectorItemToken/CollectorItemToken.tsx react-component:CollectorItemToken"
+contributing_nodes:
+  - "odd-platform ts components/Management/DataSourcesList/DataSourceItem/DataSourceItemToken/DataSourceItemToken.tsx react-component:DataSourceItemToken"
+  - "odd-platform ts components/Management/CollectorsList/CollectorItem/CollectorItemToken/CollectorItemToken.tsx react-component:CollectorItemToken"
+  - "odd-platform ts components/Management/DataSourcesList/DataSourceItem/DataSourceItem.tsx react-component:DataSourceItem"
+  - "odd-platform ts components/Management/CollectorsList/CollectorItem/CollectorItem.tsx react-component:CollectorItem"
+  - "odd-platform java TokenMapper class:TokenMapper"
+chain:
+  - hop: 1
+    node: "ui-component:DataSourceItemToken OR CollectorItemToken"
+    sidecar: unresolved
+    multiplicity_per_trigger: "1 per Management list row that has a token"
+    evidence: |-
+      DataSourceItemToken.tsx:25-28 + CollectorItemToken.tsx:25-28 —
+      BOTH components run an identical useEffect on `token.value`
+      change: `setIsHidden(token.value.substring(0, 6) === '******')`.
+      The substring-prefix sniff is the SOLE detection mechanism for
+      whether the server returned plaintext (post-create / post-rotate
+      one-shot) vs masked (any subsequent list refresh). The string
+      literal `'******'` is hard-coded; no shared constant, no
+      isMasked() helper, no fall-back path.
+    unresolved: true
+  - hop: 2
+    node: "rest:POST/PUT response — TokenMapper.mapValue server-side branch"
+    sidecar: '(referenced from F-020 batch-W TokenMapper finding + F-031 token-masking chain)'
+    multiplicity_per_trigger: 1
+    evidence: |-
+      TokenMapper.java:15-18 (per F-020 batch-W controller-tier
+      sidecar chain) ships either the 40-char plaintext token value
+      OR the literal "******" + substring(value.length - 6).
+      `showToken=true` branch emits plaintext; `showToken=false`
+      branch emits the mask. The CONTRACT between server and UI is
+      "first 6 chars == ****** → masked". The contract is
+      unexpressed in code as a shared constant or schema annotation;
+      the UI re-implements it via substring sniff.
+    unresolved: false
+  - hop: 3
+    node: "ui-component:DataSourceItem OR CollectorItem (parent warning banner)"
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      DataSourceItem.tsx:110-121 + CollectorItem.tsx:87-98 — when
+      `isHidden === false` (server returned plaintext), parent
+      renders an InfoItem with `backgroundColor: 'warning.light'`,
+      an AlertIcon, and the body "Save token in a secure location.
+      You will not be able to retrieve it again." The banner is
+      DERIVED from the child's isHidden state via prop-drilling
+      (the child sets parent state); it disappears the moment the
+      child's isHidden flips back to true (next list refresh).
+    unresolved: true
+observed_vs_expected:
+  facets:
+    - facet_id: token_visibility_detection_via_fragile_substring_prefix_sniff_cross_surface
+      drift_class: token_visibility_detection_via_fragile_substring_prefix_sniff_cross_surface
+      severity: MEDIUM
+      observed: |-
+        BOTH DataSourceItemToken.tsx:26 and CollectorItemToken.tsx:26
+        detect "is the token masked?" via
+        `token.value.substring(0, 6) === '******'`. The literal is
+        replicated verbatim between the two components — NO shared
+        constant, NO helper, NO server-side discriminator field on
+        the Token DTO. If a future server-side mask format change
+        (e.g. an operator chooses 8 stars, or a different mask
+        character, or a unicode bullet U+2022) ships, BOTH UI
+        surfaces silently break: the substring sniff returns false,
+        isHidden stays at its initial state (true via useState(true)
+        at parent line 29 for DataSource / line 28 for Collector),
+        and the operator NEVER gets the plaintext-reveal warning
+        banner on a fresh create/rotate. Existing F-020 batch-Q
+        finding `token_visibility_detection_via_fragile_substring_prefix_sniff`
+        names this for the Collector side; F-163 elevates it to the
+        cross-surface architectural pattern.
+      expected: |-
+        Either (a) the Token DTO carries an explicit `isMasked:
+        boolean` field (server-supplied discriminator); OR (b) a
+        shared client constant `MASKED_PREFIX = '******'` is the
+        SOLE owner of the magic literal, imported by both UI
+        components; OR (c) the wire format includes a structured
+        sentinel (`{value: null, masked: true}`) the UI checks
+        without string parsing.
+      evidence:
+        - "DataSourceItemToken.tsx:26 (substring sniff)"
+        - "CollectorItemToken.tsx:26 (identical substring sniff)"
+        - "TokenMapper.java:15-18 (server-side mask format)"
+      operator_visible_consequence: |-
+        Latent — invisible to today's operator under today's mask
+        format. Becomes a silent regression hazard the moment any
+        backend formatting change ships (a future "Show last 4
+        chars only" UX request, a future PII-redaction toolbar
+        knob, etc.).
+      ui_unverified: false
+    - facet_id: token_plaintext_rendered_into_dom_text_node_no_password_input_obfuscation_cross_surface
+      drift_class: token_plaintext_rendered_into_dom_text_node_no_password_input_obfuscation_cross_surface
+      severity: MEDIUM
+      observed: |-
+        BOTH `<Token $isHidden={isHidden}>{token.value}</Token>`
+        (DataSourceItemToken.tsx:34 + CollectorItemToken.tsx:34)
+        render the token value as a plain text node, styled via
+        the `$isHidden` boolean (likely a CSS `filter: blur(...)`
+        or `opacity` — the actual style is in the
+        DataSourceItemTokenStyles / CollectorItemTokenStyles file,
+        not read in this UI pass). NO `<input type='password'>`
+        obfuscation, NO Reveal-on-hover, NO auto-hide timer, NO
+        `Cache-Control: no-store` on the response. A bystander
+        looking over the operator's shoulder, a screen-share, a
+        screenshot uploaded to a bug tracker, or a developer
+        console paste captures the plaintext credential. Existing
+        F-020 batch-Q finding names this for Collector;
+        DataSourceItem.tsx:103-108 shows the IDENTICAL pattern at
+        the DataSource side — F-163 elevates to cross-surface.
+      expected: |-
+        Either (a) the token is rendered into a real
+        `<input type='password' readOnly>` with explicit
+        Reveal-on-hover (browser-native obfuscation); OR (b) an
+        auto-hide timer flips isHidden back to true after N seconds
+        and forces the operator to rotate (acknowledging the
+        copy-then-go contract); OR (c) the response payload includes
+        a one-time download header and the UI offers "Download
+        token.txt" instead of inline display (no plaintext in DOM).
+      evidence:
+        - "DataSourceItemToken.tsx:32-34 (Token text-node render)"
+        - "CollectorItemToken.tsx:32-34 (identical pattern)"
+        - "DataSourceItem.tsx:103-108 + CollectorItem.tsx:80-86 (mount sites)"
+      operator_visible_consequence: |-
+        Token leaks to bystanders / screenshots / screen-shares /
+        copy-of-DOM-source. The warning banner says "save in secure
+        location" but the UI itself displays the credential in
+        plaintext clear-view to anyone the operator's screen is
+        visible to.
+      ui_unverified: true
+      ui_unverified_reason: |-
+        The DataSourceItemTokenStyles / CollectorItemTokenStyles
+        CSS implementation of the $isHidden visual treatment was
+        not read in this UI pass. The substring sniff confirms the
+        is-it-masked decision is JS-level; the CSS may or may not
+        offer additional copy-protection on the visible state.
+    - facet_id: rotate_confirmation_dialog_no_grace_period_warning_cross_surface
+      drift_class: rotate_confirmation_dialog_no_grace_period_warning_cross_surface
+      severity: MEDIUM
+      observed: |-
+        BOTH ConfirmationDialog instances (DataSourceItemToken.tsx:37-49
+        + CollectorItemToken.tsx:37-49) ship the SAME minimal text:
+        title "Are you sure you want to regenerate token for this
+        {datasource|collector}?" + body "Regenerate token for
+        \"{name}\"?". NEITHER warns:
+         (a) NO GRACE PERIOD — the prior token starts 401-ing
+             IMMEDIATELY per F-020's
+             `token_rotation_no_grace_period_old_token_401s_immediately`
+             AND F-031's `destructive_rotation_no_grace_period`;
+         (b) NO SECURITY EFFECT ON DEFAULT — token rotation has
+             ZERO security effect against `/ingestion/entities`
+             until `auth.ingestion.filter.enabled: true` (per F-020
+             batch Q `token_rotation_no_security_effect_on_default_deployment`);
+         (c) THIS WILL BREAK YOUR IN-FLIGHT COLLECTOR — operators
+             rotating a token in production need to redeploy the
+             collector binary with the new token; the dialog gives
+             no warning of this operational consequence.
+        The replicated minimal text suggests a copy-paste pattern
+        across the two surfaces; the consequence is operators
+        rotating tokens because of a perceived leak and inadvertently
+        breaking production ingestion.
+      expected: |-
+        A richer ConfirmationDialog body listing the three
+        consequences explicitly + a checkbox-confirm pattern
+        ("I have planned the collector redeploy" → enable
+        Regenerate button) for production-tier safety. Mirror the
+        DELETE confirmation pattern's explicit
+        "{name} will be deleted permanently" disclosure rather
+        than the current minimal "Are you sure?".
+      evidence:
+        - "DataSourceItemToken.tsx:37-49 (minimal Regenerate dialog)"
+        - "CollectorItemToken.tsx:37-49 (identical minimal dialog)"
+        - "EditableOwnerItem.tsx:59-72 (the DELETE pattern with explicit consequence text — the affordance precedent)"
+        - "F-020 finding: token_rotation_no_grace_period_old_token_401s_immediately"
+        - "F-031 finding: destructive_rotation_no_grace_period"
+      operator_visible_consequence: |-
+        Operator clicks Regenerate to rotate a "leaked" token,
+        production collector starts 401-ing within seconds, paging
+        wakes up. The dialog COULD have warned, but ships verbatim
+        the same "Are you sure?" message everywhere — the dialog's
+        text-only output betrays the operator's trust in the UI's
+        risk model.
+      ui_unverified: false
+    - facet_id: warning_banner_disappears_on_next_list_refresh_no_persistence
+      drift_class: warning_banner_disappears_on_next_list_refresh_no_persistence
+      severity: LOW
+      observed: |-
+        DataSourceItem.tsx:110-121 + CollectorItem.tsx:87-98 render
+        the InfoItem warning banner ONLY while `isHidden === false`.
+        The next list refresh (post-mount fetch, search clear,
+        delete completion, page-paginate) overwrites the redux store
+        with a list call response whose tokens are MASKED — every
+        `token.value` becomes "******xxxxxx", the useEffect re-fires,
+        isHidden becomes true, banner disappears. There is NO
+        local-storage persistence of "operator has seen / dismissed
+        the warning for this token", NO acknowledgement checkbox,
+        NO "I've saved it" confirmation. The operator might miss the
+        warning entirely if they scroll, accidentally click
+        elsewhere, or if a background refetch races.
+      expected: |-
+        Either (a) the banner persists until explicit dismiss
+        (cleared via parent state, not derived from token mask
+        state); OR (b) the banner is presented as a non-dismissable
+        modal blocking the rest of the page until the operator
+        acknowledges; OR (c) the plaintext display is moved to a
+        modal-only affordance (the warning IS the modal — copy
+        from there or accept rotation later).
+      evidence:
+        - "DataSourceItem.tsx:110-121 (banner gated on isHidden)"
+        - "CollectorItem.tsx:87-98 (identical pattern)"
+      operator_visible_consequence: |-
+        Operator distracted mid-create; refreshes the tab; banner
+        gone, token masked. Operator now has a credential they
+        never copied. Recovery requires a rotation (which is the
+        no-grace-period destructive verb above).
+      ui_unverified: false
+    - facet_id: state_hoisting_to_parent_via_setisHidden_props_inverted_data_flow
+      drift_class: state_hoisting_to_parent_via_setisHidden_props_inverted_data_flow
+      severity: LOW
+      observed: |-
+        Both Token components accept `setIsHidden: Dispatch<SetStateAction<boolean>>`
+        as a prop (DataSourceItemToken.tsx:14 + CollectorItemToken.tsx:14),
+        and CALL it from a useEffect on token.value change to set
+        parent's isHidden state. The parent (DataSourceItem.tsx:29 +
+        CollectorItem.tsx:28) holds isHidden in useState(true), passes
+        the setter down. Data flow: child mounts → useEffect fires →
+        child writes to parent state → parent re-renders → warning
+        banner appears or disappears. This is inverted data flow —
+        the child decides the parent's banner visibility based on
+        the server-supplied token value. A cleaner shape: parent
+        derives isHidden from token.value DIRECTLY without the child
+        mediating; the child becomes presentation-only.
+      expected: |-
+        Move the substring sniff to the parent (DataSourceItem /
+        CollectorItem); pass a boolean `isOneShotReveal` down to the
+        Token component. The child becomes a pure render; the parent
+        owns visibility decisions. Mirrors the React lift-state-up
+        idiom.
+      evidence:
+        - "DataSourceItemToken.tsx:14 (setIsHidden prop) + 25-27 (useEffect setter call)"
+        - "CollectorItemToken.tsx:14 + 25-27 (identical pattern)"
+      operator_visible_consequence: |-
+        Latent — invisible to operators. Refactoring concern that
+        compounds with the substring-sniff fragility above (any
+        future surface adding a new token type would need to be
+        wired into both child and parent state plumbing).
+      ui_unverified: false
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+      - "DataSourceItemToken substring sniff returns isHidden=true for masked token value"
+      - "CollectorItemToken substring sniff returns isHidden=true for masked token value"
+      - "DataSourceItemToken substring sniff returns isHidden=false for fresh plaintext token (warning banner appears in parent)"
+      - "ConfirmationDialog text matches the minimal 'Are you sure?' pattern (regression test for the rotate-warning-missing finding)"
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+      - "End-to-end: register datasource → response includes plaintext token → UI renders banner + Copy → list refetch → token masks → banner disappears"
+      - "End-to-end: regenerate collector token → dialog shows minimal text → confirm → new plaintext returned → banner + Copy → refresh → masks"
+      - "Hypothetical: server changes mask format to '$$$$$$' → both UIs silently break (operator never sees banner)"
+  performance:
+    state: N/A
+    covered: []
+    uncovered: []
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+      - "Token plaintext rendered into DOM text node — accessible via document.body.innerText / right-click-inspect / clipboard manager / screen-share"
+      - "Token visible in browser back-forward cache snapshot if Cache-Control: no-store is not set on the create/regenerate response"
+      - "ConfirmationDialog minimal text — operator-error rotation breaks production ingestion (no-grace-period not warned)"
+related_features:
+  - F-020  # Collector Lifecycle — F-163 is the cross-surface shape that the CollectorItemToken contributes to
+  - F-031  # Data Source Lifecycle — F-163 is the cross-surface shape that the DataSourceItemToken contributes to
+  - F-105  # Management Section Route Gating — F-163's tokens are reachable under DISABLED to anonymous callers per F-105
+  - F-008  # Batch Ingestion — the CONSUMER of these tokens (the security model is set in F-008's filter chain)
+  - F-076  # Cross-Management Cascade-on-Delete Pattern — sibling cross-Management UX pattern recognition
+related_concepts:
+  - one-shot-token-reveal
+  - token-mask-format-substring-sniff
+  - plaintext-credential-dom-render
+  - rotate-confirmation-no-grace-warning
+  - cross-surface-replicated-ux-shape
+related_retrospectives: []
+status: ui-complete

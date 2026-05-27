@@ -1,0 +1,287 @@
+feature_id: F-162
+pillar_id: P-08
+pillar_anchored_id: P-08:F-018
+pillar_anchored_feature_name: Integration Wizard Argument-Form Authoring
+feature_name: |-
+  Integration Wizard argument-form UX — IntegrationCodeSnippetWithForm
+  compiles a Handlebars template (server-supplied via the integration
+  manifest YAML loaded by F-033's classpath registry) and renders a
+  client-only argument-collection form. Each declared argument becomes
+  a Controller-based field whose type is dispatched at render time
+  by the `arg.type` enum (STRING / number fallback / BOOLEAN /
+  staticValue). Submitting the form transitions the panel from
+  "showForm" to "Reconfigure" view, where the compiled template is
+  rendered as Markdown (typically a YAML code-fence). Distinct
+  feature from F-033 (the registry / classpath-load chain) and
+  F-033's `installed` dead-field finding: F-162 is the AUTHORING
+  surface — the operator typing values into the wizard, then
+  copy-pasting the resulting Markdown into their collector config.
+seeded_from: ui-review-2026-05-26
+seeded_at: '2026-05-26'
+discovered_from_entry_point: |-
+  ui-component:components/Management/Integrations/Integration/IntegrationContent/IntegrationCodeSnippetWithForm/IntegrationCodeSnippetWithForm.tsx
+  (mounted from IntegrationContent.tsx:14-21 when the parent
+  IntegrationContent receives a snippet with `arguments.length > 0`;
+  fallback to IntegrationCodeSnippet for the arg-less render path).
+primary_subject:
+  - "odd-platform ts components/Management/Integrations/Integration/IntegrationContent/IntegrationCodeSnippetWithForm/IntegrationCodeSnippetWithForm.tsx react-component:IntegrationCodeSnippetWithForm"
+contributing_nodes:
+  - "odd-platform ts components/Management/Integrations/Integration/IntegrationContent/IntegrationCodeSnippetWithForm/IntegrationCodeSnippetWithForm.tsx react-component:IntegrationCodeSnippetWithForm"
+  - "odd-platform ts components/Management/Integrations/Integration/IntegrationContent/IntegrationCodeSnippet/IntegrationCodeSnippet.tsx react-component:IntegrationCodeSnippet"
+  - "odd-platform ts components/Management/Integrations/Integration/IntegrationContent/IntegrationContent.tsx react-component:IntegrationContent"
+chain:
+  - hop: 1
+    node: "odd-platform ts components/Management/Integrations/Integration/IntegrationContent/IntegrationContent.tsx react-component:IntegrationContent"
+    sidecar: unresolved
+    multiplicity_per_trigger: "N snippets per integration tab"
+    evidence: |-
+      IntegrationContent.tsx:12-26 — sorts code snippets by argument
+      count descending, then dispatches each to either
+      IntegrationCodeSnippetWithForm (when arguments.length > 0) or
+      IntegrationCodeSnippet (the plain Markdown render). The sort
+      order means the most-configurable snippet renders first;
+      Markdown of the integration content body renders below.
+    unresolved: true
+  - hop: 2
+    node: "odd-platform ts components/Management/Integrations/Integration/IntegrationContent/IntegrationCodeSnippetWithForm/IntegrationCodeSnippetWithForm.tsx react-component:IntegrationCodeSnippetWithForm"
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      IntegrationCodeSnippetWithForm.tsx:13-133 — controls a
+      showForm boolean (default true) toggling between (a) the
+      argument-collection form (lines 33-121) and (b) the configured
+      Markdown render (lines 122-132). Handlebars.compile is invoked
+      via useCallback on every render (NOT useMemo — line 22-24
+      `useCallback(Handlebars.compile(snippet.template), [snippet.template])`
+      — the useCallback returns the COMPILED RESULT not the compile
+      FUNCTION; the dep array means re-compile on template change).
+      The compiled template is invoked with snippetArgs each render
+      (line 26). On Configure submit (line 28-31), the form values
+      become snippetArgs and showForm flips to false.
+    unresolved: true
+  - hop: 3
+    node: "external library Handlebars (npm:handlebars)"
+    sidecar: '(external library — not under sidecar enrichment)'
+    multiplicity_per_trigger: 1
+    evidence: |-
+      Imported at line 3; consumed at line 22. The template syntax,
+      escaping defaults, and any partials / helpers are governed by
+      the Handlebars runtime. The wizard YAML manifests authored by
+      P-10 integration developers carry Handlebars syntax embedded
+      in the code-snippet templates.
+    unresolved: false
+observed_vs_expected:
+  facets:
+    - facet_id: handlebars_compile_misuse_via_usecallback_invoked_at_render_time_not_memoised
+      drift_class: handlebars_compile_misuse_via_usecallback_invoked_at_render_time_not_memoised
+      severity: LOW
+      observed: |-
+        IntegrationCodeSnippetWithForm.tsx:22-24 declares
+        `const compiledTemplate = useCallback(Handlebars.compile(snippet.template), [snippet.template])`.
+        The semantic intent appears to be "memoise the compiled
+        template across renders" — but `useCallback(value, deps)`
+        memoises a CALLBACK function reference, not an arbitrary
+        value. Here `Handlebars.compile(snippet.template)` is invoked
+        on EVERY render before useCallback receives the result. The
+        compiled template happens to be a function (Handlebars
+        returns a render function), so useCallback's signature
+        accepts it without typecheck error, but the memoization is
+        a no-op — the compile runs every render. For a small wizard
+        manifest the cost is invisible; for a large manifest the
+        per-keystroke re-compile across the React form state cascade
+        is wasteful. The correct call is useMemo.
+      expected: |-
+        Replace with `const compiledTemplate = useMemo(() => Handlebars.compile(snippet.template), [snippet.template])`
+        so the compile happens once per template change instead of
+        every render.
+      evidence:
+        - "IntegrationCodeSnippetWithForm.tsx:22-24"
+        - "https://react.dev/reference/react/useCallback (useCallback memoises a function REFERENCE, not arbitrary values)"
+      operator_visible_consequence: |-
+        Latent — invisible to the operator unless the manifest is
+        huge OR the operator's browser is on a slow device. The bug
+        is a minor inefficiency, not a correctness defect.
+      ui_unverified: false
+    - facet_id: required_field_validate_only_checks_string_branch_number_fields_skip_validation
+      drift_class: required_field_validate_only_checks_string_branch_number_fields_skip_validation
+      severity: MEDIUM
+      observed: |-
+        IntegrationCodeSnippetWithForm.tsx:86-90 — the `rules`
+        block for every non-BOOLEAN non-staticValue argument
+        carries `required: true` AND `validate: value => { if
+        (typeof value === 'string') return !!value.trim(); }`. The
+        validate body explicitly checks `typeof value === 'string'`
+        before applying the trim+empty check. For an `arg.type ===
+        'INTEGER'` field (rendered as type='number' at line 101),
+        `value` arrives as a number (or empty string when the user
+        clears the input). The `typeof value === 'string'` branch
+        FAILS for numbers — the validate function returns undefined,
+        which react-hook-form treats as "valid" (no error). A
+        user submitting a non-empty integer passes; but a user
+        submitting `0` (a legitimate integer that operators commonly
+        pass for "disabled" / "no limit" semantics) ALSO passes
+        without explicit validation of the integer's range, sign,
+        or finiteness. More problematic — there is no min/max/step
+        validation; the `arg.type === 'INTEGER'` schema is enforced
+        ONLY by the browser's type='number' input. Negative numbers,
+        decimals, NaN-on-paste, and very large numbers are accepted.
+      expected: |-
+        Either (a) extend the validate body to branch on `typeof
+        value === 'number'` with appropriate integer/positive/range
+        checks; OR (b) the manifest YAML schema includes per-argument
+        validation hints (min / max / pattern / enum) and the form
+        consumes them; OR (c) live docs / the manifest authoring
+        guide explicitly state that argument values are
+        client-trusted and the collector's own validation is the
+        authoritative gate.
+      evidence:
+        - "IntegrationCodeSnippetWithForm.tsx:86-90 (validate body string-only)"
+        - "IntegrationCodeSnippetWithForm.tsx:101 (type='number' input)"
+      operator_visible_consequence: |-
+        An operator typing an invalid integer (e.g. negative for a
+        retention-days field) submits successfully; the resulting
+        Markdown carries the invalid value verbatim; the operator
+        copy-pastes into their collector config; the COLLECTOR
+        fails at runtime. The error feedback is delayed by the
+        deploy cycle.
+      ui_unverified: false
+    - facet_id: static_value_argument_renders_invisible_input_no_disclosure_to_operator
+      drift_class: static_value_argument_renders_invisible_input_no_disclosure_to_operator
+      severity: LOW
+      observed: |-
+        IntegrationCodeSnippetWithForm.tsx:69-77 — when an argument
+        has `staticValue`, the field renders as a
+        `<input style={{display: 'none'}} value={arg.staticValue}>`
+        registered into the form. The operator NEVER sees that the
+        argument exists or that a hardcoded value is being baked
+        into their copy-pasted snippet. This is the
+        platform_url-substitution mechanism (per F-033's
+        `default_platform_url_placeholder_into_copy_pasted_snippets`
+        finding): the manifest's static `platform_url` argument is
+        injected from server-side mapping context and rendered
+        invisibly into the template.
+      expected: |-
+        Either (a) the form renders a read-only badge for each
+        static argument disclosing its value (so the operator can
+        verify before copy-pasting); OR (b) the manifest authoring
+        guide documents the invisible-injection behaviour; OR (c)
+        a "static substitutions" preview block above the form lists
+        every server-injected value about to be baked in.
+      evidence:
+        - "IntegrationCodeSnippetWithForm.tsx:69-77 (display:none input)"
+        - "F-033 finding: default_platform_url_placeholder_into_copy_pasted_snippets"
+      operator_visible_consequence: |-
+        Per F-033 — under a misconfigured platform.base-url (the
+        default ships as `<odd-platform-repo>`), the operator
+        copy-pastes the snippet and silently bakes the placeholder
+        URL into their collector. Disclosure of the injection point
+        would make this misconfiguration visible at copy-paste time
+        rather than at first-run time.
+      ui_unverified: false
+    - facet_id: configured_snippet_no_explicit_copy_button_relies_on_markdown_renderer_copy_affordance
+      drift_class: configured_snippet_no_explicit_copy_button_relies_on_markdown_renderer_copy_affordance
+      severity: LOW
+      observed: |-
+        IntegrationCodeSnippetWithForm.tsx:122-132 — after
+        Configure, the panel shows the Reconfigure button and the
+        rendered Markdown. There is NO explicit "Copy" button on
+        the configured snippet; the copy affordance depends on the
+        Markdown component's own code-block copy widget (assumption,
+        not verified at this UI pass). For a snippet that operators
+        are EXPECTED to copy-paste verbatim into their collector
+        config, the absence of a top-level Copy button is a friction
+        point — operators triple-click + Ctrl+C, miss the trailing
+        newline or the leading whitespace, and ship subtly broken
+        YAML.
+      expected: |-
+        A "Copy snippet" affordance (with a clipboard icon, mirroring
+        CopyButton at CollectorItemToken.tsx:52) above the rendered
+        Markdown, scoped to the snippet's text and explicit about
+        line-ending normalisation.
+      evidence:
+        - "IntegrationCodeSnippetWithForm.tsx:122-132 (Reconfigure block + Markdown only)"
+        - "CollectorItemToken.tsx:52 (the CopyButton pattern used elsewhere on the same Management section)"
+      operator_visible_consequence: |-
+        Copy-paste friction; subtle whitespace bugs in operator
+        collector config; possible silent dropping of the leading
+        Markdown code-fence backticks if the operator pastes line
+        ranges instead of the whole block.
+      ui_unverified: true
+      ui_unverified_reason: |-
+        The Markdown component's internal copy widget behaviour
+        was not read in this UI pass. /enrich on the shared
+        Markdown component will confirm whether a copy button
+        ships per code-fence.
+    - facet_id: reconfigure_round_trip_loses_typed_values_on_re_show_form_unless_form_state_re_hydrated
+      drift_class: reconfigure_round_trip_loses_typed_values_on_re_show_form_unless_form_state_re_hydrated
+      severity: LOW
+      observed: |-
+        IntegrationCodeSnippetWithForm.tsx:122-128 — clicking
+        Reconfigure (line 124-128) flips showForm back to true but
+        does NOT reset snippetArgs and does NOT explicitly re-hydrate
+        the form fields. react-hook-form's internal state retention
+        across the showForm toggle is implicit and depends on the
+        useForm({}) configuration at line 20 (default — no
+        defaultValues, no shouldUnregister explicit). The user's
+        observed behaviour on Reconfigure: the form likely returns
+        to empty (defaults) rather than pre-populated with the
+        values they just submitted. Operators reconfiguring to tweak
+        a single value end up re-typing every value.
+      expected: |-
+        On Reconfigure, the form should re-hydrate from snippetArgs
+        so the operator's prior values are visible and editable —
+        the natural meaning of "Reconfigure" (vs. "Reset" which
+        could be a sibling affordance).
+      evidence:
+        - "IntegrationCodeSnippetWithForm.tsx:122-128 (Reconfigure button — no reset / no re-hydrate)"
+        - "IntegrationCodeSnippetWithForm.tsx:20 (useForm({}) with no defaultValues)"
+      operator_visible_consequence: |-
+        Operator tweaking one value re-types every value. Friction
+        compounds with the no-copy-button finding above for a
+        workflow that should be a fast configure → copy → done cycle.
+      ui_unverified: true
+      ui_unverified_reason: |-
+        react-hook-form state retention across conditional render
+        depends on internal behaviour not fully traced here; verify
+        empirically.
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+      - "IntegrationCodeSnippetWithForm renders one Controller per non-staticValue argument"
+      - "Boolean argument renders FormControlLabel with Checkbox"
+      - "Integer argument renders Input type='number'"
+      - "StaticValue argument renders display:none hidden input"
+      - "Configure submit transitions showForm from true to false"
+      - "Reconfigure transitions showForm from false to true (does NOT re-hydrate fields per current impl)"
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+      - "Operator fills wizard form for a known integration (e.g. Snowflake), Configure, the rendered Markdown contains substituted values"
+      - "Operator submits Boolean=false explicitly — form treats false as filled and passes required validation"
+      - "Operator submits Number=0 — passes (operator-relevant for retention-disabled semantics)"
+      - "Operator submits an integration with platform_url staticValue under default platform-url=<odd-platform-repo> — placeholder bakes verbatim"
+  performance:
+    state: N/A
+    covered: []
+    uncovered:
+      - "Handlebars.compile invoked on every render (useCallback misuse) — measurable on a large manifest"
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+      - "Handlebars template injection — does the manifest YAML undergo any sanitisation before reaching Handlebars.compile? A malicious wizard manifest could embed {{#with ...}}{{lookup ...}} chains; the client-side render trusts the server-supplied template entirely"
+      - "Markdown rendering of the configured snippet — if the snippet template embeds XSS in the rendered Markdown, does the shared Markdown component sanitise?"
+related_features:
+  - F-033  # Integration Wizard registry — F-162 is the authoring UI surface; F-033 is the registry / classpath chain
+  - F-031  # Data Source Lifecycle — the operator's natural next action after copying the wizard snippet
+  - F-020  # Collector Lifecycle — the credential-issuance surface needed to use the snippet
+related_concepts:
+  - integration-wizard-authoring
+  - handlebars-template-substitution
+  - static-argument-injection
+  - copy-paste-friction
+related_retrospectives: []
+status: ui-complete

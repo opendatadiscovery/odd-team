@@ -978,6 +978,191 @@ batch_extensions:
     The two are complementary: F-006 is "who is admin", F-011 is
     "who is this user at all".
 
+- batch: 2026-05-26-shoebox-F
+  entry_point_added: |-
+    SHB-104 shoebox enrichment — the GitHub-rename hazard concretised
+    as an operator-visible security-boundary failure. F-011 batch O
+    already carries the rename-orphan facet at the OIDC_USERNAME side
+    (github_ghes_hard_coded_login_rename_orphan); this enrichment adds
+    the NEW-USER-INHERITS-OLD-LINK scenario that turns the drift into
+    a security boundary failure under realistic GitHub-login-escrow
+    conditions.
+  contributing_nodes_added: []
+  notes: |-
+    SHB-104 merges into F-011 with three new drift facets:
+
+    (1) GITHUB_LOGIN_ESCROW_NEW_USER_INHERITS_ORPHANED_OWNER_LINK
+    (HIGH — security boundary failure). Operator threat model from
+    SHB-104: a former employee renames their GitHub login alice → alice2
+    (legitimate). A new external contractor signs up for GitHub and
+    grabs `alice` after GitHub's 90-day escrow period. The new alice
+    logs in via the platform's GitHub OAuth IDP, satisfies org-membership
+    at GithubUserHandler.java:76-91, and is treated by
+    AuthIdentityProviderImpl.java:29-33 as a returning user — IF the
+    prior (alice, github) USER_OWNER_MAPPING row was NOT administratively
+    re-bound after the rename. If the orphan row persists, the NEW alice
+    INHERITS the prior alice's Owner-link — every OWNERSHIP row, every
+    TERM_OWNERSHIP row, every MY_OBJECTS-scoped view. The new alice
+    receives the prior alice's data-entity scope, alert tabs, and any
+    role bindings attached to that Owner. This is a security boundary
+    failure caused by GitHub's login-escrow rotation interacting with
+    ODD's mutable username key. NEW drift facet for F-011 —
+    `github_login_escrow_recycle_new_user_inherits_orphaned_owner_link_security_boundary`.
+
+    (2) REGISTRATION_ID_RENAME_HAZARD (MEDIUM — deployment-time
+    migration). The same OAuth2User flow propagates the registrationId
+    (the operator-chosen YAML key like `github_corp`). Renaming
+    `auth.oauth2.client.github` → `auth.oauth2.client.github_corp`
+    ALSO orphans every owner-link because USER_OWNER_MAPPING.PROVIDER
+    is keyed on the registrationId. A deployment-time migration hazard
+    the docs do not warn about. NEW drift facet —
+    `oauth2_registration_id_yaml_key_rename_orphans_user_owner_mapping_provider_column`.
+
+    (3) GENERALISATION_TO_MUTABLE_USERNAME_ATTRIBUTE_FAMILY (LOW —
+    architectural framing). The same shape applies to ANY future OIDC
+    provider configured with `user-name-attribute: preferred_username`
+    (a mutable claim per OIDC core spec §5.1). Today the platform's
+    enum'd providers happen to use stable identifiers (Google `sub`,
+    Azure `oid`, Cognito `cognito:username`) — but the helper
+    AbstractOIDCUserHandler honours provider.getUserNameAttribute()
+    from the POJO, so an operator pointing at any OIDC IdP and
+    configuring a mutable claim attribute reproduces the orphan-by-rename
+    pattern. NEW drift facet —
+    `mutable_username_attribute_family_orphan_by_rename_open_to_any_oidc_provider`.
+
+    Mitigation candidates from SHB-104: (a) switch to GitHub's stable
+    `id` claim as the username key (backward incompatible); (b) add a
+    one-shot CLI/admin endpoint "rebind USER_OWNER_MAPPING from alice
+    to alice2"; (c) emit a startup WARN log + UI banner on first login
+    if no Owner row matches the user; (d) document the rename hazard.
+    Recommendation: (c) is the minimum-viable mitigation that closes
+    the SILENT half without backward-compat impact; (b) is the recovery
+    path for already-orphaned bindings.
+
+    Coherence (LSN-018 Rule 6): STRENGTHENS=3 (F-011 batch-O
+    github_ghes_hard_coded_login_rename_orphan with operator threat
+    model + recycle scenario; F-011 batch-K compound_key_silent_in_docs
+    with the registrationId-rename half; F-011 batch-N
+    cross_provider_username_row_duplication_external_joins with the
+    orphan-then-recycle path). SUPERSEDES=0. CONFLICTS=0. Cross-link
+    with F-084 (OAuth Provider Admin-Detection Matrix — sibling feature
+    minted in this same batch).
+
+- batch: ZL
+  source_thread: SHB-180
+  authored_at: 2026-05-26
+  authored_by: feature-flow-builder (slice H2 parallel triage)
+  notes: |-
+    Merge of SHB-180 — LOGIN_FORM ↔ LDAP ↔ S2S cross-mode owner bleed via
+    `provider=null` collapse. This batch STRENGTHENS the existing F-011
+    drift facets `login_form_ldap_provider_null_cross_mode_bleed` AND
+    `provider_null_cross_mode_bleed_sql_primary_source` with the explicit
+    DB-partial-unique-index enforcement mechanic and the
+    IdentityServiceImpl masking of the empty case. ADDS the realistic
+    LDAP-after-LOGIN_FORM migration attack surface as new evidence.
+
+    PRIMARY-SOURCE STRENGTHENING (no new top-level facets — F-011's existing
+    `login_form_ldap_provider_null_cross_mode_bleed` and
+    `provider_null_cross_mode_bleed_sql_primary_source` already enumerate
+    the class; this merge ADDS five distinct primary-source citations):
+
+    (1) PRINCIPAL RESOLVER PRIMARY SOURCE — `AuthIdentityProviderImpl.java:29-33`
+    is the single point of resolution: OAuth2 → `registrationId`-as-provider;
+    non-OAuth2 (LOGIN_FORM, LDAP, S2S) → `provider=null`. The fix is HERE,
+    not in the repository layer. A one-line change to emit distinct
+    provider literals (`"LOGIN_FORM"` / `"LDAP"` / `"S2S"` / `"DISABLED"`)
+    closes the bleed at the source.
+
+    (2) SQL CONDITION-BUILDER PRIMARY SOURCE —
+    `ReactiveUserOwnerMappingRepositoryImpl.java:116-127` builds the
+    WHERE clause via `getConditions(oidcUsername, provider)`. Line 121-125:
+    `if (StringUtils.isNotEmpty(provider)) PROVIDER.eq(provider) else
+    PROVIDER.isNull()`. The branch fires on null AND on empty-string —
+    both produce the `IS NULL` predicate. The repository code is correct;
+    the resolver is the broken abstraction.
+
+    (3) DB PARTIAL UNIQUE INDEX PRIMARY SOURCE —
+    `V0_0_89__update_user_owner.sql:9-15` declares two partial unique
+    indexes: `unique_deleted_at_per_owner ON user_owner_mapping (owner_id)
+    WHERE deleted_at IS NULL` AND
+    `user_owner_mapping_oidc_username_provider_deleted_key ON user_owner_mapping
+    (oidc_username, provider) WHERE deleted_at IS NULL`. The DB enforces
+    "at most one active row per (username, provider) tuple" — which means
+    a `(alice, null)` row created by a LOGIN_FORM signup BLOCKS a later
+    LDAP `alice` from getting a distinct mapping. The DB-side enforcement
+    is CORRECT for the intended data model; the application-side resolver
+    is the bug.
+
+    (4) IDENTITYSERVICE MASKING PRIMARY SOURCE —
+    `IdentityServiceImpl.java:38-39` — `getAssociatedOwner` →
+    `.defaultIfEmpty(new OwnerPojo())` masks the unmapped case in the
+    `whoami` response (returns an empty OwnerPojo rather than 404). So a
+    user authenticating via a NEW mode whose `(username, null)` slot is
+    held by another mode's prior user gets... the prior user's OwnerPojo.
+    Silent identity collision; whoami response does NOT signal the
+    mismatch.
+
+    (5) CONCEPT-CATALOG CROSS-REFERENCE —
+    `concepts/detail/invariants/provider-null-cross-mode-bleed.yaml`
+    confirms this is a pre-existing concept-catalog invariant captured
+    at concept-merger time. The concept entry should be cross-linked
+    from F-011 (already implicit via the drift_class name).
+
+    THE REALISTIC ATTACK SURFACE — LDAP-AFTER-LOGIN_FORM MIGRATION
+    (new evidence on existing facet):
+    Step 1 — operator runs ODD with `auth.type=LOGIN_FORM`; user
+    `alice@example.com` signs up, gets Owner `Alice`
+    (`user_owner_mapping(oidc_username='alice@example.com',
+    provider=null, owner_id=42)`).
+    Step 2 — operator migrates to `auth.type=LDAP`; LDAP returns a
+    different person with the SAME username `alice@example.com` (same DN
+    format) → principal resolver produces `(oidc_username, provider=null)`
+    → `getAssociatedOwner` returns Owner 42 → the LDAP user INHERITS the
+    LOGIN_FORM user's owner, role bindings, my-objects, alerts. Silent
+    cross-mode identity takeover.
+
+    The S2S case is latent rather than active today (collectors don't
+    have OwnerPojo associations; the ingestion filter sets
+    `COLLECTOR_ID_SESSION_KEY` directly), but the `provider=null`
+    collapse means that IF a future feature added "collector owner"
+    semantics resolving by username, an S2S collector named `alice`
+    would inherit alice's owner.
+
+    DOWNSTREAM IMPACT SURFACE (the bleed is felt by 15 call-sites):
+    `getAssociatedOwner` consumers include SearchServiceImpl
+    `my_objects=true`, AlertService `listByOwner` +
+    `listDependentObjectsAlerts`, DataEntityService `getMyObjects`
+    family, ActivityService `MY_OBJECTS`, DataCollaborationService.
+    Per the AuthIdentityProviderImpl audiences list. Every owner-scoped
+    read on the platform inherits the bleed.
+
+    Follow-up scope candidates:
+      - SEC-NNN (HIGH): AuthIdentityProviderImpl emit distinct provider
+        literal per non-OAuth2 mode (one-line resolver change). Existing
+        `(username, null)` rows stay; the DB partial unique index
+        naturally segregates new mappings.
+      - REFACTOR-NNN: DB migration to backfill provider values on
+        existing `(*, null, *)` rows where operator can attest mode of
+        origin. Manual data-recovery exercise; only relevant for
+        deployments that have actively used multiple non-OAuth2 modes.
+      - DOC-NNN: operator security page CRITICAL admonition for
+        operators considering auth-mode migration: "Migrating between
+        LOGIN_FORM / LDAP / S2S will cause user-to-Owner associations
+        to bleed across modes for any colliding usernames."
+
+    Probe candidate (local-only): run two sequential auth modes
+    (LOGIN_FORM → LDAP) against a fresh container, create user `alice`
+    under each, confirm via `whoami` that the second authentication
+    returns the FIRST user's OwnerPojo.
+
+    Cluster origin: SHB-180 was filed cluster_with F-011 by the mining
+    pass; feature-flow-builder confirms F-011 is the correct merge
+    target. F-011's drift_class_summary already lists
+    `login_form_ldap_provider_null_cross_mode_bleed` (line 8) and
+    `provider_null_cross_mode_bleed_sql_primary_source` (line 14); this
+    merge fills in the primary-source citations + the LDAP-migration
+    attack surface evidence. Provenance: feature-flow-builder slice H2
+    parallel triage 2026-05-26.
 feature_name: Principal-to-Owner resolution — the per-request chokepoint that
   resolves Spring Authentication → UserDto(username, provider) → OwnerPojo via
   USER_OWNER_MAPPING JOIN

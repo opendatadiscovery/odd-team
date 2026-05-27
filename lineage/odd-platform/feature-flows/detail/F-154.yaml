@@ -1,0 +1,262 @@
+feature_id: F-154
+pillar_id: P-06
+pillar_anchored_id: P-06:F-007
+pillar_anchored_feature_name: Term Create / Edit Form — Dialog with namespace autocomplete, Markdown definition editor, client-side duplicate check
+feature_name: |-
+  Term Create / Edit Form — the dialog mounted from "Add term" CTA
+  (TermSearchHeader) and "Edit" CTA (TermDetailsHeader). Carries client-side
+  duplicate detection, no error-path handling for backend failures,
+  Markdown definition editor (XSS surface), and an invalidate-by-undefined-key
+  bug in create mode.
+seeded_from: ui-review-2026-05-26
+seeded_at: 2026-05-26
+discovered_from_entry_point: |-
+  ui-component:TermsForm (mounted from TermSearchHeader "Add term" CTA
+  + TermDetailsHeader "Edit" CTA)
+primary_subject:
+  - odd-platform ts react-component:TermsForm
+contributing_nodes:
+  - odd-platform ts react-component:TermsForm
+  - odd-platform ts react-component:TermSearchHeader
+  - odd-platform ts react-component:TermDetailsHeader
+  - odd-platform java TermController controller-method:createTerm
+  - odd-platform java TermController controller-method:updateTerm
+  - odd-platform java service service:TermServiceImpl
+  - odd-platform java repository reactive repository:ReactiveTermRepositoryImpl
+chain:
+  - hop: 1
+    node: odd-platform ts react-component:TermsForm
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      TermsForm.tsx:31-219 — dual-purpose dialog. Create mode when route
+      has no `termId`; edit mode when `term?.id` exists in redux. On
+      mount fires `fetchTermsSearchResults({searchId, page:1, size:1000})`
+      (lines 71-75) to populate `existingTerms` for client-side duplicate
+      check (lines 84-94). Three Controller fields: name (required +
+      non-whitespace), namespaceName (NamespaceAutocomplete, required),
+      definition (Markdown editor, required + non-whitespace).
+  - hop: 2a
+    node: odd-platform java TermController controller-method:createTerm
+    sidecar: '(referenced from F-024 / F-002 batch U TermController chain)'
+    multiplicity_per_trigger: 1
+    evidence: |-
+      POST /api/terms — TermController.createTerm (line 74,
+      `.map(ResponseEntity::ok)`). Per F-002 batch U facet
+      `term_create_update_status_code_drift_controller_returns_200_spec_201`
+      — returns 200 not the spec'd 201. Per F-002 batch K facet
+      `namespace_create_bypass_via_get_or_create` — TermServiceImpl.createTerm
+      (line 103) calls `namespaceService.getOrCreate(name)` bypassing
+      NAMESPACE_CREATE; if the NamespaceAutocomplete user types a
+      novel namespace, the term-create silently creates a namespace
+      bypassing the documented permission gate.
+  - hop: 2b
+    node: odd-platform java TermController controller-method:updateTerm
+    sidecar: '(referenced from F-024 / F-002 batch U TermController chain)'
+    multiplicity_per_trigger: 1
+    evidence: |-
+      PUT /api/terms/{term_id} — TermController.updateTerm (line 82).
+      Same status-code drift. TermServiceImpl.updateTerm (line 138)
+      also calls namespaceService.getOrCreate — rename-to-novel-namespace
+      bypasses NAMESPACE_CREATE.
+  - hop: 3
+    node: odd-platform java service service:TermServiceImpl
+    sidecar: odd-platform__java__service__service__TermServiceImpl.md
+    multiplicity_per_trigger: 1
+    evidence: |-
+      TermServiceImpl.createTerm (lines 99-117) + updateTerm (lines
+      119-145). Definition string accepted verbatim — no Jsoup.clean,
+      no allowlist, no length cap (per F-002 batch U facet
+      `term_definition_xss_surface_extension_f_004_class_3rd_surface`).
+terminal_side_effect:
+  side_effect_class: db-write
+  description: |-
+    INSERT or UPDATE row in `term` table. Side effects via
+    TermServiceImpl: namespaceService.getOrCreate (silent namespace
+    creation if novel) + updateSearchVectors (FTS refresh) +
+    resolveUnhandledDescriptionMentions (drain staging table on create —
+    cross-time auto-link, see F-056).
+  evidence: |-
+    TermServiceImpl.java:99-117 (create) + :119-145 (update) +
+    :103, 138 (namespace getOrCreate side-channel) +
+    :116 (resolveUnhandledDescriptionMentions cross-time drain).
+  cardinality_per_call: 1 term row + N namespace rows (0 or 1) + N FTS row + M auto-link rows
+amplification_factor: 1
+observed_vs_expected:
+  facets:
+    - facet_id: client_side_duplicate_check_loads_1000_terms_in_memory
+      drift_class: ui_pre_validation_fragile_at_scale
+      severity: MEDIUM
+      observed: |-
+        TermsForm.tsx:71-75 dispatches `fetchTermsSearchResults({searchId,
+        page:1, size:1000})` on form mount. The fetch populates
+        `existingTerms` for the duplicate detector (lines 84-94). Three
+        stacking issues: (i) `size: 1000` hardcoded — a catalog of
+        1001+ terms silently skips the check for the 1001th+ term and
+        the duplicate detector returns no-match; (ii) the check ONLY
+        fires in CREATE mode (line 84 `if (!term?.id)`) — the EDIT
+        path can rename a term to collide with another in the same
+        namespace without any client-side warning; (iii) the backend
+        uniqueness constraint is the authoritative gate but
+        TermServiceImpl.createTerm has no graceful-error path
+        documented; the client check is meant to PREVENT reaching
+        backend rejection. Current shape gives operators false
+        validation that silently breaks at scale + on rename. Also
+        cross-link F-002 batch N
+        `list_term_ref_dtos_count_vs_list_filter_mismatch` —
+        listTermRefDtos may report `total > 1000` but the page=1
+        size=1000 fetch ceilings what the client sees.
+      expected: |-
+        Either (a) drop the client check entirely + add a backend
+        error-translation for the duplicate case (4xx with structured
+        body) + render it on form submit failure; OR (b) implement
+        the check as a server-side validator endpoint
+        (`GET /api/terms/check-name-availability?name=X&namespaceName=Y`)
+        the form calls on blur.
+      evidence:
+        - 'TermsForm.tsx:71-75 (hardcoded size:1000 fetch on mount)'
+        - 'TermsForm.tsx:84-94 (client-side duplicate check)'
+        - 'TermsForm.tsx:84 (CREATE-mode-only gate)'
+      ui_unverified: false
+    - facet_id: no_error_handler_on_dispatch_chain_silent_failure_on_backend_reject
+      drift_class: ui_submit_chain_lacks_catch_silent_failure
+      severity: MEDIUM
+      observed: |-
+        TermsForm.tsx:100-111 — `dispatch(createTerm|updateTerm).unwrap().then(...)`
+        with NO `.catch(...)` handler. If the backend rejects the
+        request (4xx for duplicate name, 5xx for server error), the
+        unwrap().then() chain rejects silently; the dialog STAYS OPEN
+        with the form filled, no error message renders, the user has
+        no feedback. They click "Save" again, get the same silent
+        failure. Pattern is the LSN-024-shaped silent-empty class
+        (cross-link F-064) — feature appears broken without diagnostic.
+      expected: |-
+        Add `.catch((e) => setError(serializeBackendError(e)))` —
+        surface the error in the existing Alert UI (line 122-147 already
+        has the Alert component for the client-side duplicate; reuse
+        for backend errors).
+      evidence:
+        - 'TermsForm.tsx:100-111 (dispatch chain with no .catch)'
+        - 'TermsForm.tsx:50, 122-147 (Alert component scaffolding already exists)'
+      ui_unverified: false
+    - facet_id: query_client_invalidate_by_undefined_termid_in_create_mode
+      drift_class: ui_cache_invalidation_uses_route_termid_in_create_mode
+      severity: MEDIUM
+      observed: |-
+        TermsForm.tsx:106-108 — `await queryClient.invalidateQueries({queryKey:
+        ['term', termId]})`. `termId` comes from `useTermsRouteParams()`
+        (line 36) which is the URL termId. In CREATE mode the form is
+        mounted from `/termsearch/*` where `termId` is `undefined` (or
+        `NaN` per termsRoutes.ts useTermsRouteParams parseInt behaviour
+        — F-024 batch ZH note). The invalidation fires for
+        `['term', undefined]` queryKey — invalidates nothing, OR
+        invalidates the wrong cache slot. The newly-created term's
+        details are not invalidated; the navigation to
+        `termDetailsPath(response.id)` then triggers a fresh fetch
+        (which works), but any future cached lookups for
+        `['term', undefined]` accumulate dead cache entries.
+      expected: |-
+        Use `response.id` from the unwrap result for the invalidation
+        key, OR scope the invalidation to the search-results list
+        (`['term-search', searchId]`) rather than a single-term cache.
+      evidence:
+        - 'TermsForm.tsx:36 (termId from route)'
+        - 'TermsForm.tsx:105-108 (invalidate by route termId in create mode)'
+        - 'routes/termsRoutes.ts useTermsRouteParams parseInt-NaN propagation (F-024 batch ZH)'
+      ui_unverified: false
+    - facet_id: definition_markdown_editor_xss_surface_extension_f_004
+      drift_class: stored_xss_surface_extends_at_authoring_time
+      severity: HIGH
+      observed: |-
+        TermsForm.tsx:168-186 — the definition field is a `<Markdown {...field}
+        editor height={200} />` (line 183). The editor accepts arbitrary
+        Markdown including HTML+JS payloads. On submit the raw string
+        round-trips through TermServiceImpl.createTerm/updateTerm
+        (no sanitisation per F-002 batch U + F-004 batch U). The
+        Markdown editor is the AUTHORING surface for the F-002 facet
+        `term_definition_xss_surface_extension_f_004_class_3rd_surface`
+        — an operator with TERM_UPDATE permission can plant `<script>`
+        payloads via this dialog and the F-004 family stored-XSS
+        triggers for every authenticated viewer.
+      expected: |-
+        Same as F-004 — sanitise at storage or render layer. The
+        TermsForm itself has no responsibility for sanitisation
+        (consumer responsibility), but the form IS the authoring
+        entry point for the XSS surface; documenting that the
+        Markdown definition is treated as trusted HTML is part of
+        TERM_UPDATE permission's docs.
+      evidence:
+        - 'TermsForm.tsx:168-186 (Markdown editor with `editor` prop)'
+        - 'cross-link F-002 batch U term_definition_xss_surface_extension_f_004_class_3rd_surface'
+        - 'cross-link F-004 batch U (primary documentation)'
+      ui_unverified: false
+    - facet_id: namespace_create_via_namespace_autocomplete_bypass_at_authoring_time
+      drift_class: ui_namespace_autocomplete_authors_silent_namespace_creation
+      severity: MEDIUM
+      observed: |-
+        TermsForm.tsx:161-167 — `NamespaceAutocomplete` accepts a novel
+        namespace name (user types a name not in the dropdown). On
+        submit the namespace string flows to
+        TermServiceImpl.createTerm/updateTerm and through to
+        `namespaceService.getOrCreate(namespaceName)` — per F-002 batch K
+        `namespace_create_bypass_via_get_or_create`, this bypasses
+        NAMESPACE_CREATE. The UI provides no signal that typing a
+        novel namespace will create one; it appears to be a selection
+        affordance. An operator with TERM_CREATE but without
+        NAMESPACE_CREATE silently creates new namespaces by typing
+        them.
+      expected: |-
+        Either (a) the NamespaceAutocomplete restricts to existing
+        namespaces (no novel input) and surfaces a separate "Create
+        new namespace" affordance gated by NAMESPACE_CREATE; OR (b)
+        the affordance is documented as "TERM_CREATE includes
+        namespace-create scope".
+      evidence:
+        - 'TermsForm.tsx:161-167 (NamespaceAutocomplete with no creation gate)'
+        - 'F-002 batch K namespace_create_bypass_via_get_or_create'
+      ui_unverified: true
+      ui_unverified_reason: |-
+        NamespaceAutocomplete component not read in this UI walk; the
+        novel-input handling shape determines confirmation OR refinement.
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+      - TermsForm CREATE mode duplicate check fires for catalog <= 1000 terms (pin)
+      - TermsForm CREATE mode duplicate check MISSES for catalog > 1000 terms (pin)
+      - TermsForm EDIT mode rename-to-collision — assert NO client-side warning (pin)
+      - TermsForm submit on backend reject — assert dialog reopens / error renders (pin or fix)
+      - TermsForm invalidateQueries key — assert correct key for create vs edit
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+      - End-to-end create term with novel namespace — observe namespaceService.getOrCreate call
+      - End-to-end create term with backend duplicate (race condition — two clients submit same name) — assert UI surface
+      - End-to-end Markdown definition with <script> payload — round-trip + render assertion (cross-link F-004 P-007/P-009)
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+      - Form mount latency for catalog with 999 terms — measure size=1000 fetch wait
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+      - TERM_CREATE without NAMESPACE_CREATE — silently creates namespace (regression-pin)
+      - TERM_UPDATE renames to a colliding name without DB-level uniqueness violation surfacing (pin)
+status: ui-complete
+related_features:
+  - F-002
+  - F-024
+  - F-056
+  - F-151
+related_concepts:
+  - term-create-edit
+  - client-side-validation-fragility
+  - markdown-xss-surface
+  - namespace-create-side-channel
+related_retrospectives:
+  - LSN-024
+maintainer_curated: false

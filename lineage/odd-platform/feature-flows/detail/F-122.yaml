@@ -1,0 +1,183 @@
+feature_id: F-122
+feature_name: "Operator Management-Endpoint Exposure Surface — `/actuator/env` enumerates configured credentials"
+pillar_id: P-09
+pillar_anchored_id: P-09:F-008
+pillar_anchored_feature_name: "Management-Endpoint Exposure & Credential Handling"
+seeded_from: SHB-177
+seeded_at: 2026-05-26
+discovered_from_entry_point: |-
+  rest:GET /actuator/{env,health,prometheus,info} — Spring Boot Actuator
+  exposed on the same HTTP port as the application. `/actuator/**` is in
+  `SecurityConstants.WHITELIST_PATHS` (reachable BEFORE auth in every
+  mode). `/actuator/env` enumerates every resolved property value
+  including S3 / LDAP / OAuth2 / R2DBC / custom-datasource passwords.
+primary_subject:
+  - "odd-platform-api/src/main/resources/application.yml:226-242 (management block)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/utils/SecurityConstants.java:95-96"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/config/MinioConfig.java:14-17 (@Value access-key/secret-key)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/properties/ODDLDAPProperties.java:10,14 (@Data password)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/auth/properties/ODDOAuth2Properties.java:30,34 (clientSecret no @ToString.Exclude)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/config/R2DBCConfiguration.java:35,58"
+contributing_nodes:
+  - "odd-platform java utils class:SecurityConstants"
+  - "odd-platform java config-class:MinioConfig"
+  - "odd-platform java auth.properties class:ODDLDAPProperties"
+  - "odd-platform java auth.properties class:ODDOAuth2Properties"
+  - "odd-platform java config-class:R2DBCConfiguration"
+  - "odd-platform java config-key-consumer:management.endpoints.web.exposure.include"
+chain:
+  - hop: 1
+    node: "boot:application.yml binds management.endpoints.web.exposure.include=health,prometheus,env,info"
+    sidecar: "application.yml:226-242"
+    evidence: "application.yml:226-242 (management.endpoint.env.enabled=true; show-values=WHEN_AUTHORIZED)"
+    multiplicity_per_trigger: 1
+  - hop: 2
+    node: "SecurityConstants.WHITELIST_PATHS contains `/actuator/**`"
+    sidecar: "SecurityConstants"
+    evidence: "SecurityConstants.java:95-96"
+    multiplicity_per_trigger: 1
+  - hop: 3
+    node: "Spring Boot Actuator EnvEndpoint enumerates @Value-bound properties"
+    sidecar: unresolved
+    evidence: |-
+      `/actuator/env` returns ALL property sources including the platform's
+      `@Value`-bound credentials (MinIO access-key/secret-key, LDAP password,
+      OAuth2 client-secrets, R2DBC password, custom-datasource password).
+    multiplicity_per_trigger: 1
+terminal_side_effect:
+  side_effect_class: page-render
+  description: |-
+    HTTP 200 JSON response enumerating every configured property KEY name
+    + (masked or unmasked, depending on `show-values` setting) VALUE.
+    Field-name leak is unfixable — KEY enumeration alone reveals which
+    auth providers are configured (Google + Azure + LDAP all show up as
+    distinct key prefixes); JDBC URL host:port:database-name is unmasked.
+  evidence: "application.yml:226-242"
+  cardinality_per_call: 1
+amplification_factor: 1
+observed_vs_expected:
+  facets:
+    - drift_class: actuator_path_whitelisted_reachable_unauthenticated_every_mode
+      description: |-
+        `/actuator/**` is in WHITELIST_PATHS — reachable BEFORE auth in every
+        mode (DISABLED + LOGIN_FORM + OAUTH2 + LDAP). An attacker scraping
+        `/actuator/env` under any deployment learns the schema of configured
+        credentials. Network-level mitigation (operator firewall / separate
+        management port) is required; platform default does not provide it.
+      evidence:
+        - "SecurityConstants.java:95-96 (WHITELIST_PATHS includes /actuator/**)"
+        - "application.yml (no management.server.port — actuator on main port)"
+    - drift_class: value_masking_is_defence_in_depth_not_contract
+      description: |-
+        Spring Boot 3.4+ defaults `show-values=NEVER` (or `WHEN_AUTHORIZED`).
+        Platform sets `show-values=WHEN_AUTHORIZED` at application.yml:240.
+        An operator downgrading for debugging OR a pre-3.4 deployment
+        inheriting older `ALWAYS` default instantly leaks every cleartext
+        credential. No platform-side test asserts the masker covers every
+        configured key.
+      evidence:
+        - "application.yml:226-242"
+        - "no platform-side keys-to-sanitize override (grep returns zero)"
+    - drift_class: field_name_leak_credential_schema_enumeration
+      description: |-
+        Even with values masked, `/actuator/env` reveals the SCHEMA of
+        configured credentials: an attacker learns that OAuth2 is wired
+        with Google + Azure clients (because `auth.oauth2.client.google.*`
+        + `auth.oauth2.client.azure.*` keys appear), that LDAP is wired,
+        that REMOTE attachment storage is configured. This is deployment
+        fingerprinting beyond what `/api/appInfo` (SHB-173 / F-119)
+        exposes — SCHEMA fingerprint is broader than the two values
+        AppInfo returns.
+      evidence:
+        - "application.yml (every @Value-bound credential key surfaces)"
+    - drift_class: jdbc_url_unmasked_pg_host_leak
+      description: |-
+        `spring.datasource.url=jdbc:postgresql://...` doesn't match
+        `password|secret|key|token` masker pattern — renders verbatim. An
+        attacker scanning the network learns the PG location:port:dbname.
+      evidence:
+        - "application.yml:7 (shipped default: jdbc:postgresql://postgres:5432/odd-platform)"
+    - drift_class: shipped_default_database_password_well_known_credential
+      description: |-
+        `spring.datasource.password=odd-platform-password` is the shipped
+        default. An operator forgetting to override deploys with a public
+        well-known credential. Combined with `/actuator/env` exposure of
+        the JDBC URL, deployments are one operator-override-skip away from
+        full PG compromise.
+      evidence:
+        - "application.yml:7"
+    - drift_class: lombok_data_tostring_includes_passwords_unfiltered
+      description: |-
+        `@Data` on ODDLDAPProperties (password field) and on
+        ODDOAuth2Properties.OAuth2Provider (clientSecret field) generates
+        `toString()` including the credential verbatim. NO `@ToString.Exclude`
+        on any password / secret / key / token field. A future log line
+        `log.info("loaded properties: {}", properties)` emits LDAP password
+        cleartext. Defence-in-depth gap.
+      evidence:
+        - "ODDLDAPProperties.java:10,14 (@Data, password String)"
+        - "ODDOAuth2Properties.java:30,34 (@Data on OAuth2Provider, clientSecret)"
+    - drift_class: management_server_port_unset_actuator_on_main_port
+      description: |-
+        `management.server.port` is unset; actuator runs on the same HTTP
+        port as the application. No operator can split actuator onto an
+        internal-only port without a deliberate config change. Mitigation
+        is operator-side network discipline (ingress rule / firewall);
+        platform default does not encourage it.
+      evidence:
+        - "application.yml (no management.server.port)"
+test_matrix:
+  unit: GAP
+  integration: GAP
+  performance: GAP
+  security: GAP
+related_refactoring_scopes:
+  - "REFACTOR-029 (per-sidecar refactoring scope on actuator leak)"
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+  - "actuator-credential-exposure"
+status: active
+cross_pillar_relationships:
+  - pillar_id: P-08
+    kind: shares_data_with
+    via: |-
+      Operator-management surface (P-08) — every Properties class binding
+      credentials is observable through `/actuator/env`. F-027 (Attachment
+      Lifecycle), F-006 (RBAC), and F-031 (Data Source Lifecycle) all
+      surface credentials through this endpoint.
+  - pillar_id: P-11
+    kind: shares_data_with
+    via: |-
+      Actuator endpoints are part of the platform's HTTP surface but
+      are operator-infrastructure rather than user-facing API; the
+      P-11 API Reference page does not enumerate them.
+notes_for_maintainer: |-
+  Probe-needed (local-only docker-compose stack): boot default-config
+  platform, `curl localhost:8080/actuator/env`, capture JSON keys to confirm
+  the enumeration above. Verify `show-values` defaults to NEVER empirically.
+
+  Follow-up scope candidates:
+  - SEC-NNN: add `@ToString.Exclude` on every `password|secret|key|token`
+    field across ODDLDAPProperties / ODDOAuth2Properties.OAuth2Provider /
+    any other `@Data`-annotated Properties class.
+  - SEC-NNN: restrict `management.endpoints.web.exposure.include` to
+    `health, prometheus` by default; require opt-in to `env, info`.
+  - DOC-NNN: add operator-page admonition: actuator is on main port with
+    public whitelisting; configure a separate `management.server.port`
+    for production.
+  - SEC-NNN: startup self-check scanning every `@Value`-bound credential
+    against the actuator masker pattern; fail-fast or warn if a key would
+    render unmasked.
+
+  Cluster_with [SHB-173, SHB-174, F-029] per source SHB. F-119 (SHB-173
+  graduation just minted in this same triage) carries the AppInfo
+  fingerprint surface; F-122 carries the broader actuator schema fingerprint
+  surface. The two are complementary.
+provenance: |-
+  Graduated from SHB-177 by feature-flow-builder on 2026-05-26 (parallel
+  triage slice H2). SECURITY-LOAD-BEARING. Evidence rich: 7+ file:line
+  citations across config classes + Properties classes + R2DBC +
+  SecurityConstants + application.yml. Graduation threshold easily met.
+  Cross-pillar with Slice F's session/cookie thread cluster — flagged via
+  cluster_with [SHB-173] without modifying any Slice F F-NNN.

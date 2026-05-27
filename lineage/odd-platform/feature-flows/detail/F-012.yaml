@@ -544,3 +544,86 @@ related_probes: null
 probe_verifications: []
 maintainer_curated: false
 merge_candidate_with: null
+batch_extensions:
+- batch: ui-review-2026-05-26-K
+  entry_point_added: |-
+    ui-component:DataEntityGroupForm — the DEG create/edit dialog at
+    `components/DataEntityDetails/DataEntityGroup/DataEntityGroupForm/DataEntityGroupForm.tsx`
+    (189 loc, hooks=6) + the embedded EntityItem chip-row component
+    (`./EntityItem/EntityItem.tsx`, 33 loc) used for entity removal. The
+    form is the SECOND DEG-membership write surface — NOT the per-entity
+    POST/DELETE flow that F-012 anchors, but the DEG-OWNER-side bulk
+    composition where the operator picks N entities at DEG creation /
+    edit. On submit, `createDataEntityGroup` or `updateDataEntityGroup`
+    Redux thunk dispatches via the `/api/dataentitygroups` POST/PUT
+    surface carrying the full `entities[]` list. After success the form
+    NAVIGATES to `dataEntityDetailsPath(response.id)` (line 97). The
+    SearchSuggestionsAutocomplete (line 153-157) drives entity-add by
+    name search; EntityItem renders the chip with a delete button calling
+    `useFieldArray.remove`.
+  contributing_nodes_added:
+  - odd-platform ts react-component component:DataEntityGroupForm
+  - odd-platform ts react-component component:EntityItem
+  notes: |-
+    UI-tier extension of F-012 per ui-review-2026-05-26 slice K — surfaces
+    a NEW CROSS-FEATURE drift facet adjacent to F-012's eleven existing
+    facets:
+
+    (1) **NEW UI-TIER DRIFT FACET — `DataEntityGroupForm` membership
+    submission is BULK-REPLACE-shaped** (DataEntityGroupForm.tsx:85-99,
+    101). The form's `entities` field array is the FULL DEG membership
+    set; submit issues `updateDataEntityGroup({dataEntityGroupId,
+    dataEntityGroupFormData: data})` carrying the COMPLETE entities[]
+    array — the backend `DataEntityGroupServiceImpl` on PUT replaces the
+    membership set. Operator who opens the Edit dialog, removes one
+    entity chip (EntityItem delete → `useFieldArray.remove`), and presses
+    Save MUTATES MEMBERSHIP via the DEG-side endpoint. This is a SECOND
+    write-path to the same `group_entity_relations` table — the
+    `POST /api/dataentities/{id}/data_entity_group` path F-012 anchors is
+    a per-entity SCALAR add; the PUT /api/dataentitygroups/{id} path is a
+    bulk SET. The two write paths have DIFFERENT AUTHORIZATION SCOPES —
+    per-entity POST is gated on the CHILD entity (F-012's
+    `write_collaborative_no_deg_side_authorization` headline); the DEG-PUT
+    is gated on the DEG itself (DATA_ENTITY_GROUP_UPDATE — DEG-side).
+    The two paths are also FORENSIC-DIFFERENT — F-012's
+    `forensic_silence_on_membership_writes` lock applies to the per-entity
+    POST/DELETE; the DEG-PUT may emit a separate activity event
+    (DATA_ENTITY_GROUP_UPDATED) but the membership-change-within-the-PUT
+    is NOT surfaced as a separate event. Operator using the DEG Edit
+    dialog to remove an entity sees an activity event "DEG updated" not
+    "entity X removed from DEG Y". NEW UI-tier facet candidate
+    (cross-pillar with F-012):
+    `deg_form_edit_dialog_membership_change_via_put_data_entity_groups_distinct_authorization_scope_from_per_entity_post_no_per_member_activity_event`.
+    (Severity MEDIUM — operator-policy + audit-completeness compounding.)
+
+    (2) **CORROBORATION — `EntityItem` delete chip removes from the
+    `entities` field-array ONLY** (DataEntityGroupForm.tsx:101). The
+    `handleRemove(index)` calls `useFieldArray.remove(index)` — no
+    server call fires until form submit. The dialog has `confirmOnClose`
+    (line 200) so an accidental close prompts; but Save with a SHORTER
+    entities[] list bulk-replaces. Operator may not realise the DEG-PUT
+    semantics differ from the per-row POST flow they used elsewhere.
+
+    Coherence sweep STRENGTHENS=2 — F-012 existing facets at the
+    DEG-side UI form:
+      - `hard_delete_vs_soft_delete_cascade_semantic_gap` — the DEG-PUT
+        path issues HARD-deletes for the removed entities (same as
+        user-initiated DELETE per F-012). The asymmetry with cascade
+        soft-delete + restore applies here too.
+      - `write_collaborative_no_deg_side_authorization` — does NOT apply
+        to the DEG-PUT (DEG-side endpoint IS DEG-scoped). The DEG-PUT
+        path is the LEGITIMATE write-from-DEG-owner-side, contrasting
+        with the per-entity POST's write-collaborative weakness — the
+        DEG-PUT exists; operators who want to enforce ownership SHOULD
+        prefer it.
+    SUPERSEDES=0. CONFLICTS=0. NEW=1.
+
+    Cross-pillar note: DataEntityGroupForm is also the entry-point for
+    DEG CREATION (the `else` branch at line 92 dispatches
+    `createDataEntityGroup`). On create, the entities[] are bulk-attached
+    in the same PUT-shaped semantics. This is the ONLY surface to create
+    a DEG with members in one step (the per-entity POST flow F-012
+    anchors requires creating the DEG first via a separate path, then
+    adding entities one at a time). A future F-NNN for "DEG Authoring"
+    (CREATE flow, separate from F-012 MEMBERSHIP) would anchor this
+    component's CREATE branch.

@@ -927,3 +927,85 @@ batch_origin_note: |-
   namespace_name side-door is one of F-028's catalogued call sites),
   F-019 (sibling P-08 lifecycle), F-010 (orphan-token GC gap), F-006
   (the central RBAC gate).
+
+shoebox_extensions_2026_05_26:
+- seeded_from: SHB-092
+  drift_class: operator_vs_collector_silent_overwrite_asymmetric_merge_strengthens_replace_not_merge
+  description: |-
+    STRENGTHENS the existing `replace_not_merge_silent_field_wipe` facet
+    with the CROSS-PATH dimension: the `data_source` table is mutated through
+    TWO disjoint paths that apply DIFFERENT merge semantics. (a) PUT
+    /api/datasources/{id} (Management UI Edit form) uses MapStruct
+    `@MappingTarget` to FULL-REPLACE every mutable field; (b) POST
+    /ingestion/datasources (S2S collector startup) UPSERTs by ODDRN and
+    applies PARTIAL-MERGE of ONLY `name` + `description`. The asymmetry is
+    SILENT at both ends — an operator's UI edit to a datasource's name is
+    overwritten on the next collector startup with no warning; an operator's
+    edit to `connection_url` is preserved because the collector never sends
+    that field. Per ADR-CANDIDATE-142, the asymmetry IS deliberate (collectors
+    are constrained tenants, operators are admins) — the IMPLEMENTATION GAP
+    is that the asymmetry is NOT operator-visible. The UI has no awareness;
+    the docs are silent. The audit-silence (no @ActivityLog on either path
+    end-to-end) compounds the impact: operator returns to find name reverted
+    with NO way to learn it was the collector's startup that overwrote it.
+  evidence:
+  - DataSourceController.java:38-45 (UI update — dataSourceService.update)
+  - DataSourceServiceImpl.java:68-83 (UI service path — @ReactiveTransactional)
+  - DataSourceMapper.java:49-56 (MapStruct @MappingTarget — FULL-REPLACE)
+  - DataSourceIngestionServiceImpl.java:74-92 (S2S path — UPSERT-by-ODDRN narrows to name + description)
+  - DataSourceServiceImpl.java:1-110 (Grep ZERO @ActivityLog on any mutating method)
+  - IngestionDataSourceFilter.java (S2S filter; disjoint auth principal model)
+  - concepts/detail/canonicalisation_candidates/upsert-by-oddrn-partial-merge-collector-driven-only-name-description.yaml
+  - ADR-CANDIDATE-142 (back-link via DataSourceController sidecar)
+  cross_pillar_compounds_with:
+  - F-008 (Batch Ingestion — primary source for the S2S UPSERT path)
+  - F-021 (Activity Feed — the audit-trail surface that does NOT record either write path)
+  - F-020 (Collector lifecycle — credential surface whose startup triggers the overwrite)
+  fix_proposal: |-
+    Per-field `operator_set` boolean OR `last_updated_by` enum
+    (operator | collector) on DataSourcePojo; collector UPSERT respects
+    `operator_set` flags; UI shows a lock icon next to operator-owned
+    fields. Add `@ActivityLog` on both write paths.
+  severity: HIGH
+  drift_class_strengthening: true
+ui_review_2026_05_26:
+  reviewer: ui-review-2026-05-26 (slice G — Management general)
+  status: ui-complete (UI primary-source reaffirms every UI inference + graduates the cross-surface UX pattern to F-163)
+  notes: |-
+    UI walk of DataSourcesList.tsx + DataSourceForm.tsx + DataSourceItem.tsx
+    + DataSourceItemToken.tsx confirms every UI-tier inference at
+    primary source:
+    (1) SUBSTRING-PREFIX MASK SNIFF PRIMARY-SOURCE — DataSourceItemToken.tsx:26-27
+        `setIsHidden(dataSource.token.value.substring(0, 6) === '******')`
+        — IDENTICAL pattern to CollectorItemToken (graduated to F-163).
+    (2) NO ROTATE-WARNING DIALOG PRIMARY-SOURCE — DataSourceItemToken.tsx:37-49
+        ConfirmationDialog: "Are you sure you want to regenerate token
+        for this datasource?" / "Regenerate token for \"{dataSource.name}\"?"
+        — IDENTICAL minimal pattern; no no-grace-period warning, no
+        no-security-effect-on-default warning. Confirmed at file:line.
+    (3) PLAINTEXT TOKEN IN DOM PRIMARY-SOURCE — DataSourceItemToken.tsx:34
+        text-node render. CSS-level styling not read in this UI pass.
+    (4) WARNING BANNER DERIVED FROM CHILD STATE — DataSourceItem.tsx:29 + 110-121.
+        Same inverted data flow as Collector (child sets parent state).
+    (5) HIDE-NOT-DISABLE GATING — DataSourcesList.tsx:90-100,
+        DataSourceItem.tsx:44-56, 57-75.
+    (6) DATASOURCEFORM PRIMARY-SOURCE — DataSourceForm.tsx:95-143:
+        name required; oddrn required AND `disabled={!!dataSource?.oddrn}`
+        at line 121 (ODDRN locked on edit — confirmed); namespaceName
+        via NamespaceAutocomplete (per F-028 side-door); description
+        optional; confirmOnClose at line 168.
+    (7) ODDRN LOCKED-ON-EDIT IS A UX SIGNAL — DataSourceForm.tsx:121
+        is the ONLY field carrying `disabled={...}` semantics. The
+        UI implicitly communicates that ODDRN is identity-bearing
+        (matches F-031's existing finding about UI-admin vs S2S
+        registration paths sharing the data_source table by ODDRN).
+        No accompanying inline help text explaining WHY ODDRN locks
+        on edit; operator might assume the field is "broken" rather
+        than "intentionally identity-bearing". MINOR doc-hint gap.
+    GRADUATED — the cross-surface one-shot token reveal pattern is
+    graduated to F-163; F-031 retains DataSource-specific facets;
+    F-163 owns the cross-surface UX class.
+related_features_ui_additions:
+  - F-163  # One-Shot Token Reveal Affordance Pattern — cross-surface UX class
+  - F-161  # Management Section Top-Level Chrome — sidebar visibility
+  - F-076  # Cross-Management Cascade — sister cascade-on-delete (UI tier note added)

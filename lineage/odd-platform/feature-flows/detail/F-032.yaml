@@ -23,6 +23,9 @@ drift_class_summary:
 - autocomplete_no_debounce_request_burst
 - autocomplete_no_pagination_first_30_only
 - empty_state_undocumented
+- label_promises_runs_implements_tests_by_latest_status
+- autocomplete_stuck_spinner_stale_closure_on_error
+- freesolo_autocomplete_accepts_unresolvable_typed_value_no_id
 cross_pillar_relationships:
 - pillar_id: P-10
   kind: feeds_from
@@ -130,6 +133,67 @@ batch_extensions:
       URL is emitted into the rendered SPA bundle under all four auth
       modes (route sidecar security.data_exposure[0]); under DISABLED
       the bundle is reachable unauthenticated.
+
+- batch: ui-review-2026-05-26
+  entry_point_added: |-
+    No new entry point — slice C of the 13-agent UI feature-mapping pass
+    walked the sub-components TestCategoryResults + MultipleFilterItem*
+    + SelectedFilterOption (already referenced from the batch-ZC sidecars).
+    THREE NEW DRIFT FACETS minted at the per-component tier; no new
+    sidecars (per ui-review BRIEFING — feature-flow patches, not sidecars).
+  contributing_nodes_added: []
+  notes: |-
+    THREE NEW UI-tier drift facets surface from the per-component re-read:
+
+    (1) `label_promises_runs_implements_tests_by_latest_status` (HIGH,
+        LSN-019 family) — promoted from SHB-045. Four independent surfaces
+        (UI ring label "Test Results Breakdown" at DataQualityContent.tsx
+        :110; the per-category total at TestCategoryResults.tsx:14-17,33;
+        the URL `/api/dataqatests/runs`; the OpenAPI summary; the live
+        docs verbatim "count of test runs broken down by status") all
+        promise per-run semantics; the SQL delivers per-test-by-latest-run
+        via DATA_ENTITY_TASK_LAST_RUN's PRIMARY KEY. Three independent
+        layers agree on the wrong meaning. The SHB-045 thread had the
+        "merged_into: F-032" promise but the facet block was not yet
+        explicit in observed_vs_expected — added now.
+
+    (2) `autocomplete_stuck_spinner_stale_closure_on_error` (MEDIUM) —
+        MultipleFilterItemAutocomplete.tsx:91-104 stale-closure useEffect
+        sets optionsLoading=true unconditionally but only false inside
+        `if (hookResult.isSuccess)`; dep array `[searchText,
+        autocompleteOpen]` omits hookResult. Backend error → spinner
+        strands forever; noOptionsText renders as empty string. The
+        bug was logged in F-032's unit test_matrix uncovered list but was
+        NOT a top-level facet — promoted now. Promoted from SHB-157.
+        Member of the cross-component autocomplete-UX class.
+
+    (3) `freesolo_autocomplete_accepts_unresolvable_typed_value_no_id`
+        (LOW) — MultipleFilterItemAutocomplete.tsx:166 has freeSolo;
+        lines 48-55 cast typed string to FilterOption; the resulting
+        chip lacks `.id`; filtersAtom (DataQualityStore.ts:32-42) maps
+        to .id list which becomes `[undefined, ...]`; backend ignores
+        the param; chip APPEARS in SelectedFilterOption list but does
+        NOT filter the dashboard. Operator-visible UX surprise.
+
+    NO new contributing_nodes (the per-component sub-widgets
+    MultipleFilterItem + SelectedFilterOption + LookupTablesSkeleton are
+    pure presentational wrappers; they are SUB-WIDGETS of DataQualityFilters
+    + DataQualityContent which are already contributing_nodes — per the
+    ui-review BRIEFING Skip rule). TestCategoryResults + MultipleFilterItemAutocomplete
+    are also already covered (TestCategoryResults IS a hop-3-leaf contributing_node;
+    MultipleFilterItemAutocomplete is enriched via DataQualityFilters.tsx sidecar).
+
+    Coherence sweep STRENGTHENS=2:
+    - F-032 `autocomplete_no_debounce_request_burst` — extended by the
+      sibling `autocomplete_stuck_spinner_stale_closure_on_error`; the
+      three autocomplete facets (no_debounce + stuck_spinner + no_pagination)
+      together describe the comprehensive autocomplete-UX gap; cross-component
+      lineage to NamespaceAutocomplete (cluster_with SHB-159 + SHB-170).
+    - F-032 `breakdown_3_vs_6_status_doc_drift` — extended by the
+      `label_promises_runs_implements_tests_by_latest_status` HIGH-severity
+      sibling; the two are different doc-drift classes on the same dashboard
+      ring (one is the enumeration count, the other is the runs-vs-tests
+      semantic). SUPERSEDES=0. CONFLICTS=0.
 
 discovered_from_entry_point: ui_route:/data-quality
 description: |-
@@ -823,6 +887,145 @@ observed_vs_expected:
       dashboard.md 2026-05-22 (silent) + DonutChart.tsx:94-95 (the grey
       "No data" slice). Severity: LOW — the silence is a doc-gap; the code's
       behaviour is benign.
+  - facet: |-
+      The Test Results Breakdown ring + per-category tiles count TESTS BY
+      LATEST-RUN STATUS, not RUNS — the label, the URL path, the OpenAPI
+      summary, and the live docs all promise per-run semantics
+    observed: |-
+      Four independent surfaces converge on the operator-mental-model
+      "this is a histogram of how many test EXECUTIONS landed in each
+      status": the UI ring label "Test Results Breakdown"
+      (DataQualityContent.tsx:110), the per-category card total
+      (TestCategoryResults.tsx:14-17 — total = Σ count across statuses),
+      the URL segment `/api/dataqatests/runs`, the OpenAPI operation summary
+      "Get Data Quality tests runs" (openapi.yaml:1975-1976), and the live
+      doc verbatim "the count of test runs broken down by status"
+      (dashboard.md WebFetched 2026-05-25 status 200). The backend SQL joins
+      DATA_ENTITY_TASK_LAST_RUN whose `task_oddrn` is PRIMARY KEY
+      (V0_0_45__last_runs_table.sql:9) — exactly one row per test, the
+      latest-run row. A test that ran 100 times (99 SUCCESS, 1 latest FAILED)
+      contributes ONE to FAILED, not 99 to SUCCESS + 1 to FAILED.
+      TestCategoryResults' large `total` headline (TestCategoryResults.tsx
+      :33) reads as "total runs in this category" to an operator and is
+      actually "total tests in this category." The dashboard cannot
+      distinguish "one transient failure on a stable test" from "a test that
+      fails every run." A flapping test (alternating SUCCESS/FAILED across
+      runs) jumps between buckets each refresh with no test add/remove —
+      operators cannot explain the fluctuation to non-engineering
+      stakeholders.
+    expected: |-
+      Either (a) RENAME every surface to honour the truth — "Tests Breakdown
+      by Latest Run Status" everywhere (URL path, OperationId, UI ring label
+      "Test Results Breakdown", per-category card label, TestCategoryResults
+      `total` rendered as "Total Tests" not implicit "Total Runs", docs);
+      OR (b) add a SECOND endpoint that genuinely counts runs (probably a
+      sample window — last N days) and surface BOTH metrics on the dashboard
+      (one ring "Tests by Latest Status", one "Run Volume by Status, last
+      30d"). Path (a) is mechanical; path (b) is the right product call but
+      requires backend work + a second CTE.
+    drift_class: label_promises_runs_implements_tests_by_latest_status
+    provenance: |-
+      STATIC-INFERRED — promoted from SHB-045 (HIGH severity, LSN-019 family).
+      Evidence: ReactiveDataQualityRunsRepositoryImpl.java:76,95,100 (the
+      JOIN + GROUP BY against DATA_ENTITY_TASK_LAST_RUN) +
+      V0_0_45__last_runs_table.sql:7-13 (task_oddrn PRIMARY KEY guaranteeing
+      single-row-per-task) + V0_0_45__last_runs_table.sql:15-21 (DISTINCT ON
+      back-fill preserving only the most recent run) + openapi.yaml:1975-1976
+      (the operation summary "tests runs") + DataQualityContent.tsx:110
+      (the ring label) + TestCategoryResults.tsx:14-17,33 (the per-category
+      `total` summing tests-by-latest-status) + dashboard.md WebFetched
+      2026-05-25 (verbatim "count of test runs broken down by status") +
+      DataQualityCategoryMapperImpl.java:45-60 (closed-enum 6×6 padding
+      hiding "no runs" from "0 tests with latest=X"). Severity: HIGH — first
+      PR consumer building a BI panel against /api/dataqatests/runs writes the
+      wrong query (SUM(count) across statuses ≠ total runs; it equals total
+      tests). LSN-019 family — three independent surfaces agree on the wrong
+      meaning. The first-listed maintainer ADR-shape decision is path (a)
+      rename; logged for graduation. ui_unverified: false (TestCategoryResults
+      .tsx render is directly observable; backend SQL primary-source verified).
+  - facet: |-
+      Autocomplete spinner strands forever when the list-API call errors
+      — stale-closure useEffect leaves optionsLoading=true with empty
+      noOptionsText, operator sees a permanent spinner with no error message
+    observed: |-
+      MultipleFilterItemAutocomplete.tsx:91-104 — the useEffect that drives
+      optionsLoading runs setOptionsLoading(true) unconditionally on every
+      [searchText, autocompleteOpen] change but ONLY runs
+      setOptionsLoading(false) inside `if (hookResult.isSuccess)`. The dep
+      array `[searchText, autocompleteOpen]` excludes `hookResult` — when
+      the list query fails (any 4xx/5xx, network error, or even cancellation)
+      hookResult flips to {isSuccess:false, isError:true} but the effect does
+      NOT re-run because neither dep changed; optionsLoading remains true
+      forever. MultipleFilterItemAutocomplete.tsx:162 renders
+      `noOptionsText={optionsLoading ? '' : 'No options'}` — empty string
+      while stuck. The operator sees the dropdown open, an empty list, an
+      indefinite spinner, no "No options", no error message. The autocomplete
+      is unusable for that filter for the rest of the session unless the
+      operator closes-and-reopens (autocompleteOpen toggles, re-firing the
+      effect). Same shape applies to all 10 filter autocompletes on the
+      dashboard (5 dimensions × 2 sides) and likely to the platform-wide
+      NamespaceAutocomplete pattern (cross-component sibling — SHB-159/170).
+    expected: |-
+      Either (a) add `hookResult.isLoading` / `hookResult.isError` to the
+      effect's dep array so the loading flag updates on any state change;
+      OR (b) refactor to drive optionsLoading directly from
+      hookResult.isLoading (no useState, no effect — derived state); OR
+      (c) explicit error UI when hookResult.isError (show "Failed to load
+      options — retry" instead of a stuck spinner). The codebase's
+      NamespaceAutocomplete (the platform-wide sibling) already imports
+      useDebouncedCallback — the dependency exists.
+    drift_class: autocomplete_stuck_spinner_stale_closure_on_error
+    provenance: |-
+      STATIC-INFERRED — promoted from SHB-157 (MEDIUM severity). Evidence:
+      MultipleFilterItemAutocomplete.tsx:91-104 (the stale-closure useEffect)
+      + MultipleFilterItemAutocomplete.tsx:162 (the noOptionsText empty-string
+      branch). Severity: MEDIUM — invisible on a healthy backend; surfaces
+      immediately on flaky network or rate-limiting. Member of the
+      cross-component autocomplete-UX class (cluster_with SHB-159 / SHB-170
+      for the platform-wide NamespaceAutocomplete pattern). Adjacent to the
+      existing autocomplete_no_debounce_request_burst +
+      autocomplete_no_pagination_first_30_only facets — together the three
+      describe the comprehensive autocomplete-UX gap. ui_unverified: false
+      (directly observable in the .tsx; the dep-array omission is a
+      compile-time-visible static fact).
+  - facet: |-
+      Autocomplete is freeSolo — operators can type and "select" a value
+      that does not correspond to any real backend entity; the resulting
+      FilterOption has no id and silently de-selects on filter submission
+    observed: |-
+      MultipleFilterItemAutocomplete.tsx:166 sets `freeSolo` on the MUI
+      Autocomplete. When freeSolo is true, MUI emits the typed string
+      (rather than rejecting it) on Enter / blur, and
+      handleAutocompleteSelect (lines 48-55) casts it via `option as
+      FilterOption` — but the typed string is a plain `string`, not a
+      `{name, id}` object. The downstream filtersAtom projection
+      (DataQualityStore.ts:32-42) maps each FilterOption[] to its `id` list;
+      a freeSolo-emitted string has no `.id` (becomes `undefined`), and the
+      resulting `[undefined, ...]` is sent to the backend filter query as
+      `titleIds=undefined,...` (or similar). React Query serialises the
+      undefined to no value; the backend ignores the param; the dashboard
+      doesn't actually filter by what the operator typed. The chip APPEARS
+      in the SelectedFilterOption list (rendering `selectedOption.name` —
+      string is truthy) but does NOT narrow the dashboard. Operator sees
+      "I selected 'fooBar', why didn't the dashboard change?" without an
+      explanation. freeSolo's use case is genuine "free-text search" but the
+      dashboard filter is an id-bound selector — the two intents conflict.
+    expected: |-
+      Either (a) remove freeSolo so the autocomplete rejects unmatched
+      strings; OR (b) keep freeSolo but reject the onChange when
+      typeof option === 'string' (don't add a non-id'd chip to
+      selectedOptions); OR (c) the SelectedFilterOption chip renders an
+      explicit "unresolved" badge when it lacks an id, so the operator sees
+      why the filter has no effect.
+    drift_class: freesolo_autocomplete_accepts_unresolvable_typed_value_no_id
+    provenance: |-
+      STATIC-INFERRED — observed directly in
+      MultipleFilterItemAutocomplete.tsx:166 (freeSolo) + lines 48-55 (the
+      string-cast to FilterOption) + DataQualityStore.ts:32-42 (the .id-only
+      projection). Severity: LOW — operator-visible UX surprise but no data
+      exposure; chips look added but the dashboard renders unfiltered.
+      ui_unverified: false (the freeSolo flag is a direct render-time JSX
+      prop; the FilterOption shape is a direct generated-types constraint).
   surfaced_by:
   - 'DataQuality: odd-platform__ts__react-component__component__DataQuality.md (batch ZC)'
   - 'DataQualityContent: odd-platform__ts__react-component__component__DataQualityContent.md (batch ZC)'
@@ -842,6 +1045,8 @@ test_matrix:
     - 'TestCategoryResults sortedResults — produces tiles in fixed DataEntityRunStatus enum order regardless of backend serialisation order (TestCategoryResults.tsx:19-25)'
     - 'TestCategoryResults total / en-dash — total sums every count; a tile renders the en-dash for count 0 and the numeral for count > 0 (TestCategoryResults.tsx:14-17,39)'
     - 'autocomplete optionsLoading — returns to false after the list query resolves, for the success AND error paths (MultipleFilterItemAutocomplete.tsx:91-104 stale-closure bug)'
+    - 'autocomplete freeSolo rejection — typing an unmatched value and pressing Enter does NOT add a no-id FilterOption to selectedOptions (MultipleFilterItemAutocomplete.tsx:48-55,166)'
+    - 'per-category total label — TestCategoryResults header reads "Total Tests" (not "Total Runs") to match the actual semantic (TestCategoryResults.tsx:33 + SHB-045 LSN-019 family)'
   integration:
     state: GAP
     covered: []

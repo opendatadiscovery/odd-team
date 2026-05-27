@@ -1,0 +1,216 @@
+feature_id: F-088
+feature_name: |-
+  S2S API Key — Global Admin Grant Surface (auth.s2s.enabled): a single
+  X-API-Key shared secret grants synthetic ADMIN authority across ALL
+  /** paths under LOGIN_FORM / OAUTH2 / LDAP — far broader than the
+  "S2S" name suggests, with cross-mode collision against any operator-
+  named user "ADMIN"
+pillar_id: P-09
+pillar_anchored_id: P-09:F-009
+pillar_anchored_feature_name: S2S API Key — Global Admin Grant Surface
+seeded_from: SHB-109
+seeded_at: 2026-05-26
+discovered_from_entry_point: |-
+  filter-tier:S2sAuthenticationFilter — composed at
+  SecurityWebFiltersOrder.HTTP_BASIC (highest-priority pre-authentication
+  slot) inside the OAUTH2 / LDAP / LOGIN_FORM SecurityWebFilterChains.
+  Under DISABLED, the filter is silently ignored (no wiring). For any
+  inbound request bearing `X-API-Key: <auth.s2s.token>`, the filter
+  forces the SecurityContext to a synthetic `User.withUsername('ADMIN')
+  .password('').roles('ADMIN')` principal for the entire request.
+primary_subject:
+  - odd-platform-api java auth filter:S2sAuthenticationFilter (lines 31-39 hardcoded ADMIN principal)
+  - odd-platform-api java config:OAuthSecurityConfiguration (lines 90, 108-110 wires filter at HTTP_BASIC)
+  - odd-platform-api java config:LDAPSecurityConfiguration (lines 149-151 wires filter)
+  - odd-platform-api java config:LoginFormSecurityConfiguration (lines 61-63 wires filter)
+  - odd-platform-api java config:DisabledAuthSecurityConfiguration (does NOT read auth.s2s.enabled — silent ignore)
+  - odd-platform-api java service:AuthIdentityProviderImpl (lines 29-33 else-branch → UserDto('ADMIN', null) provider=null)
+  - odd-platform-api java repository:ReactiveUserOwnerMappingRepositoryImpl (lines 116-127 case-sensitive eq)
+contributing_nodes:
+  - odd-platform java auth filter:S2sAuthenticationFilter
+  - odd-platform java config:OAuthSecurityConfiguration
+  - odd-platform java config:LDAPSecurityConfiguration
+  - odd-platform java config:LoginFormSecurityConfiguration
+  - odd-platform java config:DisabledAuthSecurityConfiguration
+  - odd-platform java service:AuthIdentityProviderImpl
+  - odd-platform java repository:ReactiveUserOwnerMappingRepositoryImpl
+chain:
+  - hop: 1
+    node: odd-platform java auth filter:S2sAuthenticationFilter
+    sidecar: unresolved
+    evidence: |-
+      S2sAuthenticationFilter.java:31-39 — `User.withUsername('ADMIN')
+      .password('').roles('ADMIN').build()` + getAuthorities(true). On
+      X-API-Key match the SecurityContext is forced with this identity
+      for the entire request.
+    multiplicity_per_trigger: 1
+  - hop: 2
+    node: odd-platform java config:OAuthSecurityConfiguration
+    sidecar: unresolved
+    evidence: |-
+      OAuthSecurityConfiguration.java:90, 108-110 — `if (s2sEnabled)
+      sec.addFilterAt(s2sAuthenticationFilter, SecurityWebFiltersOrder.HTTP_BASIC)`.
+      HTTP_BASIC is the highest-priority pre-authentication slot — S2S
+      RUNS BEFORE OAuth2 login challenge.
+    multiplicity_per_trigger: 1
+  - hop: 3
+    node: odd-platform java service:AuthIdentityProviderImpl
+    sidecar: unresolved
+    evidence: |-
+      AuthIdentityProviderImpl.java:29-33 — the S2S synthetic principal
+      is a UsernamePasswordAuthenticationToken (NOT OAuth2AuthenticationToken),
+      so the else-branch fires at line 32 → UserDto('ADMIN', null) —
+      provider=null.
+    multiplicity_per_trigger: 1
+  - hop: 4
+    node: odd-platform java repository:ReactiveUserOwnerMappingRepositoryImpl
+    sidecar: unresolved
+    evidence: |-
+      ReactiveUserOwnerMappingRepositoryImpl.java:116-127 —
+      `getConditions('ADMIN', null)` builds
+      `WHERE OIDC_USERNAME='ADMIN' AND PROVIDER IS NULL AND DELETED_AT IS NULL`.
+      Case-sensitive `eq` (not equalsIgnoreCase). If operator has named
+      a real LOGIN_FORM / LDAP user `ADMIN` (uppercase, case-sensitive
+      match), the S2S caller INHERITS that user's Owner-link.
+    multiplicity_per_trigger: 1
+terminal_side_effect:
+  side_effect_class: db-write
+  description: |-
+    Any controller endpoint the request body invokes — including
+    POST /api/policies, POST /api/owners, POST /api/users, PUT
+    /api/data-entities/{id}/internal-name, DELETE /api/policies/{id},
+    etc — runs with ADMIN authority. The terminal effect is the same
+    as any admin operator's: arbitrary DB mutation across every catalog
+    entity.
+  evidence:
+    - "S2sAuthenticationFilter.java:31-39 (synthetic ADMIN principal)"
+    - "OAuthSecurityConfiguration.java:90, 108-110 (filter scope is /**)"
+observed_vs_expected:
+  facets:
+    - drift_class: s2s_filter_scope_is_global_not_ingestion_only_name_misleading
+      description: |-
+        The filter NAME "S2S" implies "server-to-server ingestion-shaped";
+        the actual scope is ADMIN across /**. Operators writing thin-client
+        ingestion scripts inadvertently expose admin-equivalent capability
+        — the X-API-Key works for /api/policies CREATE, /api/owners
+        CREATE, /api/users mutations, ALL platform mutation endpoints.
+        Live S2S docs (verified 2026-05-10) say "Requests carrying a
+        valid token run with the built-in ADMIN user and ADMIN role,
+        so they can call any endpoint that admins can call" — the docs
+        ARE accurate but the SCOPE distinction is buried in one sentence.
+      evidence:
+        - "S2sAuthenticationFilter.java:31-39"
+        - "OAuthSecurityConfiguration.java:108-110"
+        - "live docs /authentication/s2s WebFetched 2026-05-10"
+      ui_unverified: false
+    - drift_class: ADMIN_uppercase_username_collision_with_operator_named_user
+      description: |-
+        S2S synthetic username is literal `ADMIN` (uppercase). An
+        operator who has named a real LOGIN_FORM or LDAP user `ADMIN`
+        (case-sensitive match at ReactiveUserOwnerMappingRepositoryImpl.java:116-127
+        uses `eq`, not `equalsIgnoreCase`) sees the S2S caller INHERIT
+        that user's USER_OWNER_MAPPING row. The S2S caller becomes the
+        operator-`ADMIN`-user for Owner-scoped reads. Cross-mode bleed
+        via username + provider=null. F-011 carries the SQL-layer
+        primary-source.
+      evidence:
+        - "S2sAuthenticationFilter.java:34 (literal 'ADMIN')"
+        - "ReactiveUserOwnerMappingRepositoryImpl.java:116-127 (eq case-sensitive)"
+      ui_unverified: false
+    - drift_class: s2s_silently_ignored_under_disabled_property_accepted_no_filter
+      description: |-
+        DisabledAuthSecurityConfiguration.java:13-18 does NOT read the
+        auth.s2s.enabled property. An operator setting
+        `auth.type=DISABLED` + `auth.s2s.enabled=true` gets the property
+        accepted but no filter wired. The combined "DISABLED + S2S
+        enabled" configuration is silently the same as "DISABLED" —
+        S2S is inert. No boot warning, no docs warning.
+      evidence:
+        - "DisabledAuthSecurityConfiguration.java:13-18"
+      ui_unverified: false
+    - drift_class: api_key_at_http_basic_overrides_session_cookie_under_login_form
+      description: |-
+        A request bearing BOTH X-API-Key AND a session cookie — under
+        LOGIN_FORM the session-cookie auth runs AFTER the S2S filter at
+        HTTP_BASIC order; the S2S identity wins (synthetic ADMIN), the
+        session-cookie identity is discarded. Reverse of operator
+        intuition ("my session should win, the API key is fallback").
+      evidence:
+        - "LoginFormSecurityConfiguration.java:61-63 (addFilterAt HTTP_BASIC)"
+      ui_unverified: false
+    - drift_class: token_not_constant_time_compared_timing_oracle_low_severity
+      description: |-
+        The S2S filter validates the token via s2sTokenProvider.isValidToken(...)
+        with no MessageDigest.isEqual constant-time comparison (sibling
+        pattern to IngestionDataEntitiesFilter). Timing-based discovery
+        on a low-latency network is theoretically feasible. Low-severity
+        on realistic deployment topology but the pattern is platform-wide.
+      evidence:
+        - "S2sAuthenticationFilter.java token validation path"
+      ui_unverified: false
+    - drift_class: token_singleton_no_rotation_no_per_caller_no_audit_trail
+      description: |-
+        auth.s2s.token is a YAML/env single-string shared secret.
+        @Value-read once at startup. No rotation, no per-caller token,
+        no scoped tokens, no audit trail on which automation script used
+        the token. If exfiltrated, operator must coordinate token
+        rotation across every automation consumer AND restart the
+        platform.
+      evidence:
+        - "auth.s2s.token @Value read at S2sAuthenticationFilter / s2sTokenProvider"
+      ui_unverified: false
+    - drift_class: whoami_via_x_api_key_returns_username_ADMIN_uppercase
+      description: |-
+        Under auth.s2s.enabled=true, GET /api/identity/whoami with
+        X-API-Key: <token> returns `username='ADMIN'` (uppercase synthetic
+        principal name), NOT the dummyOwner fallback (lowercase 'admin').
+        Cross-link with F-085 (Identity Probe): the S2S identity surface
+        coexists with the DISABLED-mode dummyOwner surface; the two are
+        distinguishable only by case. Two undocumented surfaces.
+      evidence:
+        - "S2sAuthenticationFilter.java:34"
+        - "IdentityController.java:32 (lowercase 'admin')"
+      ui_unverified: false
+test_matrix:
+  unit: GAP
+  integration: GAP
+  performance: GAP
+  security: GAP
+test_matrix_notes: |-
+  No coverage of S2S × auth-mode × endpoint-class × identity-collision
+  matrix. Integration target: GET /api/policies with X-API-Key under
+  OAUTH2 (no session) → expect 2xx + full catalogue; POST /api/policies
+  with X-API-Key → expect 2xx (admin-equivalent mutation succeeds);
+  GET /api/identity/whoami with X-API-Key → expect username=`ADMIN`.
+related_refactoring_scopes:
+  - REFACTOR-108  # proposed: S2sAuthenticationFilter should be path-scoped to /ingestion/**
+                  # if operator intent is "ingestion-only API key"
+  - REFACTOR-185  # default-insecure cluster — S2S name vs scope drift contributes
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+  - cross_mode_bleed_via_provider_null_principal_compound_key
+related_features:
+  - F-008  # Batch Ingestion (S2S API) — F-008 anchors /ingestion/entities specifically;
+           # F-088 anchors the cross-cutting global /** surface
+  - F-011  # Principal-to-Owner Resolution — F-088 carries the S2S ADMIN-username collision
+           # facet that F-011 has at the SQL-layer chokepoint primary source
+  - F-085  # Identity Probe — whoami via X-API-Key surfaces the uppercase 'ADMIN' identity
+status: active
+maintainer_curated: false
+proposed_action: |-
+  Local docker-compose probe: set auth.s2s.enabled=true + auth.type=OAUTH2.
+  curl -H "X-API-Key: <token>" GET /api/policies → expect 2xx with full
+  catalogue. POST /api/policies with payload → expect creation succeeds.
+  GET /api/identity/whoami with X-API-Key → expect username='ADMIN'
+  (uppercase) + permissions = admin set.
+notes: |-
+  Genuinely new feature shape — distinct from F-008 (Batch Ingestion S2S
+  API, which anchors the /ingestion/entities surface) AND from F-011
+  (the principal-resolution chokepoint that consumes the synthetic
+  principal). This feature is the OPERATOR-VISIBLE NAMING DRIFT: the
+  property is called `auth.s2s.enabled` and the documentation page is
+  `/authentication/s2s` — operators reasonably believe the scope is
+  ingestion-shaped server-to-server; the actual scope is global
+  admin-equivalent. Cross-link with F-008 (ingestion side), F-011
+  (chokepoint), F-085 (whoami).

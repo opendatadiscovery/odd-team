@@ -1,0 +1,231 @@
+feature_id: F-084
+feature_name: |-
+  OAuth Provider Admin-Detection Matrix — the operator-observable per-provider
+  divergence in how `admin-attribute`, `admin-groups`, `admin-principals`,
+  `allowed-domain`, `organization-name` are honoured (or silently ignored)
+  across the 5 enum'd providers + 2 generic-OIDC fallbacks
+pillar_id: P-09
+pillar_anchored_id: P-09:F-004
+pillar_anchored_feature_name: OAuth Provider Admin-Detection Matrix
+seeded_from: SHB-103
+seeded_at: 2026-05-26
+discovered_from_entry_point: |-
+  oauth-handler-tier:GoogleUserHandler / GithubUserHandler /
+  AbstractOIDCUserHandler subclasses (CognitoUserHandler, AzureUserHandler,
+  ODDIAMUserHandler, CustomOIDCUserHandler) — the per-provider OAuth2 /
+  OIDC handler chain invoked from OAuthSecurityConfiguration.java:185-197
+  on every successful authentication. Each handler decides ADMIN-vs-USER
+  via a provider-specific subset of (admin-attribute, admin-groups,
+  admin-principals, allowed-domain, organization-name) knobs that the
+  ODDOAuth2Properties.OAuth2Provider POJO accepts uniformly.
+primary_subject:
+  - odd-platform-api java auth handler:GoogleUserHandler (74 lines; does NOT extend AbstractOIDCUserHandler)
+  - odd-platform-api java auth handler:GithubUserHandler (OAuth2 non-OIDC; outbound /user/orgs + /user/teams)
+  - odd-platform-api java auth handler:AbstractOIDCUserHandler (base used by Cognito / Azure / Custom / ODDIAM)
+  - odd-platform-api java auth handler:CognitoUserHandler
+  - odd-platform-api java auth handler:AzureUserHandler
+  - odd-platform-api java auth handler:ODDIAMUserHandler
+  - odd-platform-api java auth handler:CustomOIDCUserHandler
+  - odd-platform-api java auth config:ODDOAuth2Properties (the unified config POJO)
+  - odd-platform-api java auth Provider (5-value enum: COGNITO/GITHUB/GOOGLE/ODD_IAM/AZURE)
+  - odd-platform-api java config:OAuthSecurityConfiguration (lines 168-175 Google hd= URL mutate; lines 185-197 dispatcher)
+contributing_nodes:
+  - odd-platform java auth handler:GoogleUserHandler
+  - odd-platform java auth handler:GithubUserHandler
+  - odd-platform java auth handler:AbstractOIDCUserHandler
+  - odd-platform java auth Provider
+  - odd-platform java auth config:ODDOAuth2Properties
+  - odd-platform java config:OAuthSecurityConfiguration
+chain:
+  - hop: 1
+    node: odd-platform java config:OAuthSecurityConfiguration
+    sidecar: unresolved
+    evidence: |-
+      OAuthSecurityConfiguration.java:185-197 — the dispatcher selects one
+      *UserHandler from the autowired List<OAuth2UserHandler> via
+      first-match-wins shouldHandle(); ordering is Spring-list default
+      (no @Order annotation). Lines 168-175 — Google-specific
+      allowedDomain → ?hd={domain} URL mutation fires only when
+      Provider.GOOGLE.name().equalsIgnoreCase.
+    multiplicity_per_trigger: 1
+  - hop: 2
+    node: odd-platform java auth handler:GoogleUserHandler
+    sidecar: odd-platform__java__auth__handler__GoogleUserHandler.md
+    evidence: |-
+      GoogleUserHandler.java:1-74 — 74-line class, does NOT extend
+      AbstractOIDCUserHandler (every other OIDC handler does). NEVER
+      reads provider.getAdminGroups(); admin detection consults only
+      adminPrincipals + adminAttribute (defaults to literal `email` at
+      line 31 GOOGLE_EMAIL, not userNameAttribute).
+    multiplicity_per_trigger: 1
+  - hop: 2-alt
+    node: odd-platform java auth handler:GithubUserHandler
+    sidecar: odd-platform__java__auth__handler__GithubUserHandler.md
+    evidence: |-
+      GithubUserHandler.java:54-67 — admin-principals fast-path BYPASSES
+      the organization-name org-gate. Lines 78-81 + 106-113 — two outbound
+      HTTPS calls per login (/user/orgs + /user/teams) against hard-coded
+      https://api.github.com — GHES (GitHub Enterprise Server) operators
+      structurally locked out.
+    multiplicity_per_trigger: 1
+  - hop: 2-alt2
+    node: odd-platform java auth handler:AbstractOIDCUserHandler
+    sidecar: unresolved
+    evidence: |-
+      AbstractOIDCUserHandler.java:33-55 — base class for Cognito/Azure/
+      Custom/ODDIAM. admin-attribute defaults to userNameAttribute (NOT
+      email); admin-groups IS consulted via provider.getAdminGroups().
+      Two distinct admin-detection vocabularies coexist in the handler
+      set.
+    multiplicity_per_trigger: 1
+terminal_side_effect:
+  side_effect_class: db-write
+  description: |-
+    Each handler emits one of (a) accept + ADMIN authority, (b) accept +
+    USER authority, (c) reject (allowedDomain mismatch on Google,
+    organization-name mismatch on GitHub). The downstream side effect
+    is the SecurityContext write + the principal-to-owner resolution
+    chain (feeds F-011) — followed by every authorization decision
+    across the platform for the session's lifetime.
+  evidence: |-
+    GoogleUserHandler.java:65-72 (return WHEN-admin / WHEN-user paths) +
+    GithubUserHandler.java:54-94 (admin-principals path / organization-name path).
+observed_vs_expected:
+  facets:
+    - drift_class: google_admin_groups_silent_no_op_field_binds_but_ignored
+      description: |-
+        ODDOAuth2Properties.OAuth2Provider exposes `adminGroups: Set<String>`
+        uniformly (line 49). The field BINDS successfully from any
+        `auth.oauth2.client.google.admin-groups: [...]` config — no boot
+        error, no validation warning. The Google handler NEVER reads
+        provider.getAdminGroups(); the value is silently ignored. An
+        operator configuring `admin-groups: [workspace-admins]` for
+        Google sees ZERO behaviour change, ZERO boot log, ZERO error.
+        The user expected to be admin remains USER.
+      evidence:
+        - "GoogleUserHandler.java:1-74 (full class — no getAdminGroups call)"
+        - "ODDOAuth2Properties.java:49 (adminGroups field IS defined)"
+      ui_unverified: false
+    - drift_class: github_admin_principals_bypasses_organization_name_gate
+      description: |-
+        GithubUserHandler admin-principals fast-path (lines 54-67) fires
+        BEFORE the organization-name org-gate (line 68). An operator
+        configuring `organization-name: my-corp` AND
+        `admin-principals: [external-consultant]` grants ADMIN to the
+        external consultant even though they are NOT a member of `my-corp`.
+        Operator mental model: the org-gate is the outermost guard;
+        actual order: admin-principals overrides it.
+      evidence:
+        - "GithubUserHandler.java:54-67 (admin-principals fast-path)"
+        - "GithubUserHandler.java:68-91 (organization-name check)"
+      ui_unverified: false
+    - drift_class: allowed_domain_silent_no_op_on_non_google_providers
+      description: |-
+        OAuthSecurityConfiguration.java:168-175 — allowedDomain URL-mutates
+        the authorize endpoint with `?hd={domain}` ONLY when
+        Provider.GOOGLE.name().equalsIgnoreCase. Setting `allowed-domain`
+        on Cognito / Azure / Custom / ODDIAM silently has no effect.
+        Operator may believe domain-restriction is enforced across all
+        providers.
+      evidence:
+        - "OAuthSecurityConfiguration.java:168-175"
+      ui_unverified: false
+    - drift_class: github_hard_coded_api_github_com_ghes_lockout
+      description: |-
+        GithubUserHandler.java:39 hard-codes `WebClient.create('https://api.github.com')`
+        with no @Value, no operator override. GitHub Enterprise Server
+        deployments at https://github.example.com/api/v3 cannot use the
+        handler; every login fires DNS/cert errors. Live OAuth2 docs are
+        silent on GHES applicability.
+      evidence:
+        - "GithubUserHandler.java:39"
+      ui_unverified: false
+    - drift_class: handler_dispatch_order_unspecified_first_match_wins
+      description: |-
+        OAuthSecurityConfiguration.java:185-197 first-match-wins via
+        Spring's autowired List<OAuth2UserHandler>; NO @Order annotations
+        anywhere in the handler hierarchy. CustomOIDCUserHandler.shouldHandle
+        returns true for ANY provider NOT in the Provider enum
+        (lines 28-34) — adding an OktaUserHandler requires understanding
+        the fragility of dispatch order.
+      evidence:
+        - "OAuthSecurityConfiguration.java:185-197"
+        - "CustomOIDCUserHandler.java:28-34"
+      ui_unverified: false
+    - drift_class: live_docs_claim_okta_keycloak_first_class_code_does_not
+      description: |-
+        Live OAuth2/OIDC docs (WebFetched 2026-05-12 in mining pass)
+        document SEVEN providers including Okta + Keycloak + Custom OIDC.
+        Provider.java enum has FIVE values (COGNITO/GITHUB/GOOGLE/ODD_IAM/AZURE).
+        Okta + Keycloak fall through CustomOIDCUserHandler — no per-provider
+        admin-group mapping, no provider-specific claim handling, only
+        defaultOidcLogoutHandler. Docs lead operators to assume parity
+        that does not exist.
+      evidence:
+        - "odd-platform-api java auth Provider.java:3-5"
+        - "live OAuth2/OIDC docs WebFetched 2026-05-12"
+      ui_unverified: false
+    - drift_class: provider_quirks_strategy_two_admin_detection_vocabularies
+      description: |-
+        Architectural drift class (ADR-CANDIDATE-034 per F-011 batch O):
+        GoogleUserHandler + GithubUserHandler do NOT extend
+        AbstractOIDCUserHandler; the abstract base used by Cognito / Azure /
+        Custom / ODDIAM reads provider.getAdminGroups() and defaults
+        admin-attribute to userNameAttribute. Google + GitHub do not.
+        The TWO admin-detection vocabularies are: (1) base-pattern —
+        admin-groups consulted, admin-attribute = userNameAttribute by
+        default; (2) Google-pattern — admin-groups ignored, admin-attribute
+        = literal `email` by default. There is no `provider-quirks` doc
+        page enumerating which provider uses which.
+      evidence:
+        - "AbstractOIDCUserHandler.java:33-55"
+        - "GoogleUserHandler.java:1-74"
+      ui_unverified: false
+test_matrix:
+  unit: GAP
+  integration: GAP
+  performance: GAP
+  security: GAP
+test_matrix_notes: |-
+  Zero direct test coverage across the handler hierarchy. Verified via
+  Grep for `*UserHandlerTest.java` across odd-platform-api/src/test —
+  returns ZERO matches. The 6 handler classes + the OAuthSecurityConfiguration
+  dispatcher are entirely uncovered. The provider-quirks matrix is the
+  natural integration-test target: per-provider × per-knob behaviour matrix.
+related_refactoring_scopes:
+  - REFACTOR-185  # default-insecure cluster — provider-quirks-strategy contributes
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+  - oauth-provider-quirks-strategy-pattern
+  - admin-detection-asymmetry-cross-provider
+status: ui-incomplete
+ui_incomplete_reason: |-
+  UI surface of OAuth admin-detection: the SPA reads identity.permissions
+  via WithPermissionsProvider; admin/USER distinction surfaces only via
+  the resulting permission set. No UI component reflects the per-provider
+  configuration. Backend chain is complete; UI consumption is via
+  /api/identity/whoami → identity.permissions (covered by F-011 batch Q
+  AppToolbar sidecar). The drift facets here are ALL backend-only — no
+  UI-layer claim is made.
+related_features:
+  - F-011  # Principal-to-Owner Resolution — F-011 carries provider-quirks facets at the chokepoint;
+           # this feature names the operator-observable per-provider MATRIX as a distinct surface.
+maintainer_curated: false
+proposed_action: |-
+  Local-only probe via docker-compose + osixia/openldap is not applicable
+  (LDAP probe lives at SHB-110). For OAuth, a local Keycloak realm
+  configured as 5 distinct providers (Google-shape, GitHub-shape, Cognito-
+  shape, Azure-shape, Custom-OIDC-shape) per provider's ID-token claim
+  vocabulary; per-provider integration test asserting which knob fires.
+notes: |-
+  Genuinely new feature shape — not subsumed by F-011 (the principal-to-owner
+  resolution chokepoint), F-034 (feature-flag exposure), or F-008
+  (S2S ingestion). The operator-observable claim is "the same `admin-groups`
+  key has DIFFERENT semantics across the 5 enum'd providers" — a cross-cutting
+  surface that lives at the dispatcher + each handler. F-011 already carries
+  several individual facets here (google_admin_groups_silent_no_op,
+  oauth_provider_quirks_pattern); this feature is the operator-shape OWNER
+  of the matrix as a coherent surface for documentation + integration test
+  scope. Cross-link with F-011 in BOTH directions: F-011 owns the
+  resolution chokepoint; F-084 owns the per-provider matrix.

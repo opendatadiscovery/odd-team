@@ -1260,6 +1260,9 @@ related_features:
 - F-025  # Query Examples — same Owner-LSN-018-coherence batch V cross-link
 - F-026  # Reference Data — same batch V cross-link
 - F-027  # Attachment Lifecycle — same batch V cross-link
+- F-171  # OwnerAssociations triage — POSITIVE CONTRAST UX, consistent confirm-on-destructive (Accept/Reject both gated by ConfirmationDialog) vs F-019's empty-roles-destructive-update UX missing confirmation
+- F-172  # OwnerAssociations admin direct-bind — symmetric audit-silence sibling to F-019 trinity on the user_owner_mapping write path
+- F-173  # OwnerAssociations active unbind — POSITIVE CONTRAST UX (ConfirmationDialog before destructive delete)
 maintainer_curated: false
 batch_origin_note: |-
   2026-05-20 batch P — NEW pillar-anchored feature minted from the
@@ -1274,3 +1277,134 @@ batch_origin_note: |-
   (RBAC orphan-binding-closure contrast), F-011 (rename-hazard-surface
   contrast), and F-008 (architectural similarities in audit-silence
   + partial-merge + per-tenant-scope patterns).
+
+shoebox_extensions_2026_05_26:
+- seeded_from: SHB-084
+  drift_class: owner_create_bypassed_by_three_service_tier_side_doors_path_anchored_gate_misnamed_invariant
+  description: |-
+    STRENGTHENS the existing
+    `service_tier_get_or_create_permission_bypass_owner_create_side_door`
+    facet (F-019 batch V) with the FULL three-callsite enumeration:
+     - OwnerAssociationRequestServiceImpl.java:57 (createOwnerAssociationRequest)
+     - OwnershipServiceImpl.java:52 (OwnershipServiceImpl.create — DataEntity Ownership form)
+     - TermOwnershipServiceImpl.java:35 (Term Ownership form)
+    Each has a DIFFERENT controller-tier permission gate (DATA_ENTITY_OWNERSHIP_CREATE
+    / TERM_OWNERSHIP_CREATE / no-gate-just-authenticated), NONE of which
+    is OWNER_CREATE. The SecurityConstants.java:143 rule for `OWNER_CREATE`
+    is path-anchored, not method-anchored, so the service-tier `getOrCreate`
+    callers bypass it. Mints emit no `@ActivityLog`; the directory
+    accumulates audit-silently. Live `/permissions` doc names `OWNER_CREATE`
+    as "Allows creating a new owner entity" — operators reading this cannot
+    discover the 3 side-doors. Compounds with SHB-087 (DIRECT_OWNER_SYNC →
+    F-075) into self-mint-and-self-bind privilege chain.
+  evidence:
+  - OwnerServiceImpl.java:38-42 (getOrCreate impl — zero permission check)
+  - OwnerAssociationRequestServiceImpl.java:57 (side-door callsite #1)
+  - OwnershipServiceImpl.java:52 (side-door callsite #2)
+  - TermOwnershipServiceImpl.java:35 (side-door callsite #3)
+  - SecurityConstants.java:143 (OWNER_CREATE rule — path-anchored)
+  - SecurityConstants.java:148-162 (POST /api/owner_association_request NOT in SECURITY_RULES)
+  - OwnerServiceImpl.java:38-122 (Grep ZERO @ActivityLog on the 3 lifecycle methods)
+  severity: HIGH
+  cross_pillar_compounds_with:
+  - F-075 (DIRECT_OWNER_SYNC self-mint-and-self-bind chain — full privilege chain)
+  - F-019 facet `partial_unique_index_enables_name_reuse_after_soft_delete` (stewardship hazard amplifies the side-door damage)
+  - F-019 facet `name_field_case_sensitive_no_normalisation_no_validation` (typo accumulation under autocomplete freeSolo)
+- seeded_from: SHB-093
+  drift_class: cascade_check_toctou_three_management_pattern_cross_link_anchor
+  description: |-
+    STRENGTHENS the existing `service_tier_cascade_check_non_atomic_with_soft_delete_owner_side`
+    facet (F-019 batch S) with the CROSS-MANAGEMENT-FEATURE structural-class
+    observation: F-019 (Owner) / F-028 (Namespace) / F-031 (DataSource)
+    each carry the same defect shape. F-076 is the structural-class anchor
+    for the pattern; this F-019 entry preserves the per-feature cascade
+    facet while pointing readers at the cross-cutting concept. The Owner
+    branch is the LEAST-bad of the three (3-leg @ReactiveTransactional);
+    Namespace is the WORST (no @ReactiveTransactional at all).
+  evidence:
+  - OwnerServiceImpl.java:88-100 (3-leg Mono.zip cascade-check + soft-delete)
+  - F-076 (Cross-Management cascade pattern — primary anchor for the structural class)
+  cross_pillar_compounds_with:
+  - F-076 (structural-class home)
+  - F-028 (Namespace — sister cascade, no transaction)
+  - F-031 (DataSource — sister cascade, 1-leg check)
+- seeded_from: SHB-095
+  drift_class: getownerdtobyid_returns_soft_deleted_visibility_asymmetry_strengthens_existing
+  description: |-
+    STRENGTHENS the existing
+    `soft_deleted_owner_visible_via_get_by_id_but_hidden_from_list` facet
+    (F-019 frontmatter) with the GDPR-right-to-erasure operational-failure
+    scenario + the cross-link to SHB-084 (mint side-doors) + SHB-085
+    (ungated list reads) → a compromised low-privilege user can record
+    Owner ids during normal browsing, then iterate by-id reads
+    post-deletion to recover PII the operator believed they had removed.
+    USER_OWNER_MAPPING rows for the soft-deleted Owner persist;
+    correlation attack on user identity is recoverable post-delete.
+  evidence:
+  - OwnerServiceImpl.java:44-52 (list — filtered via listCondition)
+  - OwnerServiceImpl.java:102-107 (getOwnerDtoById — NOT filtered; switchIfEmpty only on never-existed)
+  - ReactiveOwnerRepositoryImpl.java:65-83 (getDto has no `deleted_at IS NULL`)
+  - ReactiveAbstractSoftDeleteCRUDRepository.java:50-59 (soft-delete UPDATE)
+  - openapi.yaml:131-220 (no doc-mention of soft-delete semantics)
+  fix_one_line: |-
+    Add `.where(OWNER.DELETED_AT.isNull())` to ReactiveOwnerRepositoryImpl.getDto;
+    audit every `getDto`-style method in soft-delete repositories.
+  cross_pillar_compounds_with:
+  - F-074 (Management read-collaborative posture — list reads are ungated → attacker enumerates Owner ids before deletion)
+  - F-019 facet `partial_unique_index_enables_name_reuse_after_soft_delete` (deleted Bob + new Bob coexist with same name)
+  severity: MEDIUM
+  drift_class_strengthening: true
+- seeded_from: ui-review-2026-05-26
+  drift_class: empty_roles_destructive_update_three_click_ui_primary_source_owner_form
+  description: |-
+    REAFFIRMS the F-019 batch-Q `empty_roles_destructive_update_reachable_from_ui_in_three_clicks`
+    drift facet at UI .tsx PRIMARY SOURCE. The 3-click flow is now
+    confirmed at file:line:
+    (1) OwnerForm.tsx:73-86 — `<Controller name='name'>` carries
+        `rules={{ required: true, validate: value => !!value.trim() }}`;
+    (2) OwnerForm.tsx:40-43 + 95-103 — the roles field uses
+        `useFieldArray` with NO rules block; each role renders as
+        a TagItem with `onRemoveClick={handleRemove(idx)}` —
+        operator clicks the X on each tag, roles array drains to [];
+    (3) OwnerForm.tsx:108-117 — Save button enabled because
+        `formState.isValid` only checks `name`.
+    Confirmed via direct UI walk; UI primary source closed for this
+    drift facet. The asymmetric severity (UPDATE-empty-roles is
+    IRREVERSIBLE — owner_to_role rows hard-deleted; DELETE has a
+    confirmation modal) IS visible at the UI tier:
+    EditableOwnerItem.tsx:55-72 (DELETE has "\"{name}\" will be
+    deleted permanently") vs OwnerForm.tsx (no asymmetric warning
+    on Save). The UI affordance set itself encodes a backwards
+    risk model.
+  evidence:
+  - OwnerForm.tsx:40-43 (useFieldArray no rules)
+  - OwnerForm.tsx:73-86 (name required, roles not)
+  - OwnerForm.tsx:108-117 (Save button isValid only checks name)
+  - EditableOwnerItem.tsx:55-72 (DELETE confirmation precedent)
+  fix_one_line: |-
+    Add `rules={{ validate: () => fields.length > 0 || 'Owner must have at least one role' }}` on the roles field;
+    OR ship an explicit "Save with no roles" confirmation modal that warns of irreversibility.
+  cross_pillar_compounds_with:
+  - F-161 (Management Section Top-Level Chrome) — chrome-level visibility leak gives non-admin users sidebar access to the path
+  - F-163 (One-Shot Token Reveal) — sibling cross-Management UX class of "asymmetric consequence disclosure"
+  severity: HIGH
+  ui_unverified: false
+ui_review_2026_05_26:
+  reviewer: ui-review-2026-05-26 (slice G — Management general)
+  status: ui-complete (UI primary-source reaffirms every batch-Q UI inference at .tsx file:line)
+  notes: |-
+    UI walk of OwnerForm.tsx + EditableOwnerItem.tsx + OwnersList.tsx
+    confirms every batch-Q UI-tier inference at primary source:
+    (1) Empty-roles 3-click flow — confirmed (see new drift facet entry above).
+    (2) DELETE pattern with explicit confirmation —
+        EditableOwnerItem.tsx:55-72.
+    (3) Hide-not-disable permission gating — OwnersList.tsx:88-98
+        + EditableOwnerItem.tsx:41-54, 55-74. WithPermissions HOC
+        HIDES Create / Edit / Delete buttons. No grayed-out signal.
+    (4) Soft-deleted hidden from UI list positive finding reaffirmed
+        — OwnersList.tsx:32-46 (no by-id surface reachable from list).
+    (5) No local audit affordance — verified end-to-end; no "recent
+        changes" panel, no operator-visible audit link. Strengthens
+        F-019's 7-sidecar audit-silence pattern at the UI tier.
+    No conflicts, no removals. NEW drift facet appended:
+    `empty_roles_destructive_update_three_click_ui_primary_source_owner_form`.

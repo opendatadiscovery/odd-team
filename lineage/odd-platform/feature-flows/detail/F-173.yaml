@@ -1,0 +1,183 @@
+feature_id: F-173
+pillar_id: P-08
+pillar_anchored_id: P-08:F-018
+pillar_anchored_feature_name: Active-tab Remove UserOwnerMapping (unbind affordance — the reverse of F-172/F-075-A)
+feature_name: |-
+  Active-tab Remove UserOwnerMapping — the Management → Associations
+  "Active associations" tab lists every APPROVED OwnerAssociationRequest
+  (status = APPROVED) with a per-row Remove affordance gated by
+  Permission.OWNER_ASSOCIATION_MANAGE. The action calls
+  useRemoveUserOwnerMapping which deletes the underlying
+  user_owner_mapping row by ownerId. Reverses the bind outcomes of all
+  three create branches (F-075 branch A approved, F-075 branch B
+  auto-approved, F-172 admin direct-bind).
+seeded_from: ui-review-2026-05-26
+seeded_at: 2026-05-26
+discovered_from_entry_point: |-
+  ui_route:/management/associations/active
+  ui-component:OwnerAssociationsActive
+  ui-component:ActiveAssociationRequest
+primary_subject:
+  - "odd-platform ts react-component component:OwnerAssociationsActive"
+  - "odd-platform ts react-component component:ActiveAssociationRequest"
+  - "odd-platform java UserOwnerMappingController (presumed)"
+  - "odd-platform java UserOwnerMappingServiceImpl"
+contributing_nodes:
+  - "odd-platform ts react-component component:OwnerAssociationsActive (APPROVED list)"
+  - "odd-platform ts react-component component:ActiveAssociationRequest (per-row Remove)"
+  - "odd-platform java UserOwnerMappingService"
+chain:
+  - hop: 1
+    node: "ui_route:/management/associations/active"
+    sidecar: unresolved
+    evidence: "OwnerAssociations.tsx:62 — <Route path='active' element={<OwnerAssociationsActive size={size} />} />"
+    multiplicity_per_trigger: 1
+  - hop: 2
+    node: "ui-component:OwnerAssociationsActive (APPROVED list)"
+    sidecar: unresolved
+    evidence: |-
+      OwnerAssociationsActive.tsx:28-33 — useGetOwnerAssociationRequestList
+      ({status: OwnerAssociationRequestStatusParam.APPROVED}). Same hook
+      as F-171's PENDING list, different status filter. The "Active
+      associations" tab semantically MEANS "APPROVED requests that
+      result in a live user_owner_mapping row" — the row IS the binding.
+    multiplicity_per_trigger: 1
+  - hop: 3
+    node: "ui-component:ActiveAssociationRequest (per-row Remove + ConfirmationDialog)"
+    sidecar: unresolved
+    evidence: |-
+      ActiveAssociationRequest.tsx:32-39 — useRemoveUserOwnerMapping
+      mutation. handleDelete guards on `if (!ownerId) return;` then
+      fires deleteAssociation({ownerId}). The Remove button (lines
+      87-93) is `disabled={!hasAccessTo(Permission.OWNER_ASSOCIATION_MANAGE)}`
+      — same DISABLE-not-HIDE posture as F-171, opposite of F-172.
+      ConfirmationDialog (lines 77-94) text: "User X will stop being
+      associated with owner Y". Action button label "Remove".
+    multiplicity_per_trigger: 1
+  - hop: 4
+    node: "rest:DELETE /api/user_owner_mapping/{ownerId} (inferred from hook + payload shape)"
+    sidecar: unresolved
+    evidence: |-
+      The handler passes only `{ownerId}` to the mutation. Inferred verb:
+      DELETE on a UserOwnerMapping endpoint. Backend controller path
+      not Read in slice H.
+    multiplicity_per_trigger: 1
+    ui_unverified: true
+    ui_unverified_reason: |-
+      Hook implementation + REST shape not Read (lib/hooks/ access
+      blocked). The payload-by-ownerId-only is interesting — does the
+      backend resolve the user_owner_mapping row from ownerId + the
+      requesting user's identity? Or does it resolve from ownerId alone
+      (which would imply one-mapping-per-owner)? Defer to backend Read.
+primary_drift_class: unbind_payload_carries_only_ownerid_no_username_or_provider_disambiguation_concern
+drift_class_summary:
+  - unbind_payload_carries_only_ownerid_no_username_or_provider_disambiguation_concern
+  - positive_finding_confirm_dialog_present_for_destructive_unbind
+  - confirm_dialog_silent_on_consequence_no_explanation_what_my_views_will_show
+  - bulk_remove_not_available_one_at_a_time_only
+observed_vs_expected:
+  facets:
+    - drift_class: unbind_payload_carries_only_ownerid_no_username_or_provider_disambiguation_concern
+      description: |-
+        The handleDelete callback fires `deleteAssociation({ownerId})`
+        with ONLY the ownerId — no username, no provider. The
+        ActiveAssociationRequest row has all three (username, ownerId,
+        provider) in its props, so the omission is intentional. The
+        question: if user "alice@local" and user "alice@oauth2" are BOTH
+        bound to owner X (different provider rows), does
+        DELETE /api/user_owner_mapping/{ownerId} drop ONE row or ALL
+        rows? The UI assumes the backend disambiguates — high probability
+        the backend uses ownerId + the AUTHENTICATED user's identity to
+        scope the delete, but if the operator is an ADMIN acting on
+        behalf of another user, the disambiguation is implicit and could
+        accidentally unbind the wrong row.
+      evidence:
+        - "ActiveAssociationRequest.tsx:34-39 — handleDelete passes only {ownerId}"
+        - "ActiveAssociationRequest.tsx:10-18 — row props include username + provider, intentionally not passed downstream"
+      ui_unverified: true
+      ui_unverified_reason: |-
+        Backend resolution semantics of DELETE /api/user_owner_mapping/{ownerId}
+        not Read. Highest-leverage probe candidate: bootstrap two users
+        bound to the same Owner, have an admin click Remove on one, observe
+        which row(s) disappear.
+    - drift_class: positive_finding_confirm_dialog_present_for_destructive_unbind
+      description: |-
+        Positive finding: the Remove affordance lives behind a
+        ConfirmationDialog (ActiveAssociationRequest.tsx:77-94) BEFORE
+        firing the destructive mutation. Symmetric with F-171's
+        Accept/Reject confirmations. Contrast with F-019 batch-Q empty-
+        roles-update destructive UPDATE which had NO confirmation; the
+        OwnerAssociations subtree maintains a CONSISTENT confirm-on-
+        destructive posture that the Owners CRUD subtree breaks.
+      evidence:
+        - "ActiveAssociationRequest.tsx:77-94 (ConfirmationDialog wrapping the Remove button)"
+      ui_unverified: false
+    - drift_class: confirm_dialog_silent_on_consequence_no_explanation_what_my_views_will_show
+      description: |-
+        The ConfirmationDialog text is "User X will stop being associated
+        with owner Y" — TRUE but minimal. It does not state what
+        EFFECTS the unbind has on the user's experience: their "My
+        objects" Activity view goes silent-empty (F-064), their Alerts
+        "My" view goes silent-empty (F-064), they lose the
+        ownership-scoped permissions they had through that Owner's
+        Role bundles (F-006, F-011). The operator-facing description
+        is local-correct but globally under-explained.
+      evidence:
+        - "ActiveAssociationRequest.tsx:80-84 (dialog actionText)"
+        - "Cross-link F-064 silent-empty pattern + F-011 Principal-to-Owner Resolution consumers"
+      ui_unverified: false
+    - drift_class: bulk_remove_not_available_one_at_a_time_only
+      description: |-
+        The Active tab presents a paginated list with per-row Remove
+        buttons. There is no multi-select checkbox, no "Remove all
+        bound to Owner X" affordance, no bulk-action toolbar. An admin
+        decommissioning a team member's access across many Owner rows
+        clicks Remove + Confirm for each row. Operationally O(rows)
+        UX; for a heavy user this is friction. Adjacent to a UX-bar
+        finding rather than a correctness bug.
+      evidence:
+        - "OwnerAssociationsActive.tsx:73-97 (no multi-select state in the list component)"
+        - "ActiveAssociationRequest.tsx:42-97 (per-row UI structure)"
+      ui_unverified: false
+terminal_side_effect:
+  side_effect_class: db-write
+  description: |-
+    DELETE on user_owner_mapping row(s) keyed by ownerId + authenticated
+    user identity (presumed). The corresponding owner_association_request
+    row is NOT touched (the request remains APPROVED in the DB even
+    though the binding is gone — operator should not see this in the
+    History tab since History reads owner_association_request_activity,
+    not owner_association_request directly). If the unbind emits NO
+    activity entry of its own, the operator-facing audit trail SILENT
+    on unbind events — a symmetric finding to F-172's audit-silence
+    drift facet.
+  evidence: "ActiveAssociationRequest.tsx:32-39 + inferred backend"
+test_matrix:
+  unit: GAP
+  integration: GAP
+  performance: GAP
+  security: GAP
+related_features:
+  - F-075  # User-self-request flow (the create-side this reverses)
+  - F-171  # Operator triage workflow (the approve step this reverses)
+  - F-172  # Admin direct-bind create (the reverse direction of the same row)
+  - F-064  # User-Owner Association Discoverability — the user's "My" views go silent-empty after this unbind
+  - F-011  # Principal-to-Owner Resolution — the consumer whose lookup now fails
+  - F-006  # RBAC Policy lifecycle — the user's effective permissions change as a side-effect
+related_retrospectives:
+  - LSN-023  # ui-incomplete — backend disambiguation semantics + audit-emission not Read
+status: ui-incomplete
+maintainer_curated: false
+batch_origin: ui-review-2026-05-26
+created_in_batch: ui-review-2026-05-26-slice-H
+notes: |-
+  Minted from ui-review-2026-05-26 slice H. The disambiguation question
+  (drift facet 1) is the load-bearing finding — if the backend resolves
+  by ownerId-only and an admin is acting on a multi-bound owner, the
+  Remove may target the wrong row OR all rows. Highest-leverage probe.
+
+  The confirm-dialog symmetry across F-171 (Accept/Reject) + F-173
+  (Remove) is a POSITIVE finding — the OwnerAssociations subtree
+  consistently uses ConfirmationDialog for destructive ops. Contrast
+  with F-019 batch-Q empty-roles-update UX where the destructive
+  reachable path had NO confirmation.

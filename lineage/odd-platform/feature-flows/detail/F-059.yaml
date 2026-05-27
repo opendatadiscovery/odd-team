@@ -1,0 +1,226 @@
+feature_id: F-059
+pillar_id: P-03
+pillar_anchored_id: P-03:F-003
+pillar_anchored_feature_name: Lookup Table Rename Cascade
+feature_name: |-
+  Lookup table rename — operator metadata edit silently renames the underlying
+  Postgres table, breaking every downstream pipeline that joined against the
+  documented public surface (lookup_tables_schema)
+seeded_from: SHB-047
+seeded_at: 2026-05-26
+discovered_from_entry_point: |-
+  rest:PUT /api/referencedata/table/{lookup_table_id} — the metadata
+  rename endpoint. Beyond updating the catalog metadata, executes
+  `ALTER TABLE lookup_tables_schema.n_{nsId}__{old_underscored_name}
+  RENAME TO lookup_tables_schema.n_{nsId}__{new_underscored_name}` as a
+  side effect.
+primary_subject:
+  - odd-platform-api/src/main/java/.../ReferenceDataServiceImpl.java:107-124
+  - odd-platform-api/src/main/java/.../ReferenceDataRepositoryImpl.java:181-202
+  - odd-platform-api/src/main/java/.../ReferenceDataServiceImpl.java:191-194 (buildTableName)
+contributing_nodes:
+  - node_id: odd-platform ts react-component:LookupTableForm
+    role: ui-edit-form
+    sidecar: lineage/odd-platform/understanding/odd-platform__ts__react-component__component__LookupTables.md
+    note: |-
+      LookupTableForm.tsx:84-93 — form has ONE name field. No UI surface to
+      opt out of the physical rename, no UI surface to set an alias, no
+      warning dialog at rename-time, no preview of the resulting physical
+      table name. The operator-visible action is "edit metadata"; the
+      hidden side-effect is "DDL on a documented public SQL surface."
+    unresolved: false
+  - node_id: odd-platform java controller:ReferenceDataController (updateLookupTable)
+    role: rest-entry-point
+    sidecar: lineage/odd-platform/understanding/odd-platform__java__ReferenceDataController__controller-class__ReferenceDataController.md
+    note: |-
+      bugs_limitations_corner_cases[7] (sister-sidecar) records this finding
+      at MEDIUM severity. SHB-047 promotes to HIGH because the doc-promised
+      public-schema surface compounds the blast radius.
+  - node_id: odd-platform java service:ReferenceDataServiceImpl (updateLookupTable)
+    role: service-tier
+    sidecar: '(referenced from ReferenceDataController sidecar coupling)'
+    note: |-
+      ReferenceDataServiceImpl.java:107-124 — updateLookupTable rebuilds the
+      physical table name by re-running buildTableName(formData.getName(),
+      table.namespacePojo()) — the rename is a SIDE EFFECT of the metadata
+      edit. buildTableName at lines 191-194:
+      name.toLowerCase().replace(" ", "_"). So "Customer Lookups" →
+      customer_lookups; "Customer Lookup Codes" → customer_lookup_codes.
+      Any name change that mutates the lowercased-underscored form mutates
+      the table name.
+    unresolved: true
+  - node_id: odd-platform java repository:ReferenceDataRepositoryImpl
+    role: persistence-tier-ddl
+    sidecar: '(referenced from ReferenceDataController sidecar coupling)'
+    note: |-
+      ReferenceDataRepositoryImpl.java:181-202 — the DDL chain executing
+      `ALTER TABLE ... RENAME TO ...` against lookup_tables_schema. No
+      deprecation alias, no rename view, no notification, no audit emission,
+      no UI warning at rename-time.
+    unresolved: true
+chain:
+  - hop: 1
+    node: odd-platform ts react-component:LookupTableForm
+    sidecar: lineage/odd-platform/understanding/odd-platform__ts__react-component__component__LookupTables.md
+    evidence: 'LookupTableForm.tsx:84-93 — single name field; no warning'
+    multiplicity_per_trigger: 1
+    unresolved: false
+  - hop: 2
+    node: odd-platform java controller:ReferenceDataController (updateLookupTable)
+    sidecar: lineage/odd-platform/understanding/odd-platform__java__ReferenceDataController__controller-class__ReferenceDataController.md
+    evidence: 'PUT /api/referencedata/table/{lookup_table_id}'
+    multiplicity_per_trigger: 1
+    unresolved: false
+  - hop: 3
+    node: odd-platform java service:ReferenceDataServiceImpl (updateLookupTable)
+    sidecar: '(referenced from controller sidecar coupling)'
+    evidence: 'ReferenceDataServiceImpl.java:107-124 + buildTableName:191-194'
+    multiplicity_per_trigger: 1
+    unresolved: true
+  - hop: 4
+    node: odd-platform java repository:ReferenceDataRepositoryImpl (ALTER TABLE RENAME)
+    sidecar: '(referenced from controller sidecar coupling)'
+    evidence: 'ReferenceDataRepositoryImpl.java:181-202 — ALTER TABLE RENAME TO DDL'
+    multiplicity_per_trigger: 1
+    unresolved: true
+terminal_side_effect:
+  side_effect_class: db-write
+  description: |-
+    Postgres DDL: `ALTER TABLE lookup_tables_schema.n_{nsId}__{old_name}
+    RENAME TO lookup_tables_schema.n_{nsId}__{new_name}`. Downstream
+    pipelines (dbt models, BI dashboards, notebooks, Airflow DAGs) that
+    joined against the old name receive `relation
+    "lookup_tables_schema.n_5__customer_lookups" does not exist` on their
+    next run. No deprecation alias, no rename view, no notification, no
+    audit emission, no UI warning.
+  evidence: 'ReferenceDataRepositoryImpl.java:181-202 — ALTER TABLE DDL'
+observed_vs_expected:
+  facets:
+    - facet_id: rename_cascade_breaks_documented_public_surface_silently
+      drift_class: ui_metadata_edit_silently_renames_documented_public_postgres_surface
+      severity: HIGH
+      observed: |-
+        Operator edits a lookup table's NAME through the UI (a metadata
+        action). The service-tier rebuilds the physical table name and the
+        DDL renames the underlying Postgres table. Downstream pipelines
+        joining against the documented public surface
+        (lookup_tables_schema.{name}, per docs.opendatadiscovery.org/features/master-data-management/lookup-tables)
+        break with no signal. Operator renaming "Customer Lookups" to
+        "Customer Lookup Codes" to clarify the concept can break the
+        company's revenue dashboard with no UI warning, no audit event, no
+        notification fan-out.
+      expected: |-
+        Layered mitigation per SHB-047 Notes:
+        (a) UI rename-time WARNING dialog naming the affected physical
+        table + offering (cancel / rename-with-alias / rename-without-alias);
+        (b) Backend CREATE VIEW lookup_tables_schema.n_5__customer_lookups
+        AS SELECT * FROM lookup_tables_schema.n_5__customer_lookup_codes as
+        a deprecation alias with configurable TTL;
+        (c) Decouple business-name from physical-name entirely (immutable
+        n_{nsId}__lt_{lookupTableId} physical name; business-name metadata
+        only) — breaking change vs documented public surface;
+        (d) Audit emission via ActivityEvent — same shape as F-057's
+        DQ severity audit-silence finding (cross-pillar pattern).
+      evidence:
+        - 'ReferenceDataServiceImpl.java:107-124, 191-194 (rebuilds physical table name)'
+        - 'ReferenceDataRepositoryImpl.java:181-202 (ALTER TABLE DDL)'
+        - 'documentation/docs/features/master-data-management/lookup-tables — "Lookup tables are directly queryable via the lookup_tables_schema PostgreSQL schema" (per ReferenceDataController sidecar implicit_adrs[3])'
+        - 'LookupTableForm.tsx:84-93 (single name field; no warning UI)'
+      ui_unverified: false
+    - facet_id: lsn_001_class_default_footgun_at_operator_action_layer
+      drift_class: operator_action_layer_silent_data_contract_break_lsn_001_class
+      severity: HIGH
+      observed: |-
+        LSN-001-class default-footgun pattern at the operator-action layer
+        (vs the deployment-config layer where LSN-001's attachment-ephemeral
+        default originated). Shape: operator takes a CORRECT-LOOKING action;
+        the action does something correct (renames metadata) AND a hidden
+        side-effect (renames physical table) that breaks something they
+        care about (downstream pipelines).
+      expected: |-
+        The operator-action layer matches the deployment-config layer in
+        caveat-clarity — every UI action that has a non-obvious side-effect
+        carries a UI warning AND a doc-side caveat AND an audit event.
+        Three layers of defence; today there are zero.
+      evidence:
+        - 'retrospectives/LSN-001-attachment-ephemeral-default.md (case-law anchor for the default-footgun pattern)'
+        - 'SHB-047 Notes (LSN-001-class characterisation)'
+      ui_unverified: false
+    - facet_id: no_audit_emission_on_lookup_table_rename
+      drift_class: audit_silence_on_gated_mutation_with_external_blast_radius
+      severity: MEDIUM
+      observed: |-
+        The rename emits no ActivityEvent, no last_modified_by, no version
+        increment. Post-mortem on a "why did the revenue dashboard break
+        last Tuesday" investigation cannot answer "who renamed which lookup
+        table when" from the platform. Same audit-silence pattern as F-057
+        (DQ severity) — applied to a different mutating surface with
+        cross-system blast radius via the documented public SQL schema.
+      expected: |-
+        ActivityEvent.builder().eventType(LOOKUP_TABLE_RENAMED)
+        .oldState(...).newState(...).principal(...) emission inside
+        ReferenceDataServiceImpl.updateLookupTable. F-021 (Activity Feed)
+        is the canonical sink. Cross-cuts F-057's DQ severity audit-silence
+        finding as the next invocation site of the canonicalisation
+        candidate 3 pattern (audit-log presence asymmetry).
+      evidence:
+        - 'ReferenceDataServiceImpl.java:107-124 (no @ActivityLog)'
+        - 'system-mission.md canonicalisation candidate 3'
+      ui_unverified: false
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+      - buildTableName() boundary test (whitespace, special chars, length cap)
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+      - WebTestClient — PUT updateLookupTable; assert the Postgres table physical name changed (pinning the implicit contract)
+      - WebTestClient — PUT updateLookupTable; assert an ActivityEvent row recording the rename (currently the assertion would fail; future-pin)
+  performance:
+    state: GAP
+    covered: []
+    uncovered: []
+  security:
+    state: GAP
+    covered: []
+    uncovered: []
+  control_summary: 0/4
+  highest_leverage_uncovered: |-
+    Integration — pinning the physical-table rename + the ActivityEvent
+    emission together would catch BOTH the contract drift (in case a future
+    refactor decouples names) AND the audit-silence (the current bug).
+related_refactoring_scopes: []
+related_test_gaps: []
+related_doc_gaps: []
+related_features:
+  - F-026
+  - F-058
+  - F-028
+  - F-057
+related_concepts:
+  - lookup-tables
+  - master-data-management
+  - lsn-001-default-footgun
+cross_pillar_relationships:
+  - P-03_feeds_P-01: lookup tables ARE data entities (entity_class LOOKUP_TABLE) — the rename surfaces in Discovery's search + Directory drill-down + Catalog Overview report.
+  - P-03_shares_data_with_P-07: rename SHOULD feed Activity Feed (F-021) but doesn't.
+ui_unverified: false
+status: active
+note: |-
+  Graduated 2026-05-26 from SHB-047. The third feature in pillar P-03's
+  graduated surface (F-026 RBAC + per-table mutations; F-058 listing UX;
+  F-059 rename-cascade lifecycle). The rename is a LIFECYCLE / DATA-CONTRACT
+  gap, not an RBAC gap — distinct from F-026 (which is RBAC + cross-table
+  jump). The shared audit-silence pattern with F-057 (DQ severity) is
+  cross-pillar evidence for the system-mission.md canonicalisation candidate 3
+  (audit-log presence asymmetry — 2-tier audit story).
+
+  PRD-shape decision per SHB-047 Next:
+  - (a) UI warning + (d) audit emission as the cheap short-term fix;
+  - (b) alias-view as the medium-term fix;
+  - (c) decouple business-from-physical name as a deferred major-version
+    migration. Recorded for maintainer; the feature flow anchors the
+    operator-visible expectation regardless of implementation choice.

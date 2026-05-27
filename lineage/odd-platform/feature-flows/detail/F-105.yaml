@@ -1,0 +1,372 @@
+feature_id: F-105
+pillar_id: P-08
+pillar_anchored_id: P-08:F-015
+pillar_anchored_feature_name: Management Section Route Gating (reads bypass authorization)
+feature_name: |-
+  Management Section Route Gating — every Management sub-area except
+  /management/associations is reachable by deep-link for any authenticated
+  user (or any anonymous caller under auth.type=DISABLED), and renders
+  the FULL CATALOG of that surface (Owners / Roles / Policies / Namespaces /
+  Tags / Collectors / DataSources / Integrations). WithPermissionsProvider
+  wrappers provide context but do NOT block rendering; only the
+  create/edit/delete buttons hide. Policy NAMES + JSON contents +
+  Collector token names + DataSource ODDRNs are all readable to every
+  user without a Management permission.
+primary_drift_class: management_section_route_gating_reads_bypass_authorization_only_associations_gated
+drift_class_summary:
+  - management_section_route_gating_reads_bypass_authorization_only_associations_gated
+  - with_permissions_provider_is_context_only_not_a_rendering_gate
+  - integrations_sub_area_has_no_permission_context_at_all
+  - admin_surface_existence_disclosed_to_non_admin_users_recon_information
+  - docs_do_not_document_management_ui_permission_model_at_all
+cross_pillar_relationships:
+  - pillar_id: P-09
+    kind: shares_data_with
+    via: |-
+      Cross-references P-09 Security & Access Control — F-006 owns the
+      RBAC policy LIFECYCLE (create/edit/delete/soft-delete semantics);
+      F-105 owns the chrome-level reachability that lets non-admin users
+      READ policy contents without the lifecycle gate firing. F-006's
+      mutation-gate works; the read-side bypass is a sibling gap not
+      captured by F-006.
+  - pillar_id: P-08
+    kind: composes
+    via: |-
+      Every Management sub-area's data-fetch firing surface — F-019
+      Owner Lifecycle, F-020 Collector Lifecycle, F-026 Lookup Tables,
+      F-028 Namespace Lifecycle, F-031 Data Source Lifecycle, F-006 RBAC
+      Policy Lifecycle, F-033 Integration Wizard. All compose into the
+      Management section; F-105 is the chrome-level gate that should
+      precede them but does not.
+batch_origin: 2026-05-26
+created_in_batch: 2026-05-26-triage-H1
+seeded_from: SHB-163
+seeded_at: 2026-05-26
+discovered_from_entry_point: |-
+  ui_route:/management/* (the React-Router-DOM v6 wildcard mount that
+  hosts the 9 Management sub-area routes — owners, roles, policies,
+  namespaces, datasources, collectors, tags, integrations, associations).
+  App.tsx:62 mounts <Route path={`${managementPath()}/*`} element={<Management />} />
+  with no route-level RestrictedRoute or redirect guard.
+description: |-
+  The Management UI is conceptually admin-tier in every published doc and
+  every conventional ODD-deployment runbook — but the SPA implements
+  AUTHORIZATION ONLY ON THE MUTATING ENDPOINTS, not on the read-side
+  navigation. Eight of nine Management sub-areas (/management/owners,
+  /roles, /policies, /policies/{id}, /namespaces, /datasources, /collectors,
+  /tags, /integrations) fetch and render the full catalog of that
+  surface on mount, regardless of the user's permission set. Only
+  /management/associations/* is route-gated via a RestrictedRoute
+  redirect.
+
+  The structural reason: `Management.tsx:9-12` wraps the entire section
+  in `<WithPermissionsProvider allowedPermissions={[OWNER_ASSOCIATION_MANAGE]}>`,
+  but `WithPermissionsProvider.tsx:12-48` is a CONTEXT PROVIDER, not a
+  rendering gate — it returns `children` unconditionally in every branch.
+  The inner ManagementRoutes (`ManagementRoutes.tsx:29-149`) likewise
+  wraps each sub-route in a per-route WithPermissionsProvider, which
+  again only provides context.
+
+  The single working route-gate in the entire Management section is at
+  `ManagementRoutes.tsx:101-110` — `RestrictedRoute` on `/associations/*`
+  with a redirect destination. Every other sub-route just renders.
+
+  Concrete observable consequences:
+  (a) `/management/policies` renders the full Policy LIST; non-admin
+      users see Policy names + their owners. Clicking through to
+      `/management/policies/{id}` renders the full Policy JSON
+      (permission grants, ODDRN selectors, role bindings). No
+      mutation can be performed (create/edit/delete buttons hide via
+      `hasAccessTo(POLICY_MANAGE)` calls), but the disclosure is real.
+  (b) `/management/integrations` is the WORST case — there is NO
+      permission-context wrapping at all on the route. Inner
+      `usePermissions().hasAccessTo` calls fall back to the OUTER
+      Management.tsx context (`OWNER_ASSOCIATION_MANAGE`), producing
+      a surprising deny-by-default for any integration-specific
+      permission check.
+  (c) Under `auth.type=DISABLED`, every anonymous network caller
+      reaches every Management sub-area; the deployment's RBAC model
+      is fully visible to the public (when the platform is exposed
+      to the public network — REFACTOR-185 19-sidecar cluster
+      anchors this).
+
+  The drift is structural: the platform exposes the Management UI as an
+  "admin" affordance in its toolbar (F-041 tab visibility) but does not
+  implement that affordance with the gate operators would expect. The
+  read-collaborative posture (per P-09 maintainer notes: "every
+  authenticated user can enumerate the entire catalog") IS the platform-
+  wide stance — F-105 is the Management-section-specific instance
+  worth documenting + considering whether to harden.
+
+  Doc-side: `docs.opendatadiscovery.org/features/management` does NOT
+  document the Management UI's permission visibility model, does not
+  warn that READS are not gated, does not list per-tab visibility
+  rules. The doc reinforces the operator's mistaken model.
+contributing_nodes:
+  - node_id: odd-platform ts components/App.tsx route-mount:management
+    role: route-mount-no-guard
+    unresolved: true
+    note: |-
+      App.tsx:62 — `<Route path={`${managementPath()}/*`} element={<Management />} />`
+      with no route-level RestrictedRoute. The entry point.
+  - node_id: odd-platform ts components/Management/Management.tsx
+    role: management-section-root
+    unresolved: true
+    note: |-
+      Management.tsx:9-12 — outer `<WithPermissionsProvider>` provides
+      context but does not block rendering.
+  - node_id: odd-platform ts components/Management/ManagementRoutes/ManagementRoutes.tsx
+    role: per-sub-route-providers
+    unresolved: true
+    note: |-
+      ManagementRoutes.tsx:29-149 — per-sub-route providers with same
+      context-only behaviour. RestrictedRoute at 101-110 is the ONE
+      working gate, on /associations/* only.
+  - node_id: odd-platform ts components/shared/contexts/Permission/WithPermissionsProvider.tsx
+    role: non-blocking-permission-context
+    unresolved: true
+    note: |-
+      WithPermissionsProvider.tsx:12-48 — returns children unconditionally
+      in every branch; verified non-blocking by ZH/ZI systemic finding.
+  - node_id: odd-platform ts components/Management/NamespaceList/NamespaceList.tsx
+    role: example-list-fetches-unconditional
+    unresolved: true
+    note: |-
+      NamespaceList.tsx:46-48 — `fetchNamespaceList` dispatched on mount
+      with no permission check. Representative shape across the 9 sub-areas.
+chain:
+  - hop: 1
+    node: odd-platform ts components/App.tsx route-mount:management
+    sidecar: '(unresolved)'
+    multiplicity_per_trigger: 1
+    evidence: |-
+      App.tsx:62 — the mount point. Single wildcard route. No
+      RestrictedRoute/redirect guard.
+    unresolved: true
+  - hop: 2
+    node: odd-platform ts components/Management/Management.tsx
+    sidecar: '(unresolved)'
+    multiplicity_per_trigger: 1
+    evidence: |-
+      Management.tsx:9-12 — outer non-blocking provider; renders
+      children unconditionally.
+    unresolved: true
+  - hop: 3
+    node: odd-platform ts components/Management/ManagementRoutes/ManagementRoutes.tsx
+    sidecar: '(unresolved)'
+    multiplicity_per_trigger: '8 of 9 unguarded'
+    evidence: |-
+      ManagementRoutes.tsx:29-149 — 9 sub-routes; 8 wrapped only in
+      per-route providers (context-only); 1 (/associations/*) at lines
+      101-110 has the ONE working RestrictedRoute.
+    unresolved: true
+  - hop: 4
+    node: odd-platform ts components/Management/NamespaceList/NamespaceList.tsx (representative)
+    sidecar: '(unresolved)'
+    multiplicity_per_trigger: 1
+    evidence: |-
+      NamespaceList.tsx:46-48 — fetch dispatched on mount; same shape
+      across OwnersList, RolesList, PoliciesList, DataSourcesList,
+      CollectorsList, TagsList, IntegrationsList.
+    unresolved: true
+amplification_factor: |-
+  8 unguarded sub-area list endpoints × 1 list-fetch per mount × N entities
+  per surface. For a 1000-entity-per-surface deployment: 8000 entities readable
+  to every authenticated (or anonymous-under-DISABLED) network caller. Policy
+  JSON detail fetches: 1 per policy ID navigated.
+amplification_note: |-
+  The amplification is in the gap between operator mental model and
+  reality. Operators see "Management" as admin-only chrome (per tab
+  visibility under F-041 + intuition + every doc page that mentions
+  Management UI). Reality: only the WRITE PATH is admin-only.
+terminal_side_effect:
+  side_effect_class: page-render
+  description: |-
+    page-render — every Management sub-area renders its full list to any
+    authenticated user. Detail-page navigation renders the full JSON of
+    the selected entity (Policy contents, Role bundles, Collector token
+    names, DataSource ODDRNs). Create/edit/delete buttons hide; the
+    DOM-visible read is complete.
+  evidence: |-
+    NamespaceList.tsx:46-48 (canonical list-fetch shape) +
+    ManagementRoutes.tsx:29-149 (the 9 sub-routes) +
+    WithPermissionsProvider.tsx:12-48 (the non-blocking provider).
+  cardinality_per_call: '1 page-render per sub-area visit; 1 detail-render per detail-navigation'
+observed_vs_expected:
+  facets:
+    - facet_id: management_section_route_gating_reads_bypass_authorization_only_associations_gated
+      drift_class: management_section_route_gating_reads_bypass_authorization_only_associations_gated
+      severity: HIGH
+      observed: |-
+        Of 9 Management sub-areas, ONLY /management/associations/* has a
+        working RestrictedRoute gate (ManagementRoutes.tsx:101-110).
+        The other 8 — owners, roles, policies (+ policies/{id}),
+        namespaces, datasources, collectors, tags, integrations —
+        render their full catalog to any authenticated user (or any
+        anonymous caller under DISABLED). NamespaceList.tsx:46-48 is
+        the canonical fetch-on-mount shape across all 8.
+      expected: |-
+        Either every Management sub-area is gated by a RestrictedRoute
+        for a Management-tier permission set, OR the read-collaborative
+        posture is explicitly documented as the deliberate design
+        choice (an implicit ADR surfaced + a doc-page caveat).
+      operator_visible_consequence: |-
+        A user with zero Management permissions deep-links to
+        `/management/policies/{id}` and reads the Policy JSON (permission
+        grants, ODDRN selectors, role attachments). Create/edit/delete
+        buttons hide; the disclosure is real. Same for the other 7
+        sub-areas. Under DISABLED this leaks to anonymous network callers.
+        Seeded from SHB-163.
+      ui_unverified: false
+    - facet_id: with_permissions_provider_is_context_only_not_a_rendering_gate
+      drift_class: with_permissions_provider_is_context_only_not_a_rendering_gate
+      severity: HIGH
+      observed: |-
+        WithPermissionsProvider.tsx:12-48 — returns `children` unconditionally
+        in every branch. The name suggests rendering-gate semantics;
+        the implementation provides only React Context.
+      expected: |-
+        Either rename the component to clarify (e.g., WithPermissionsContext)
+        OR introduce a sibling WithPermissionsGate that actually blocks
+        rendering when the required permissions are absent.
+      operator_visible_consequence: |-
+        A reviewer reading the Management code sees `<WithPermissionsProvider>`
+        wraps and assumes rendering is gated; the implementation does
+        not match the inferred contract. Compound failure with the
+        Integrations sub-area (which has NO provider at all).
+      ui_unverified: false
+    - facet_id: integrations_sub_area_has_no_permission_context_at_all
+      drift_class: integrations_sub_area_has_no_permission_context_at_all
+      severity: MEDIUM
+      observed: |-
+        Per managementRoutes sidecar bug #2 — /management/integrations
+        has NO permission-context wrapping in ManagementRoutes.tsx.
+        Inner `usePermissions().hasAccessTo` falls back to the outer
+        Management.tsx context (OWNER_ASSOCIATION_MANAGE only), producing
+        surprising deny-by-default for any integration-specific permission
+        check.
+      expected: |-
+        Either wrap /integrations in its own permission context with
+        an integration-specific allowedPermissions, OR explicitly
+        document the fall-through as deliberate.
+      operator_visible_consequence: |-
+        Integrations features that gate on a custom permission key
+        ALWAYS deny by default — the gate fires on the wrong context.
+        Tomorrow a permission-gated integration feature ships and
+        no admin can use it without explicitly granting
+        OWNER_ASSOCIATION_MANAGE.
+      ui_unverified: false
+    - facet_id: admin_surface_existence_disclosed_to_non_admin_users_recon_information
+      drift_class: admin_surface_existence_disclosed_to_non_admin_users_recon_information
+      severity: MEDIUM
+      observed: |-
+        The Management list pages leak the EXISTENCE of admin surfaces
+        + the catalog of admin-tier resources (Policy names, Role names,
+        Collector identities). For deployments with strict separation-
+        of-duties requirements, this is reconnaissance information.
+      expected: |-
+        Either a route-level gate hides the lists, or the operator-facing
+        docs (Cornerstone-3 caveat) explicitly note the leak.
+      operator_visible_consequence: |-
+        Compound with F-041 toolbar's Management tab visibility — any
+        authenticated user can browse the admin surface's catalog
+        even when they cannot mutate it.
+      ui_unverified: false
+    - facet_id: docs_do_not_document_management_ui_permission_model_at_all
+      drift_class: docs_do_not_document_management_ui_permission_model_at_all
+      severity: MEDIUM
+      observed: |-
+        `docs.opendatadiscovery.org` does not document the Management UI's
+        permission visibility model. No per-tab visibility statement,
+        no Cornerstone-3 caveat, no screenshot showing the
+        "non-admin sees full Policy list" reality. Per SHB-163 evidence.
+      expected: |-
+        Either a doc-page caveat ("Management section reads are not
+        gated by permission") + a behaviour table, OR the gates are
+        added and the doc page describes the gated behaviour.
+      operator_visible_consequence: |-
+        Cross-link DOC-NNN candidate. Operators rely on intuition +
+        toolbar chrome ("Management is admin-only") which the
+        implementation contradicts.
+      ui_unverified: false
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+      - WithPermissionsProvider returns children unconditionally regardless of allowedPermissions
+      - WithPermissionsProvider populates Context with hasAccessTo() resolving against the passed allowedPermissions
+      - ManagementRoutes mounts 9 sub-routes; RestrictedRoute wraps exactly /associations/*
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+      - Anonymous user under auth.type=DISABLED deep-links to /management/policies → sees full list
+      - Authenticated user with zero permissions deep-links to /management/policies/{id} → reads JSON
+      - Authenticated user with zero permissions hits /management/integrations → fall-through deny-by-default for inner usePermissions checks
+      - Authenticated user with OWNER_ASSOCIATION_MANAGE deep-links to /management/associations → guarded (the one working case)
+  performance:
+    state: N/A
+    covered: []
+    uncovered: []
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+      - Policy JSON contents disclosed to non-admin readers (POL-RBAC reconnaissance leak)
+      - Collector token names disclosed (no token value leak — values one-shot at creation per F-020)
+      - DataSource ODDRNs + namespace bindings disclosed (catalog topology leak)
+      - Under DISABLED, all of the above leak to anonymous network callers (REFACTOR-185 cluster)
+control_summary: |-
+  0 of 16 cells COVERED. Probe P-162 already emitted in managementRoutes
+  sidecar — local-only per Rule 7: docker-compose ODD platform + Playwright
+  headless-browser with an empty-permission user session. Highest-leverage
+  probe: anonymous-deep-link to each of the 9 sub-areas under DISABLED-mode.
+ui_review_2026_05_26:
+  reviewer: ui-review-2026-05-26 (slice G — Management general)
+  status: ui-complete (UI primary-source confirms every facet at .tsx layer)
+  notes: |-
+    UI walk of Management.tsx + ManagementRoutes.tsx + ManagementTabs.tsx
+    confirms every batch-ZH inference at primary source:
+    (1) Management.tsx:8-22 — outer WithPermissionsProvider seeded with
+        OWNER_ASSOCIATION_MANAGE; NO RestrictedRoute on the shell.
+        Confirmed at file:line.
+    (2) ManagementRoutes.tsx:23-156 — 10 sub-routes; the SOLE
+        RestrictedRoute is on /associations/* at lines 101-110 with
+        redirectTo='../namespaces'. Every other sub-route is wrapped
+        in a per-route WithPermissionsProvider (context-only) OR
+        nothing at all (the /integrations/* route at line 150).
+        Confirmed at file:line.
+    (3) WithPermissionsProvider non-blocking behaviour — sub-routes
+        with permission providers still render children regardless
+        of permission. Verified by reading the import + usage; the
+        component's internals were not re-read in this UI pass
+        (already documented at batch-ZH).
+    Cross-link to NEWLY MINTED F-161 (Management Section Top-Level
+    Chrome) which extracts the chrome-shell concerns distinct from
+    F-105's route-gating concern; F-105 owns the routes; F-161 owns
+    the shell + ManagementTabs visibility layer.
+probes_referenced:
+  - P-162
+related_refactoring_scopes:
+  - REFACTOR-185
+related_doc_gaps: []
+related_features:
+  - F-006
+  - F-019
+  - F-020
+  - F-026
+  - F-028
+  - F-031
+  - F-033
+  - F-034
+  - F-041
+related_concepts:
+  - read-collaborative-posture
+  - management-ui-permission-model
+  - route-level-permission-gate
+  - admin-surface-reconnaissance-leak
+related_retrospectives: []
+maintainer_curated: false
+ui_unverified: false
+status: active

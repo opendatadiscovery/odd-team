@@ -1,0 +1,188 @@
+feature_id: F-198
+pillar_id: P-07
+pillar_anchored_id: P-07:F-014-notification-settings-dialog
+pillar_anchored_feature_name: |-
+  Per-Entity Alert Notification Settings — operator authoring dialog for
+  the F-014 halt-config (4 alert types × time-bounded halt-until value).
+  Mutation surface of the alert subsystem; sibling to F-014's read surface.
+feature_name: |-
+  Notification Settings dialog — react-hook-form dialog mounted on the
+  Alerts tab that mutates `incompatibleSchemaHaltUntil` /
+  `failedDqTestHaltUntil` / `failedJobHaltUntil` /
+  `distributionAnomalyHaltUntil` via
+  `PUT /api/dataentities/{id}/alert_config`. Permission-gated via
+  `WithPermissions` on `DATA_ENTITY_ALERT_CONFIG_UPDATE`.
+seeded_from: ui-review-2026-05-26
+seeded_at: 2026-05-26
+discovered_from_entry_point: "ui-component:NotificationSettings"
+primary_subject:
+  - "odd-platform ts react-component component:NotificationSettings"
+  - "odd-platform ts react-component component:AlertTypeRange"
+  - "odd-platform ts react-component component:DataEntityAlerts"
+  - "odd-platform ts react-component component:DataEntityAlertItem"
+contributing_nodes:
+  - "odd-platform ts react-component component:NotificationSettings"
+  - "odd-platform ts react-component component:AlertTypeRange"
+  - "odd-platform ts react-component component:DataEntityAlerts"
+  - "odd-platform ts react-component component:DataEntityAlertItem"
+  - "odd-platform java DataEntityController controller-method:updateAlertConfig (per F-014 sibling)"
+chain:
+  - hop: 1
+    node: "odd-platform ts react-component component:DataEntityAlerts"
+    sidecar: unresolved
+    evidence: |-
+      DataEntityAlerts.tsx:51-92 — wraps the NotificationSettings
+      dialog trigger in `<WithPermissions permissionTo=
+      Permission.DATA_ENTITY_ALERT_CONFIG_UPDATE>` (line 53). Without
+      that permission, the operator sees NO trigger button. Mounts
+      DataEntityAlertItem list + InfiniteScroll with hardcoded
+      `size = 30` (line 31). On `dataEntityId` change, dispatches
+      `fetchDataEntityAlerts({dataEntityId, page: 1, size})` — F-014
+      backend chain.
+    multiplicity_per_trigger: 1
+    unresolved: false
+  - hop: 2
+    node: "odd-platform ts react-component component:NotificationSettings"
+    sidecar: unresolved
+    evidence: |-
+      NotificationSettings.tsx:25-143 — DialogWrapper containing four
+      `<AlertTypeRange>` instances (one per alert type), each bound to
+      a react-hook-form `Control<FormData>` via `control` prop. Submit
+      dispatches `updateDataEntityAlertsConfig({dataEntityId,
+      dataEntityAlertConfig})` from line 50. The dialog opens via
+      `renderOpenBtn` cloneElement injecting `onClick` that calls
+      `fetchDataEntityAlertsConfig({dataEntityId})` to populate.
+      The on-open + on-submit pattern stages async fetch → form
+      population on each open.
+    multiplicity_per_trigger: 1
+    unresolved: false
+  - hop: 3
+    node: "odd-platform ts react-component component:AlertTypeRange"
+    sidecar: unresolved
+    evidence: |-
+      AlertTypeRange.tsx (151 lines, 7 children, 4 hooks) renders a
+      single alert-type's time-bounded halt-until input. Backend
+      field shape is one of the 4 `haltUntil` keys
+      (incompatibleSchema / failedDqTest / failedJob /
+      distributionAnomaly). The form value is serialised to a
+      number via `SerializeDateToNumber<...>` per type alias at
+      NotificationSettings.tsx:21-23.
+    multiplicity_per_trigger: 4  # one per alert type
+    unresolved: false
+  - hop: 4
+    node: "odd-platform ts react-component component:DataEntityAlertItem"
+    sidecar: unresolved
+    evidence: |-
+      DataEntityAlertItem.tsx:38-145 — alert-row component with
+      OPEN ⇆ RESOLVED status toggle button wrapped in
+      `<WithPermissions permissionTo=
+      Permission.DATA_ENTITY_ALERT_RESOLVE>` (line 111). The Resolve
+      / Reopen button mutates via `updateAlertStatus({alertId,
+      alertStatusFormData: {status}, entityId: dataEntityId})`.
+      Alert chunk history toggled via local
+      `useState(showHistory)`; per F-014 chunks include raw
+      AlertManager-pushed description text — cross-channel leak
+      surface enumerated at F-014's
+      cross_owner_per_entity_alert_read facet.
+    multiplicity_per_trigger: 1  # per alert row
+    unresolved: false
+observed_vs_expected:
+  facets:
+    - drift_class: notification_settings_silent_open_failure_no_fetch_error_handling
+      description: |-
+        NotificationSettings.tsx:127 — opening the dialog dispatches
+        `fetchDataEntityAlertsConfig` but the dialog content (line 61-107)
+        only renders the AppCircularProgress while
+        `isDataEntityAlertConfigFetching === true`. There's NO branch
+        for the FAILED fetch state — if the fetch rejects, the
+        progress spinner disappears and the form renders with empty /
+        undefined default values. Operator sees an empty form, may
+        submit changes that overwrite server state with empty halt-until
+        values silently.
+      evidence:
+        - "NotificationSettings/NotificationSettings.tsx:61-107"
+        - "NotificationSettings/NotificationSettings.tsx:127 (fetch dispatched on open)"
+      ui_unverified: true
+      ui_unverified_reason: |-
+        Whether the redux selector `getDataEntityAlertsConfigFetchingStatus`
+        exposes an `isError` flag the dialog could read has not been
+        traced.
+    - drift_class: alert_resolve_button_no_confirmation_dialog
+      description: |-
+        DataEntityAlertItem.tsx:113-118 — clicking Resolve / Reopen
+        dispatches `updateAlertStatus` immediately with no confirmation
+        modal. Per F-014's auto-cleanup workaround narrative, a
+        manually-resolved alert is hard-deleted by housekeeping
+        (REFACTOR-NNN in F-014's related_refactoring_scopes); an
+        accidental click destroys audit history. The UI gives no
+        warning before the destructive action.
+      evidence:
+        - "DataEntityAlerts/DataEntityAlertItem/DataEntityAlertItem.tsx:113-118"
+        - "F-014 audit-export workaround narrative"
+      ui_unverified: false
+    - drift_class: notification_settings_dialog_field_labels_not_translated
+      description: |-
+        NotificationSettings.tsx:57, 76-79 — `formTitle` Typography
+        contains hardcoded English "Notification settings"; the
+        description text on lines 76-79 ("Select the type of
+        notifications and the period for which you want to disable
+        notifications") and the footer caption on lines 102-104
+        ("When the time is up, disabled alert types will turn on
+        automatically.") are ALL hardcoded English. Contrast with
+        the parent DataEntityAlerts.tsx:57 which DOES use
+        `t('Notification settings')` for the trigger button.
+        Mid-component i18n inconsistency.
+      evidence:
+        - "DataEntityAlerts/NotificationSettings/NotificationSettings.tsx:57"
+        - "DataEntityAlerts/NotificationSettings/NotificationSettings.tsx:76-79"
+        - "DataEntityAlerts/NotificationSettings/NotificationSettings.tsx:102-104"
+        - "DataEntityAlerts/DataEntityAlerts.tsx:57 (translated sibling)"
+      ui_unverified: false
+    - drift_class: alert_item_show_history_button_loses_state_on_remount
+      description: |-
+        DataEntityAlertItem.tsx:36 — `showHistory` is a local
+        `useState(false)`. The parent DataEntityAlerts paginates via
+        InfiniteScroll AND refires `fetchDataEntityAlerts` on every
+        `dataEntityId` change (line 33-35). The redux slice
+        replacement for the alerts list remounts the items;
+        showHistory resets to false on every remount. An operator
+        scrolling history-open + scrolling away + scrolling back
+        loses the open state silently.
+      evidence:
+        - "DataEntityAlerts/DataEntityAlertItem/DataEntityAlertItem.tsx:36"
+      ui_unverified: true
+      ui_unverified_reason: |-
+        Whether `key={alert.id}` (line 79) preserves React state
+        across redux array order changes depends on the reducer's
+        merge semantics — not verified.
+    - drift_class: notification_settings_no_optimistic_concurrency_check
+      description: |-
+        Two operators opening the Notification Settings dialog on the
+        same entity simultaneously: operator A reads halt-until values
+        v1, types changes, submits as v1+A. Operator B's already-open
+        dialog still holds v1; submits as v1+B. Net: B's submission
+        overwrites A's silently — no version field, no If-Match
+        header, no concurrency warning. The form has no last-write-
+        wins indicator.
+      evidence:
+        - "NotificationSettings/NotificationSettings.tsx:49-53 (handleSubmitForm — no version check)"
+      ui_unverified: true
+      ui_unverified_reason: |-
+        Whether the backend `PUT /api/dataentities/{id}/alert_config`
+        accepts unconditional writes or carries an ETag has not been
+        traced at the controller-method sidecar tier.
+test_matrix:
+  unit: GAP
+  integration: GAP
+  performance: GAP
+  security: GAP
+status: ui-complete
+related_features:
+  - F-014  # Per-Entity Alert View — sibling read surface
+related_concepts:
+  - alert-halt-config
+  - per-entity-alert-mutation
+  - data-entity-alert-config-update-permission
+related_retrospectives:
+  - LSN-023  # ui-complete — UI hops verified; concurrency + open-failure facets carry ui_unverified
+maintainer_curated: false

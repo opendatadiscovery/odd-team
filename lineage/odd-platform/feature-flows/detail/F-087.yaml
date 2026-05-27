@@ -1,0 +1,220 @@
+feature_id: F-087
+feature_name: |-
+  Session Cookie Security Posture & Lifetime — under default config,
+  session cookies are stamped with no Secure flag, no operator-configured
+  SameSite directive, sessions never expire (`spring.session.timeout: -1`),
+  housekeeping cannot evict, and CSRF is unconditionally disabled
+pillar_id: P-09
+pillar_anchored_id: P-09:F-008
+pillar_anchored_feature_name: Session Cookie Security Posture & Lifetime
+seeded_from: SHB-108
+seeded_at: 2026-05-26
+discovered_from_entry_point: |-
+  config-class:SessionConfiguration (the Spring Session provider switch:
+  IN_MEMORY / REDIS / INTERNAL_POSTGRESQL) + application.yml:1-3 (the
+  `spring.session.timeout: -1` shipped default). Under LOGIN_FORM /
+  OAUTH2 / LDAP auth modes — all three rely on WebSession — every
+  authenticated browser request rides a session cookie whose attribute
+  set is delegated entirely to the deployment topology.
+primary_subject:
+  - odd-platform-api java config:SessionConfiguration (no CookieWebSessionIdResolver bean)
+  - odd-platform-api java repository:JooqSessionRepository (lines 138-148, 156, 188)
+  - odd-platform-api java housekeeping:PostgreSQLSessionHousekeepingJob
+  - odd-platform-api resources/application.yml (line 1-3 timeout=-1; line 28-30 provider=IN_MEMORY; line 244-245 redis.health=false)
+  - odd-platform-api java config:LoginFormSecurityConfiguration (CSRF disabled at line 54)
+  - odd-platform-api java config:OAuthSecurityConfiguration (uses WebSession)
+  - odd-platform-api java config:LDAPSecurityConfiguration (uses WebSession)
+contributing_nodes:
+  - odd-platform java config:SessionConfiguration
+  - odd-platform java repository:JooqSessionRepository
+  - odd-platform java housekeeping:PostgreSQLSessionHousekeepingJob
+  - odd-platform java config:LoginFormSecurityConfiguration
+chain:
+  - hop: 1
+    node: odd-platform java config:SessionConfiguration
+    sidecar: unresolved
+    evidence: |-
+      SessionConfiguration.java:1-65 — no CookieWebSessionIdResolver bean,
+      no SameSite directive, no HttpOnly override, no Secure flag setter.
+      Grep `CookieWebSession|SameSite|HttpOnly|Secure.*cookie|sessionIdResolver|WebSessionIdResolver`
+      across the entire odd-platform repo returns ZERO matches.
+    multiplicity_per_trigger: 1
+  - hop: 2
+    node: odd-platform resources/application.yml
+    sidecar: unresolved
+    evidence: |-
+      application.yml:1-3 — `spring.session.timeout: -1` — Spring Session
+      semantic: sessions NEVER expire. Sessions live for JVM lifetime
+      (IN_MEMORY mode) or until manual invalidation. Combined with the
+      absence of session revocation hooks across the codebase, a
+      compromised cookie is valid indefinitely.
+    multiplicity_per_trigger: 1
+  - hop: 3
+    node: odd-platform java repository:JooqSessionRepository
+    sidecar: unresolved
+    evidence: |-
+      JooqSessionRepository.java:138-148 — recordFromSession sets
+      `expiry_time = lastAccessedTime.plusSeconds(maxInactiveInterval.toSeconds())`;
+      when maxInactiveInterval is unset or negative the expiry is
+      effectively never reached. Line 156, 188 — Java-serialised session
+      attributes (deprecated for the deserialization-gadget reason).
+    multiplicity_per_trigger: 1
+  - hop: 4
+    node: odd-platform java housekeeping:PostgreSQLSessionHousekeepingJob
+    sidecar: unresolved
+    evidence: |-
+      PostgreSQLSessionHousekeepingJob.java:30 — deletes via
+      `expiry_time < now()`. Under timeout=-1 this predicate NEVER
+      matches; the table grows monotonically.
+    multiplicity_per_trigger: 1
+terminal_side_effect:
+  side_effect_class: header-set
+  description: |-
+    Every authenticated response carries a Set-Cookie header (Spring
+    WebFlux default SESSION cookie) whose attribute set is governed
+    entirely by Spring's framework defaults — likely HttpOnly is on,
+    Secure is OFF, SameSite is implicit Lax. The platform applies NO
+    overrides. Under spring.session.timeout=-1 the session reference
+    backing the cookie never expires server-side; the cookie acts as
+    an indefinite credential.
+  evidence:
+    - "SessionConfiguration.java:1-65 (no resolver bean)"
+    - "application.yml:1-3 (timeout=-1)"
+observed_vs_expected:
+  facets:
+    - drift_class: spring_session_timeout_minus_one_session_never_expires_default
+      description: |-
+        application.yml:1-3 ships `spring.session.timeout: -1`. Sessions
+        never expire server-side. Combined with no revocation hooks,
+        a compromised cookie is valid until JVM restart (IN_MEMORY)
+        or until manual operator-side invalidation (REDIS /
+        INTERNAL_POSTGRESQL). LSN-001-shape: silent insecure default,
+        warning-only doc, no programmatic guardrail.
+      evidence:
+        - "application.yml:1-3"
+        - "JooqSessionRepository.java:138-148 (expiry math)"
+      ui_unverified: false
+    - drift_class: no_cookie_attribute_overrides_secure_flag_offloaded_to_proxy
+      description: |-
+        SessionConfiguration has no CookieWebSessionIdResolver bean.
+        Secure flag, SameSite directive, HttpOnly override — all
+        delegated to deployment topology (reverse proxy stamping flags
+        externally). No doc warns operators of this responsibility.
+        On a non-HTTPS deployment the cookie travels in clear; on a
+        multi-tenant proxy with permissive SameSite=Lax, cross-site
+        GET / top-level-navigation cookie leakage applies.
+      evidence:
+        - "SessionConfiguration.java:1-65"
+        - "Grep across repo for SameSite|CookieWebSession — 0 matches"
+      ui_unverified: false
+    - drift_class: housekeeping_unreachable_under_minus_one_timeout_pg_table_grows_monotonic
+      description: |-
+        PostgreSQLSessionHousekeepingJob.java:30 deletes via
+        `expiry_time < now()`. Under timeout=-1 this predicate NEVER
+        matches; the spring_session_table grows monotonically. A 1000-user
+        platform with daily logins accumulates ~365K session rows
+        annually. Operationally bounded only by PG storage capacity;
+        no doc warns.
+      evidence:
+        - "PostgreSQLSessionHousekeepingJob.java:30"
+        - "application.yml:1-3 (timeout=-1)"
+      ui_unverified: false
+    - drift_class: housekeeping_job_no_schedulerlock_multi_instance_redundant_load
+      description: |-
+        PostgreSQLSessionHousekeepingJobHandler.java:13 has NO @SchedulerLock
+        annotation. On a multi-instance INTERNAL_POSTGRESQL deployment
+        every instance runs the cleanup hourly, producing N× DB load.
+        Inconsistent with other ODD @Scheduled jobs that DO use Postgres
+        advisory locks (notifications, partitions, data-collaboration).
+      evidence:
+        - "PostgreSQLSessionHousekeepingJobHandler.java:13 (no @SchedulerLock)"
+      ui_unverified: false
+    - drift_class: in_memory_default_breaks_collector_session_bridge_in_multi_replica
+      description: |-
+        SessionConfiguration.java:28-30 ships session.provider: IN_MEMORY
+        as default. Multi-replica deployments behind non-sticky
+        load-balancers see sessions per-process. The /ingestion/datasources
+        collector-identity bridge (via SessionConstants.COLLECTOR_ID_SESSION_KEY
+        written by IngestionDataSourceFilter, read by
+        IngestionController.createDataSource) breaks on the second
+        request hop, surfacing as HTTP 500
+        IllegalStateException("Collector id is null"). REFACTOR-419
+        tracks the cluster fragility.
+      evidence:
+        - "SessionConfiguration.java:28-30 (IN_MEMORY default)"
+        - "IngestionController.java:50-58 (NPE surface)"
+      ui_unverified: false
+    - drift_class: java_serialization_session_attributes_deserialization_gadget_risk
+      description: |-
+        JooqSessionRepository.java:156, 188 — under INTERNAL_POSTGRESQL,
+        session attribute payload is Java-serialised via
+        SerializationUtils.serialize(...) / .deserialize(...). Deprecated
+        in newer Spring versions for the deserialization-gadget reason.
+        A database compromise yields deserialisation gadgets on
+        attribute-load.
+      evidence:
+        - "JooqSessionRepository.java:156, 188"
+      ui_unverified: false
+    - drift_class: csrf_disabled_login_form_compounds_with_cookie_attribute_absence
+      description: |-
+        Under LOGIN_FORM, CSRF is unconditionally disabled
+        (LoginFormSecurityConfiguration.java:54). A logged-in browser
+        session is the canonical CSRF target (state-changing
+        POST/PUT/DELETE rides automatically with the session cookie).
+        Platform disables CSRF AND ships with no SameSite=Strict directive
+        AND ships with non-Secure cookies on non-HTTPS deployments.
+        Triple compounding under LOGIN_FORM.
+      evidence:
+        - "LoginFormSecurityConfiguration.java:54 (CSRF disabled)"
+        - "SessionConfiguration.java:1-65 (no SameSite directive)"
+      ui_unverified: false
+    - drift_class: redis_session_provider_health_check_disabled_by_default
+      description: |-
+        application.yml:244-245 — `management.health.redis.enabled: false`
+        default. On a REDIS-session-only deployment, a Redis outage
+        causes 5xx on every authenticated request but /actuator/health
+        does not reflect it. Operational-visibility gap.
+      evidence:
+        - "application.yml:244-245"
+      ui_unverified: false
+test_matrix:
+  unit: GAP
+  integration: GAP
+  performance: GAP
+  security: GAP
+test_matrix_notes: |-
+  No test coverage of cookie attribute defaults or session expiry.
+  Integration target: per-auth-mode × per-session-provider × HTTPS-vs-HTTP
+  deployment cookie-attribute assertion. Performance target: PG session
+  table growth under timeout=-1.
+related_refactoring_scopes:
+  - REFACTOR-419  # cluster fragility under IN_MEMORY + non-sticky LB
+  - REFACTOR-185  # default-insecure cluster — timeout=-1 + cookie-attribute absence are
+                  # additional facets of the same OOTB-zero-deps stance
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+  - default_insecure_cluster_session_layer
+  - operator_offloading_security_to_reverse_proxy
+related_features:
+  - F-011  # Principal-to-Owner Resolution — every authenticated session-cookie principal
+           # passes through F-011's chokepoint.
+status: active
+maintainer_curated: false
+proposed_action: |-
+  Local docker-compose probe: bring up odd-platform with auth.type=LOGIN_FORM
+  + session.provider=IN_MEMORY (default). Log in. `curl -v` to capture
+  the SESSION cookie attribute set. Confirm absence of Secure / configured
+  SameSite. Leave session 7 days; confirm it remains valid (idempotency
+  on a GET endpoint). Then under INTERNAL_POSTGRESQL, observe
+  spring_session table growth; restart JVM; confirm rows persist + cookie
+  still resolves.
+notes: |-
+  Genuinely new feature shape — no existing F-NNN anchors session cookie
+  posture. Closest existing references: F-011 batch Q records "UI has no
+  local login form" (the SPA delegates entirely to Spring's framework
+  default LoginPageGeneratingWebFilter); this feature is the COOKIE side
+  of the same delegation pattern. Cross-link F-011 for the principal flow.
+  The LSN-001 / LSN-002 family pattern (silent insecure default, doc-only
+  warning, no programmatic guardrail) is the architectural shape — same
+  as auth.type=DISABLED, attachment.storage=LOCAL, metrics.storage=INTERNAL_POSTGRES.

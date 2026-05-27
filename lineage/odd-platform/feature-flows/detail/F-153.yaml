@@ -1,0 +1,166 @@
+feature_id: F-153
+pillar_id: P-06
+pillar_anchored_id: P-06:F-006
+pillar_anchored_feature_name: Term Reverse-Lookup — Linked Columns paginated tab
+feature_name: |-
+  Term Linked-Columns Tab — paginated reverse-lookup of every Dataset
+  Field linked to the current Term, with broken pagination (InfiniteScroll
+  `next` wired to noop) and explicit-trigger-only search
+seeded_from: ui-review-2026-05-26
+seeded_at: 2026-05-26
+discovered_from_entry_point: ui_route:/terms/:termId/linked-columns
+primary_subject:
+  - odd-platform ts react-component:LinkedColumnsList
+contributing_nodes:
+  - odd-platform ts react-component:LinkedColumnsList
+  - odd-platform ts react-component:LinkedColumn
+  - odd-platform java TermController controller-method:getTermLinkedColumns
+  - odd-platform java service service:TermServiceImpl
+  - odd-platform java repository reactive repository:ReactiveTermRepositoryImpl
+chain:
+  - hop: 1
+    node: odd-platform ts react-component:LinkedColumnsList
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      LinkedColumnsList.tsx:18-95 — `useGetTermLinkedColumns({termId, page:1,
+      size: 50, query})` tanstack-query hook. `useEffect` fires `search()`
+      (the refetch fn) on mount (lines 29-31). Search input triggers
+      refetch on Enter (line 34) + icon click (line 48). InfiniteScroll
+      with `next={() => {}}` (line 77) — NOOP, silently broken pagination.
+      Empty-state "No linked columns" (line 90).
+  - hop: 2
+    node: odd-platform java TermController controller-method:getTermLinkedColumns
+    sidecar: '(referenced from F-024 TermController chain)'
+    multiplicity_per_trigger: 1
+    evidence: |-
+      Backend supports paginated retrieval of dataset_field_to_term links
+      filtered by termId. The UI never advances beyond page 1.
+  - hop: 3
+    node: odd-platform java repository reactive repository:ReactiveTermRepositoryImpl
+    sidecar: odd-platform__java__repository__reactive__repository__ReactiveTermRepositoryImpl.md
+    multiplicity_per_trigger: 1
+    evidence: |-
+      Reads dataset_field_to_term rows for the given term_id with
+      DatasetField + Dataset + Owner joins. Per F-002 batch N — the
+      dataset_field_to_term link table was HARD-DELETED in V0_0_76 so
+      every row visible is a true active link; no soft-delete latency
+      vector here (distinct from term_to_term batch N facets).
+terminal_side_effect:
+  side_effect_class: page-render
+  description: |-
+    Paginated table of Linked Column rows (name + dataset + namespace +
+    datasource + owner). Reverse-lookup surface — every Dataset Field
+    whose dataset_field_to_term row points at the current term_id
+    surfaces here.
+  evidence: |-
+    LinkedColumnsList.tsx:74-87 (InfiniteScroll + LinkedColumn row map).
+  cardinality_per_call: pageSize=50 rows; ONLY page 1 due to noop next
+amplification_factor: 1
+observed_vs_expected:
+  facets:
+    - facet_id: infinite_scroll_next_wired_to_noop_pagination_silently_broken
+      drift_class: ui_pagination_silently_broken_via_noop_callback
+      severity: HIGH
+      observed: |-
+        LinkedColumnsList.tsx:77 — `<InfiniteScroll next={() => {}}>`.
+        The InfiniteScroll component fires `next` when the user scrolls
+        past the threshold; here it's a no-op. The HOOK
+        `useGetTermLinkedColumns` does not expose a `fetchNextPage`
+        function — the call signature `{termId, page: 1, size, query}`
+        is single-page (compare LinkedTermsList.tsx:24-31 which uses
+        `useInfiniteQuery` with `fetchNextPage`). A Term with 51+
+        linked columns silently truncates at column 50; operators see
+        the InfiniteScroll spinner if `isFetching` is true but never
+        advance. Worse — `pageInfo.hasNext` is forwarded to InfiniteScroll
+        (line 78) so the UI promises more pages but the trigger does
+        nothing. False UI affordance.
+      expected: |-
+        Either (a) migrate `useGetTermLinkedColumns` to `useInfiniteQuery`
+        with `fetchNextPage` and wire `next={fetchNextPage}`, mirroring
+        LinkedTermsList; OR (b) remove the InfiniteScroll wrapper +
+        replace with a "Load more" button + explicit pagination state
+        (page index incremented on click). Current shape is the worst
+        of both — silently broken.
+      evidence:
+        - 'LinkedColumnsList.tsx:77 (next={() => {}})'
+        - 'LinkedColumnsList.tsx:22-27 (single-page hook signature)'
+        - 'LinkedTermsList.tsx:24-31 (the working sibling pattern)'
+      ui_unverified: false
+    - facet_id: search_query_not_in_hook_deps_array_no_refetch_on_query_change
+      drift_class: ui_hook_call_misses_query_dependency_only_explicit_refetch_works
+      severity: MEDIUM
+      observed: |-
+        LinkedColumnsList.tsx:22-27 — `useGetTermLinkedColumns({termId,
+        page:1, size, query})` is invoked with `query` as a hook
+        argument. Whether the hook re-fires on query change depends on
+        the hook's internal `queryKey` shape. If `queryKey` includes
+        `query`, the hook auto-fetches on every keystroke (which is
+        why the explicit `search()` refetch exists at line 34/48). If
+        `queryKey` does NOT include `query`, only explicit `refetch()`
+        retrieves filtered results. Without reading the hook
+        implementation, this is `ui_unverified`.
+      expected: |-
+        Determined by hook design — if `queryKey` includes `query`,
+        a debounce is needed to avoid per-keystroke fetches. If not,
+        document the explicit-trigger contract.
+      evidence:
+        - 'LinkedColumnsList.tsx:22-27 (hook signature with query as arg)'
+        - 'LinkedColumnsList.tsx:34-49 (explicit search() on Enter/click)'
+      ui_unverified: true
+      ui_unverified_reason: |-
+        Hook implementation (`useGetTermLinkedColumns`) not read in this
+        UI walk; the queryKey shape determines auto-fetch vs explicit-only.
+    - facet_id: term_linked_columns_reverse_lookup_inherits_read_collaborative_posture
+      drift_class: ui_renders_unscoped_reverse_lookup_surface
+      severity: LOW
+      observed: |-
+        Every authenticated user sees every Dataset Field linked to the
+        Term across every namespace and every owner — consistent with
+        the platform-wide read-collaborative posture (cross-link F-002
+        batch N, F-024 batch U facet
+        `read_collaborative_posture_inherits_repo_tier_no_ui_filter`).
+        No UI filter "show only fields in my namespace" or "fields I
+        own". Aligned with the documented architecture; the absence is
+        the intentional UX manifestation.
+      expected: |-
+        No fix required; document the catalog-wide reverse-lookup
+        posture for the Business Glossary docs page.
+      evidence:
+        - 'LinkedColumnsList.tsx (no namespace / owner filter inputs)'
+      ui_unverified: false
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+      - LinkedColumnsList InfiniteScroll noop bug — assert N=51 columns truncates at 50 (pin the bug OR fix and assert all 51 render)
+      - LinkedColumnsList search — assert refetch fires on Enter
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+      - End-to-end /terms/:termId/linked-columns with N=51 — observe network and assert page 2 NOT fetched (pin)
+      - Search query — apply filter, click search icon, assert filtered API call shape
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+      - Page-1-only ceiling latency — query cost for a Term with thousands of linked columns + how the 50-cap masks it
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+      - Cross-namespace reverse-lookup — Term in team-A's namespace has linked columns in team-B's; assert team-A user sees them
+status: ui-complete
+related_features:
+  - F-002
+  - F-024
+  - F-056
+  - F-151
+  - F-152
+related_concepts:
+  - term-reverse-lookup
+  - dataset-field-term-linkage
+  - infinite-scroll-pagination-defect
+maintainer_curated: false

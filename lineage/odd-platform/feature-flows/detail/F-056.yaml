@@ -1,0 +1,281 @@
+feature_id: F-056
+pillar_id: P-06
+pillar_anchored_id: P-06:F-003
+pillar_anchored_feature_name: Term Description-Mention Auto-Link Side-Channel
+feature_name: |-
+  [[namespace:term]] description-mention auto-link — DATA_ENTITY_DESCRIPTION_UPDATE silently
+  creates term-link rows bypassing DATA_ENTITY_ADD_TERM, with cross-time + cross-namespace
+  + audit-invisible properties
+seeded_from: SHB-030
+seeded_at: 2026-05-26
+discovered_from_entry_point: |-
+  rest:PUT /api/dataentities/{id}/description (and PUT
+  /api/datasetfields/{id}/description) — the description-update endpoints
+  gate ONLY on DATA_ENTITY_DESCRIPTION_UPDATE. Plus rest:POST /api/terms
+  and PUT /api/terms/{id} (createTerm / updateTerm) — which drain the
+  unhandled-mention staging table on term-create / term-update, materialising
+  cross-time auto-links to entities whose descriptions were written by OTHER
+  users who never had DATA_ENTITY_ADD_TERM.
+primary_subject:
+  - odd-platform-api/src/main/java/.../TermServiceImpl.java:67 (regex declaration)
+  - odd-platform-api/src/main/java/.../TermServiceImpl.java:201-207 (handleDataEntityDescriptionTerms)
+  - odd-platform-api/src/main/java/.../TermServiceImpl.java:99-117 (createTerm + resolveUnhandledDescriptionMentions)
+  - odd-platform-api/src/main/java/.../TermServiceImpl.java:421-442 (cross-time drain)
+contributing_nodes:
+  - node_id: odd-platform java service:TermServiceImpl
+    role: service-tier-side-channel-host
+    sidecar: lineage/odd-platform/understanding/odd-platform__java__service__service__TermServiceImpl.md
+    note: |-
+      The regex `\[\[([^:]*?):([^\]]*?)\]\]` parses [[namespace:term]] mentions
+      out of every internal description (data-entity, dataset-field,
+      term-definition). handleDataEntityDescriptionTerms / handleDatasetFieldDescriptionTerms
+      synthesise *_to_term rows with is_description_link = TRUE.
+      resolveUnhandledDescriptionMentions drains the staging table on
+      createTerm / updateTerm — the cross-time drain that auto-links new terms
+      to OLD descriptions by OTHER users.
+  - node_id: odd-platform java service:DataEntityServiceImpl
+    role: invocation-site
+    sidecar: '(referenced from TermServiceImpl sidecar coupling)'
+    note: |-
+      DataEntityServiceImpl.upsertDescription:325-328 invokes
+      handleDataEntityDescriptionTerms. Gated only by
+      DATA_ENTITY_DESCRIPTION_UPDATE.
+    unresolved: true
+  - node_id: odd-platform java DataEntityDescriptionUnhandledTermRepository
+    role: staging-table-repository
+    sidecar: '(referenced from TermServiceImpl sidecar coupling)'
+    note: |-
+      data_entity_description_unhandled_term + dataset_field_description_unhandled_term
+      staging tables. Hold mention rows for [[ns:term]] references that
+      could not be resolved at description-edit time. Drained by
+      resolveUnhandledDescriptionMentions on subsequent term-create / term-update.
+    unresolved: true
+chain:
+  - hop: 1
+    node: odd-platform java DataEntityController controller-method:upsertDescription
+    sidecar: '(referenced from TermServiceImpl sidecar coupling)'
+    evidence: 'gated on DATA_ENTITY_DESCRIPTION_UPDATE (SecurityConstants.java:194-197)'
+    multiplicity_per_trigger: 1
+    unresolved: true
+  - hop: 2
+    node: odd-platform java service:DataEntityServiceImpl
+    sidecar: '(referenced from TermServiceImpl sidecar coupling)'
+    evidence: 'DataEntityServiceImpl.upsertDescription:325-328 invokes handleDataEntityDescriptionTerms'
+    multiplicity_per_trigger: 1
+    unresolved: true
+  - hop: 3
+    node: odd-platform java service:TermServiceImpl (handleDataEntityDescriptionTerms)
+    sidecar: lineage/odd-platform/understanding/odd-platform__java__service__service__TermServiceImpl.md
+    evidence: 'TermServiceImpl.java:201-207 (parses regex, INSERTs auto-link rows with is_description_link=TRUE); :67 regex'
+    multiplicity_per_trigger: N (per mention in description)
+    unresolved: false
+  - hop: 1b
+    node: odd-platform java TermController controller-method:createTerm
+    sidecar: lineage/odd-platform/understanding/odd-platform__java__TermController__controller-class__TermController.md
+    evidence: 'gated on TERM_CREATE; cross-time drain entry point'
+    multiplicity_per_trigger: 1
+    unresolved: false
+  - hop: 2b
+    node: odd-platform java service:TermServiceImpl (createTerm + resolveUnhandledDescriptionMentions)
+    sidecar: lineage/odd-platform/understanding/odd-platform__java__service__service__TermServiceImpl.md
+    evidence: 'TermServiceImpl.java:99-117 createTerm; :421-442 resolveUnhandledDescriptionMentions'
+    multiplicity_per_trigger: N (per draining unhandled mention; potentially HUNDREDS for a popular term)
+    unresolved: false
+terminal_side_effect:
+  side_effect_class: db-write
+  description: |-
+    INSERT data_entity_to_term / dataset_field_to_term / term_to_term rows with
+    is_description_link = TRUE — without DATA_ENTITY_ADD_TERM /
+    DATASET_FIELD_ADD_TERM permission being checked. Cross-time path:
+    rows materialised on term-create from descriptions written WEEKS AGO by
+    users who never held the link-create permission.
+  evidence: 'TermServiceImpl.java:201-207, 421-442'
+  cardinality_per_call: N (per mention) × M (per drainable unhandled term)
+observed_vs_expected:
+  facets:
+    - facet_id: permission_bypass_via_description_mention
+      drift_class: permission_side_door_through_description_update_endpoint
+      severity: HIGH
+      observed: |-
+        Any user with DATA_ENTITY_DESCRIPTION_UPDATE can plant
+        [[finance:Customer]] in a description; on save, the service-tier
+        TermServiceImpl.handleDataEntityDescriptionTerms parses the regex
+        and INSERTs data_entity_to_term rows — bypassing DATA_ENTITY_ADD_TERM.
+        Same shape for DATASET_FIELD_DESCRIPTION_UPDATE → DATASET_FIELD_ADD_TERM.
+      expected: |-
+        Either (a) service-tier permission check inside the description-mention
+        handler (consult DATA_ENTITY_ADD_TERM before INSERTing the link rows),
+        OR (b) documented "description-mention is part of
+        DATA_ENTITY_DESCRIPTION_UPDATE's scope" framing in the Business
+        Glossary doc with explicit RBAC implications.
+      evidence:
+        - 'TermServiceImpl.java:67 (regex) + :201-207 (handler) + :421-442 (drain)'
+        - 'DataEntityServiceImpl.java:325-328 (invocation site)'
+        - 'SecurityConstants.java:194-197 (description-update gate; the gate this bypasses)'
+        - 'TermServiceImpl.md:18 (understanding — the headline finding)'
+      ui_unverified: false
+    - facet_id: cross_time_auto_link_drain_on_term_create
+      drift_class: side_channel_drains_stale_mentions_authored_by_third_parties
+      severity: HIGH
+      observed: |-
+        TermServiceImpl.createTerm:99-117 calls resolveUnhandledDescriptionMentions
+        (line 116) which drains the *_unhandled_term staging table. A user
+        creating term X today silently auto-links X to data-entities whose
+        descriptions were written days or weeks ago by users who never had
+        DATA_ENTITY_ADD_TERM permission. The terms graph becomes
+        "spontaneously dense" in ways the operator who created the term
+        didn't intend or audit. Cross-time path is invisible at term-create
+        time — the audit log shows TERM_CREATED but not the N link rows
+        materialised as a side-effect.
+      expected: |-
+        Either (a) the drain requires the term-creator to hold
+        DATA_ENTITY_ADD_TERM (and is partial if they don't), OR (b) the
+        drained mentions emit explicit activity events per auto-linked entity,
+        OR (c) the drain is documented as a feature with explicit cross-time
+        property warnings on the live docs page.
+      evidence:
+        - 'TermServiceImpl.java:99-117 (createTerm) + :116 (call to resolveUnhandledDescriptionMentions)'
+        - 'TermServiceImpl.java:421-442 (drain function)'
+      ui_unverified: false
+    - facet_id: cross_namespace_pollution_via_mention_regex
+      drift_class: cross_tenant_link_via_namespace_qualified_mention_no_per_tenant_scope
+      severity: HIGH
+      observed: |-
+        [[other-team-ns:Customer]] in team-A's data-entity description silently
+        links team-B's term into team-A's entity — without team-A having any
+        permission on team-B's namespace. The Business Glossary docs claim
+        "Searches and term-to-entity link operations resolve within the
+        namespace by default" — but the auto-link path crosses namespace
+        boundaries unrestricted (per TermController sidecar doc-drift[2]).
+        getByNameAndNamespace lookup has NO tenant filter.
+      expected: |-
+        Either (a) the regex resolves mentions ONLY within the editing user's
+        accessible namespaces, OR (b) the docs faithfully describe the
+        cross-namespace property + the RBAC implications.
+      evidence:
+        - 'TermServiceImpl.java:350-359 (findTermsInDescription)'
+        - 'ReactiveTermRepositoryImpl.java:162-179 (getByNameAndNamespace — no tenant filter)'
+        - 'TermController sidecar doc-drift[2]'
+      ui_unverified: false
+    - facet_id: is_description_link_invisible_in_ui_audit_invisible
+      drift_class: ui_does_not_distinguish_auto_linked_from_manually_linked
+      severity: MEDIUM
+      observed: |-
+        Per TermServiceImpl sidecar concepts.entities[7] + TermDetails sidecar
+        bugs[4]: the read-side removeDuplicateNonDescriptionTerms
+        (TermServiceImpl.java:444-448) actually PREFERS the description-link
+        variant when both exist — so a manually-created term-link row is
+        HIDDEN by an auto-created description-link row pointing at the same
+        (entity, term) pair. Operators viewing the data-entity's Terms section
+        see a single chip; they cannot tell if it's manual or auto, and the
+        UI provides no signal of cross-time or cross-namespace origin.
+
+        2026-05-26 ui-review-F PRIMARY-SOURCE: UI walk confirms the
+        asymmetric coverage. On the TERM detail page → Overview tab →
+        Linked terms panel, TermItem.tsx:53 renders `<LinkedTermIcon />`
+        for `linkedTerm.isDescriptionLink === true` AND hides the X
+        delete button via `!isDescriptionLink` (line 61). On the TERM
+        detail page → Linked entities tab, LinkedEntity.tsx (the row
+        component for TermLinkedEntitiesList) renders NO equivalent
+        indicator and NO conditional delete affordance — operators
+        viewing a Term's linked-entities cannot tell which entities were
+        auto-linked via description-mention vs manually linked. The
+        DATA ENTITY side (DataEntityDetails Terms section, F-002 surface)
+        was previously documented to gate the X via `WithPermissions +
+        !linkedTerm.isDescriptionLink` (TermItem.tsx:48 — cited in F-002
+        batch L drift facet 11 `description_link_protection_silent_204_via_api`).
+        The TERM-side LinkedEntity component has the OPPOSITE problem:
+        no indicator AT ALL, no conditional gate. Two distinct UI
+        coverage gaps, same root class.
+      expected: |-
+        UI surfaces a styling distinction (chip variant, tooltip
+        "Auto-linked from description") + an audit trail that records the
+        ORIGIN context (description-edit by user X at time T mentioning
+        [[ns:term]] vs manual link by user Y).
+      evidence:
+        - 'TermServiceImpl.java:444-448 (removeDuplicateNonDescriptionTerms)'
+        - 'TermServiceImpl sidecar concepts.entities[7]'
+        - 'TermDetails sidecar bugs[4]'
+        - 'TermItem.tsx:53 (LinkedTermIcon on term-to-term — PRESENT)'
+        - 'LinkedEntity.tsx (TermLinkedEntitiesList row — NO equivalent — ui-review-F 2026-05-26)'
+      ui_unverified: false
+      ui_verified_at: '2026-05-26'
+      ui_verified_via: ui-review-F slice walk + primary-source TermItem.tsx + LinkedEntity.tsx
+    - facet_id: f_004_xss_intersection_on_mention_payload
+      drift_class: stored_xss_surface_extends_to_mention_staging_table
+      severity: HIGH
+      observed: |-
+        Per TermServiceImpl sidecar operations[3]: the regex consumes the raw
+        Markdown body — a <script> payload inside [[ns:term]] markers parses
+        through the regex unchanged. The staging-table row's term_name /
+        term_namespace_name columns hold the verbatim user input. F-004 XSS
+        family touches this storage layer (the unhandled-mention staging
+        tables, not just data_entity.internal_description).
+      expected: |-
+        Either (a) the regex sanitises captured groups (Jsoup.clean / HTML
+        allowlist) before staging, OR (b) the staging-table reader sanitises
+        on read (defence-in-depth), OR (c) F-004 family-wide sanitiser fix
+        (Markdown.tsx rehype-sanitize) catches the render-side as elsewhere.
+      evidence:
+        - 'TermServiceImpl sidecar operations[3]'
+        - 'TermServiceImpl.java:67 (regex with [^:]*? + [^\\]]*? capture groups — no sanitisation)'
+      ui_unverified: false
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+      - regex parser test pinning [[ns:term]] syntax + script-payload handling
+      - resolveUnhandledDescriptionMentions cross-time drain test (mock staging table; assert auto-link rows materialised)
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+      - WebTestClient — caller with only DATA_ENTITY_DESCRIPTION_UPDATE creates description with [[ns:existing_term]]; assert data_entity_to_term row created with is_description_link=TRUE
+      - cross-namespace integration test — team-A user editing description with [[team-B-ns:term]]; assert link row created without permission on team-B's namespace
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+      - drain-on-create benchmark — N=100 unhandled mentions for a popular term name; measure latency of createTerm
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+      - permission-bypass regression test (the primary facet)
+      - cross-namespace pollution regression test
+      - F-004 family — sanitiser regression on mention payloads
+  control_summary: 0/4
+  highest_leverage_uncovered: |-
+    Security — a single integration test that pins the bypass (DESCRIPTION_UPDATE
+    creates a link without ADD_TERM) would close the primary facet AND serve
+    as the regression anchor for any future fix (whether service-tier check
+    or documented-design path).
+related_refactoring_scopes:
+  - REFACTOR-227
+related_test_gaps: []
+related_doc_gaps: []
+related_features:
+  - F-002
+  - F-004
+related_concepts:
+  - term-description-mention
+  - term-linkage
+  - data-glossary
+cross_pillar_relationships:
+  - P-06_shares_data_with_P-01: term-to-entity link rows materialised via this side-channel surface on the data-entity Terms section.
+  - P-06_feeds_from_P-09: the description-edit permission gate (DATA_ENTITY_DESCRIPTION_UPDATE) is the security boundary the auto-link side-channel bypasses.
+ui_unverified: false
+status: active
+note: |-
+  Graduated 2026-05-26 from SHB-030. F-002 carries the
+  `description_edit_auto_link_side_channel` drift_class as a single facet on
+  the broader Term-to-Entity Linkage feature; this graduation promotes the
+  CROSS-TIME + CROSS-NAMESPACE + AUDIT-INVISIBLE properties to a feature in
+  their own right because operators authoring RBAC policies need a stable
+  feature anchor — the auto-link IS a feature (not just a bug-attached facet)
+  per the maintainer's product-owner lens: every reader of the
+  Business Glossary docs encounters [[ns:term]] mentions; the security
+  implications are first-class operator-mental-model content. F-056 is the
+  doc-anchor for that operator understanding; F-002 carries the implementation
+  drift facets. The two features cross-link.

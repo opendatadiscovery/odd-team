@@ -1,0 +1,277 @@
+feature_id: F-044
+pillar_id: P-01
+pillar_anchored_id: P-01:F-008
+pillar_anchored_feature_name: Data Entity Status Lifecycle (Auto-Flip + Retention TTL)
+feature_name: |-
+  Data Entity Status Lifecycle — scheduled DRAFT/DEPRECATED → DELETED
+  auto-flip on operator-set switch time, paired with the documented
+  30-day soft-delete retention window that depends on
+  `status_updated_at` being set on every transition
+seeded_from: SHB-003
+seeded_at: 2026-05-26
+status: active
+absorbs_threads:
+  - thread: SHB-003
+    role: primary
+    summary: |-
+      DataEntityStatusSwitchJob runs every 10 minutes under ShedLock and
+      bulk-flips eligible DRAFT/DEPRECATED entities to DELETED via the
+      same service path as a manual PUT.
+  - thread: SHB-004
+    role: drift-facet
+    summary: |-
+      `DataEntityMapperImpl.applyStatus` mutates `pojo.setStatus` BEFORE
+      the change-detection guard, so `status_updated_at` is never set;
+      the downstream Housekeeping TTL never fires; the documented
+      30-day retention window is silently false.
+primary_drift_class: status_updated_at_never_set_breaks_30_day_ttl
+drift_class_summary:
+  - status_updated_at_never_set_breaks_30_day_ttl
+  - scheduled_auto_flip_no_per_tick_batch_cap
+  - scheduled_auto_flip_silently_breaks_housekeeping_via_shb_004
+  - no_operator_peek_endpoint_for_scheduled_transitions
+  - cadence_lock_window_undocumented
+  - shared_service_path_manual_put_and_auto_flip_share_mapper_bug
+discovered_from_entry_point: |-
+  scheduled-job:DataEntityStatusSwitchJob (every 10 minutes, ShedLock
+  9-minute window) — paired with rest:PUT /api/dataentities/{id}/statuses
+  as the manual side of the same lifecycle. The auto-flip path is the
+  scheduler entry-point; the bug surfaces equally on the manual PUT
+  path because both route through DataEntityMapperImpl.applyStatus.
+primary_subject:
+  - odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/scheduling/DataEntityStatusSwitchJob.java
+  - odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/DataEntityStatusDto.java
+  - odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/internal/DataEntityInternalStateServiceImpl.java
+  - odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/mapper/DataEntityMapperImpl.java
+  - odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDataEntityRepositoryImpl.java
+  - odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/scheduling/DataEntityHousekeepingJob.java
+contributing_nodes:
+  - odd-platform java scheduling:DataEntityStatusSwitchJob
+  - odd-platform java service service:DataEntityServiceImpl
+  - odd-platform java service service:internal:DataEntityInternalStateServiceImpl
+  - odd-platform java mapper:DataEntityMapperImpl
+  - odd-platform java DataEntityController controller-method:updateStatus
+  - odd-platform java repository reactive repository:ReactiveDataEntityRepositoryImpl
+  - odd-platform java scheduling:DataEntityHousekeepingJob
+chain:
+  - hop: 1
+    node: scheduling:DataEntityStatusSwitchJob
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      DataEntityStatusSwitchJob.java:21-31 — `@SchedulerLock(name = "statusSwitchJob")`
+      with 9-minute lock window + fixed-rate 10 minutes. Single tick reads ALL
+      eligible entities (no LIMIT) and routes through the shared service path.
+  - hop: 2
+    node: repository reactive:ReactiveDataEntityRepositoryImpl.getPojosForStatusSwitch
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      ReactiveDataEntityRepositoryImpl.java:256-262 — `getPojosForStatusSwitch`
+      returns ALL eligible pojos with NO `LIMIT`, NO chunking. A 5K-entity backlog
+      maturing in one window runs through a single transaction.
+  - hop: 3
+    node: service:internal:DataEntityInternalStateServiceImpl.changeStatusForDataEntities
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      DataEntityInternalStateServiceImpl.java:73-98 — the SAME method handles
+      manual PUT + scheduler. Both share the soft-delete cascade and BOTH
+      route through DataEntityMapperImpl.applyStatus.
+  - hop: 4
+    node: mapper:DataEntityMapperImpl.applyStatus
+    sidecar: unresolved
+    multiplicity_per_trigger: 1
+    evidence: |-
+      DataEntityMapperImpl.java:242-253 — `pojo.setStatus(statusDto.getId())`
+      runs on line 247 BEFORE the `if (statusDto.getId() != pojo.getStatus())`
+      check on line 249. At the check point pojo.getStatus() equals the new
+      value, the guard is always false, `setStatusUpdatedAt(...)` is never
+      reached. This is SHB-004's structural bug.
+  - hop: 5
+    node: scheduling:DataEntityHousekeepingJob
+    sidecar: unresolved
+    multiplicity_per_trigger: 0
+    evidence: |-
+      DataEntityHousekeepingJob.java:73-82 — TTL query
+      `STATUS_UPDATED_AT.lessOrEqual(now - data_entity_delete_days)`. NULL
+      compares as NULL in SQL three-valued logic — every entity transitioned
+      through the mapper bug is silently EXCLUDED from the housekeeping
+      delete set. Multiplicity = 0: the downstream effect NEVER fires for
+      entities transitioned by this lifecycle.
+terminal_side_effect:
+  side_effect_class: db-write
+  description: |-
+    `data_entity.status` is bulk-updated to DELETED for all eligible pojos
+    in one transaction; soft-delete cascade fires (lineage relations,
+    group relations, parent-group relations, statistics decrement,
+    manually-created DEG fill-flag unset, attachment retention). The
+    EXPECTED downstream effect — eventual hard-delete after 30 days —
+    NEVER fires because `status_updated_at` is silently left NULL.
+  evidence: |-
+    DataEntityInternalStateServiceImpl.java:73-98 (cascade);
+    DataEntityHousekeepingJob.java:73-82 (TTL never fires);
+    application.yml:170 (housekeeping.ttl.data_entity_delete_days: 30 default).
+observed_vs_expected:
+  observed: |-
+    Operator sets `status_switch_time` on a DEPRECATED entity. The
+    scheduled job picks it up within ≤10 minutes and flips status to
+    DELETED with the soft-delete cascade. `status_updated_at` is silently
+    left NULL because the mapper's change-detection guard is broken. The
+    Housekeeping TTL never matches this row. The "30-day retention,
+    then hard-delete" promise documented at /features/data-discovery/statuses
+    is silently false; the DELETED row persists forever, the
+    `data_entity` table grows unbounded, FK references stay live,
+    statistics rollups are off, and the isStale flag continues to
+    render. Operator-visible only via `SELECT count(*) WHERE
+    status='DELETED'` showing a count that never drops.
+  expected: |-
+    Operator's mental model + the documented behaviour: auto-flip to
+    DELETED → 30-day grace window → hard-delete. The flip happens; the
+    hard-delete never does.
+  facets:
+    - drift_class: status_updated_at_never_set_breaks_30_day_ttl
+      description: |-
+        SHB-004 primary defect: DataEntityMapperImpl.applyStatus mutates
+        the pojo BEFORE the change-detection guard. The guard always
+        evaluates false; status_updated_at is never assigned. Affects
+        BOTH manual PUT and scheduled auto-flip paths since both route
+        through the same mapper.
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/mapper/DataEntityMapperImpl.java:242-253"
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/scheduling/DataEntityHousekeepingJob.java:73-82"
+        - "odd-platform-api/src/main/resources/application.yml:170"
+        - "https://docs.opendatadiscovery.org/features/data-discovery/statuses (verified 2026-05-12 status 200)"
+      severity: HIGH
+      seeded_from: SHB-004
+    - drift_class: scheduled_auto_flip_no_per_tick_batch_cap
+      description: |-
+        getPojosForStatusSwitch returns ALL eligible pojos with no LIMIT
+        and no chunking. A 5K-entity backlog maturing the same hour runs
+        through ONE transaction processing 5K pojos × 3-7 cascade writes
+        — potentially exceeding the 9-minute ShedLock window. The job
+        completes but the next tick skips (lock taken), creating
+        phantom-double-tick latency.
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDataEntityRepositoryImpl.java:256-262"
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/scheduling/DataEntityStatusSwitchJob.java:21-31"
+      severity: MEDIUM
+      seeded_from: SHB-003
+    - drift_class: scheduled_auto_flip_silently_breaks_housekeeping_via_shb_004
+      description: |-
+        The interaction effect: every entity auto-flipped by the
+        scheduler routes through the broken mapper, gets
+        status_updated_at = NULL, and is permanently excluded from the
+        TTL. The two defects compose to make the documented two-stage
+        retirement pipeline (auto-flip → time-based hard-delete) a
+        one-stage system that never reclaims storage.
+      evidence:
+        - "DataEntityStatusSwitchJob + DataEntityMapperImpl.applyStatus + DataEntityHousekeepingJob — composed"
+      severity: HIGH
+      seeded_from: SHB-003+SHB-004
+    - drift_class: no_operator_peek_endpoint_for_scheduled_transitions
+      description: |-
+        There is NO `GET /api/dataentities/scheduled-transitions` endpoint
+        (or similar) to show operators which entities will auto-flip in
+        the next 24h. Operators have to inspect individual entity detail
+        pages.
+      evidence:
+        - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/DataEntityController.java — grep returns no scheduled-transitions endpoint"
+      severity: LOW
+      seeded_from: SHB-003
+    - drift_class: cadence_lock_window_undocumented
+      description: |-
+        Live `/features/data-discovery/statuses` documents the auto-transition
+        behaviour at the user level but does NOT mention the cadence
+        (10 minutes), lock window (9 minutes), or the burst-cap behaviour
+        (no chunking). Operators have no upper bound on flip latency
+        guarantees.
+      evidence:
+        - "https://docs.opendatadiscovery.org/features/data-discovery/statuses (verified 2026-05-12 status 200)"
+        - "DataEntityStatusSwitchJob.java:21-31"
+      severity: LOW
+      seeded_from: SHB-003
+    - drift_class: shared_service_path_manual_put_and_auto_flip_share_mapper_bug
+      description: |-
+        Both the manual PUT path (DataEntityController.updateStatus) and
+        the scheduled auto-flip path route through
+        DataEntityInternalStateServiceImpl.changeStatusForDataEntities,
+        which calls DataEntityMapperImpl.applyStatus. The SHB-004 bug
+        affects BOTH paths uniformly — verification on either side
+        confirms the other.
+      evidence:
+        - "DataEntityInternalStateServiceImpl.java:73-98"
+        - "DataEntityMapperImpl.java:242-253"
+      severity: HIGH
+      seeded_from: SHB-003+SHB-004
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+      - "Assert pojo.getStatusUpdatedAt() is set after applyStatus on a real status transition."
+      - "Assert getPojosForStatusSwitch returns ≤ chunk_size entities per call (after fix)."
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+      - "Scheduled job auto-flips DEPRECATED → DELETED at status_switch_time (no test exercises the scheduled path)."
+      - "Burst behaviour: 5K entities maturing in one tick all process within 9 minutes."
+      - "End-to-end retention: flip → wait 30 simulated days → assert housekeeping deletes the row (currently fails by design)."
+  performance:
+    state: GAP
+    covered: []
+    uncovered:
+      - "Latency profile of a single tick with N=1000, N=5000 eligible pojos × cascade fan-out."
+      - "Lock contention between manual PUT calls and the scheduled tick."
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+      - "Auto-flip path operates with system principal — no audit trail of which entities transitioned automatically (Activity feed coverage TBD)."
+control_summary: |-
+  0/4 cells COVERED. The lifecycle feature is entirely under-tested:
+  no unit-test asserts status_updated_at is set, no integration test
+  exercises the scheduled path, no end-to-end test verifies the
+  documented 30-day retention. The SHB-004 mapper bug + the
+  no-chunking burst risk + the missing operator-peek endpoint
+  compose into a HIGH-severity correctness defect that's invisible
+  to operators until they run `SELECT count(*) WHERE status='DELETED'`
+  and find a number that never drops.
+related_refactoring_scopes: []  # to be linked once REFACTOR-NNN entries land for applyStatus fix + chunking + DATA-FIX migration
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+  - data-entity-status
+  - housekeeping-ttl-retention
+  - soft-delete-is-the-platforms-deletion-model
+related_features:
+  - F-001  # Detail-page view tracking — view_count on entities is the OTHER scheduled column; isStale flag bridges
+  - F-010  # Housekeeping TTL Enforcement (P-08:F-002) — the DOWNSTREAM job that depends on status_updated_at being set
+  - F-018  # Manual Object Tagging — soft-delete cascade in tag relations is the SISTER cascade pattern
+  - F-027  # Attachment Lifecycle — retention/expiry interactions through soft-delete cascade
+related_pillar_features:
+  - P-08:F-002  # Housekeeping TTL Enforcement (F-010 within F-NNN numbering)
+proposed_local_probes:
+  - id: P-shb-003-001
+    description: |-
+      Local docker-compose stack: PUT a status on a fresh entity, then
+      SELECT status_updated_at — assert NULL (locks the bug). After fix,
+      same probe asserts NOT NULL.
+    type: integration
+    cost: low
+  - id: P-shb-003-002
+    description: |-
+      Local stack with the scheduler enabled: insert 100 entities with
+      status_switch_time = now() - 1 second, wait one tick (≤10 minutes),
+      assert all 100 are DELETED + count their status_updated_at columns.
+    type: integration
+    cost: medium
+  - id: P-shb-003-003
+    description: |-
+      Burst-cap probe: insert 5000 entities maturing in the same hour;
+      time the tick; verify it completes within the 9-minute lock window.
+    type: performance
+    cost: medium
+ui_unverified: false  # the Statuses feature has a documented UI (operator sets status + switch time on the entity detail page) but no UI hop is enumerated above — verification deferred to a follow-up batch
+maintainer_curated: false

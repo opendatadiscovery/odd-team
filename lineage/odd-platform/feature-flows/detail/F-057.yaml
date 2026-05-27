@@ -1,0 +1,197 @@
+feature_id: F-057
+pillar_id: P-04
+pillar_anchored_id: P-04:F-004
+pillar_anchored_feature_name: DQ Test Severity Lifecycle
+feature_name: |-
+  DQ test severity change (Minor / Major / Critical) — gated by permission but
+  emits NO activity event, NO last_modified_by, NO version increment; severity
+  drives SLA colour visible cross-tenant; compliance cannot answer "who set
+  this to Critical"
+seeded_from: SHB-044
+seeded_at: 2026-05-26
+discovered_from_entry_point: |-
+  rest:PUT /api/datasets/{id}/dataqatests/{tid}/severity — the severity
+  mutation endpoint. Severity directly drives the dataset's SLA colour per
+  SLACalculator's aggregate-weight computation: raising a single test from
+  Major to Critical can flip the dataset from Yellow to Red without any test
+  pass/fail status changing.
+primary_subject:
+  - odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDataQualityRepositoryImpl.java:87-102
+  - odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/DataQualityServiceImpl.java:62-81
+  - odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/controller/DataQualityController.java:51-61
+contributing_nodes:
+  - node_id: odd-platform java controller:DataQualityController (setDataQATestSeverity)
+    role: rest-entry-point
+    sidecar: '(referenced from DataQualityController sidecar)'
+    note: |-
+      PUT /api/datasets/{id}/dataqatests/{tid}/severity. Thin proxy; no
+      interceptor / aspect that would emit audit downstream.
+      SecurityConstants.java:243-246 declares the SecurityRule
+      (DATASET_TEST_RUN_SET_SEVERITY permission, DATA_ENTITY-scoped).
+    unresolved: true
+  - node_id: odd-platform java service:DataQualityServiceImpl (setDataQualityTestSeverity)
+    role: service-tier
+    sidecar: '(referenced from DataQualityController sidecar coupling)'
+    note: |-
+      @ReactiveTransactional. Calls the upsert and returns the DTO. No
+      activityRepository reference, no ActivityEvent.builder(), no notification
+      dispatch.
+    unresolved: true
+  - node_id: odd-platform java repository:ReactiveDataQualityRepositoryImpl
+    role: persistence-tier
+    sidecar: '(referenced from DataQualityController sidecar coupling)'
+    note: |-
+      onDuplicateKeyUpdate on (DATA_QUALITY_TEST_ID, DATASET_ID). Idempotent
+      in OUTCOME (the row converges) but loses HISTORY (the prior severity
+      is overwritten). No last_modified_by, no updated_at, no version column.
+    unresolved: true
+chain:
+  - hop: 1
+    node: odd-platform java controller:DataQualityController (setDataQATestSeverity)
+    sidecar: '(referenced from DataQualityController sidecar)'
+    evidence: 'PUT /api/datasets/{id}/dataqatests/{tid}/severity; SecurityConstants.java:243-246 — DATASET_TEST_RUN_SET_SEVERITY gate present'
+    multiplicity_per_trigger: 1
+    unresolved: true
+  - hop: 2
+    node: odd-platform java service:DataQualityServiceImpl (setDataQualityTestSeverity)
+    sidecar: '(referenced from DataQualityController sidecar)'
+    evidence: 'DataQualityServiceImpl.java:62-81 — no @ActivityLog'
+    multiplicity_per_trigger: 1
+    unresolved: true
+  - hop: 3
+    node: odd-platform java repository:ReactiveDataQualityRepositoryImpl
+    sidecar: '(referenced from DataQualityController sidecar)'
+    evidence: 'ReactiveDataQualityRepositoryImpl.java:87-102 — onDuplicateKeyUpdate'
+    multiplicity_per_trigger: 1
+    unresolved: true
+terminal_side_effect:
+  side_effect_class: db-write
+  description: |-
+    UPSERT row in data_quality_test_severity (or equivalent) with new severity
+    value. No audit-side write (no INSERT into activity); no notification
+    fan-out; no Slack / webhook emission. The dataset's SLA colour
+    (consumed by F-022 SLA badge BI integration) flips synchronously on the
+    next read.
+  evidence: 'ReactiveDataQualityRepositoryImpl.java:87-102 (the upsert) + DataQualityServiceImpl.java:62-81 (absence of ActivityEvent)'
+  cardinality_per_call: 1
+observed_vs_expected:
+  facets:
+    - facet_id: severity_mutation_no_activity_event
+      drift_class: audit_silence_on_gated_mutation_blast_radius_via_sla_color
+      severity: HIGH
+      observed: |-
+        Gated by DATASET_TEST_RUN_SET_SEVERITY permission but emits NO
+        ActivityEvent row. No last_modified_by, no version increment, no
+        Slack / webhook notification. The upsert is idempotent in OUTCOME but
+        loses HISTORY: prior severity overwritten. A compliance reviewer
+        auditing "who changed this dataset's SLA to Red on May 14?" cannot
+        answer from the platform without DB inspection. An operator triaging
+        a dashboard flip cannot tell whether (a) a test result changed or
+        (b) someone reclassified a test's severity.
+      expected: |-
+        ActivityEvent.builder().eventType(DATA_QUALITY_TEST_SEVERITY_CHANGED)
+        .oldState(...).newState(...).principal(...) emission inside the
+        service. ActivityEventType enum gains DATA_QUALITY_TEST_SEVERITY_CHANGED;
+        activity-event-payload schema gains a variant. F-021 (Activity Feed)
+        is the canonical sink. Two-step service (read old → emit event →
+        upsert) is the canonical fix; prior severity is read at upsert-time
+        anyway via the existing-row check.
+      evidence:
+        - 'DataQualityServiceImpl.java:62-81 (no ActivityEvent)'
+        - 'DataQualityController.java:51-61 (thin proxy)'
+        - 'ReactiveDataQualityRepositoryImpl.java:87-102 (onDuplicateKeyUpdate — no last_modified_by)'
+        - 'documentation/docs/data-quality/sla-statuses.md:44 (severity-drives-SLA-colour relationship; implicit ADR per DataQualityController sidecar)'
+        - 'system-mission.md canonicalisation candidate 3 (audit-log presence asymmetry — this is a NEW invocation site of the pattern)'
+      ui_unverified: false
+    - facet_id: sla_blast_radius_amplification_via_bi_integration
+      drift_class: gated_mutation_invisible_change_flows_to_bi_tools_cross_origin
+      severity: MEDIUM
+      observed: |-
+        Severity changes feed the SLA colour exposed at /api/datasets/{id}/sla
+        (the BI-embeddable PNG endpoint per F-022 + SHB-043). Operators in
+        the regulated-data audience (financial, healthcare, government) see
+        their downstream BI dashboards flip colour with NO platform-side
+        signal of who triggered it. Blast radius is bigger than the F-019
+        owner-lifecycle audit-silence case because the change is consumed
+        OUTSIDE the platform UI (Confluence, Notion, Excel, Looker tiles).
+      expected: |-
+        Same as primary facet (activity-event emission) — once the audit
+        event exists, BI consumers can subscribe to the event stream via
+        F-009 WAL-driven notification delivery path (cross-feature linkage).
+      evidence:
+        - 'F-022 / SHB-043 SLA badge cross-origin embed observation'
+        - 'SLACalculator.java:80-100 (the colour algorithm)'
+      ui_unverified: false
+    - facet_id: severity_lifecycle_history_unrecoverable
+      drift_class: upsert_idempotent_in_outcome_loses_change_history
+      severity: MEDIUM
+      observed: |-
+        ReactiveDataQualityRepositoryImpl.java:87-102 uses onDuplicateKeyUpdate
+        on (DATA_QUALITY_TEST_ID, DATASET_ID) with no version column, no
+        history table. A test's severity history is unrecoverable from
+        platform storage. The same shape as F-013 silent UPDATE-not-UPSERT
+        (custom metadata fields) — but applied to a permission-gated
+        compliance-impactful surface.
+      expected: |-
+        Either (a) emit ActivityEvent (primary facet) which preserves history
+        in the activity log, OR (b) add a versioned-row history table for
+        severity changes specifically, OR (c) document the
+        unrecoverable-history constraint operationally on the docs page.
+      evidence:
+        - 'ReactiveDataQualityRepositoryImpl.java:87-102'
+        - 'F-013 (custom metadata field — sibling pattern)'
+      ui_unverified: false
+test_matrix:
+  unit:
+    state: GAP
+    covered: []
+    uncovered:
+      - service-tier test asserting ActivityEvent emission with old + new severity (currently the assertion would fail; the test is the future-pin)
+  integration:
+    state: GAP
+    covered: []
+    uncovered:
+      - WebTestClient — PUT severity twice; assert GET /api/activity returns 2 events with correct old → new state transitions
+      - WebTestClient — PUT severity then GET /api/datasets/{id}/sla; assert SLA colour reflects the new severity (the read-side coupling)
+  performance:
+    state: GAP
+    covered: []
+    uncovered: []
+  security:
+    state: GAP
+    covered: []
+    uncovered:
+      - audit-log gap meta-test — every mutating service method must either emit ActivityEvent or be documented as audit-exempt (the methodology assertion)
+  control_summary: 0/4
+  highest_leverage_uncovered: |-
+    Integration — a single test that pins "PUT severity → ActivityEvent
+    emitted with correct old/new state" closes the primary facet AND serves
+    as the regression anchor for any future audit-emission fix.
+related_refactoring_scopes: []
+related_test_gaps: []
+related_doc_gaps: []
+related_features:
+  - F-022
+  - F-021
+  - F-019
+  - F-040
+related_concepts:
+  - data-quality-test-severity
+  - audit-log-presence-asymmetry
+  - sla-calculator
+cross_pillar_relationships:
+  - P-04_feeds_P-07: severity changes SHOULD feed Activity Feed (F-021) but don't — the audit-silence is cross-pillar.
+  - P-04_shares_data_with_P-07: severity changes drive SLA colour which is consumed by BI tools — same surface as the F-022 / SHB-043 cross-origin observation.
+ui_unverified: false
+status: active
+note: |-
+  Graduated 2026-05-26 from SHB-044. Pillar P-04 sub-feature seed
+  "Dataset Quality Statuses (SLA)" per system-mission.md:158 — F-022 owns the
+  read surface (Test Reports tab + SLA badge); this feature owns the
+  WRITE-AND-AUDIT lifecycle. Textbook LSN-007 instance (the audit-silence
+  six-sidecar pattern) applied to DQ severity — the shape (a state mutation
+  on an owned entity that traversed the permission gate but bypassed the
+  activity-log emission step) is canonicalised in
+  system-mission.md canonicalisation candidate 3. F-057 is a NEW invocation
+  site of that pattern; the canonical case-law remains the audit-log
+  presence asymmetry decision pending in the canonicalisation candidates.

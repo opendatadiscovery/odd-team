@@ -195,11 +195,13 @@ from lineage_extractor.extractors.config_prefixes import extract_config_prefixes
 from lineage_extractor.extractors.controllers import extract_controllers  # noqa: E402
 from lineage_extractor.extractors.files import extract_files  # noqa: E402
 from lineage_extractor.extractors.openapi_tags import extract_openapi_tags  # noqa: E402
+from lineage_extractor.extractors.ui_components import extract_ui_components  # noqa: E402
 from lineage_extractor.extractors.ui_routes import extract_ui_routes  # noqa: E402
 from lineage_extractor.extractors.ui_shell import extract_ui_shell  # noqa: E402
 
 _register_axis("files")(extract_files)
 _register_axis("ui_shell")(extract_ui_shell)
+_register_axis("ui_components")(extract_ui_components)
 _register_axis("controllers")(extract_controllers)
 _register_axis("openapi_tags")(extract_openapi_tags)
 _register_axis("ui_routes")(extract_ui_routes)

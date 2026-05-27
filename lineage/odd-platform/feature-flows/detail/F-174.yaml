@@ -1,0 +1,203 @@
+feature_id: F-174
+pillar_id: P-08
+pillar_anchored_id: P-08:F-019
+pillar_anchored_feature_name: Owner-Association History Audit-Trail Consumer (the only operator-visible audit surface in this UI subtree)
+feature_name: |-
+  Owner-Association History tab — the Management → Associations
+  "History" tab consumes GET /api/owner_association_request/activity
+  via useGetOwnerAssociationActivityList and renders a paginated list
+  of OwnerAssociationRequestActivity rows (username / ownerName / role /
+  provider / resolvedBy / status / resolvedAt). The ONLY operator-visible
+  audit surface inside the Associations UI subtree. The endpoint is
+  also enumerated by F-074 as an example of the Management-tab read-
+  collaborative posture (any authenticated user can fetch the full
+  activity log).
+seeded_from: ui-review-2026-05-26
+seeded_at: 2026-05-26
+discovered_from_entry_point: |-
+  ui_route:/management/associations/history
+  ui-component:OwnerAssociationsResolved
+  ui-component:ResolvedAssociationRequest
+  ui-component:RequestStatus
+  rest:GET /api/owner_association_request/activity
+primary_subject:
+  - "odd-platform ts react-component component:OwnerAssociationsResolved"
+  - "odd-platform ts react-component component:ResolvedAssociationRequest"
+  - "odd-platform ts react-component component:RequestStatus"
+  - "odd-platform java OwnerAssociationRequestController controller-method:activityLog"
+contributing_nodes:
+  - "odd-platform ts react-component component:OwnerAssociationsResolved (History list)"
+  - "odd-platform ts react-component component:ResolvedAssociationRequest (per-row presentation)"
+  - "odd-platform ts react-component component:RequestStatus (status badge)"
+  - "odd-platform java OwnerAssociationRequestController controller-method:activityLog (F-074 reference)"
+chain:
+  - hop: 1
+    node: "ui_route:/management/associations/history"
+    sidecar: unresolved
+    evidence: "OwnerAssociations.tsx:64 — <Route path='history' element={<OwnerAssociationsResolved size={size} />} />"
+    multiplicity_per_trigger: 1
+  - hop: 2
+    node: "ui-component:OwnerAssociationsResolved"
+    sidecar: unresolved
+    evidence: |-
+      OwnerAssociationsResolved.tsx:30-35 —
+      useGetOwnerAssociationActivityList({status: RESOLVED}). Renders
+      InfiniteScroll over paginated items; per-row component is
+      ResolvedAssociationRequest. Uses activity.activityId as key
+      (line 89) — confirms these are NOT the original
+      owner_association_request rows; they are activity entries.
+    multiplicity_per_trigger: 1
+  - hop: 3
+    node: "ui-component:ResolvedAssociationRequest (per-row, READ-ONLY)"
+    sidecar: unresolved
+    evidence: |-
+      ResolvedAssociationRequest.tsx:30-69 — 7 columns: username /
+      ownerName / role / provider / resolvedBy / status / resolvedAt.
+      NO action buttons (READ-ONLY surface). Status renders via
+      RequestStatus component.
+    multiplicity_per_trigger: 1
+  - hop: 4
+    node: "ui-component:RequestStatus (status badge)"
+    sidecar: unresolved
+    evidence: |-
+      RequestStatus.tsx:9-23 — three-way switch: APPROVED → "Approved",
+      DECLINED → "Declined", otherwise "pending" (lowercase, inconsistent
+      casing — note the `pending` is the fallback for any status value
+      other than APPROVED/DECLINED, including undefined). Renders inside
+      a styled S.Container parametrised by `$status` for visual variant.
+    multiplicity_per_trigger: 1
+  - hop: 5
+    node: "rest:GET /api/owner_association_request/activity"
+    sidecar: "unresolved (F-074 references controller-method:activityLog)"
+    evidence: |-
+      F-074 entry-point list explicitly names this endpoint as one of
+      the seven Management read endpoints reachable to any authenticated
+      user. The hook useGetOwnerAssociationActivityList wraps it; status
+      filter parameter RESOLVED scopes the query to non-PENDING entries.
+    multiplicity_per_trigger: 1
+primary_drift_class: history_tab_only_audits_owner_association_request_flow_not_direct_user_owner_mapping_writes
+drift_class_summary:
+  - history_tab_only_audits_owner_association_request_flow_not_direct_user_owner_mapping_writes
+  - request_status_component_silent_fallback_to_pending_for_unknown_status_values
+  - audit_trail_no_search_filter_only_status_resolved_or_pending
+  - read_collaborative_posture_history_tab_reachable_to_any_authed_user_per_f074
+  - resolved_by_column_only_owner_name_or_identity_username_no_disambiguation
+observed_vs_expected:
+  facets:
+    - drift_class: history_tab_only_audits_owner_association_request_flow_not_direct_user_owner_mapping_writes
+      description: |-
+        The History tab feeds from owner_association_request_activity,
+        which (per F-075 chain hop evidence) is written by the
+        OwnerAssociationRequest service when a request is APPROVED or
+        DECLINED. If F-172 (admin direct-bind via OwnerAssociationForm)
+        and F-173 (active unbind) bypass this audit table — high
+        probability they do, since they use a separate UserOwnerMapping
+        controller — then this operator-facing audit surface is
+        INCOMPLETE. An operator looking at History to answer "who bound
+        user X to owner Y last Tuesday" will MISS direct-bind events
+        and unbind events. Cross-link F-172 facet
+        admin_direct_bind_bypasses_owner_association_request_audit_trail_no_history_tab_entry.
+      evidence:
+        - "OwnerAssociationsResolved.tsx:30-35 — explicit use of useGetOwnerAssociationActivityList (the request activity feed)"
+        - "OwnerAssociationForm uses a different mutation (useCreateUserOwnerMapping); ActiveAssociationRequest uses a different mutation (useRemoveUserOwnerMapping)"
+      ui_unverified: true
+      ui_unverified_reason: |-
+        Backend audit emission semantics for UserOwnerMapping controller
+        not Read in slice H. Defer to backend pass.
+    - drift_class: request_status_component_silent_fallback_to_pending_for_unknown_status_values
+      description: |-
+        RequestStatus.tsx:10-15 — if status is neither APPROVED nor
+        DECLINED, returns 'pending' (lowercase, no i18n). The branch
+        guards against `undefined` but ALSO catches any future enum
+        values added to OwnerAssociationRequestStatus (e.g. SUPERSEDED,
+        EXPIRED, REVOKED) by silently labelling them "pending". The
+        return-null at line 17 (`return status ? ... : null;`) handles
+        undefined-input explicitly — but the early `if` chain fires
+        FIRST so undefined never reaches the ternary. Operator sees
+        "pending" for an explicitly-non-pending future enum value with
+        no diagnostic affordance.
+      evidence:
+        - "RequestStatus.tsx:10-15 (3-way if-chain fallback to 'pending')"
+        - "RequestStatus.tsx:17-21 (status-truthy ternary)"
+      ui_unverified: false
+    - drift_class: audit_trail_no_search_filter_only_status_resolved_or_pending
+      description: |-
+        The History tab passes only `query` (free-text from the header
+        search input) and `status: RESOLVED` to the activity endpoint.
+        There is no date-range filter, no per-user filter, no per-owner
+        filter, no resolved-by filter. An operator investigating an
+        audit question across 1000+ entries must scroll the whole list
+        or remember the username/ownerName to type in. Compare to typical
+        audit surfaces with at-minimum date-range + per-actor filters.
+      evidence:
+        - "OwnerAssociationsResolved.tsx:30-35 (hook invocation; only query + size + status params)"
+        - "OwnerAssociationsHeader.tsx:42-48 (single free-text search input — no advanced filters)"
+      ui_unverified: false
+    - drift_class: read_collaborative_posture_history_tab_reachable_to_any_authed_user_per_f074
+      description: |-
+        Per F-074, GET /api/owner_association_request/activity has NO
+        entry in SecurityConstants.SECURITY_RULES → catch-all auth →
+        any authenticated user can read the full audit log. The UI
+        does NOT layer a permission gate around the History tab nav
+        link (the outer WithPermissionsProvider wraps only the Header,
+        not the Tabs or Routes). A least-privilege expectation that
+        only admins read the audit silently fails.
+      evidence:
+        - "OwnerAssociations.tsx:48-53 — WithPermissionsProvider wraps OwnerAssociationsHeader ONLY (Tabs + Routes outside the gate)"
+        - "OwnerAssociationsTabs.tsx:24-42 — three tabs rendered unconditionally (link to /associations/history always reachable)"
+        - "F-074 facet enumerating this exact endpoint"
+      ui_unverified: false
+    - drift_class: resolved_by_column_only_owner_name_or_identity_username_no_disambiguation
+      description: |-
+        ResolvedAssociationRequest.tsx:50-58 renders the "Resolved by"
+        cell as `statusUpdatedBy?.owner?.name || statusUpdatedBy?.identity.username`.
+        Falls back to identity.username when no owner.name present
+        (typical case: admin acting before any owner mapping is in
+        place — e.g. the platform's first admin during initial setup
+        per F-064 onboarding gap). When BOTH owner.name and
+        identity.username exist, only owner.name surfaces — the
+        underlying user identity is hidden. Operator auditing "who
+        approved" sees a name string that may belong to a renamed Owner
+        (F-019 OWNER.NAME-rename-safe-for-user-owner-mapping facet);
+        the identity is the durable key but the UI doesn't show it.
+      evidence:
+        - "ResolvedAssociationRequest.tsx:50-58 (cell rendering logic with || fallback)"
+      ui_unverified: false
+terminal_side_effect:
+  side_effect_class: page-render
+  description: |-
+    GET response returns paginated activity entries from
+    owner_association_request_activity table — read-only render with
+    NO downstream mutations. Cardinality of returned rows scales with
+    org's request-flow history; the page size is 30 (OwnerAssociations.tsx:23).
+  evidence: "OwnerAssociationsResolved.tsx:30-105 + OwnerAssociations.tsx:23"
+test_matrix:
+  unit: GAP
+  integration: GAP
+  performance: GAP
+  security: GAP
+related_features:
+  - F-075  # SELF-request flow (writes most entries to this audit feed)
+  - F-171  # Operator triage workflow (clicking Accept/Reject writes entries)
+  - F-172  # Admin direct-bind (suspected NOT to write to this feed — load-bearing drift)
+  - F-173  # Active unbind (suspected NOT to write to this feed — load-bearing drift)
+  - F-074  # Management read-collaborative posture (this endpoint is one of the seven enumerated)
+  - F-019  # Owner Lifecycle — OWNER.NAME rename affects the audit's Resolved-by display
+related_retrospectives:
+  - LSN-023  # ui-incomplete — backend audit-emission semantics for direct-bind / unbind not Read
+status: ui-incomplete
+maintainer_curated: false
+batch_origin: ui-review-2026-05-26
+created_in_batch: ui-review-2026-05-26-slice-H
+notes: |-
+  Minted from ui-review-2026-05-26 slice H. F-174 is the operator-side
+  CLAIM of audit visibility within the OwnerAssociations UI subtree.
+  The load-bearing finding is the drift facet
+  `history_tab_only_audits_owner_association_request_flow_not_direct_user_owner_mapping_writes`
+  — if confirmed, an operator who trusts the History tab to enumerate
+  ALL user-owner binding events is SILENTLY MISSING the F-172 direct-
+  bind and F-173 unbind events. Highest-leverage backend probe.
+
+  The RequestStatus fallback-to-pending finding (drift facet 2) is a
+  minor robustness gap but observable in the .tsx without any backend
+  read.

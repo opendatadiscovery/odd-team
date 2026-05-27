@@ -1,0 +1,228 @@
+feature_id: F-123
+feature_name: "Platform-Wide Deletion Semantics Catalog — three soft-delete mechanisms coexist across the schema"
+pillar_id: P-08
+pillar_anchored_id: P-08:F-016
+pillar_anchored_feature_name: "Deletion Semantics Per-Resource Contract"
+seeded_from: SHB-179
+seeded_at: 2026-05-26
+sme_consultation_recommended: true
+sme_consultation_archetype: "data-platform-architect"
+sme_consultation_question: |-
+  Is the existing three-mechanism deletion contract (`deleted_at` /
+  `status='DELETED' + deleted_at` / hard-delete) operator-correct (each
+  table's choice reflects intentional semantics — collectors retain
+  rotation history, ownership is hard-deleted because audit lives in
+  Activity feed) — or is it accidental schema drift across batches that
+  should be converged on `deleted_at IS NULL` everywhere? V0_0_64 already
+  converged FROM `is_deleted` boolean → `deleted_at` for most tables.
+  The remaining inconsistencies (collector.name FULL UNIQUE vs role.name
+  PARTIAL UNIQUE; metadata_field partial unique missing `WHERE deleted_at
+  IS NULL`; ownership/dataset_field/token hard-deleted) need expert
+  validation: is this the deliberate operator-observable contract or is
+  it drift?
+discovered_from_entry_point: |-
+  schema:db/migration/V0_0_*.sql — fifty migration files across V0_0_1
+  through V0_0_89+ collectively define the soft-delete contract per
+  table. The convergence migration V0_0_64 dropped `is_deleted` boolean
+  and added partial unique indexes `WHERE deleted_at IS NULL` across most
+  tables, but metadata_field/collector.name + ownership/token/dataset_field
+  hard-delete sit outside the convergence.
+primary_subject:
+  - "odd-platform-api/src/main/resources/db/migration/V0_0_64__remove_is_deleted_field.sql:1-105"
+  - "odd-platform-api/src/main/resources/db/migration/V0_0_28__add_token.sql:1-9 (token — no deleted_at)"
+  - "odd-platform-api/src/main/resources/db/migration/V0_0_3__add_ownership.sql:10-22 (ownership — no deleted_at)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveOwnershipRepositoryImpl.java:85-91,94-107 (hard DELETE)"
+  - "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/repository/reactive/ReactiveDataEntityRepositoryImpl.java (STATUS + deleted_at double-tracking)"
+contributing_nodes:
+  - "odd-platform sql migration:V0_0_64__remove_is_deleted_field"
+  - "odd-platform java repository:ReactiveDataSourceRepositoryImpl"
+  - "odd-platform java repository:ReactiveOwnershipRepositoryImpl"
+  - "odd-platform java repository:ReactiveDatasetFieldRepositoryImpl"
+  - "odd-platform java repository:ReactiveMetadataFieldRepositoryImpl"
+  - "odd-platform java repository:ReactiveDataEntityRepositoryImpl"
+  - "odd-platform java service:DataEntityStatusSwitchJob"
+chain:
+  - hop: 1
+    node: "schema:migration files V0_0_1..V0_0_89"
+    sidecar: unresolved
+    evidence: "V0_0_64__remove_is_deleted_field.sql (the convergence migration)"
+    multiplicity_per_trigger: 1
+  - hop: 2
+    node: "repository:reactive — each repo implements its own delete pattern"
+    sidecar: "multiple"
+    evidence: |-
+      Three patterns:
+      (a) `deleted_at` soft-delete via `ReactiveAbstractSoftDeleteCRUDRepository`;
+      (b) `STATUS='DELETED'` + `deleted_at` (data_entity only — status mutation
+          plus subsequent soft-delete in housekeeping cascade);
+      (c) hard DELETE (ownership, token, dataset_field, every M:N join table).
+    multiplicity_per_trigger: 1
+  - hop: 3
+    node: "external observers (BI tools, admin scripts, audit reviews)"
+    sidecar: unresolved
+    evidence: |-
+      A reader of the schema cannot tell from the schema alone which
+      mechanism applies. Same operator action yields different outcomes:
+      delete-Collector + recreate-with-same-name → `UniqueConstraintException`;
+      delete-Role + recreate-with-same-name → SUCCESS.
+    multiplicity_per_trigger: 1
+terminal_side_effect:
+  side_effect_class: db-write
+  description: |-
+    DELETE / UPDATE-SET-deleted_at / UPDATE-SET-status='DELETED' across
+    20+ tables. The deletion-semantics inconsistency is operator-observable
+    on every recreate-after-delete operation.
+  evidence: "V0_0_64 + per-table migrations + ReactiveOwnershipRepositoryImpl.java:85-91"
+  cardinality_per_call: 1
+amplification_factor: 1
+observed_vs_expected:
+  facets:
+    - drift_class: three_distinct_soft_delete_mechanisms_no_schema_level_documentation
+      description: |-
+        Three mechanisms coexist: (1) `deleted_at TIMESTAMP` (the canonical
+        post-V0_0_64 convergence — role, policy, data_source, collector,
+        namespace, tag, term, data_entity, metadata_field,
+        user_owner_mapping); (2) `STATUS` enum with `DELETED` value, plus
+        `deleted_at` (data_entity only); (3) NO soft-delete column at all
+        (ownership, token, role_to_policy, dataset_field, every M:N join
+        table — hard-delete-only). Querying "all live data sources" needs
+        `WHERE deleted_at IS NULL`; "all live data entities" needs
+        `WHERE deleted_at IS NULL AND status != 'DELETED'`; "all live
+        tokens" needs NO predicate. A schema reader cannot infer the
+        mechanism from the schema alone.
+      evidence:
+        - "V0_0_64__remove_is_deleted_field.sql (convergence migration)"
+        - "V0_0_28__add_token.sql:1-9 (no deleted_at)"
+        - "V0_0_3__add_ownership.sql:10-22 (no deleted_at)"
+        - "ReactiveDataSourceRepositoryImpl invariants section"
+    - drift_class: collector_name_full_unique_blocks_recreate_after_soft_delete
+      description: |-
+        `collector.name` is FULL UNIQUE per V0_0_29:4 — NOT partial-scoped
+        to `deleted_at IS NULL`. An operator deleting a Collector then
+        re-creating with the same name hits `UniqueConstraintException`.
+        Same operator action against a Role succeeds (role.name is
+        partial-unique per V0_0_55:42 + V0_0_64:88-90). Error message
+        shape is identical but the cause is different. Schema-side fix
+        is a migration to partial-unique on collector.name.
+      evidence:
+        - "V0_0_29:4 (collector.name FULL UNIQUE)"
+        - "V0_0_55:42, V0_0_64:88-90 (role.name partial unique WHERE deleted_at IS NULL)"
+    - drift_class: metadata_field_convergence_incomplete_partial_unique_missing_deleted_at
+      description: |-
+        Metadata_field's partial unique indexes still filter only by
+        `origin` — they do NOT include `WHERE deleted_at IS NULL`. A
+        soft-deleted INTERNAL metadata field's name remains BLOCKED for
+        re-creation. The read side filters out soft-deleted; the operator
+        sees "this field doesn't exist" but cannot create it. No UI
+        affordance, no service method to hard-delete a soft-deleted
+        metadata_field. Real bug, real operator dead-end.
+      evidence:
+        - "ReactiveMetadataFieldRepositoryImpl invariants section"
+    - drift_class: data_entity_status_and_deleted_at_double_tracking_state_machine_can_stall
+      description: |-
+        A DataEntity can be in four states: (a) live (status='LIVE' AND
+        deleted_at IS NULL), (b) status-deleted-but-row-present
+        (status='DELETED' AND deleted_at IS NULL — the housekeeping
+        waiting room), (c) soft-deleted (deleted_at IS NOT NULL),
+        (d) hard-deleted (not in the table). DataEntityStatusSwitchJob
+        (10min) and HousekeepingJobManager (15min) drive the state
+        machine on separate cadences. Per SHB-176 / F-121, these two
+        `@Scheduled` jobs race on the SAME thread — the state machine
+        can stall under sustained backlog.
+      evidence:
+        - "ReactiveDataEntityRepositoryImpl (STATUS column + deleted_at)"
+        - "DataEntityStatusSwitchJob.java:21 (@Scheduled 10min)"
+        - "HousekeepingJobManager.java:25 (@Scheduled 15min)"
+        - "SHB-176 / F-121 (single-thread executor)"
+    - drift_class: ownership_hard_deleted_no_recovery_audit_in_activity_table_only
+      description: |-
+        `OwnershipServiceImpl.delete` issues `DELETE FROM ownership` — the
+        row is gone. AbstractOwnershipActivityHandler captures before/after
+        state in `activity` table so an audit reviewer can reconstruct, but
+        the `ownership` table itself has no history. Inconsistent with
+        the rest of the platform's soft-delete posture. Operator question
+        "who owned this entity 6 months ago" is answerable only via the
+        activity feed (which has its own TTL).
+      evidence:
+        - "ReactiveOwnershipRepositoryImpl.java:85-91,94-107"
+        - "OwnershipServiceImpl.delete + AbstractOwnershipActivityHandler"
+    - drift_class: dataset_field_token_no_soft_delete_column_at_all
+      description: |-
+        `dataset_field` and `token` tables have NO soft-delete column.
+        Every `delete(id)` is a hard DELETE. For tokens, the regenerate
+        path UPDATEs in place (prior value LOST). Cross-link SHB-182 /
+        F-125 — token housekeeping gap.
+      evidence:
+        - "V0_0_28__add_token.sql:1-9"
+        - "ReactiveDatasetFieldRepositoryImpl invariants section"
+    - drift_class: no_doc_page_enumerating_per_resource_deletion_contract
+      description: |-
+        Operator docs do NOT carry a "Deletion Semantics" page enumerating
+        each resource's mechanism (DataSource, Collector, Owner, Namespace,
+        Role, Policy, Tag, Term, Metadata Field, Ownership, Token,
+        DataEntity, DatasetField). A BI engineer or admin-script author
+        cannot answer "is this row recoverable" without reading source.
+      evidence:
+        - "WebFetch docs.opendatadiscovery.org (no Deletion Semantics page)"
+test_matrix:
+  unit: GAP
+  integration: GAP
+  performance: GAP
+  security: GAP
+related_refactoring_scopes: []
+related_test_gaps: []
+related_doc_gaps: []
+related_concepts:
+  - "three-soft-delete-mechanisms-across-the-repository-layer"
+status: active
+cross_pillar_relationships:
+  - pillar_id: P-09
+    kind: shares_data_with
+    via: |-
+      RBAC tables (role, policy) sit on the `deleted_at` mechanism per
+      V0_0_64 + V0_0_55:42. F-006 (RBAC Policy Lifecycle) inherits this
+      catalog. Auth tokens hard-delete; ownership hard-delete; user_owner_mapping
+      soft-delete.
+  - pillar_id: P-01
+    kind: shares_data_with
+    via: |-
+      Data Entity status + deleted_at double-tracking lives at the
+      Discovery pillar's substrate. F-001 / F-018 (Discovery + Tagging)
+      consume these read predicates.
+notes_for_maintainer: |-
+  SME consultation strongly recommended (set above). The pillar mapping
+  itself is unambiguous (P-08 operator infrastructure — cross-cutting),
+  but the *intent* — is this drift to fix, or contract to document — is
+  a domain question for the data-platform architect.
+
+  Probe-needed (local-only): manually delete a Collector via UI, then
+  re-create with the same name. Confirm UniqueConstraintException. Then
+  delete a Role and re-create. Confirm success. The contrast is the
+  operator-observable manifestation of the inconsistency.
+
+  Follow-up scope candidates:
+  - REFACTOR-NNN: metadata_field partial unique index migrate to include
+    `WHERE deleted_at IS NULL` (Tag-side fix in V0_0_64).
+  - REFACTOR-NNN: collector.name migrate FULL UNIQUE → partial unique
+    `WHERE deleted_at IS NULL`.
+  - REFACTOR-NNN: ownership consider adding `deleted_at` for audit
+    recovery independent of activity TTL.
+  - DOC-NNN: create "Deletion Semantics" page enumerating each resource.
+  - CONCEPT-MERGER: promote `three-soft-delete-mechanisms-across-the-repository-layer`
+    from cross-sidecar reference to canonical concept entry with full
+    per-table enumeration.
+
+  Cluster_with [F-019, F-020, F-028, F-031, F-006] per source SHB — these
+  are the lifecycle features that inherit the deletion mechanism. They
+  remain independent F-NNNs; this F-123 is the cross-cutting catalog
+  that names the inheritance contract.
+provenance: |-
+  Graduated from SHB-179 by feature-flow-builder on 2026-05-26 (parallel
+  triage slice H2). Evidence rich: 4 substrate axes (SQL migration files +
+  repository sidecars + invariants sections + concept-catalog cross-refs).
+  Graduation threshold easily met. SME consultation flagged because the
+  hypothesis depends on knowing operator-intent (deliberate vs accidental
+  schema drift) which is not resolvable from code alone. Per slice-discipline,
+  the existing F-019/020/028/031/006 lifecycle features are not modified
+  here — they all live cross-pillar (P-08, P-09) but inheriting features
+  belong to their own slices.

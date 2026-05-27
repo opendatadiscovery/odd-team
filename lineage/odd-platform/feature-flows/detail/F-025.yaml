@@ -355,6 +355,186 @@ batch_extensions:
     block-vs-context pin). Probe stack inherited from F-025's
     existing P-165 + P-128 + P-130 + P-131.
 
+- batch: ZM-ui-review-2026-05-26
+  entry_point_added: |-
+    react-component sub-tree decomposition — slice B DataModelling
+    UI review across 15 query-examples + relationships components.
+    PRIMARY-SOURCE walk of QueryExamples.tsx (54 LOC) +
+    QueryExampleForm.tsx (146 LOC, the dialog renderer) +
+    QueryExampleDetailsContainer.tsx (102 LOC) +
+    QueryExampleDetailsOverview.tsx (31 LOC) +
+    QueryExampleDetailsContainerActions.tsx (83 LOC) +
+    QueryExamplesList.tsx (56 LOC) +
+    QueryExampleDetailsTabs.tsx (67 LOC). hop-1+ component-tier
+    coverage for the F-025 surface.
+  contributing_nodes_added:
+  - odd-platform ts react-component component:QueryExamples
+  - odd-platform ts react-component component:QueryExampleForm
+  - odd-platform ts react-component component:QueryExampleDetailsContainer
+  - odd-platform ts react-component component:QueryExampleDetailsOverview
+  - odd-platform ts react-component component:QueryExampleDetailsContainerActions
+  notes: |-
+    The slice-B UI review primary-source walk EXTENDS F-025 with
+    SIX new findings. THREE reaffirm existing facets at the
+    sub-component layer; THREE are NEW drift facets surfaced for
+    the first time:
+
+    (1) **F-004 4TH-SURFACE XSS — VERIFIED AT SHARED MARKDOWN
+    COMPONENT** (HIGH, refinement of existing
+    `markdown_render_no_sanitisation_xss_surface_extension_f_004_4th`).
+    `Markdown.tsx:113-124` (shared component) calls
+    `<MDEditor.Markdown source={value} ... />` with NO
+    `rehype-sanitize` plugin, NO `disallowedElements`, NO
+    `allowDangerousHtml=false` guard (Grep confirmed — zero
+    matches for `rehype-raw|rehype-sanitize|disallowedElements|allowDangerousHtml`
+    in the Markdown/ directory). `@uiw/react-md-editor`'s default
+    `MDEditor.Markdown` pipeline applies `rehype-sanitize` by
+    DEFAULT (per upstream README), but the schema is the
+    Github-flavoured default — `<img onerror=...>` is filtered
+    while `<a href=javascript:...>` is filtered, BUT
+    `<details>`/`<summary>`/`<a target="_blank">` are NOT filtered
+    and the `data-*` attribute namespace IS preserved. The
+    QueryExample `definition` AND `query` flow through this
+    component at BOTH render sites:
+    `QueryExampleDetailsOverview.tsx:19, 25` (details page) AND
+    `QueryExamplesListItem.tsx` (catalog list). The F-025 existing
+    facet noted MDEditor.Markdown is used; this batch refines the
+    finding: the partial-mitigation envelope from F-004 applies,
+    NOT the unmitigated `rehype-raw` shape. The actual
+    measurable-XSS exposure narrows to the openHref-target-attr +
+    data-attr injection vectors; full inline-onerror is filtered
+    by upstream default. STRENGTHENS the existing facet with the
+    precise mitigation-shape characterisation.
+
+    (2) **NEW DRIFT FACET — QueryExampleForm EDITOR MODE ACCEPTS
+    UNVALIDATED MARKDOWN AT AUTHORING TIME** (MEDIUM, authoring
+    surface). `QueryExampleForm.tsx:105-111` renders the `query`
+    field as `<Markdown value={field.value} onChange={...} editor
+    height={200} />` — `editor=true` switches to
+    `<MDEditor preview='edit' ...>` (Markdown.tsx:103-111). The
+    textarea ACCEPTS any string; the only validation is
+    `rules={{ required: true, validate: value => !!value.trim() }}`
+    (line 94). No client-side allowlist, no length cap, no
+    suspicious-pattern detection. The `definition` field uses
+    `<Input>` (line 86), free-form text — same lack of caps.
+    Server-side: V0_0_84:5 stores `query text NOT NULL` with no
+    length cap. Authoring is the FIRST point in the XSS chain
+    where an allowlist could intervene cheaply; the form passes
+    raw user input straight to the API. NEW DRIFT FACET to add to
+    `drift_class_summary`:
+    `query_example_form_editor_mode_accepts_unvalidated_markdown_authoring_no_client_allowlist_or_length_cap`.
+
+    (3) **NEW DRIFT FACET — QueryExamplesList SILENT-EMPTY WHEN
+    URL HAS NO `querySearchId`** (MEDIUM, broken-deep-link). The
+    list at `QueryExamplesList.tsx:14-20` reads `searchId` from
+    `searchParams.get('querySearchId')` and passes
+    `enabled: !!searchId` to `useSearchQueryExamples`. The parent
+    `QueryExamples.tsx:14` calls `useCreateQueryExampleSearch()`
+    which (per its hook contract) creates a session and PUSHES
+    the `querySearchId` onto the URL — but ONLY on first
+    successful load. A deep-link to `/data-modelling/query-examples`
+    that arrives WITHOUT `?querySearchId=...` and races with the
+    session-creation mutation will momentarily render an EMPTY
+    list with no skeleton (the InfiniteScroll loader requires
+    `isLoading` to be true, but `enabled: false` means the
+    react-query hook NEVER fires; `isLoading` stays falsy). The
+    user sees `EmptyContentPlaceholder` (line 48) for a tick
+    before the URL update re-fires the render. Same shape as
+    F-024 batch-U `session_expiry_silent_broken_url_no_recovery_path`
+    — extends that family. Bookmarked URLs with a stale
+    `querySearchId` ALSO silently fail when the search-facets
+    session has expired (30-day TTL per F-024 / F-017 / F-026
+    family). NEW DRIFT FACET candidate:
+    `query_examples_list_silent_empty_when_no_query_search_id_in_url_race_condition_with_session_creation_mutation_and_stale_url_recovery_gap`.
+
+    (4) **NEW DRIFT FACET — DOUBLE WITHPERMISSIONSPROVIDER WRAPPING
+    AT DETAILS PAGE WITH ASYMMETRIC `resourcePermissions` PAYLOAD**
+    (MEDIUM, structural drift exposing resource-tier permission
+    asymmetry). `DataModellingRoutes.tsx:30-37` wraps the route
+    in `<WithPermissionsProvider
+    allowedPermissions=[QUERY_EXAMPLE_UPDATE, QUERY_EXAMPLE_DELETE]
+    resourcePermissions={[]}>` — empty resource permissions array.
+    `QueryExampleDetailsContainer.tsx:53-64` ALSO wraps the
+    actions sub-tree in `<WithPermissionsProvider
+    allowedPermissions=[QUERY_EXAMPLE_UPDATE, QUERY_EXAMPLE_DELETE]
+    resourcePermissions={resourcePermissions ?? []}>` — but THIS
+    one passes the resource-tier permissions fetched via
+    `useResourcePermissions({ resourceId: exampleId,
+    permissionResourceType: PermissionResourceType.QUERY_EXAMPLE })`
+    (lines 21-24). The OUTER context (route-level) has empty
+    resource permissions; the INNER context (actions-level) has
+    fetched resource permissions. The structural reason: the
+    route mount cannot know the `exampleId` yet (it's a path
+    param resolved INSIDE the route element) — so the route
+    cannot fetch `useResourcePermissions` at the wrapping site.
+    Operators with ROLE-level UPDATE/DELETE but NO resource-tier
+    grant see the route + the page render fully (the route-level
+    context says role allows it), but the inner buttons gated by
+    `WithPermissions` consume the inner context which checks the
+    resource grant. The user sees the page + missing buttons.
+    Without the inner re-wrap, the buttons would render even
+    for users without resource-tier grant. NEW DRIFT FACET to add
+    to `drift_class_summary`:
+    `query_example_details_double_with_permissions_provider_wrap_outer_route_context_no_resource_permissions_inner_actions_context_has_resource_permissions_structural_compensation_for_route_param_timing`.
+
+    (5) F-025 EXISTING `markdown_render_no_sanitisation_xss_surface_extension_f_004_4th`
+    REAFFIRMED AT BOTH RENDER SITES (HIGH, refinement). The two
+    render sites — `QueryExampleDetailsOverview.tsx:19,25` for
+    `definition` and `query` AND `QueryExamplesListItem.tsx`
+    catalog row — both flow through the SAME shared `Markdown.tsx`
+    (NOT MDEditor.Markdown directly per existing F-025 batch-V
+    note; this batch CORRECTS that — the shared `Markdown.tsx`
+    IS the indirection layer and wraps MDEditor.Markdown). A
+    single fix at `Markdown.tsx:113-124` (add a sanitize plugin
+    or restrict MDEditor.Markdown's components prop) closes BOTH
+    surfaces. The F-025 existing fix recommendation ("requires
+    either (a) switching MDEditor.Markdown to the shared
+    Markdown.tsx OR (b) applying rehype-sanitize at
+    MDEditor.Markdown separately") is partially superseded — the
+    shared Markdown.tsx IS the renderer; the fix is to add
+    rehype-sanitize to ITS configuration.
+
+    (6) F-025 EXISTING `service_tier_no_preauthorize_controller_perimeter_sole_defence`
+    REAFFIRMED AT COMPONENT LAYER (HIGH, refinement). The Edit
+    and Delete buttons at `QueryExampleDetailsContainerActions.tsx:40-79`
+    are wrapped in `<WithPermissions permissionTo=QUERY_EXAMPLE_UPDATE>`
+    + `<WithPermissions permissionTo=QUERY_EXAMPLE_DELETE>`
+    respectively (separate wrappers, NOT every-semantics — a
+    user with UPDATE-but-not-DELETE sees Edit only). The Add
+    button at `QueryExamples.tsx:36-46` is wrapped in
+    `<WithPermissions permissionTo=QUERY_EXAMPLE_CREATE>`.
+    `WithPermissions` (NO Provider suffix) IS the true gate that
+    returns null when the inner-context permission check fails.
+    The defence is fully UI-affordance-based; per F-025's
+    existing `service_tier_no_preauthorize` facet, a non-HTTP
+    caller bypassing the UI is unconstrained at the service tier.
+    Reaffirms with the precise UI gating SHAPE — three separate
+    `WithPermissions` gates, NOT a single Provider-level filter.
+
+    Coherence sweep STRENGTHENS=2 — F-025 existing
+    `markdown_render_no_sanitisation_xss_surface_extension_f_004_4th`
+    facet refined (the shared Markdown.tsx IS the renderer; the
+    earlier note's MDEditor-direct mention is corrected);
+    F-025 existing `service_tier_no_preauthorize_controller_perimeter_sole_defence`
+    facet extended with the precise three-gate UI affordance
+    shape. SUPERSEDES=0. CONFLICTS=0.
+
+    NEW probe candidates from this slice:
+    - **P-NNN-form-XSS-authoring-pin** — POST to
+      `/api/queryexample` via the form with
+      `definition='<details open><summary>x</summary>raw</details>'`
+      and `query='<a href="javascript:alert(1)">click</a>'`;
+      assert verbatim storage; verify behaviour at render time.
+    - **P-NNN-list-silent-empty-deep-link** — navigate to
+      `/data-modelling/query-examples` without any query-string;
+      time-to-first-row observation; assert the user sees a
+      meaningful placeholder (not raw EmptyContentPlaceholder).
+    - **P-NNN-resource-tier-permission-asymmetry-pin** — user
+      with role-tier UPDATE but no resource-tier grant on
+      example ID X; navigate to `/data-modelling/query-examples/X`;
+      assert page renders + Edit button is hidden +
+      pressing-keyboard-shortcut-or-direct-form-POST behaviour.
+
 discovered_from_entry_point: rest:POST/GET/PUT/DELETE /api/queryexample/** (13-endpoint controller-class surface)
 description: |-
   Query Examples are the Data Modelling pillar's operator-curated artefact

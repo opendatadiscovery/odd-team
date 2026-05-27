@@ -114,3 +114,81 @@ related_features:
 - F-019
 - F-006
 ui_unverified: false
+
+shoebox_extensions_2026_05_26:
+- seeded_from: SHB-088
+  drift_class: title_directory_free_text_auto_create_silently_defeats_policy_conditions
+  description: |-
+    Title is consumed by Policy conditions (`dataEntity:owner:title == 'X'`,
+    `term:owner:title == 'X'`) yet it is a FREE-TEXT catch-bucket
+    auto-created by OwnershipServiceImpl.create/update via
+    `titleService.getOrCreate(formData.getTitleName())`. No allowlist, no
+    case-folding, no trimming, no enum, no @Pattern, no @Size, no charset
+    constraints. Two operators typing "Data Steward", "data steward",
+    "DATA STEWARD", " Data Steward " (leading space), "data-steward",
+    "Data_Steward", "Métier de Steward" each create DISTINCT rows. The
+    `ReactiveTitleRepositoryImpl.getByName` uses `TITLE.NAME.eq(name)` —
+    case-sensitive byte equality. Policy condition matches one variant —
+    every other variant SILENTLY grants the operator NOTHING. This is the
+    SECURITY-CONSEQUENCE half of the Title free-text pattern: Tag and Owner
+    drift (F-018/F-019) have UX consequences; Title drift has AUTHORIZATION
+    consequences.
+    Operator-pain scenario: Policy `dataEntity:owner:title == 'Data Steward'`
+    is authored to grant DataEntity-update to all Data Stewards. Three months
+    later half the team's Ownership records show `'data steward'` (lowercase)
+    because the autocomplete's client-side filter shows only 30 oldest rows
+    (server-side ORDER BY id ASC). The policy silently fails for the
+    lowercase users — access denied with NO operator-visible signal.
+    The directory has NO UI delete endpoint, NO admin curation — once a
+    typo'd title is in the directory it stays. The soft-delete machinery is
+    PROVISIONED (`ReactiveTitleRepositoryImpl extends
+    ReactiveAbstractSoftDeleteCRUDRepository`) but UNUSED.
+  evidence:
+  - TitleServiceImpl.java:19-22 (getOrCreate impl — accepts any string verbatim)
+  - OwnershipServiceImpl.java:53 + :107 (sole production caller — create + update)
+  - V0_0_3__add_ownership.sql:1-8 (title.name varchar(128) — no CHECK constraint)
+  - odd-platform-specification/components.yaml:278-288 (Title OpenAPI — no pattern, no min/maxLength, no enum)
+  - OwnerTitleAutocomplete.tsx:43-48, 149 (MUI Autocomplete freeSolo — operator types brand-new value)
+  - ReactiveTitleRepositoryImpl.java:26 (getByName — case-sensitive byte equality)
+  - ExceptionUtils.java:22-23 (TITLE_NAME_UNIQUE — case-sensitive partial unique index)
+  - live /configuration-and-deployment/enable-security/authorization/policies (WebFetched 2026-05-25, status 200) — mentions `dataEntity:owner:title` without explaining case-sensitivity or free-text accumulation
+  cross_pillar_compounds_with:
+  - F-018 (Manual Object Tagging — sister free-text directory)
+  - F-019 (Owner directory — sister side-door pattern; same class with UX consequences)
+  - F-074 (Management read-collaborative posture — Title list is ungated; attacker enumerates the policy vocabulary)
+  severity: MEDIUM
+  fix_proposal: |-
+    (a) Add `title.canonical_name` column normalised on write (lowercase + trim +
+        collapse-whitespace + diacritics-fold); use it for Policy condition matches.
+    (b) Curated allowlist with operator-management UI.
+    (c) Decouple Title-create from Title-assign (distinct permissions); require
+        admin-approved Title before it can be assigned.
+    (d) Hard de-dupe pass on existing data.
+ui_review_2026_05_26:
+  reviewer: ui-review-2026-05-26 (slice G — Management general)
+  status: "ui-complete (UI primary-source confirms: NO Management tab for Titles — admin-via-side-channel is the SOLE write path)"
+  notes: |-
+    UI walk of ManagementTabs.tsx + ManagementRoutes.tsx confirms:
+    (1) ManagementTabs.tsx:19-50 enumerates 9 tab entries — Namespaces,
+        Datasources, Integrations, Collectors, Owners, Tags, Associations,
+        Roles, Policies. NO "Titles" tab.
+    (2) ManagementRoutes.tsx:23-156 declares no `<Route path='titles'>`
+        nor any sub-route for title management.
+    The Title directory is administered EXCLUSIVELY via the
+    free-text auto-create side-channel (per F-036's primary finding):
+    OwnerTitleAutocomplete in the ownership-grant modal (typing a
+    never-seen string mints a row). No admin dedicated tab, no
+    operator-facing list, no curation surface, no merge/delete UI,
+    no audit panel. This is the OPERATOR-FACING manifestation of
+    F-036's `no_canonical_doc_for_title_concept` finding — the live
+    docs cannot point at a curation surface that does not exist.
+    Compounds with F-074 (ungated GET /api/titles) and F-161
+    (sidebar leak): a Policy condition referencing `:owner:title ==
+    'Data Steward'` references a free-text directory that operators
+    have no UI affordance to inspect or normalise. The closest
+    operator-visible Title surface is the TitleFilter in
+    /data-quality/runs (a READ surface for filtering), per F-036's
+    own discovered_from_entry_point.
+    NO new drift facet — strengthens existing
+    `no_canonical_doc_for_title_concept` with the UI primary source
+    of "no Management tab exists".

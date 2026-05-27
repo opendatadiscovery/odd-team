@@ -1256,3 +1256,120 @@ batch_origin_note: |-
   from a complete UI + backend trinity that lives under P-08
   Management; F-008 lives under P-10 Integrations & Ingestion. The
   cross-pillar `feeds` relationship is recorded above.
+
+shoebox_extensions_2026_05_26:
+- seeded_from: SHB-090
+  drift_class: token_rotation_no_grace_window_in_flight_ingestion_401_strengthens_existing
+  description: |-
+    STRENGTHENS the existing
+    `token_rotation_no_grace_period_old_token_401s_immediately` facet
+    with the OPERATOR-VISIBLE failure scenario + the cross-confirmed
+    DataSource sibling at SHB-097 + the @ReactiveTransactional absence
+    on `regenerateToken` (CollectorServiceImpl.java:82-90). Rotation is
+    an IN-PLACE single-statement UPDATE; the moment the UPDATE commits,
+    every in-flight `POST /ingestion/entities` using the old token
+    401s with "Token is not correct" from
+    IngestionDataEntitiesFilter.java:55-58's plain String.equals().
+    NO previous_token column, NO valid_until window, NO overlap. No
+    operator-visible warning at the UI confirm step; no Last-Used-At
+    timestamp; no notification to the affected collector. Datasets
+    ingested during the rotation window are silently dropped (no
+    retry queue for auth failures at the collector level by default).
+  evidence:
+  - ReactiveTokenRepositoryImpl.java:30-39 (single-row UPDATE)
+  - TokenGeneratorImpl.java:44-52 (in-place pojo mutation)
+  - IngestionDataEntitiesFilter.java:55-58 (plain String.equals)
+  - CollectorServiceImpl.java:82-90 (regenerateToken NOT @ReactiveTransactional)
+  - V0_0_29__add_collector.sql:14 (token schema — no previous_value column)
+  - CollectorController.java:47-51 + DataSourceController.java:53-59 (no UI-visible grace-period response)
+  - live /configuration-and-deployment/enable-security/authentication (WebFetched 2026-05-10) — silent on rotation grace
+  cross_pillar_compounds_with:
+  - F-031 facet `destructive_rotation_no_grace_period` (DataSource sibling — already present)
+  - F-020 facet `collector_token_plaintext_at_rest_sql_primary_source_end_to_end` (3-axis defect with entropy + plaintext)
+  fix_proposal: |-
+    Introduce previous_value + previous_valid_until columns on TOKEN;
+    IngestionDataEntitiesFilter accepts either; previous invalidates
+    after configurable window (operator-tunable, e.g. 24h default).
+  severity: HIGH
+  drift_class_strengthening: true
+- seeded_from: SHB-091
+  drift_class: token_entropy_non_cryptographic_rng_via_randomstringutils_alphanumeric_strengthens_existing
+  description: |-
+    STRENGTHENS the existing
+    `token_entropy_not_securerandom_randomstringutils` facet (F-020
+    frontmatter) with the EXPLICIT TokenGeneratorImpl.java:39, 49
+    primary-source citations + the attack-model + the one-line fix.
+    `RandomStringUtils.randomAlphanumeric(40)` delegates to
+    `ThreadLocalRandom` in commons-lang 3.16+ — NOT SecureRandom.
+    Non-cryptographically-secure PRNG; well-documented seed-recovery
+    attacks on `java.util.Random` family.
+    `RandomStringUtils.secure().nextAlphanumeric(int)` is the
+    cryptographically-secure variant available since 3.16. Combined
+    with SHB-090 (no rotation grace) and plaintext-at-rest /
+    plaintext-on-the-wire storage: token-credential surface is a
+    3-axis defect.
+    Cross-cuts Slice F (security threads) — same token defect class.
+  evidence:
+  - TokenGeneratorImpl.java:39 (generate path — `RandomStringUtils.randomAlphanumeric(40)`)
+  - TokenGeneratorImpl.java:49 (regenerate path — same)
+  - commons-lang 3.16+ Javadoc — RandomStringUtils delegates to ThreadLocalRandom
+  - IngestionDataEntitiesFilter.java:55-58 (consumer — full ingestion-write access on compromise)
+  - ReactiveTokenRepositoryImpl.java:21-39 (plaintext at rest)
+  - CollectorController.java:27-31, 47-51 + DataSourceController.java:30-36, 53-59 (plaintext in response)
+  fix_one_line: |-
+    Replace `RandomStringUtils.randomAlphanumeric(40)` with
+    `RandomStringUtils.secure().nextAlphanumeric(40)` (commons-lang 3.16+).
+    Mechanical, low-risk, high-security-leverage. Two sites:
+    TokenGeneratorImpl.java:39 + :49.
+  cross_pillar_compounds_with:
+  - SHB-090 (no rotation grace window — 3-axis defect)
+  - F-020 facet `collector_token_plaintext_at_rest_sql_primary_source_end_to_end`
+  - F-020 facet `anonymous_list_enumeration_under_disabled_leaks_last_six_chars_of_every_token`
+  - Slice F security threads (token semantics duplicate hypothesis surface)
+  severity: HIGH
+  drift_class_strengthening: true
+  sliceF_cross_cut_note: |-
+    The maintainer's mining hint flagged SHB-091 as cross-cutting with Slice F.
+    To avoid race-condition mutations on F-020, I am MERGING in-place here
+    (Slice E owns P-08; F-020 is P-08) and recording the strengthening as
+    primary-source citations. If Slice F also wants to attach a security
+    thread to this same token surface, they should add a separate
+    cross-pillar relationship to F-020 OR create a dedicated security-class
+    feature anchor without modifying F-020's drift_class_summary.
+ui_review_2026_05_26:
+  reviewer: ui-review-2026-05-26 (slice G — Management general)
+  status: ui-complete (UI primary-source reaffirms every batch-Q UI inference + graduates the cross-surface UX pattern to F-163)
+  notes: |-
+    UI walk of CollectorsList.tsx + CollectorForm.tsx + CollectorItem.tsx
+    + CollectorItemToken.tsx confirms every batch-Q UI-tier inference
+    at primary source:
+    (1) SUBSTRING-PREFIX MASK SNIFF PRIMARY-SOURCE — CollectorItemToken.tsx:26-27
+        `setIsHidden(collector.token.value.substring(0, 6) === '******')`.
+    (2) NO ROTATE-WARNING DIALOG PRIMARY-SOURCE — CollectorItemToken.tsx:37-49
+        ConfirmationDialog text confirmed minimal — "Are you sure
+        you want to regenerate token for this collector?" /
+        "Regenerate token for \"{collector.name}\"?". No
+        no-grace-period warning, no no-security-effect-on-default
+        warning. Confirmed at file:line.
+    (3) PLAINTEXT TOKEN IN DOM PRIMARY-SOURCE — CollectorItemToken.tsx:34
+        `<Token $isHidden={isHidden}>{collector.token.value}</Token>`
+        — text-node render. CSS-level styling not read in this pass.
+    (4) WARNING BANNER DERIVED FROM CHILD STATE — CollectorItem.tsx:28 + 87-98.
+        Inverted data flow (child sets parent state via setIsHidden prop).
+    (5) HIDE-NOT-DISABLE GATING — CollectorsList.tsx:91-101,
+        CollectorItem.tsx:39-51, 52-70.
+    (6) COLLECTORFORM PRIMARY-SOURCE — CollectorForm.tsx:92-122:
+        name required; namespaceName via NamespaceAutocomplete
+        (freeSolo per F-028 side-door analysis); description
+        optional; token field ABSENT (server-issued only);
+        confirmOnClose at line 147 — operator gets a discard prompt
+        on accidental close.
+    GRADUATED — the cross-surface "one-shot token reveal" UX
+    pattern (substring sniff + plaintext text-node + minimal rotate
+    dialog + warning banner derived from child state) is shared
+    verbatim with DataSourceItemToken. The pattern is graduated to
+    NEWLY MINTED F-163 — F-020 retains the Collector-specific
+    facets; F-163 owns the cross-surface UX class.
+related_features_ui_additions:
+  - F-163  # One-Shot Token Reveal Affordance Pattern — the cross-surface UX class
+  - F-161  # Management Section Top-Level Chrome — sidebar visibility leak gives anon callers /management/collectors path knowledge

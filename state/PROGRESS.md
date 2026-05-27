@@ -1,8 +1,24 @@
-# Last updated 2026-05-28 — `/implement pending DOC items` — **autonomous doc-sweep iteration 23; batch-20c (Notifications — 7 operational footguns on the WAL-driven dispatcher) shipped on sweep branch — 60 of 88 items shipped, 30 sweep commits**
+# Last updated 2026-05-28 — `/implement pending DOC items` — **autonomous doc-sweep iteration 24; batch-20d (Data Collaboration 4 caveats + GenAI platform-to-user posture + GenAI SSRF + NEW api-reference/genai.md sub-page) shipped on sweep branch — 63 of 88 items shipped, 31 sweep commits**
 
 `/loop`-driven autonomous sweep of the remaining 88 pending DOC items into one long-lived branch in the documentation repo (`feature/docs-pending-sweep-2026-05-27`). The plan YAML at `state/doc-batch-plan-2026-05-27.yaml` is the source of truth — each loop iteration picks the first batch with `status: pending`, fires `/implement` on its items, marks the batch `done`, and ScheduleWakeup-fires the next iteration. Sweep ends when no pending batches remain — at that point the loop pushes the branch and emits the PR-creation URL.
 
 Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critical items spanning 8+ files including 2 NEW pages; split into 13a-f sub-batches in the plan to preserve Quality Bar per iteration. Batch-13a shipped 3 items (DOC-168 ingestion auth extension + DOC-194 dataset-stats cross-dataset write + DOC-228 deployment matrix) all extending `enable-security/README.md` plus cross-link augments on `odd-platform.md` and `s2s.md`. Single commit `9c309d9` on the sweep branch. Gate 11 audience-isolation grep returns zero hits.
+
+## Iteration 24 (batch-20d, 3 items shipped on sweep branch — Data Collaboration + GenAI cluster + NEW api-reference sub-page)
+
+Single commit `0eb0ed1` across 5 files covers 3 items:
+
+| Item | What |
+|---|---|
+| **DOC-161** | NEW `developer-guides/api-reference/genai.md` 10th sibling sub-page following the established hub-and-spokes pattern (single POST /api/genai/ask endpoint, request/response shapes, status codes, authorisation posture cross-link). api-reference.md hub gains GenAI entry; SUMMARY.md updated. `active-platform-features/genai.md` L112 retargets from the GitHub OpenAPI URL to the new sub-page. |
+| **DOC-184** | New "Platform-to-user security posture" H2 section on genai.md framing the contrast with existing external-side coverage. DANGER admonition on the wide-open `/api/genai/ask` (no RBAC entry, falls through to authenticated-or-anonymous, 5 sub-gaps: no quota / no audit / no PII redaction / no body-size cap / DISABLED null actor). WARNING on `genai.url` SSRF surface (no @URL constraint, no scheme allow-list). |
+| **DOC-204** | New "Known operator caveats" section on data-collaboration.md with 4 admonitions: DANGER on Slack signature verification absent (EventApiController reads raw body, never reads X-Slack-Signature; mitigation = reverse-proxy HMAC verifier); WARNING on OAuth bot token lifecycle (singleton client at boot, no rotation hook, no fail-closed on revocation); WARNING on at-least-once delivery (no unique constraint on message_provider_event, plain INSERT, duplicate Slack deliveries materialise duplicate child messages); INFO on 60s channel cache TTL (freshly-invited bot channels invisible to autocomplete for up to 60s). |
+
+Gate 11 audience-isolation grep returns zero hits.
+
+## Driver state (post-iteration-24)
+
+Plan YAML: batches 13a-f + 14a + 14b + 15a + 15b + 15c + 16 + 17 + 18a + 18b + 18c + 18d + 19a + 19b + 19c + 20a + 20b + 20c + 20d flipped `status: done`. Next pending batch: **20e** (NEW PAGE Metrics Ingestion — DOC-202).
 
 ## Iteration 23 (batch-20c, 1 CRITICAL item shipped on sweep branch — Notifications 7-footgun consolidation)
 

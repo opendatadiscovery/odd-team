@@ -41,6 +41,21 @@ ontology_feed:
 
 Identify platform features that have no corresponding documentation page or section in the documentation repo.
 
+## Batch-assignment protocol (parallel-execution support)
+
+The coverage manifest at `state/coverage/docs-coverage-undocumented-features.yaml` carries a `mode_b_iteration.batch_assignments:` block enumerating PRE-ASSIGNED disjoint feature batches (currently batch-3 through batch-11). This enables multiple `/scan` invocations to run IN PARALLEL across separate sessions / agents / overnight loop iterations without colliding on the same F-NNNs.
+
+**How to consume a batch**:
+
+1. Optionally pass `batch=batch-N` as the second arg to `/scan` (e.g. `/scan scanners/docs/coverage/undocumented-features.md batch=batch-3`). If omitted, the scanner picks the manifest's `next_pending_batch`.
+2. The scanner reads the named batch's `features:` list — that IS the iteration set for this run (overrides the default 113-feature filter).
+3. Set the batch's `status: pending` → `in-progress` at start. After successful emit of findings + scanner-feed log + write-backs, set to `scanned`.
+4. The batch produces ITS OWN scanner-feed log + findings file (uniquely named by `scan_run_id`). Scanner_reviews writebacks target ONLY the batch's F-NNNs. The coverage-manifest `scanned_features` append is last-write-wins under parallel execution; rerun the manifest's `coverage_pct` recompute after the parallel cohort returns.
+
+**When the assignment block is consumed empty** (every batch `status: scanned`): mode-B iteration is complete. Switch the scanner to fallback-to-axis-cross-check mode (the mode-A 5 axes below remain valid as substrate-coverage cross-checks per Method §46).
+
+**When the substrate refreshes** (`manifest.yaml` advances past `staleness_threshold_commits`): regenerate the `batch_assignments:` block from the new F-NNN catalogue before continuing. The pre-assignment is substrate-commit-specific.
+
 ## Method
 
 **Mode B (ontology-fed) is the rev-13 default for this scanner** (per the `ontology_feed:` frontmatter). The mode-B per-feature pseudo-protocol (APPROACH.md §20.3) replaces the per-axis enumeration: iterate `lineage/odd-platform/feature-flows/detail/F-*.yaml`, derive expected doc path per F-NNN, fetch live URL, emit findings, write-back annotation. The 5 enumeration axes below are retained as the **fallback / coverage-corroboration step**: any feature surface enumerated below that does NOT have a corresponding F-NNN in the ontology IS itself a substrate-coverage gap (per Rule 20 + LSN-025) and gets logged as `coverage_gap_for_scan:` in the scanner-feed.

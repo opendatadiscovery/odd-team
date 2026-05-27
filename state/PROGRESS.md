@@ -14,7 +14,11 @@ Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critica
 
 ## Driver state
 
-Plan YAML: batches 13a-f + 14a + 14b + 15a + 15b + 15c + 16 + 17 flipped `status: done`. Next pending batch: **18** (Data Quality cluster — 8 items DOC-169, 170, 173, 185, 191, 192, 203, 205). The next loop iteration will pick it up.
+Plan YAML: batches 13a-f + 14a + 14b + 15a + 15b + 15c + 16 + 17 + 18a flipped `status: done`. **Batch-18 split into 18a/18b/18c/18d.** Next pending batch: **18b** (DQ dashboard cluster — 2 items DOC-173 + DOC-203). The next loop iteration will pick it up.
+
+## Iteration 14 (batch-18a, 3 items shipped on sweep branch — DQ sla-statuses)
+
+Single commit `8baa4aa` on sla-statuses.md fixes the PNG-vs-JSON endpoint drift and adds 3 caveats (default-MAJOR severity, cross-owner read posture, severity-change audit-silence). Gate 11 zero hits.
 
 ## Iteration 13 (batch-17, 5 items shipped on sweep branch — Business Glossary cluster, 13 caveats)
 

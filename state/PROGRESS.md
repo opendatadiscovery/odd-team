@@ -1,4 +1,40 @@
-# Last updated 2026-05-27 — `/implement pending DOC items` — **batch-12 user-owner + permissions cluster (15 DOC items) shipped on feature/docs-user-owner-association-batch12**; 2 cohesive commits, 3 affected files
+# Last updated 2026-05-27 — `/review pending DOC items` — **22 review-ready items closed in one separate /review session; 22 ACCEPTED, 0 BLOCKED; 7 editorial follow-ups logged (DOC-265..271)**
+
+`/review` (max effort, separate session from any prior `/implement`) processed all 22 `review-ready` DOC items across three groups:
+
+| Group | Items | Verdict |
+|---|---|---|
+| **batch-11** (data-discovery known limitations) | DOC-260, 261, 262, 263, 264 (5 items, already merged on `documentation/main` via 8ae7711/93800c0/3bda50d/6d8c07f/44343fa) | 5 ACCEPTED |
+| **batch-12** (user-owner + permissions cluster) | DOC-207, 208, 209, 210, 214, 215, 216, 217, 218, 219, 220, 221, 222, 223, 224 (15 items, already merged on `documentation/main` via e7d30ae + 73470f8 — the `feature/docs-user-owner-association-batch12` branch referenced in the prior PROGRESS entry is not present in remotes; commits were direct-to-main per sprint mode) | 15 ACCEPTED |
+| **scanner items** | DOC-162 + DOC-163 (workspace-only — scanner Method extension + re-enumeration) | 2 ACCEPTED |
+
+All 22 items flipped from `status: review-ready` → `status: done`. Per-item verdicts appended to each work item file.
+
+## Gate evidence (highlights)
+
+- **Gate 4 (Consumer-read)**: every cited file:line in the batch-11 / batch-12 commit Sources footers VERIFIED this session against `odd-platform` `origin/main`. Critical security claims spot-checked: `SearchController.java:25` confirmed NO @PreAuthorize; `SecurityConstants.java` confirmed zero `/api/search` matches + the OWNER_RELATION_MANAGE vs OWNER_ASSOCIATION_MANAGE permission split on `/api/owners/mapping`; `OwnerAssociationRequestServiceImpl.java:64` confirms the DIRECT_OWNER_SYNC short-circuit composing with `OwnerServiceImpl.getOrCreate` (line 40-41); `DataEntityStaleDetector.java:13-17` confirms the `stalePeriod != null` short-circuit that turns the indicator silent when the config key is unset (LSN-001 / LSN-002 family — exactly as DOC-264's DANGER admonition describes); `ActiveAssociationRequest.tsx:91` vs `SecurityConstants.java:161` confirms the UI/backend permission inconsistency on the Remove button.
+- **Gate 8 (Live-site verification)**: WebFetched all batch-11 + batch-12 pages 2026-05-27 — every authored H2 section, every admonition, every cross-link renders as expected.
+- **Gate 11 (Audience isolation)**: mechanical banned-term grep returned ZERO hits on every file touched by the two batches. The known LSN-026 leak in `tagging.md:56` ("Cornerstone 5 holds…") is already tracked under DOC-165 and is OUT OF SCOPE for these batches (tagging.md was not touched by either commit set).
+
+## Editorial follow-ups (parallel work — none blocking)
+
+Seven cross-page coherence findings surfaced during the editorial audit, all logged as DOC-NNN follow-ups:
+
+- **DOC-265** — `entity-detail-page.md` Sidebar list truncation admonition is silent on the same bare-`.sort()` no-comparator defect in `OverviewTerms.tsx:48-50` (covered for Tags + Groups; missing for Terms).
+- **DOC-266** — `entity-detail-page.md` per-class panel matrix claims `TRANSFORMER_RUN` / `QUALITY_TEST_RUN` "Inherits parent surface" — the `OverviewStats.tsx` switch has no case for these enum values; they hit `default: return null`. Both classes ARE declared in `lib/constants.ts:69, 73`; the matrix wording contradicts the silent-absence admonition immediately below it.
+- **DOC-267** — `authorization/owners.md` is a 9-line stub structurally inconsistent with the comprehensive 118-line `user-owner-association.md` shipped in batch-12. Needs rewrite distinguishing Owner (catalog identity) from User (auth identity), naming the three binding write-paths, naming the freeSolo accretion behaviour, and surfacing the Owner-role precedence.
+- **DOC-268** — `authorization/roles.md` carries a redundant "Be careful" admonition (restates owner-role-supersedes-user-role) and is silent on the admin direct-bind path (`OWNER_RELATION_MANAGE` → Create association) introduced in batch-12.
+- **DOC-269** — `authorization/README.md` (14 lines, TOC-only) doesn't orient operators to the three load-bearing facts that batch-12 made canonical: read-collaborative posture, immediate token rotation with no grace period, DIRECT_OWNER_SYNC compositional implications.
+- **DOC-270** — `catalog-overview.md`: line 54 says "Clicking a tile opens that entity's Structure page" (factually wrong — opens the entity detail page, default Overview tab); also missing entity-detail-page.md cross-links in the "Catalog Overview vs entity Overview tab" admonition and in "Where to next".
+- **DOC-271** — Aspect pages → `entity-detail-page.md` bidirectional cross-link gap: `tagging.md`, `business-names.md`, `groups-domains.md`, `attachments.md` are all referenced FROM entity-detail-page.md but don't reference it BACK in their "Where to next".
+
+## Counts
+
+- review-ready: 22 → 0
+- done: +22 (batch-11: 5, batch-12: 15, scanner: 2)
+- pending: +7 (DOC-265 through DOC-271)
+
+# Earlier: 2026-05-27 — `/implement pending DOC items` — **batch-12 user-owner + permissions cluster (15 DOC items) shipped on feature/docs-user-owner-association-batch12**; 2 cohesive commits, 3 affected files
 
 `/implement` worked the user-owner-association + permissions.md cluster surfaced by Mode-B batch-9 (SR-20260527T1900Z) — 15 DOC items, one tight theme: rewrite the user-owner-association page from a 2-branch narrative to a 3-branch backbone (user self-request + DIRECT_OWNER_SYNC auto-approve + admin direct-bind) with the full operator workflow (New requests / Active associations / History sub-tabs) and four permissions.md row corrections + a Management read-collaborative posture admonition. Branch: `feature/docs-user-owner-association-batch12` (cut from fresh `origin/main`). The previous Admin section on user-owner-association.md was factually wrong (named the home-page widget as the admin direct-bind affordance) — replaced cleanly. Gate 11 audience-isolation grep returns zero hits on both commits.
 

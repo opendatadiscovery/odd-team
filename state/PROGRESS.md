@@ -1,4 +1,24 @@
-# Last updated 2026-05-27 — `/review pending DOC items` — **22 review-ready items closed in one separate /review session; 22 ACCEPTED, 0 BLOCKED; 7 editorial follow-ups logged (DOC-265..271)**
+# Last updated 2026-05-27 — `/implement pending DOC items` — **autonomous doc-sweep started; batch-13 split into 13a-f for tractability; batch-13a (ingestion auth cluster, 3 items) shipped on sweep branch**
+
+`/loop`-driven autonomous sweep of the remaining 88 pending DOC items into one long-lived branch in the documentation repo (`feature/docs-pending-sweep-2026-05-27`). The plan YAML at `state/doc-batch-plan-2026-05-27.yaml` is the source of truth — each loop iteration picks the first batch with `status: pending`, fires `/implement` on its items, marks the batch `done`, and ScheduleWakeup-fires the next iteration. Sweep ends when no pending batches remain — at that point the loop pushes the branch and emits the PR-creation URL.
+
+Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critical items spanning 8+ files including 2 NEW pages; split into 13a-f sub-batches in the plan to preserve Quality Bar per iteration. Batch-13a shipped 3 items (DOC-168 ingestion auth extension + DOC-194 dataset-stats cross-dataset write + DOC-228 deployment matrix) all extending `enable-security/README.md` plus cross-link augments on `odd-platform.md` and `s2s.md`. Single commit `9c309d9` on the sweep branch. Gate 11 audience-isolation grep returns zero hits.
+
+## Shipped this iteration (batch-13a → review-ready, awaiting `/review` post-sweep)
+
+| Item | Page | Commit | What |
+|---|---|---|---|
+| **DOC-168** | `enable-security/README.md` + `odd-platform.md` + `s2s.md` cross-link | `9c309d9` | "Ingestion paths the filter does not cover" subsection reframed; per-mode reachability explicit; "one of two WebFilter-covered endpoints" framing. |
+| **DOC-194** | `enable-security/README.md` (new H2 "Statistics endpoint — write shape and replay behaviour") | `9c309d9` | DANGER admonition for cross-dataset write surface (writes resolve by field-ODDRN only — no parent-child JOIN); destructive-replace contract on EXTERNAL_STATISTICS-origin tags. |
+| **DOC-228** | `enable-security/README.md` (new H2 "Deployment matrix — per-endpoint × per-auth-config") | `9c309d9` | 7-row × 3-col matrix (5 endpoints × 3 mode-groups, with `auth.ingestion.filter.enabled=false/true` split for `/ingestion/entities`); S2S column-equivalent paragraph; "the matrix is the authoritative answer" framing. |
+
+## Driver state
+
+Plan YAML: batch-13a flipped `status: done`. Next pending batch: **13b** (LOGIN_FORM + LDAP + cross-mode auth-bleed — 3 items DOC-234, 238, 245 on login-form.md + ldap.md). The next loop iteration will pick it up.
+
+## (PRIOR ENTRY — preserved for chronological context)
+
+# Earlier: 2026-05-27 — `/review pending DOC items` — **22 review-ready items closed in one separate /review session; 22 ACCEPTED, 0 BLOCKED; 7 editorial follow-ups logged (DOC-265..271)**
 
 `/review` (max effort, separate session from any prior `/implement`) processed all 22 `review-ready` DOC items across three groups:
 

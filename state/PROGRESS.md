@@ -14,7 +14,23 @@ Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critica
 
 ## Driver state
 
-Plan YAML: batches 13a-f + 14a + 14b + 15a + 15b flipped `status: done`. Next pending batch: **15c** (Authorization README + roles small fixes — 3 items DOC-176, 268, 269). The next loop iteration will pick it up.
+Plan YAML: batches 13a-f + 14a + 14b + 15a + 15b + 15c flipped `status: done`. **Batch-15 SPLIT COMPLETE (15a + 15b + 15c shipped, 9 items total).** Next pending batch: **16** (Catalog Overview + Entity Detail — 7 items DOC-166, 186, 212, 213, 265, 266, 270). The next loop iteration will pick it up.
+
+## Iteration 11 (batch-15c, 3 items shipped on sweep branch — authorization README + roles)
+
+| Item | File | Commit | What |
+|---|---|---|---|
+| **DOC-269** | rewrite `enable-security/authorization/README.md` | `f9968d6` | 18→~70 line rewrite: model orientation (RBAC + user-vs-owner identity bridge); three load-bearing operator-trust facts (read-collaborative posture, token rotation no grace, DIRECT_OWNER_SYNC composition); recommended reading order; Where to next. |
+| **DOC-176** | extends `authorization/README.md` | `f9968d6` | "How the UI surfaces missing permissions" section — hide-not-disable convention with operator guidance (ask admin, no platform-side signal). |
+| **DOC-268** | rewrite `authorization/roles.md` | `f9968d6` | Replaces the redundant "Be careful" warning admonition with a positive "Setting up an initial admin" recipe — both halves named explicitly (create Owner with ADMIN-role first, bind via admin direct-bind on Management → Associations). Adds "Attaching a Role to an Owner" + Where to next sections. |
+
+## Batch-15 cluster summary (sub-batches 15a-c → 9 authorization items shipped)
+
+| Sub-batch | Items | Sweep commit | Theme |
+|---|---|---|---|
+| 15a | DOC-247, 251, 267 | efcf940 | owners.md rewrite + lifecycle caveats + destructive-PUT safe-pattern |
+| 15b | DOC-243, 249, 258 | 7cd3737 | permissions read-surface + Title vocabulary caveat + authorization performance |
+| 15c | DOC-176, 268, 269 | f9968d6 | README rewrite + roles.md restructure + hide-not-disable convention |
 
 ## Iteration 10 (batch-15b, 3 items shipped on sweep branch — permissions + policies caveats)
 

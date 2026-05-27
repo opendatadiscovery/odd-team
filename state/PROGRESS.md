@@ -1,4 +1,41 @@
-# Last updated 2026-05-27 — `/triage findings/docs-coverage-undocumented-features/2026-05-27-batch-7.md` — Mode B run SR-20260527T2000Z; 10 new DOC backlog items + 6 new PLT upstream issue drafts (PLT-084 superseded by PLT-066 from batch-4)
+# Last updated 2026-05-27 — `/scan scanners/docs/coverage/undocumented-features.md batch=batch-11` — **MODE-B ITERATION COMPLETE (113/113 features scanned; ALL 11 PILLARS FULLY CLOSED)**
+
+The eleventh and final mode-B batch (`SR-20260527T2330Z`) landed at 2026-05-27T23:30Z, covering the 10 remaining P-01 search / directory / detail-header features (F-017, F-023, F-147, F-148, F-176, F-177, F-178, F-179, F-206, F-208). Findings file: `findings/docs-coverage-undocumented-features/2026-05-27-batch-11.md` (36 findings: 12 HIGH + 16 MEDIUM + 8 LOW; verification_class fully-corroborated). Scanner-feed log: `lineage/odd-platform/scanner-feed/2026-05-27-SR-20260527T2330Z.yaml`.
+
+**Mode-B iteration status**: 113 of 113 features scanned = 100% coverage. The scanner now switches to fallback-to-axis-cross-check mode per scanner Method §46. Coverage manifest at `state/coverage/docs-coverage-undocumented-features.yaml` updated; `next_pending_batch: null`.
+
+**Pillar closure roll-up** (after batch-11):
+- P-01 Catalog & Data Discovery — 26 features — **CLOSED** (by batch-11)
+- P-02 / P-03 / P-04 — closed at batch-3 + batch-5 (3-pillar wave)
+- P-05 / P-10 / P-11 — closed at batch-6 (3-pillar wave)
+- P-06 — closed at batch-5 (Glossary cluster)
+- P-07 — closed at batch-3 (Active Platform Features)
+- P-08 — closed at batches-7+8+9 (Management lifecycle + chrome + Owner-Association)
+- P-09 — closed at batch-4 (Security & Access Control — FIRST fully-closed pillar)
+
+**Batch-11 substrate write-backs (executed this scan)**:
+- 10 `scanner_reviews:` blocks appended to F-017 / F-023 / F-147 / F-148 / F-176 / F-177 / F-178 / F-179 / F-206 / F-208 (APPEND-ONLY).
+- 1 corroboration block appended to `lineage/odd-platform/doc-gaps/detail/DOC-GAP-252.md` (F-023a NaN-route-hook).
+- 1 new shoebox entry at `lineage/odd-platform/shoebox/detail/SHB-183-f017-housekeeping-clarification.md` (Category: open) — F-017's grep-scoped `last_accessed_at NEVER READ` assertion is FACTUALLY INCORRECT at HEAD (SearchFacetsHousekeepingJob.java:23-27 IS wired).
+
+**Verdict breakdown (batch-11)**: ontology-confirmed × 22 (sidecar facets verified at HEAD); ontology-extended × 5 (new behaviour beyond sidecar — F-148 reducer normalisation resolution + F-208 application.yml default verification); ontology-drift × 2 (F-017d stale grep claim — SHB-183 logged); corroboration-only × 7 (existing DOC-GAPs strengthened, no new IDs minted this run).
+
+**Methodology observations from batch-11**:
+1. **CCO-2 axis-4 extension candidate**: `SearchResultsTabs.tsx` (the 9-tab class strip — always rendered on the catalog page, hardcodes English on 6 of 9 tabs) was NOT picked up by mode-A axis-4 (`ui_shell`) because it lives in `components/Search/Results/` rather than `components/shared/elements/AppToolbar/`. The axis-4 LSN-013 i18n probe missed it. Recommend extending axis-4 to include "primary-route page-root child components" beyond toolbar widgets.
+2. **CCO-3 grep-scope drift**: F-017's facet `side_effect_update_on_every_get` contains a grep claim scoped to ONE migration file (`V0_0_52__introduce_housekeeping.sql`) that was correct at THAT file's scope but negatively misleading at the CODEBASE scope — the housekeeping policy lives in Java at `SearchFacetsHousekeepingJob.java`. SHB-183 captures this for case-law; recommend codebase-wide grep when asserting "X is not referenced anywhere."
+3. **Cross-file unverified-resolution wins**: Two F-148 + F-208 facets sidecar-marked `ui_unverified` were RESOLVED this run via cross-file reads — F-148 by reading `dataEntitySearch.slice.ts:173-174`; F-208 by reading `application.yml:211`. Demonstrates that mode-B's per-feature pseudo-protocol's cross-file reach productively closes unverified flags.
+
+**Next phases**:
+1. `/triage findings/docs-coverage-undocumented-features/2026-05-27-batch-11.md` — convert 36 findings to DOC backlog items + PLT issue drafts. Anticipated outcomes: a "Search session URL semantics" DOC item + a "DELETED-state edit-affordance hiding" DOC item + an "Entity class taxonomy reference page" NEW DOC item (per CCO-4 in the findings file).
+2. `/triage` for batch-3 / batch-6 / batch-8 / batch-10 / batch-11 (the 5 unprocessed batches) — coordinate cross-batch DOC-NNN + PLT-NNN assignments.
+3. Substrate refresh: F-017 facet amendments per SHB-183 recommendation (remove "dead column" + "session_state_accumulates_forever" sub-claims; cross-link to F-010 housekeeping TTL surface).
+4. SHB-183 graduation candidate: if one more grep-scope drift surfaces in a future batch, SHB-183 graduates to LSN with the case-law lesson.
+
+---
+
+## (PRIOR ENTRY — preserved for chronological context)
+
+# Earlier: 2026-05-27 — `/triage findings/docs-coverage-undocumented-features/2026-05-27-batch-7.md` — Mode B run SR-20260527T2000Z; 10 new DOC backlog items + 6 new PLT upstream issue drafts (PLT-084 superseded by PLT-066 from batch-4)
 
 `/triage` converted the 32 distinct findings from the seventh **mode-B (ontology-fed) run** of `docs/coverage/undocumented-features` (batch-7, theme: P-08 Management lifecycle batch A — operator-CRUD) into 10 atomic DOC backlog items and 7 paste-ready PLT upstream issue drafts (one of which — PLT-084 — was rejected as a cross-batch duplicate of PLT-066 from batch-4 on the same day). The 10 features consumed: F-010, F-019, F-020, F-027, F-028, F-031, F-033, F-035, F-036, F-065. After this batch P-08 is closed at 13 of 18 nominal features (batch-7 ×10 + batch-1 ×3); the remaining 5 wait on batch-8 + batch-9.
 

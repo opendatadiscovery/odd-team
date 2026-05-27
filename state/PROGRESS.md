@@ -1,8 +1,23 @@
-# Last updated 2026-05-28 — `/implement pending DOC items` — **autonomous doc-sweep iteration 28; batch-21c (Lineage pillar My-objects triplet — composition + anchor architecture) shipped on sweep branch — 70 of 88 items shipped, 35 sweep commits — BATCH 21 CLUSTER COMPLETE**
+# Last updated 2026-05-28 — `/implement pending DOC items` — **autonomous doc-sweep iteration 29; batch-22a (metadata-stale clock-skew + DEG membership section + activity-feed/permissions cross-refs) shipped on sweep branch — 72 of 88 items shipped, 36 sweep commits**
 
 `/loop`-driven autonomous sweep of the remaining 88 pending DOC items into one long-lived branch in the documentation repo (`feature/docs-pending-sweep-2026-05-27`). The plan YAML at `state/doc-batch-plan-2026-05-27.yaml` is the source of truth — each loop iteration picks the first batch with `status: pending`, fires `/implement` on its items, marks the batch `done`, and ScheduleWakeup-fires the next iteration. Sweep ends when no pending batches remain — at that point the loop pushes the branch and emits the PR-creation URL.
 
 Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critical items spanning 8+ files including 2 NEW pages; split into 13a-f sub-batches in the plan to preserve Quality Bar per iteration. Batch-13a shipped 3 items (DOC-168 ingestion auth extension + DOC-194 dataset-stats cross-dataset write + DOC-228 deployment matrix) all extending `enable-security/README.md` plus cross-link augments on `odd-platform.md` and `s2s.md`. Single commit `9c309d9` on the sweep branch. Gate 11 audience-isolation grep returns zero hits.
+
+## Iteration 29 (batch-22a, 2 items shipped on sweep branch — metadata-stale clock-skew + DEG Membership section)
+
+Single commit `b937d32` across 4 files covers 2 items:
+
+| Item | What |
+|---|---|
+| **DOC-175** | metadata-stale.md "Known limitations" gains new H3 on clock-skew flicker (predicate evaluated on rendering replica's JVM clock; non-NTP-synced replicas can flicker). Residual after DOC-264 dedup. |
+| **DOC-188** | groups-domains.md new "Managing DEG Membership" H2 (2-endpoint table + DANGER write-collaborative + WARNING forensic silence + WARNING ADD/DELETE idempotence asymmetry + 4 smaller caveats). activity-feed.md WARNING on DEG-membership-not-emitted. permissions.md ADD/DELETE_FROM_GROUP rows extended. |
+
+Gate 11 audience-isolation grep returns zero hits.
+
+## Driver state (post-iteration-29)
+
+Plan YAML: batches 13a-f + 14a + 14b + 15a + 15b + 15c + 16 + 17 + 18a + 18b + 18c + 18d + 19a + 19b + 19c + 20a + 20b + 20c + 20d + 20e + 21a + 21b + 21c + 22a flipped `status: done`. **Batch 22 split into 22a (done) + 22b (NEW entity-description.md) + 22c (NEW custom-metadata.md) + 22d (NEW per-column-annotation.md).** Next pending batch: **22b**.
 
 ## Iteration 28 (batch-21c, 1 CRITICAL item shipped on sweep branch — Lineage pillar My-objects triplet)
 

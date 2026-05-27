@@ -29,6 +29,23 @@ The reviewer does **not** bring the per-item acceptance criteria, scanner findin
 
 ## procedure
 
+### 0. Mechanical pre-pass — Gate 11 banned-term grep *(2026-05-27)*
+
+Before the editorial read, run the mechanical Gate 11 check (`pillars/documentation/gates.md` Gate 11 — Audience isolation). The grep takes <1 second; the editorial read takes hours. Front-loading the mechanical pass prevents single-sentence workspace-internal leaks (the LSN-026 class) from slipping past the reviewer's eye on the long read.
+
+```bash
+# Strict banned-term grep — every hit is a finding unless quoted inside a fenced code block
+# that explicitly cites the workspace
+grep -rnE 'Cornerstone [0-9]+|Gate [0-9]+|\bLSN-[0-9]+\b|\bSHB-[0-9]+\b|\bREFACTOR-[0-9]+\b|\bTEST-GAP-[0-9]+\b|\bDOC-GAP-[0-9]+\b|\bADR-CANDIDATE-[0-9]+\b|feature-flow-builder|feature-reflector|doc-gap-finder|concept-merger|odd-sme|adr-archaeologist|methodology-reviewer|graph-retriever|file-analyser|probe-runner|domain-extractor|Stress Protocol|Quality Bar|Pre-authoring stance|claim-inventory|consumer-read|unset-parameter audit' ../documentation/docs/
+
+# Contextual stop-words — each hit needs classification per the Gate 11 Exceptions table
+grep -rnE '\bsidecar\b|\bmaintainer\b|\bmethodology\b|\bplaybook\b|\bpillar\b|\bbacklog\b|\bfindings\b|\blineage\b|\bscanners\b|\bretrospectives\b' ../documentation/docs/
+```
+
+For each banned-term hit: log `playbooks/follow-up-on-disk.md` DOC-NNN with the file:line, the leaking term, and a proposed rewrite. For each stop-word hit: read the surrounding sentence and classify per Gate 11's Exceptions table (infrastructure-sense `sidecar`; community-contributor `maintainer`; external `methodology`; etc.). Allowed hits get no finding; ambiguous hits become DOC-NNN with the classification question for maintainer triage.
+
+The mechanical pass is **mandatory and runs first**. The editorial-read stance (step 1 onward) is judgment-bound and cannot reliably catch a 12-word leak in a 1400-line `tagging.md`. The mechanical pass catches strings; the editorial pass catches semantics. Both are required.
+
 ### 1. Set the stance, then run the systematic audit
 
 The stance and the systematic audit are complementary. The stance keeps the reviewer reading as the doc product's owner (the qualitative "would I be ashamed to see this quoted back?" check); the systematic audit forces comprehensive coverage so axes don't get skipped because they happen to feel uneventful on this read.

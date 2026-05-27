@@ -9,10 +9,11 @@ since: 2026-04-16
 
 Acceptance criteria on a work item are the named deliverables. The Quality Bar is the responsibility the maintainer carries on **every** change regardless of scope. If a Quality Bar check reveals an issue outside the current item's scope, log it as a new backlog item (`CLAUDE.md` "Follow-up work must be logged on disk") — never ignore, never just narrate.
 
-Each of the ten gates below is a gate, not a principle. Review will reject an item that cannot cite evidence for each one.
+Each of the eleven gates below is a gate, not a principle. Review will reject an item that cannot cite evidence for each one.
 
 - **Gate 9 (Factual claim provenance)** generalises the runtime-claim pattern — Gates 4, 5, the term/alias side of Gate 2, and the repo/integration claims that surface in Gate 1 are specific applications of its SoT table.
 - **Gate 10 (Content type homing)** generalises the no-duplicates pattern to content TYPES — Gate 1 (no parallel copies of the same content) and Gate 7 (single home for layout/IA) are specific applications of its homing rule.
+- **Gate 11 (Audience isolation)** *(2026-05-27)* is the mechanical complement to the editorial-read stance — it catches workspace-internal vocabulary that the stance check reliably misses on single-sentence leaks (case-law: `retrospectives/LSN-026`).
 - **Gates 1, 4, 5, 8, 9** have universal cores that apply across pillars. The executable PROTOCOL form lives in `playbooks/{duplication-sweep,consumer-read,unset-parameter-audit,live-site-verification,claim-inventory}.md`. The gate sections below are the documentation pillar's specialisation — they cite the playbook for the universal procedure and add doc-specific extensions (SoT classes, examples, case-law).
 
 ## Pre-authoring stance check (cognitive — runs before any sub-section is written)
@@ -152,11 +153,67 @@ In every case the work shipped reads well in isolation, but the global picture i
 
 Phase A regex sweeps run with these patterns are the ground truth for "what content has drifted onto feature pages"; the homing rule above is the ground truth for "what to do about each hit." The patterns evolve — when a future scan surfaces a heading shape this list does not capture, extend the list in the same commit that surfaces the gap (`retrospectives/LSN-006-lookup-tables-content-homing.md` is the canonical retrospective for this gate; case-law extends the patterns rather than replacing them).
 
-## Beyond the 10 gates — the doc-product editorial audit
+## 11. Audience isolation — workspace-internal vocabulary never appears in published docs. (Gate)
 
-The 10 gates above verify **per-item quality of execution**: did the maintainer author this item correctly? They do not verify **doc-product completeness of coverage**: does the manual cohere when read together? Every retrospective `LSN-001` through `LSN-010` is a finding caught by user spot-check, not by the gates' machinery — the gates fire on what is *authored*, not on what is *absent* or *incoherent across pages*. `retrospectives/LSN-011-doc-product-coherence-not-self-detecting.md` names this structural pattern.
+**Rule.** Published documentation (`documentation/docs/**/*.md`, served live at `docs.opendatadiscovery.org`) is for ODD operators, integrators, and developers learning to use the platform. It is **not** the workspace's internal methodology document. Workspace-internal vocabulary — terms whose meaning is defined inside `pillars/`, `playbooks/`, `retrospectives/`, `adrs/`, `state/`, `backlog/`, `issues/`, `lineage/`, `scanners/`, `CLAUDE.md`, or `APPROACH.md` — MUST NOT appear in published pages. A reader on the live site has never heard of "Cornerstone 5", "Gate 7", "LSN-023", "DOC-138", "F-075", "shoebox", "sidecar" (the methodology sense; see exception below), or "feature-flow-builder" — and shouldn't have to.
 
-`/review` runs `playbooks/doc-product-editorial-read.md` end-to-end on every invocation, after the per-item gates and before the verdict. The audit's stance is editorial: the reviewer reads `documentation/docs/**/*.md` end-to-end as the documentation owner — the way an operator three years from now will read it — and surfaces every coherence finding (internal contradiction, conceptual drift, cross-audience absence, reader-flow defect, parallel surfaces with drift, dead admonitions, half-finished narratives, IA / hierarchy incoherence, phantom config keys, unresolved references) as a tracked DOC-NNN follow-up via `playbooks/follow-up-on-disk.md`.
+The rule is **mechanical, not stance-only**. The Pre-authoring stance check (top of this file) and the editorial-read playbook (`playbooks/doc-product-editorial-read.md`) both already require the reviewer to read as the audience — but stance-only enforcement misses single-sentence leaks the way the 2026-05-27 case-law (`retrospectives/LSN-026`) demonstrates. Mechanical grep on a banned-term list catches what the reviewer's eye glides past.
+
+**Banned-term registry.** Every term whose meaning is defined inside this workspace and would land in a published doc as an unexplained reference. The list below is the maintained minimum — extend it (in this file, in the same commit) when a new internal term is introduced that could plausibly leak.
+
+| Term / pattern | Workspace meaning | Why it's banned in published docs |
+|---|---|---|
+| `Cornerstone [0-9]+` | Doc-product principle defined in `pillars/documentation/cornerstones.md` | Reader has no source-of-definition; opaque |
+| `Gate [0-9]+` | Quality Bar gate defined in `pillars/documentation/gates.md` (this file) | Same — readers don't audit the doc product, they read it |
+| `\bLSN-[0-9]+\b` | Retrospective ID under `retrospectives/` | Internal incident IDs; reader has no access to the retrospective file |
+| `\bDOC-[0-9]+\b` (when referring to backlog) | Backlog item ID under `backlog/docs/` | Internal work-tracking ID |
+| `\bF-[0-9]+\b` (when referring to feature-flow) | Feature-flow ID under `lineage/{repo}/feature-flows/` | Internal ontology ID |
+| `\bSHB-[0-9]+\b` | Shoebox thread ID under `lineage/{repo}/shoebox/` | Internal investigation thread |
+| `\bREFACTOR-[0-9]+\b`, `\bTEST-GAP-[0-9]+\b`, `\bDOC-GAP-[0-9]+\b` | Reducer-output IDs | Internal audit artefacts |
+| `\bADR-CANDIDATE-[0-9]+\b` | Internal ADR candidate | Internal architectural-decision tracking |
+| `shoebox`, `sidecar` (methodology sense), `feature-flow`, `feature-flow-builder`, `feature-reflector`, `doc-gap-finder`, `concept-merger`, `odd-sme`, `adr-archaeologist`, `methodology-reviewer`, `graph-retriever`, `file-analyser`, `probe-runner`, `domain-extractor` | Agent / reducer / artefact names from `.claude/agents/` and `lineage/_extractor/` | Internal agent / component names |
+| `Stress Protocol`, `Quality Bar`, `Pre-authoring stance`, `Source of Truth class`, `editorial-read`, `claim-inventory`, `consumer-read`, `unset-parameter audit` | Methodology protocol names from `playbooks/` and `pillars/` | Internal procedure names |
+| `playbook`, `pillar`, `backlog`, `findings`, `lineage`, `scanners`, `retrospectives`, `methodology` (when referring to this workspace's methodology) | Workspace directory / structural names | Same |
+| `the maintainer` (when referring to ODD documentation maintainer; the workspace meta-role), `audit-target`, `requirements registry` | Workspace meta-roles | Same |
+
+**Exceptions** (allowed in published docs — verify each at review):
+
+- `sidecar` in the **infrastructure sense** (Kubernetes sidecar, SSO sidecar, S3-proxy sidecar) — operator-language term; not the workspace's per-node-sidecar concept. Verified by reading the surrounding sentence: if the noun is "a sidecar container" / "a sidecar process" / "auth sidecar" / "S3-proxy sidecar", allow. If it's "a sidecar for this code" / "the sidecar's `docs_link_semantic` block", deny.
+- `maintainer` / `maintainers` in **community-contributor guides** (`developer-guides/how-to-contribute.md` style — "Our maintainers will review your PR") — operator-language term; the GitHub-PR-reviewer role, not the workspace meta-role.
+- `methodology` in **comparative discussion of external methodologies** (e.g. an integration page discussing dbt's testing methodology) — allowed; only the *workspace's own* methodology is banned.
+- The README of the `documentation/` repo itself, if it has one, is allowed to discuss the doc product's own conventions in operator-readable form (the README is a meta-document; the published pages are the product).
+
+**Procedure** (per-commit, runs as part of `/implement` and `/review`):
+
+1. **Grep the staged diff** for every banned term/pattern in the registry above. For each hit:
+   - If the file is under `documentation/docs/**/*.md` AND the term is on a *content* line (not in a meta comment, hidden block, or fenced code that's quoting workspace artefacts) → **finding**; block the commit / flip the review verdict to `blocked`.
+   - If the file is under workspace-internal paths (`pillars/`, `playbooks/`, `retrospectives/`, `adrs/`, `state/`, `backlog/`, `issues/`, `lineage/`, `scanners/`, `APPROACH.md`, `CLAUDE.md`) → no finding (workspace-internal docs may name workspace-internal terms freely).
+2. **For each finding, choose**:
+   - **Rewrite** in operator language — name the underlying user-observable concept directly (e.g. "Cornerstone 5 holds — two surfaces for two distinct content types" → "Two pages cover tags: the read-side surface here (applying, finding by) and the operator-mutating surface under Management → Tags (creating, editing the vocabulary)").
+   - **Delete** if the sentence carries no operator value once the internal reference is removed (often the case — internal references frequently signal a maintainer talking to themselves through the doc).
+   - **Move** to an internal artefact (a sidecar for the feature flow, a backlog item context note, an ADR) if the substance is internal-only.
+3. **Update the registry** in this gate's table if a new internal term has been introduced that could plausibly leak. Extension is a normal part of the gate's evolution; the table is not closed.
+
+**Mechanical check command** (runnable from workspace root):
+
+```bash
+# Hits on banned terms in published doc tree only (always findings unless quoted from workspace files)
+grep -rnE 'Cornerstone [0-9]+|Gate [0-9]+|\bLSN-[0-9]+\b|\bSHB-[0-9]+\b|\bREFACTOR-[0-9]+\b|\bTEST-GAP-[0-9]+\b|\bDOC-GAP-[0-9]+\b|\bADR-CANDIDATE-[0-9]+\b|feature-flow-builder|feature-reflector|doc-gap-finder|concept-merger|odd-sme|adr-archaeologist|methodology-reviewer|graph-retriever|file-analyser|probe-runner|domain-extractor|Stress Protocol|Quality Bar|Pre-authoring stance|claim-inventory|consumer-read|unset-parameter audit' ../documentation/docs/
+
+# Per-term grep for stop-words that need contextual review (sidecar / maintainer / methodology / playbook / pillar / backlog / findings / lineage / scanners / retrospectives)
+# Each hit must be classified per the Exceptions list above.
+grep -rnE '\bsidecar\b|\bmaintainer\b|\bmethodology\b|\bplaybook\b|\bpillar\b|\bbacklog\b|\bfindings\b|\blineage\b|\bscanners\b|\bretrospectives\b' ../documentation/docs/
+```
+
+**Case-law.** `retrospectives/LSN-026-workspace-vocabulary-leaked-to-published-doc.md` — the maintainer spotted "Cornerstone 5 holds — two surfaces for two distinct content types: Management → Tags is the *operator-mutating* canonical home for the vocabulary; this page is the *read-side* canonical home for applying and finding by tags." on the live site at `docs.opendatadiscovery.org/features/data-discovery/tagging`. The editorial-read stance was in place; the mechanical check was not. The leak survived two `/review` passes because the reviewer's "read like an operator three years from now" prompt is a quality stance, not a banned-term grep — single-sentence leaks slipped past.
+
+**Why this gate is mechanical, not editorial.** The editorial-read stance (`/review`'s end-to-end pass) is irreplaceable for coherence findings (cross-page drift, missing audience surfaces, IA misplacement) — those are inherently judgment calls. Banned-term leakage is mechanical: there's a finite list of strings; either they appear on a doc line or they don't. Mechanical checks should never substitute for editorial reading; mechanical checks catch what editorial reading reliably misses. The two are complementary.
+
+## Beyond the 11 gates — the doc-product editorial audit
+
+The 11 gates above verify **per-item quality of execution**: did the maintainer author this item correctly? They do not verify **doc-product completeness of coverage**: does the manual cohere when read together? Every retrospective `LSN-001` through `LSN-010` is a finding caught by user spot-check, not by the gates' machinery — the gates fire on what is *authored*, not on what is *absent* or *incoherent across pages*. `retrospectives/LSN-011-doc-product-coherence-not-self-detecting.md` names this structural pattern.
+
+`/review` runs `playbooks/doc-product-editorial-read.md` end-to-end on every invocation, after the per-item gates (including the Gate 11 mechanical banned-term grep) and before the verdict. The audit's stance is editorial: the reviewer reads `documentation/docs/**/*.md` end-to-end as the documentation owner — the way an operator three years from now will read it — and surfaces every coherence finding (internal contradiction, conceptual drift, cross-audience absence, reader-flow defect, parallel surfaces with drift, dead admonitions, half-finished narratives, IA / hierarchy incoherence, phantom config keys, unresolved references) as a tracked DOC-NNN follow-up via `playbooks/follow-up-on-disk.md`.
 
 Editorial findings **do not block the per-item verdict**. The 10 gates above remain the sole authority for `review-ready` → `done` or `blocked`. The audit extends the backlog as parallel work; the doc product as a whole stays at the bar by progressive closure of the editorial backlog over time.
 

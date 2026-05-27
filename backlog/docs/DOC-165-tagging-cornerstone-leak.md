@@ -3,7 +3,7 @@ id: DOC-165
 title: "tagging.md: rewrite the 'Cornerstone 5 holds' sentence in operator language (Gate 11 / LSN-026 first-found leak)"
 category: docs
 target_repo: documentation
-status: pending
+status: review-ready
 priority: medium
 affected_files:
   - documentation/docs/data-discovery/tagging.md (line 56 — the one sentence to rewrite)

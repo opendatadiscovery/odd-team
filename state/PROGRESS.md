@@ -1,8 +1,24 @@
-# Last updated 2026-05-28 — `/implement pending DOC items` — **autonomous doc-sweep iteration 17; batch-18d (NEW PAGE DQ Test Run History, 1 critical item) shipped on sweep branch — 46 of 88 items shipped, 24 sweep commits**
+# Last updated 2026-05-28 — `/implement pending DOC items` — **autonomous doc-sweep iteration 18; batch-19a (Tagging cluster + 4-page back-link sweep, 3 items) shipped on sweep branch — 49 of 88 items shipped, 25 sweep commits**
 
 `/loop`-driven autonomous sweep of the remaining 88 pending DOC items into one long-lived branch in the documentation repo (`feature/docs-pending-sweep-2026-05-27`). The plan YAML at `state/doc-batch-plan-2026-05-27.yaml` is the source of truth — each loop iteration picks the first batch with `status: pending`, fires `/implement` on its items, marks the batch `done`, and ScheduleWakeup-fires the next iteration. Sweep ends when no pending batches remain — at that point the loop pushes the branch and emits the PR-creation URL.
 
 Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critical items spanning 8+ files including 2 NEW pages; split into 13a-f sub-batches in the plan to preserve Quality Bar per iteration. Batch-13a shipped 3 items (DOC-168 ingestion auth extension + DOC-194 dataset-stats cross-dataset write + DOC-228 deployment matrix) all extending `enable-security/README.md` plus cross-link augments on `odd-platform.md` and `s2s.md`. Single commit `9c309d9` on the sweep branch. Gate 11 audience-isolation grep returns zero hits.
+
+## Iteration 18 (batch-19a, 3 items shipped on sweep branch — Tagging cluster + 4-page back-link sweep)
+
+Single commit `ed61136` across 6 files covers 3 items:
+
+| Item | What |
+|---|---|
+| **DOC-165** | tagging.md line 56 cornerstone-leak rewrite — workspace-vocabulary sentence replaced with operator-facing two-surface description (apply / find here; vocabulary management on Management → Tags). |
+| **DOC-190** | tagging.md three load-bearing caveats: (a) Top-tags / Tag-facet seed OLDEST-by-id (listMostPopular paginates BEFORE counting); (b) 5 paths mint new tags into the global directory (TAG_CREATE + 3 side-channel *_TAGS_UPDATE permissions + collector ingestion); (c) 3-way audit asymmetry (TAG_ASSIGNMENT_UPDATED on entities + DATASET_FIELD_TAGS_UPDATED full-payload on columns + NO event on terms); plus an INFO admonition on tag-name case-sensitivity. Cross-references: activity-feed.md extends event-types list with DATASET_FIELD_TAGS_UPDATED + WARNING on 3-way asymmetry; permissions.md extends the four tag-related rows (DATA_ENTITY_TAGS_UPDATE, DATASET_FIELD_TAGS_UPDATE, TERM_TAGS_UPDATE, TAG_CREATE) with operator-caveat sentences. |
+| **DOC-271** | 4-page bidirectional back-link sweep — entity-detail-page.md added to Where-to-next on tagging.md + business-names.md + groups-domains.md + attachments.md. Closes the gap introduced when entity-detail-page.md shipped in batch-11 (the umbrella cross-linked four aspect pages without those pages cross-linking back). |
+
+Gate 11 audience-isolation grep returns zero hits.
+
+## Driver state (post-iteration-18)
+
+Plan YAML: batches 13a-f + 14a + 14b + 15a + 15b + 15c + 16 + 17 + 18a + 18b + 18c + 18d + 19a flipped `status: done`. **Batch 19 split into 19a / 19b / 19c** (lookup tables / query examples + relationships). Next pending batch: **19b** (lookup-tables.md cluster — DOC-182 + DOC-231).
 
 ## Iteration 17 (batch-18d, 1 CRITICAL item shipped on sweep branch — NEW PAGE DQ Test Run History)
 

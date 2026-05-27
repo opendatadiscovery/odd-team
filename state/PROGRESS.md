@@ -1,4 +1,106 @@
-# Last updated 2026-05-27 — `/triage findings/docs-coverage-undocumented-features/2026-05-27-batch-4.md` — Mode B run SR-20260527T2030Z; 16 new DOC backlog items + 1 SPC backlog item + 22 PLT upstream issue drafts
+# Last updated 2026-05-27 — `/triage findings/docs-coverage-undocumented-features/2026-05-27-batch-7.md` — Mode B run SR-20260527T2000Z; 10 new DOC backlog items + 6 new PLT upstream issue drafts (PLT-084 superseded by PLT-066 from batch-4)
+
+`/triage` converted the 32 distinct findings from the seventh **mode-B (ontology-fed) run** of `docs/coverage/undocumented-features` (batch-7, theme: P-08 Management lifecycle batch A — operator-CRUD) into 10 atomic DOC backlog items and 7 paste-ready PLT upstream issue drafts (one of which — PLT-084 — was rejected as a cross-batch duplicate of PLT-066 from batch-4 on the same day). The 10 features consumed: F-010, F-019, F-020, F-027, F-028, F-031, F-033, F-035, F-036, F-065. After this batch P-08 is closed at 13 of 18 nominal features (batch-7 ×10 + batch-1 ×3); the remaining 5 wait on batch-8 + batch-9.
+
+The findings file's expected scanner-feed log (`SR-20260527T2000Z`) was not found by that exact name in `lineage/odd-platform/scanner-feed/` — triage proceeded by direct cross-reference against the findings citations + existing DOC-GAP-NNN entries + cross-batch PLT search. The cross-batch search caught two real duplicates: PLT-084 (Owner empty-roles) → PLT-066, and PLT-083 Defect 2 (jOOQ precedence) → PLT-005 (filed 2026-04-25 during DOC-021 review). Both are documented in the rejected/coordinated drafts.
+
+## Findings → backlog mapping (with merge decisions)
+
+Merge rule: one backlog item per affected doc page (one item = one PR-ready atomic commit). Upstream code-side fixes are filed as separate paste-ready PLT drafts so each upstream conversation is bounded.
+
+| Finding(s) | → Item | Affected page(s) / target | Severity (after rev-13 lift) |
+|---|---|---|---|
+| F-010a + F-010b + F-010c + F-010d (Housekeeping 4-pack: jOOQ precedence + 3-vs-5 jobs + Java TTL=0 LSN-001 shape + session-housekeeping no @SchedulerLock) | **DOC-250** | `configuration-and-deployment/odd-platform.md` (housekeeping section + session-housekeeping cross-mention) | **CRITICAL** (HIGH×2 → CRITICAL on F-010c LSN-001 + F-010d inconsistency-axis; MED×2 → HIGH) |
+| F-019a + F-019b + F-019c + F-019d (Owner 4-pack: audit silence + GET unauth + getOrCreate 3-caller side-door + empty-roles destructive PUT) | **DOC-251** | `enable-security/authorization/owners.md` + `permissions.md` | **CRITICAL** (HIGH×4 → CRITICAL on audit-silence + multi-tenant Owner leak + side-door + destructive UPDATE) |
+| F-020a + F-020b + F-020c (Collector 3-pack: UI-vs-API DISABLED + token plaintext + no-grace rotation + filter-off default) | **DOC-252** | `features/management.md` (Collectors section) | **CRITICAL** (HIGH×2 → CRITICAL on plaintext-at-rest + UI-vs-API; MED → HIGH on rotation) |
+| F-027a + F-027b + F-027c (Attachment 3-pack: chunk staging /tmp under REMOTE + cross-entity privilege escalation + MinioConfig httpClient/credentialsProvider unset) | **DOC-253** | `features/data-discovery/attachments.md` + `odd-platform.md` attachment-storage sub-section | **CRITICAL** (HIGH×2 → CRITICAL on cross-entity authz + partial LSN-001 remediation; MED → HIGH on IAM-role gap) |
+| F-028a + F-028b (Namespace lifecycle: missing-page 404 + 4-sister-service side-door cluster) | **DOC-254** (CREATE) | NEW `features/management/namespaces.md` + SUMMARY.md + `permissions.md` + `features/management.md` parent | **HIGH** (HIGH on missing-page; HIGH → CRITICAL on side-door cluster; merged carries HIGH because the missing-page severity dominates) |
+| F-031a + F-031b + F-031c (Data Source 3-pack: namespace_name side-door + delete-orphan TOKEN + uncleared FTS + regenerate non-@Tx + plaintext) | **DOC-255** | `features/management.md` (Data Sources section) | **HIGH** (HIGH → CRITICAL on F-031a side-door; MED×2 → HIGH on delete + regenerate) |
+| F-033b (Integration Wizard auth posture — F-033a already covered DOC-GAP-277..281) | **DOC-256** | `integrations/integrations/integration-wizard.md` | **HIGH** (MED → HIGH) |
+| F-035a + F-035b + F-035c (Additional Links 3-pack: AdditionalLinkProperties no validation + AppInfoMenu reverse-tabnabbing + WCAG keyboard inaccessibility) | **DOC-257** | `configuration-and-deployment/odd-platform.md` (odd.links sub-section) | **HIGH** (MED×3 → HIGH; security + WCAG + operator-supplied compound) |
+| F-036a + F-036b (Title vocabulary: free-text auto-create silent policy leak + no Management UI tab) | **DOC-258** | `enable-security/authorization/policies.md` | **HIGH** (MED → HIGH on F-036a policy-silent-miss; LOW → MED on F-036b admin-surface absence) |
+| F-065a + F-065b + F-065c (Advisory-lock 3-pack: 4 IDs no registry + pg_advisory_lock blocks forever + partition.advisory-lock-id undocumented) | **DOC-259** | `configuration-and-deployment/odd-platform.md` (NEW Advisory-lock registry sub-section + cross-mentions in 4 other sections) | **CRITICAL** (HIGH → CRITICAL on silent-wedge LSN-001/002 class; MED×2 → HIGH) |
+| F-010c (Java TTL=0) + F-010d (session no @SchedulerLock) | **PLT-083** | upstream (3-pack coordinator with PLT-005 from 2026-04-25) | HIGH |
+| F-019d (Owner empty-roles destructive UPDATE) | **PLT-084 → REJECTED → PLT-066** | upstream (cross-batch duplicate; PLT-066 from batch-4 same day) | HIGH |
+| F-020b (Collector token plaintext-at-rest) | **PLT-085** | upstream (hash-at-rest migration) | HIGH security |
+| F-027b (Attachment cross-entity authz) + F-027c (MinioConfig builder gaps) | **PLT-086** | upstream | HIGH |
+| F-031b (deleteDataSource cleanup) + F-031c (regenerate @Tx + Cache-Control) | **PLT-087** | upstream | MEDIUM |
+| F-035a (validation) + F-035b (rel) + F-035c (a11y) | **PLT-088** | upstream UI/config 3-pack | MEDIUM |
+| F-065b (advisory-lock blocks forever) | **PLT-089** | upstream — central enum + @PostConstruct validator + pg_try wrapper + readiness-probe degradation | HIGH |
+
+## Rev-13 priority-lift application
+
+All 32 findings are sourced from `Ontology[F-NNN:...]` clues (mode-B = ontology-fed). Per the rev-13 rule, every finding back-links to a feature-flow clue source → lift fires by one tier. Distribution after lift:
+
+- **CRITICAL**: 5 of 10 DOC items (DOC-250, DOC-251, DOC-252, DOC-253, DOC-259).
+- **HIGH**: 5 of 10 DOC items (DOC-254, DOC-255, DOC-256, DOC-257, DOC-258).
+- **MEDIUM / LOW**: 0 (no batch-7 item lands below HIGH after lift).
+
+The dense critical concentration reflects the P-08 operator-CRUD focus: management surfaces with security implications (audit silence + multi-tenant leak surfaces + LSN-001-shape silent defaults) are the load-bearing operator-trust class. CLAUDE.md's "wrong docs > missing docs" priority bar applies — the doc-side caveats are the ship-blocking artefacts; the PLTs are the upstream coordination handles.
+
+## Cross-batch dedup observations
+
+Two cross-batch PLT duplicates were caught **after** drafting but **before** filing — both rejected/coordinated in this triage commit:
+
+1. **PLT-084 (Owner empty-roles) → PLT-066 (filed 2026-05-27 batch-4).** Identical surface (F-019d ≅ F-011e). PLT-084 marked `rejected` with rejection note pointing at PLT-066. DOC-251 Caveat 4 updated to cross-link PLT-066.
+2. **PLT-083 Defect 2 (jOOQ precedence) → PLT-005 (filed 2026-04-25 during DOC-021 review).** Identical surface (F-010a ≅ original PLT-005 surface). PLT-083 edited to drop Defect 2 and add a Coordination section pointing at PLT-005. DOC-250 Caveat 2 updated to cross-link PLT-005.
+
+The methodology observation: scanner-feed-log-based deduplication is necessary AND insufficient — cross-batch substrate-tier overlap requires the triager to grep `issues/odd-platform/` for keywords before writing each PLT. Recommend adding a "search-PLT-keyword" registry-search step to the triage skill.
+
+## Dedup write-backs
+
+(Scanner-feed log not located by name — write-backs queued by the findings file itself.) Findings file enumerates:
+- 21 corroborations against existing DOC-GAP-NNN entries (write-backs queued during the scan-run).
+- 11 NEW-at-scanner findings — candidates for new DOC-GAP entries.
+- F-010c (Java TTL=0 LSN-001 shape) is the highest-priority NEW DOC-GAP candidate.
+
+The triager did not run a dedicated `/doc-gap-check` reducer this batch; recommend running it after batch-8 or batch-9 to consolidate.
+
+## File-conflict notes (for `/implement` scheduling)
+
+- **`configuration-and-deployment/odd-platform.md` hosts DOC-250 + DOC-253 (sub-section) + DOC-257 + DOC-259** (4 of 10 items touch the same page). Fold into one PR with four per-section commits to avoid 4 PRs against one file. Recommend ordering: DOC-259 (new Advisory-lock registry sub-section, establishes vocabulary) → DOC-250 (housekeeping caveats, cross-links DOC-259's session-housekeeping framing) → DOC-253 (attachment-storage MinioConfig caveats) → DOC-257 (odd.links validation/AppInfoMenu caveats).
+- **`features/management.md` hosts DOC-252 + DOC-254 cross-link + DOC-255**. Two-commit single PR (Collectors + Data Sources sections + the namespace-creation phrase link).
+- **`permissions.md` hosts DOC-251 + DOC-254 cross-links**. One-commit minor extension.
+- **DOC-254 multi-file CREATE pattern** — new sub-page + SUMMARY.md entry + parent management.md cross-link + permissions.md cross-link. Ordinary new-feature-page shape.
+- **DOC-256 (Integration Wizard)** is a single-file single-section extension; small PR.
+- **DOC-258 (Policies Title-vocabulary)** is a single-file single-section extension; small PR.
+- **No cross-repo file conflicts**. All 10 DOC items are in `documentation/`; all 6 PLT drafts (+ 1 rejected) are workspace-resident paste-ready for upstream filing.
+
+## Counts (after this triage)
+
+- DOC backlog items: prior + 10 (DOC-250..DOC-259, all `pending`).
+- PLT issue drafts: prior + 6 active (PLT-083 + PLT-085..PLT-089) + 1 rejected (PLT-084 — cross-batch dup of PLT-066).
+- `pending` (DOC): +10. All other DOC statuses unchanged this run.
+
+## Mode-B coverage signal
+
+Without a scanner-feed log this batch's `verification_class` is not programmatically asserted, but the findings file declares **fully-corroborated** (every feature has ≥1 primary-source citation re-verified against odd-platform source). After batch-7, coverage reaches 30 of 113 F-NNNs (27%). P-08 closure stands at 13 of 18 features (batch-1 ×3 + batch-7 ×10); remaining 5 P-08 features queue for batch-8 + batch-9.
+
+## Substrate-coverage gaps surfaced for next /enrich pass
+
+(Carried forward from prior batches; batch-7 did not surface NEW substrate-level absences.)
+
+- `springdoc:` YAML namespace still has no F-NNN.
+- `spring.codec.max-in-memory-size` (2026-05-08 F-056 finding) not graduated to F-NNN.
+- `session.provider` (SessionConfiguration) referenced (F-119/120/122) but not deeply enriched.
+- `management.*` Spring Boot Actuator namespace (2026-05-08 F-054 finding) — no F-NNN.
+
+## Hand-off
+
+- **Next `/implement` candidate**: any of the 5 CRITICAL items. Recommend fast-tracking **DOC-251** (Owner page — most operator-mental-model-correcting) AND **DOC-259** (Advisory-lock registry — establishes the cross-subsystem vocabulary other items cross-link). DOC-254 (NEW Namespaces page) is the largest item by effort but reader-facing critical for the side-door cluster story.
+- **Upstream PLTs ready to file**: PLT-083 (Housekeeping 2-pack, coordinate with PLT-005), PLT-085 (Collector token hashing — security HIGH), PLT-086 (Attachment cross-entity authz — security HIGH), PLT-087 (DataSource lifecycle MEDIUM), PLT-088 (UI/config 3-pack MEDIUM), PLT-089 (Advisory-lock fail-fast HIGH). All paste-ready, none auto-filed per `issues/README.md`.
+- **PLT-066 (Owner empty-roles)** is now load-bearing for two DOC items — DOC-175 (batch-4 sibling) AND DOC-251 (this batch). When filed upstream, both DOC items reference the same GitHub issue URL.
+- **PLT-005 (AlertHousekeepingJob jOOQ precedence)** is now load-bearing for DOC-021 (original) AND DOC-250 (this batch). Same GitHub-issue-URL coordination on filing.
+- **Editorial audit** is mandatory on `/review`, not on `/triage`. No editorial findings surfaced here; the triage's job is conversion-of-findings.
+
+## Methodology observations
+
+1. **Cross-batch PLT collision detection.** The two duplicates this batch (PLT-084 ↔ PLT-066, PLT-083 Defect 2 ↔ PLT-005) were both caught manually post-draft. Recommend the `/triage` skill add a step that greps `issues/{repo}/` for surface keywords (e.g., `OwnerServiceImpl.getRoleIdsList`, `AlertHousekeepingJob`, `MinioConfig`, etc.) before each PLT draft is finalised. This is the cheapest dedup vector.
+2. **Scanner-feed log path inference.** This batch's findings file declared `scan_run_id: SR-20260527T2000Z` but no scanner-feed log file matches that ID by name. The protocol's lookup at `lineage/{substrate_repo}/scanner-feed/{YYYY-MM-DD}-{scan_run_id}.yaml` returned empty. Either the lookup convention drifted, or the log file was not written, or it was renamed. Worth tightening in the next skill revision.
+3. **Concurrent triage races.** This batch detected at least one other concurrent batch claiming IDs from DOC-194..DOC-249 + PLT-026..PLT-082 during my own writes. The first claim wins; my final IDs (DOC-250..259, PLT-083..089) are the result of the race losing the early range and retrying further on. Suggests the `/triage` skill should compute the next-free ID atomically (e.g., via file-lock or a sequence file) when concurrent batches are common.
+
+---
+
 
 `/triage` converted the **38 distinct findings** from the **batch-4 mode-B (ontology-fed) run** of `docs/coverage/undocumented-features` (scanner-feed log: `lineage/odd-platform/scanner-feed/2026-05-27-SR-20260527T2030Z.yaml`; verification class: `fully-corroborated`) into **16 atomic DOC backlog items + 1 SPC backlog item + 22 paste-ready PLT issue drafts**. Theme: **closes P-09 (Security & Access Control) — the FIRST FULLY-CLOSED pillar in mode-B iteration** (16/16 P-09 features scanned across batches 1+4). 13 features covered this batch (F-006 RBAC / F-011 Principal-to-Owner / F-015 My-Objects Anchor-Set / F-034 Feature-Flag Exposure / F-084 OAuth Admin-Detection / F-085 Identity Probe / F-086 OAuth Logout / F-087 Session Cookie / F-089 Post-Logout Redirect / F-090 Permission Read Surface / F-119 Deployment-Info / F-122 Management-Endpoint / F-124 ADMIN Promotion). After batch-4, mode-B feature coverage is **33 of 113 F-NNNs (29%)**.
 

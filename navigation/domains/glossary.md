@@ -33,9 +33,23 @@ Business terms, definitions, term-to-entity assignments, term hierarchy.
 - `POST/DELETE /api/terms/{term_id}/query_examples` — query examples
 
 ## Documentation
-- `documentation/docs/Features.md#dictionary-terms` — basic term feature
-- `documentation/docs/Features.md#associating-terms-with-data-entities-through-descriptive-information` — text-based linking
-- `documentation/docs/GLOSSARY.md` — stub (5 empty headers)
+- `documentation/docs/data-glossary/business-glossary.md` — feature page (live: `https://docs.opendatadiscovery.org/features/data-glossary/business-glossary`); covers term CRUD, namespace scoping claim, 7 TERM_* permissions, term-to-entity link mechanics including `[[namespace:term]]` description-mention shorthand.
+- **Known doc drift / known operator caveats** (per `lineage/odd-platform/feature-flows/detail/F-002.yaml`, `F-024.yaml`, `F-056.yaml`, `F-151.yaml`..`F-156.yaml` + scan runs SR-20260527T1400Z + SR-20260527T1800Z findings F-002a/b/c, F-024a/b/c, F-056a/b/c, F-151a/b/c, F-152a/b/c/d, F-153a, F-154a/b/c/d/e, F-155a/b, F-156a/b; tracked as backlog item **DOC-177** — pending triage):
+  - Silent term-link authorization bypass (SecurityConstants `/term` SINGULAR vs OpenAPI `/terms` PLURAL — REFACTOR-217); DATA_ENTITY_ADD_TERM gate falls through to `.authenticated()`.
+  - Description-edit auto-link side-channel — `[[ns:term]]` syntax materializes link rows bypassing DATA_ENTITY_ADD_TERM; cross-time drain on term-create silently materializes auto-links to entities authored by OTHER users WEEKS AGO.
+  - Cross-namespace term enumeration — no per-namespace filter at any read site; doc's "scoped by namespace by default" promise is false at SQL layer.
+  - is_description_link UI-asymmetry — TermLinkedEntitiesList shows no indicator; TermLinkedTermsList does.
+  - Term detail page Overview tab fires DOUBLE-FETCH of the 12-JOIN hot path.
+  - Term reverse-lookup tabs have hardcoded status:500 errors (F-152a — FIXME comment); silent pagination break on TermLinkedColumnsList (`next={() => {}}` — F-153a).
+  - TermsForm authoring: client-side duplicate check fragile at scale; no error handler on submit; Markdown editor accepts <script> payloads (F-004 family 3rd Term-surface).
+  - OverviewTags slice-then-sort bug — important tags silently hidden beneath "View All".
+  - Tag/Namespace creation bypass via TagsEditForm + NamespaceAutocomplete (TERM_TAGS_UPDATE / TERM_CREATE silently invoke `getOrCreate` patterns).
+- `documentation/docs/GLOSSARY.md` — stub (5 empty headers — pre-existing).
+
+## Related code sites (added 2026-05-27 — scan run SR-20260527T1800Z)
+- Service: `odd-platform-api/.../service/term/TermServiceImpl.java` — regex `\[\[([^:]*?):([^\]]*?)\]\]` at line 67; auto-link materialisation at lines 201-207; cross-time drain at lines 99-117 (createTerm) + 421-442 (resolveUnhandledDescriptionMentions).
+- UI sub-tree (per F-151..F-156): `odd-platform-ui/src/components/Terms/TermDetails/{TermDetails,TermDetailsTabs,TermDetailsRoutes,Overview/{Overview,OverviewTags,TermLinkedTerms},TermLinkedTermsList/LinkedTermsList,TermLinkedColumnsList/LinkedColumnsList,TermLinkedEntitiesList,TermQueryExamples}.tsx`.
+- UI form: `odd-platform-ui/src/components/Terms/TermsForm/TermsForm.tsx` — Create/Edit dialog (F-154 anchor).
 
 ## Related Domains
 - data-entities (terms assigned to entities and fields)

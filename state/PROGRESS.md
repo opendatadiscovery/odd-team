@@ -1,8 +1,23 @@
-# Last updated 2026-05-28 — `/implement pending DOC items` — **autonomous doc-sweep iteration 21; batch-20a (Alerting cluster — 3 sections / 12 caveats from DOC-179 + DOC-200 + DOC-201) shipped on sweep branch — 57 of 88 items shipped, 28 sweep commits**
+# Last updated 2026-05-28 — `/implement pending DOC items` — **autonomous doc-sweep iteration 22; batch-20b (Activity Feed cluster — structural scope + My Objects setup + User filter correction + per-entity tab + cross-channel posture) shipped on sweep branch — 59 of 88 items shipped, 29 sweep commits**
 
 `/loop`-driven autonomous sweep of the remaining 88 pending DOC items into one long-lived branch in the documentation repo (`feature/docs-pending-sweep-2026-05-27`). The plan YAML at `state/doc-batch-plan-2026-05-27.yaml` is the source of truth — each loop iteration picks the first batch with `status: pending`, fires `/implement` on its items, marks the batch `done`, and ScheduleWakeup-fires the next iteration. Sweep ends when no pending batches remain — at that point the loop pushes the branch and emits the PR-creation URL.
 
 Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critical items spanning 8+ files including 2 NEW pages; split into 13a-f sub-batches in the plan to preserve Quality Bar per iteration. Batch-13a shipped 3 items (DOC-168 ingestion auth extension + DOC-194 dataset-stats cross-dataset write + DOC-228 deployment matrix) all extending `enable-security/README.md` plus cross-link augments on `odd-platform.md` and `s2s.md`. Single commit `9c309d9` on the sweep branch. Gate 11 audience-isolation grep returns zero hits.
+
+## Iteration 22 (batch-20b, 2 items shipped on sweep branch — Activity Feed cluster: structural scope + rewrites)
+
+Single commit `3e898f1` across 2 files covers 2 items:
+
+| Item | What |
+|---|---|
+| **DOC-181** | Structural framing on activity-feed.md: existing Scope warning extended with the schema-FK explanation (activity.data_entity_id NOT NULL is the structural blocker on RBAC/Owner/Term/Namespace/Datasource/Collector/IntegrationWizard emission); new "Known caveats" section with 2 admonitions (default cross-team read posture — no per-owner predicate; DISABLED-mode null-actor rendering). Event-type enumeration confirmed complete at 27 (post-batch-19a additions). |
+| **DOC-206** | 5 rewrites on activity-feed.md: new "My Objects setup (user-owner association prerequisite)" section near top + admin pre-flight admonition; User filter framing corrected from actor-axis to entity-ownership-axis with the API-direct-against-created_by hint; new "Per-entity Activity tab differences" section with capability comparison table; WARNING admonition on cross-channel read posture (per-entity tab mounts bare, reachable for soft-deleted entities). Cross-ref on owners.md: new "Operator-facing surfaces that depend on user-owner association" section enumerating Activity Feed + Alerts + recommended-entities surfaces with the silent-empty failure mode + admin-onboarding fix. |
+
+Gate 11 audience-isolation grep returns zero hits.
+
+## Driver state (post-iteration-22)
+
+Plan YAML: batches 13a-f + 14a + 14b + 15a + 15b + 15c + 16 + 17 + 18a + 18b + 18c + 18d + 19a + 19b + 19c + 20a + 20b flipped `status: done`. Next pending batch: **20c** (Notifications, 1 critical item DOC-180).
 
 ## Iteration 21 (batch-20a, 3 items shipped on sweep branch — Alerting cluster, 12 caveats layered into 3 new sections)
 

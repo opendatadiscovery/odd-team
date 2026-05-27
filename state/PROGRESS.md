@@ -14,7 +14,15 @@ Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critica
 
 ## Driver state
 
-Plan YAML: batches 13a-f + 14a flipped `status: done`. **Batch-14 split into 14a + 14b for tractability.** Next pending batch: **14b** (Platform config operational cluster — 3 items DOC-250, 257, 259 on odd-platform.md). The next loop iteration will pick it up.
+Plan YAML: batches 13a-f + 14a + 14b flipped `status: done`. **Batch-14 split complete (14a + 14b shipped, 6 items total).** Next pending batch: **15** (Authorization — owners + permissions + policies + roles + README, 9 items DOC-176, 243, 247, 249, 251, 258, 267, 268, 269). The next loop iteration will pick it up.
+
+## Iteration 8 (batch-14b, 3 items shipped on sweep branch — odd-platform.md operational cluster)
+
+| Item | Section | Commit | What |
+|---|---|---|---|
+| **DOC-250** | Housekeeping Settings Configuration H2 | `b5d03e6` | 3→5 jobs framing; DANGER admonition on Java-side TTL=0 silent-wipe (HousekeepingTTLProperties no field initialisers + overlay-replaces-not-merges hazard); warning on jOOQ-precedence skip of manual-RESOLVED alerts; info on session-housekeeping N× redundant DB load on multi-replica. |
+| **DOC-257** | new H4 under Additional navigation links | `8d8a36f` | "Validation and operator-link risks" — AdditionalLinkProperties accepts unvalidated `javascript:` / `data:` / `file:` / relative paths; 5 AppInfoMenu link sites without `rel=noopener noreferrer` (reverse-tabnabbing); AppInfoMenu keyboard/touch inaccessible despite ARIA. |
+| **DOC-259** | new H2 "Advisory-lock registry" | `079ecb4` | 4-row table of advisory-lock IDs (notifications.wal/partition/datacollaboration ×2); deliberate-share-90 note for partition managers; warning admonition on `pg_advisory_lock` blocking variant + silent collision wedge with no readiness signal; ShedLock contrast note. |
 
 ## Iteration 7 (batch-14a, 3 items shipped on sweep branch — odd-platform.md security cluster)
 

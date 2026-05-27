@@ -14,7 +14,15 @@ Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critica
 
 ## Driver state
 
-Plan YAML: batch-13a flipped `status: done`. Next pending batch: **13b** (LOGIN_FORM + LDAP + cross-mode auth-bleed — 3 items DOC-234, 238, 245 on login-form.md + ldap.md). The next loop iteration will pick it up.
+Plan YAML: batches 13a + 13b flipped `status: done`. Next pending batch: **13c** (OAuth admin-detection per-provider matrix + logout cluster — 2 items DOC-235, 236 on oauth2-oidc.md). The next loop iteration will pick it up.
+
+## Iteration 2 (batch-13b, 3 items shipped on sweep branch)
+
+| Item | Page | Commit | What |
+|---|---|---|---|
+| **DOC-234** | `enable-security/authentication/login-form.md` | `7003aaf` | New H2 "Authorization posture under LOGIN_FORM" with 3 sub-sections — Policy/Role tables not consulted (AuthorizationCustomizer missing), CSRF unconditionally disabled, `auth.login-form-redirect` without scheme/host allowlist. |
+| **DOC-238** | `enable-security/authentication/ldap.md` | `af3a9b7` | New H3 "Admin promotion (substring overpromotion warning)" with sample-naming-pattern × effect table + the empty/unset `admin-groups` silent USER-only branch. |
+| **DOC-245** | both pages | `7003aaf` + `af3a9b7` | Symmetric "Cross-mode user-name collision" sections on each page — the activity-feed read JOIN is provider-agnostic; operator-mitigation paragraph + cross-link between the two pages. |
 
 ## (PRIOR ENTRY — preserved for chronological context)
 

@@ -4,6 +4,16 @@
 
 Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critical items spanning 8+ files including 2 NEW pages; split into 13a-f sub-batches in the plan to preserve Quality Bar per iteration. Batch-13a shipped 3 items (DOC-168 ingestion auth extension + DOC-194 dataset-stats cross-dataset write + DOC-228 deployment matrix) all extending `enable-security/README.md` plus cross-link augments on `odd-platform.md` and `s2s.md`. Single commit `9c309d9` on the sweep branch. Gate 11 audience-isolation grep returns zero hits.
 
+## Iteration 30 (batch-22b, 1 CRITICAL item shipped on sweep branch — NEW PAGE entity-description.md)
+
+Single commit `3d30b54` creates a new canonical sub-page covering the platform's primary free-text annotation surface — operator-authored Markdown descriptions on every data entity. The page is the **anchor of a 6-surface stored-XSS class** (entity description + per-column description + term definition + Query Example body + Lookup Table cell values + Slack notification body) that previously had no operator-facing documentation. Sections: authoring (PUT /api/dataentities/{id}/description, persists verbatim to data_entity.internal_description), supported Markdown surface (rehype-raw enabled), permissions, activity trail (DESCRIPTION_UPDATED), DANGER admonition with table + "happy-accident defence at the rendering tier" framing. SUMMARY.md + data-discovery.md pillar + permissions.md DATA_ENTITY_DESCRIPTION_UPDATE row wiring all in the same commit.
+
+Gate 11 audience-isolation grep returns zero hits.
+
+## Driver state (post-iteration-30)
+
+Plan YAML: batches 13a-f + 14a + 14b + 15a + 15b + 15c + 16 + 17 + 18a + 18b + 18c + 18d + 19a + 19b + 19c + 20a + 20b + 20c + 20d + 20e + 21a + 21b + 21c + 22a + 22b flipped `status: done`. Next pending batch: **22c** (NEW PAGE custom-metadata.md — DOC-189).
+
 ## Iteration 29 (batch-22a, 2 items shipped on sweep branch — metadata-stale clock-skew + DEG Membership section)
 
 Single commit `b937d32` across 4 files covers 2 items:

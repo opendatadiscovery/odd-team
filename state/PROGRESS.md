@@ -1,8 +1,23 @@
-# Last updated 2026-05-28 — `/implement pending DOC items` — **autonomous doc-sweep iteration 26; batch-21a (Lineage data-objects — Compact/Full toggle + UI-vs-API depth contract + pillar/api-ref cross-refs) shipped on sweep branch — 67 of 88 items shipped, 33 sweep commits**
+# Last updated 2026-05-28 — `/implement pending DOC items` — **autonomous doc-sweep iteration 27; batch-21b (Microservices Access model + payload fields + DEG group-lineage parameter absence + 404-vs-200-empty asymmetry + pillar read-collaborative posture) shipped on sweep branch — 69 of 88 items shipped, 34 sweep commits**
 
 `/loop`-driven autonomous sweep of the remaining 88 pending DOC items into one long-lived branch in the documentation repo (`feature/docs-pending-sweep-2026-05-27`). The plan YAML at `state/doc-batch-plan-2026-05-27.yaml` is the source of truth — each loop iteration picks the first batch with `status: pending`, fires `/implement` on its items, marks the batch `done`, and ScheduleWakeup-fires the next iteration. Sweep ends when no pending batches remain — at that point the loop pushes the branch and emits the PR-creation URL.
 
 Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critical items spanning 8+ files including 2 NEW pages; split into 13a-f sub-batches in the plan to preserve Quality Bar per iteration. Batch-13a shipped 3 items (DOC-168 ingestion auth extension + DOC-194 dataset-stats cross-dataset write + DOC-228 deployment matrix) all extending `enable-security/README.md` plus cross-link augments on `odd-platform.md` and `s2s.md`. Single commit `9c309d9` on the sweep branch. Gate 11 audience-isolation grep returns zero hits.
+
+## Iteration 27 (batch-21b, 2 CRITICAL items shipped on sweep branch — microservices + DEG-anchored API ref)
+
+Single commit `88bd857` across 4 files covers 2 items:
+
+| Item | What |
+|---|---|
+| **DOC-226** | microservices.md gains "Access model" section (read-collaborative posture + WARNING on operational-topology amplified sensitivity) + "Supported payload fields" section (class-agnostic DTO; microservice-specific OpenTelemetry trace fields silently dropped at response-DTO mapper). |
+| **DOC-225** | api-reference/lineage.md group-lineage entry gets INFO admonition on parameter absence (no lineage_depth, no expanded_entity_ids) + WARNING with comparison table on 404-vs-200-empty asymmetry. data-lineage.md pillar gets "Read posture across the catalog" H2. data-objects.md Group lineage section gets back-pointer to the API reference's parameter-absence + asymmetry detail. |
+
+Gate 11 audience-isolation grep returns zero hits.
+
+## Driver state (post-iteration-27)
+
+Plan YAML: batches 13a-f + 14a + 14b + 15a + 15b + 15c + 16 + 17 + 18a + 18b + 18c + 18d + 19a + 19b + 19c + 20a + 20b + 20c + 20d + 20e + 21a + 21b flipped `status: done`. Next pending batch: **21c** (my-objects triplet architecture — DOC-244).
 
 ## Iteration 26 (batch-21a, 3 items shipped on sweep branch — Lineage data-objects cluster)
 

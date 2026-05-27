@@ -14,7 +14,21 @@ Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critica
 
 ## Driver state
 
-Plan YAML: batches 13a-f + 14a + 14b + 15a + 15b + 15c flipped `status: done`. **Batch-15 SPLIT COMPLETE (15a + 15b + 15c shipped, 9 items total).** Next pending batch: **16** (Catalog Overview + Entity Detail — 7 items DOC-166, 186, 212, 213, 265, 266, 270). The next loop iteration will pick it up.
+Plan YAML: batches 13a-f + 14a + 14b + 15a + 15b + 15c + 16 flipped `status: done`. Next pending batch: **17** (Business Glossary cluster — 5 items DOC-177, 178, 199, 230, 233). The next loop iteration will pick it up.
+
+## Iteration 12 (batch-16, 7 items shipped on sweep branch — Catalog Overview + Entity Detail)
+
+Single commit `40258df` covers seven items across three files:
+
+| Item | File | What |
+|---|---|---|
+| **DOC-166** | catalog-overview.md | DISABLED-mode Recommended-panel-hidden correction + click-target Structure→Overview correction. |
+| **DOC-186** | catalog-overview.md + search.md | `exclude_from_search` FTS-only caveat (9 list-shape consumers ignore the flag) + symmetric mirror on search.md. Reframes Recommended panel as fourth column of a shared list component. |
+| **DOC-212** | catalog-overview.md | Owner-association 4-branch state machine table (Form / Pending / Declined / Approved). |
+| **DOC-213** | catalog-overview.md | Sections intro updated to "three conditional sections" + Directory subsection clarifier. |
+| **DOC-270** | catalog-overview.md | Recommended-tile destination corrected + cross-links to entity-detail-page.md added in admonition + Where-to-next. |
+| **DOC-265** | entity-detail-page.md | Sidebar truncation admonition extended from Groups-only to Groups-and-Terms (shared stringification defect on `LinkedTerm[]`). |
+| **DOC-266** | entity-detail-page.md | TRANSFORMER_RUN + QUALITY_TEST_RUN per-class matrix rows corrected from "Inherits parent surface" to "No main-column stats panel renders today" + silent-absence admonition extended naming the two recognised-but-unswitched run-classes.
 
 ## Iteration 11 (batch-15c, 3 items shipped on sweep branch — authorization README + roles)
 

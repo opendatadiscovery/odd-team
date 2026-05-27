@@ -1,4 +1,44 @@
-# Last updated 2026-05-27 — `/triage findings/docs-coverage-undocumented-features/2026-05-27-batch-11.md` — **MODE-B ITERATION TRIAGE COMPLETE**: 5 new DOC backlog items (DOC-260..264) + 8 new PLT upstream issue drafts (PLT-090..097) from the final mode-B batch
+# Last updated 2026-05-27 — `/implement against DOC items` — **batch-11 DOC items (DOC-260..264) shipped to documentation/main**; 5 commits, 7 affected files; 1 backlog-internal duplication resolved (DOC-175 narrowed to residual scope)
+
+`/implement` ran the five batch-11 DOC items as a cohesive data-discovery operator-trust caveat batch, direct-to-main on `documentation` per sprint mode. Each item shipped as one atomic commit with a `Sources:` footer naming the consumer-code references. Gate 11 audience-isolation grep passed on every staged diff. Documentation push: `df9954a..44343fa main -> main`.
+
+## Shipped (review-ready, awaiting `/review` in a separate session)
+
+| Item | Page | Commit | Caveats |
+|---|---|---|---|
+| **DOC-263** | NEW `data-discovery/entity-detail-page.md` (141 lines, 6 H2 sections) + SUMMARY + data-discovery.md | `8ae7711` | Overview tab composition + per-class panel matrix + class/type badges + sidebar truncation defects + per-panel permission map. CCO-4 consolidation. |
+| **DOC-260** | `data-discovery/search.md` | `93800c0` | Result-class tabs (9-tab strip enumeration) + 5 known-limitation caveats (session-UUID URL semantics, cross-owner facet enumeration, tsquery operator-injection warning admonition, 100-row dropdown cap, +2 view_count amplification). |
+| **DOC-261** | `data-discovery/directory.md` | `3bda50d` | Known limitations: ODDRN-property reflection (warning admonition), level-4 page-vs-count predicate divergence, `'all'` literal magic-string. |
+| **DOC-262** | `data-discovery/statuses.md` | `6d8c07f` | DELETED-state read-only surface H2 (anchored from entity-detail-page) + Detail-header authoring caveats H2 (label toggle, silent read-only badge, Share-to-Slack feature-flag silent). |
+| **DOC-264** | `data-discovery/metadata-stale.md` | `44343fa` | DANGER admonition: silent-default footgun + 4 caveats (never-ingested = is_stale:false, globally-silent UI, deployment-wide cadence, trust-on-write forgery). |
+
+## Cross-file integration
+
+DOC-263 created the umbrella canonical page; DOC-260 / DOC-261 / DOC-262 / DOC-264 all cross-link to it in their Where-to-next or body. DOC-262's "DELETED-state read-only surface" H2 is the anchor target of the entity-detail-page's reference to the per-affordance breakdown. The five commits form a coherent data-discovery operator-trust documentation cluster.
+
+## Sprint-mode batching
+
+All five commits direct to `documentation/main` (sprint mode — single long-lived branch, no PR-per-batch flow). Workspace state ships as a single odd-team commit (this PROGRESS update + file-registry refresh + 5 backlog frontmatters + DOC-175 dedup narrowing).
+
+## Dedup discovery (logged for retrospective)
+
+`DOC-175` was already pending against the same page (`metadata-stale.md`) with 5 caveats; 4 of 5 overlap with DOC-264. The duplication sweep at planning time greped the documentation tree but not the backlog itself. DOC-175 narrowed to the residual scope (clock-skew flicker caveat + optional glossary/surfaces expansion); priority dropped MEDIUM. Lesson for future implements: extend the planning-time duplication sweep to grep `backlog/{cat}/*.md` for entries whose `affected_files:` list the same path the new item targets.
+
+## Live-site verification (deferred to `/review`)
+
+Affected live URLs for `/review`'s WebFetch pass:
+
+- `https://docs.opendatadiscovery.org/data-discovery/entity-detail-page` (NEW page)
+- `https://docs.opendatadiscovery.org/data-discovery/search`
+- `https://docs.opendatadiscovery.org/data-discovery/directory`
+- `https://docs.opendatadiscovery.org/data-discovery/statuses`
+- `https://docs.opendatadiscovery.org/data-discovery/metadata-stale`
+- `https://docs.opendatadiscovery.org/data-discovery` (Subsections / Where-to-next edits)
+- `https://docs.opendatadiscovery.org/` (SUMMARY sidebar)
+
+## (PRIOR ENTRY — preserved for chronological context)
+
+# Earlier: 2026-05-27 — `/triage findings/docs-coverage-undocumented-features/2026-05-27-batch-11.md` — **MODE-B ITERATION TRIAGE COMPLETE**: 5 new DOC backlog items (DOC-260..264) + 8 new PLT upstream issue drafts (PLT-090..097) from the final mode-B batch
 
 `/triage` converted the 36 findings from batch-11 (scanner-feed log `2026-05-27-SR-20260527T2330Z.yaml`, verification_class `fully-corroborated`) into 5 atomic DOC backlog items and 8 paste-ready PLT upstream issue drafts. The 10 features consumed: F-017, F-023, F-147, F-148, F-176, F-177, F-178, F-179, F-206, F-208 (the final P-01 search / directory / detail-header cluster — pillar fully closed). After this triage, the entire mode-B iteration (113 of 113 features) is converted into actionable artefacts — backlog + issues + substrate write-backs.
 

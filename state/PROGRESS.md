@@ -14,7 +14,14 @@ Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critica
 
 ## Driver state
 
-Plan YAML: batches 13a + 13b + 13c flipped `status: done`. Next pending batch: **13d** (DISABLED + S2S — 2 items DOC-172 + DOC-239 on s2s.md + disabled-authentication.md). The next loop iteration will pick it up.
+Plan YAML: batches 13a-d flipped `status: done`. Next pending batch: **13e** (NEW PAGE admin-promotion landing — 1 large item DOC-237). The next loop iteration will pick it up.
+
+## Iteration 4 (batch-13d, 2 items shipped on sweep branch)
+
+| Item | Page | Commit | What |
+|---|---|---|---|
+| **DOC-172** | `enable-security/authentication/s2s.md` | `24818f5` | New "Operator caveats" H2 with two admonitions — literal uppercase ADMIN synthetic principal collides case-sensitively with operator-named users; `auth.s2s.enabled=true` silently inert under `auth.type=DISABLED`. |
+| **DOC-239** | `enable-security/authentication/disabled-authentication.md` | `fdb57f4` | Full page expansion preserving the DO-NOT-use warning at top; new H2 sections — "What's anonymously reachable" (synthetic admin via whoami with dynamic blast radius + appInfo version fingerprint + actuator/env credential schema + every /api/** mutation surface); "Fingerprint matrix (passive recon)" (per-mode whoami response shapes); "Reserved usernames" (admin lowercase + ADMIN uppercase); "Migrating away from DISABLED" (audit list before flipping). |
 
 ## Iteration 3 (batch-13c, 2 items shipped on sweep branch)
 

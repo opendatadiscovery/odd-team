@@ -1,8 +1,22 @@
-# Last updated 2026-05-28 — `/implement pending DOC items` — **autonomous doc-sweep iteration 24; batch-20d (Data Collaboration 4 caveats + GenAI platform-to-user posture + GenAI SSRF + NEW api-reference/genai.md sub-page) shipped on sweep branch — 63 of 88 items shipped, 31 sweep commits**
+# Last updated 2026-05-28 — `/implement pending DOC items` — **autonomous doc-sweep iteration 25; batch-20e (NEW PAGE active-platform-features/metrics-ingestion.md + landing/SUMMARY/odd-platform.md wiring) shipped on sweep branch — 64 of 88 items shipped, 32 sweep commits — BATCH 20 CLUSTER COMPLETE**
 
 `/loop`-driven autonomous sweep of the remaining 88 pending DOC items into one long-lived branch in the documentation repo (`feature/docs-pending-sweep-2026-05-27`). The plan YAML at `state/doc-batch-plan-2026-05-27.yaml` is the source of truth — each loop iteration picks the first batch with `status: pending`, fires `/implement` on its items, marks the batch `done`, and ScheduleWakeup-fires the next iteration. Sweep ends when no pending batches remain — at that point the loop pushes the branch and emits the PR-creation URL.
 
 Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critical items spanning 8+ files including 2 NEW pages; split into 13a-f sub-batches in the plan to preserve Quality Bar per iteration. Batch-13a shipped 3 items (DOC-168 ingestion auth extension + DOC-194 dataset-stats cross-dataset write + DOC-228 deployment matrix) all extending `enable-security/README.md` plus cross-link augments on `odd-platform.md` and `s2s.md`. Single commit `9c309d9` on the sweep branch. Gate 11 audience-isolation grep returns zero hits.
+
+## Iteration 25 (batch-20e, 1 item shipped on sweep branch — NEW PAGE Metrics Ingestion sub-page)
+
+Single commit `b867ebb` creates a new canonical sub-page + wires landing + SUMMARY + storage caveats on odd-platform.md:
+
+| Item | What |
+|---|---|
+| **DOC-202** | NEW `active-platform-features/metrics-ingestion.md` covering POST /ingestion/metrics endpoint (MetricSetList → 5 metric types, 20MB body cap, 201 response, NoSuchBeanDefinitionException on invalid storage) + per-entity Metrics tab read side. Three known-limitation admonitions: DANGER on tenant isolation INTERNAL_POSTGRES gap; DANGER on security whitelist gap; WARNING on one-way storage migration. active-platform-features.md landing extended 5 → 6 subsystems; SUMMARY.md entry; odd-platform.md metrics.storage section gets DANGER + WARNING cross-linking the feature-page caveats. |
+
+Gate 11 audience-isolation grep returns zero hits.
+
+## Driver state (post-iteration-25)
+
+Plan YAML: batches 13a-f + 14a + 14b + 15a + 15b + 15c + 16 + 17 + 18a + 18b + 18c + 18d + 19a + 19b + 19c + 20a + 20b + 20c + 20d + 20e flipped `status: done`. **Batch 20 cluster (5 sub-batches, 10 items) complete.** Next pending batch: **21** (Lineage, 6 items).
 
 ## Iteration 24 (batch-20d, 3 items shipped on sweep branch — Data Collaboration + GenAI cluster + NEW api-reference sub-page)
 

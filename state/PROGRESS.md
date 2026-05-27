@@ -1,8 +1,22 @@
-# Last updated 2026-05-28 — `/implement pending DOC items` — **autonomous doc-sweep iteration 16; batch-18c (Data Discovery statuses + schema-diff, 2 critical items) shipped on sweep branch — 45 of 88 items shipped, 23 sweep commits**
+# Last updated 2026-05-28 — `/implement pending DOC items` — **autonomous doc-sweep iteration 17; batch-18d (NEW PAGE DQ Test Run History, 1 critical item) shipped on sweep branch — 46 of 88 items shipped, 24 sweep commits**
 
 `/loop`-driven autonomous sweep of the remaining 88 pending DOC items into one long-lived branch in the documentation repo (`feature/docs-pending-sweep-2026-05-27`). The plan YAML at `state/doc-batch-plan-2026-05-27.yaml` is the source of truth — each loop iteration picks the first batch with `status: pending`, fires `/implement` on its items, marks the batch `done`, and ScheduleWakeup-fires the next iteration. Sweep ends when no pending batches remain — at that point the loop pushes the branch and emits the PR-creation URL.
 
 Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critical items spanning 8+ files including 2 NEW pages; split into 13a-f sub-batches in the plan to preserve Quality Bar per iteration. Batch-13a shipped 3 items (DOC-168 ingestion auth extension + DOC-194 dataset-stats cross-dataset write + DOC-228 deployment matrix) all extending `enable-security/README.md` plus cross-link augments on `odd-platform.md` and `s2s.md`. Single commit `9c309d9` on the sweep branch. Gate 11 audience-isolation grep returns zero hits.
+
+## Iteration 17 (batch-18d, 1 CRITICAL item shipped on sweep branch — NEW PAGE DQ Test Run History)
+
+Single commit `cd311ce` creates a new canonical sub-page + wires SUMMARY + cross-link:
+
+| Item | Files | What |
+|---|---|---|
+| **DOC-185** | NEW `data-quality/test-run-history.md` + `SUMMARY.md` + `data-quality.md` cross-link | Per-test runs timeline + endpoint shape (`GET /api/dataentities/{id}/runs` with page/size/status query params, DataEntityRunList response) + UI surfaces (`/history` 100-row infinite scroll + `/test-report` first-10 preview) + RestrictedRoute hide-when-DELETED note. Three known-limitation admonitions: DANGER on the HTTP 500 from RUNNING rows (DB-side 7-value enum vs wire-side 6-value enum + MapStruct strict String→enum); WARNING on the cross-owner read posture + `status_reason` free-form text leak channel (Great Expectations sample failing rows + dbt compiled SQL + custom-framework text); INFO on the NULLS-FIRST end_time ordering UX surprise. The sub-page realises the cross-link from `dashboard.md` shipped in batch-18b. |
+
+Gate 11 audience-isolation grep returns zero hits.
+
+## Driver state (post-iteration-17)
+
+Plan YAML: batches 13a-f + 14a + 14b + 15a + 15b + 15c + 16 + 17 + 18a + 18b + 18c + 18d flipped `status: done`. **Batch 18 cluster (4 sub-batches, 8 DQ items) complete.** Next pending batch: **19** (Lookup Tables + Query Examples + Tagging + Relationships — 8 items spanning master-data-management + data-discovery surfaces).
 
 ## Iteration 16 (batch-18c, 2 CRITICAL items shipped on sweep branch — Data Discovery statuses + schema-diff)
 

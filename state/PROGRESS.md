@@ -1,8 +1,24 @@
-# Last updated 2026-05-28 — `/implement pending DOC items` — **autonomous doc-sweep iteration 20; batch-19c (Query Examples 7-caveat + 3-tab structural section + Relationships 6-caveat, 3 items) shipped on sweep branch — 54 of 88 items shipped, 27 sweep commits — BATCH 19 CLUSTER COMPLETE**
+# Last updated 2026-05-28 — `/implement pending DOC items` — **autonomous doc-sweep iteration 21; batch-20a (Alerting cluster — 3 sections / 12 caveats from DOC-179 + DOC-200 + DOC-201) shipped on sweep branch — 57 of 88 items shipped, 28 sweep commits**
 
 `/loop`-driven autonomous sweep of the remaining 88 pending DOC items into one long-lived branch in the documentation repo (`feature/docs-pending-sweep-2026-05-27`). The plan YAML at `state/doc-batch-plan-2026-05-27.yaml` is the source of truth — each loop iteration picks the first batch with `status: pending`, fires `/implement` on its items, marks the batch `done`, and ScheduleWakeup-fires the next iteration. Sweep ends when no pending batches remain — at that point the loop pushes the branch and emits the PR-creation URL.
 
 Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critical items spanning 8+ files including 2 NEW pages; split into 13a-f sub-batches in the plan to preserve Quality Bar per iteration. Batch-13a shipped 3 items (DOC-168 ingestion auth extension + DOC-194 dataset-stats cross-dataset write + DOC-228 deployment matrix) all extending `enable-security/README.md` plus cross-link augments on `odd-platform.md` and `s2s.md`. Single commit `9c309d9` on the sweep branch. Gate 11 audience-isolation grep returns zero hits.
+
+## Iteration 21 (batch-20a, 3 items shipped on sweep branch — Alerting cluster, 12 caveats layered into 3 new sections)
+
+Single commit `6f0e646` on `active-platform-features/alerting.md`. Batch 20 has been split into 5 sub-batches (20a Alerting, 20b Activity Feed, 20c Notifications, 20d Data Collab + GenAI, 20e NEW Metrics Ingestion).
+
+| Item | What |
+|---|---|
+| **DOC-179** | New "Inbound AlertManager webhook — operator caveats" sub-section: DANGER on forge-and-display (anyone with network reach can inject a forged Distribution Anomaly on any entity), DANGER on URL stored XSS (generatorURL embedded verbatim, no scheme allow-list), WARNING on missing idempotency (Prometheus retries duplicate alerts). Mitigation: network-layer restriction. |
+| **DOC-200** | Two new sub-sections under Auto-cleanup: "Workaround completeness notes" (pagination defaults silently truncate, soft-delete-inclusive read, no per-owner scoping) + "Listing constraints today" (per-entity tab hardcoded size=30 no filter / no export; global Alerts list hardcoded size=30 no status/type/date filter no entity-name search no bulk-resolve). |
+| **DOC-201** | New "Known UX limitations" section: bare /alerts → /alerts/all (cross-team feed); My/Dependents tabs hidden without user-owner association but URLs remain navigable; Resolve button has no confirmation dialog (WARNING admonition cross-linked to existing housekeeping hard-delete + workaround); Notification Settings dialog has no optimistic concurrency check. |
+
+Gate 11 audience-isolation grep returns zero hits.
+
+## Driver state (post-iteration-21)
+
+Plan YAML: batches 13a-f + 14a + 14b + 15a + 15b + 15c + 16 + 17 + 18a + 18b + 18c + 18d + 19a + 19b + 19c + 20a flipped `status: done`. **Batch 20 split into 20a (done) + 20b / 20c / 20d / 20e (pending).** Next pending batch: **20b** (Activity Feed cluster — DOC-181 + DOC-206).
 
 ## Iteration 20 (batch-19c, 3 items shipped on sweep branch — Query Examples 7-caveat + 3-tab structural section + Relationships 6-caveat)
 

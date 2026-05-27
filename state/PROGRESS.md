@@ -14,7 +14,14 @@ Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critica
 
 ## Driver state
 
-Plan YAML: batches 13a + 13b flipped `status: done`. Next pending batch: **13c** (OAuth admin-detection per-provider matrix + logout cluster — 2 items DOC-235, 236 on oauth2-oidc.md). The next loop iteration will pick it up.
+Plan YAML: batches 13a + 13b + 13c flipped `status: done`. Next pending batch: **13d** (DISABLED + S2S — 2 items DOC-172 + DOC-239 on s2s.md + disabled-authentication.md). The next loop iteration will pick it up.
+
+## Iteration 3 (batch-13c, 2 items shipped on sweep branch)
+
+| Item | Page | Commit | What |
+|---|---|---|---|
+| **DOC-235** | `enable-security/authentication/oauth2-oidc.md` | `47dc01a` | New H2 "Admin-detection per-provider matrix" after the common-properties block + 3 GitHub admonitions (admin-principals bypasses organization-name, admin-groups substring overpromotion, GHES not supported) + Google admin-groups silent-no-op admonition + Okta/Keycloak/CustomOIDC no-admin-path admonition. |
+| **DOC-236** | `enable-security/authentication/oauth2-oidc.md` | `ac83342` | 3 appended H2 sections: Logout token-revocation matrix (per provider); Post-logout redirect derivation (`UriUtils.getBaseUri` builds from inbound request URI with no host allowlist; reverse-proxy-trust caveat; revocation-compounding caveat); UI feedback caveat (SPA does not surface revocation outcome). |
 
 ## Iteration 2 (batch-13b, 3 items shipped on sweep branch)
 

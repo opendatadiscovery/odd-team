@@ -1,4 +1,55 @@
-# Last updated 2026-05-27 — `/implement against DOC items` — **batch-11 DOC items (DOC-260..264) shipped to documentation/main**; 5 commits, 7 affected files; 1 backlog-internal duplication resolved (DOC-175 narrowed to residual scope)
+# Last updated 2026-05-27 — `/implement pending DOC items` — **batch-12 user-owner + permissions cluster (15 DOC items) shipped on feature/docs-user-owner-association-batch12**; 2 cohesive commits, 3 affected files
+
+`/implement` worked the user-owner-association + permissions.md cluster surfaced by Mode-B batch-9 (SR-20260527T1900Z) — 15 DOC items, one tight theme: rewrite the user-owner-association page from a 2-branch narrative to a 3-branch backbone (user self-request + DIRECT_OWNER_SYNC auto-approve + admin direct-bind) with the full operator workflow (New requests / Active associations / History sub-tabs) and four permissions.md row corrections + a Management read-collaborative posture admonition. Branch: `feature/docs-user-owner-association-batch12` (cut from fresh `origin/main`). The previous Admin section on user-owner-association.md was factually wrong (named the home-page widget as the admin direct-bind affordance) — replaced cleanly. Gate 11 audience-isolation grep returns zero hits on both commits.
+
+## Shipped (review-ready, awaiting `/review` in a separate session)
+
+| Item | Page | Commit | What |
+|---|---|---|---|
+| **DOC-208** | `enable-security/authorization/user-owner-association.md` | `e7d30ae` | Branch B (DIRECT_OWNER_SYNC auto-approve) — new section "How DIRECT_OWNER_SYNC changes the user-side flow" + Operator caution admonition. |
+| **DOC-210** | `enable-security/authorization/user-owner-association.md` | `e7d30ae` | Admin section completely rewritten — old "modal in the bottom" Admin section replaced by "For administrators" with three sub-tabs + Create association affordance. Backbone item for the batch. |
+| **DOC-214** | `enable-security/authorization/user-owner-association.md` | `e7d30ae` | "Choosing an owner name" subsection — freeSolo input + on-submit create-owner + operator hygiene recommendation. |
+| **DOC-215** | `enable-security/authorization/user-owner-association.md` | `e7d30ae` | "If your request is declined" subsection — dismissable-but-not-persisted banner + no-decline-reason limitation. |
+| **DOC-216** | `enable-security/authorization/user-owner-association.md` | `e7d30ae` | "Changing or removing your association" subsection — one-shot lifecycle, no self-service revoke, admin-only recovery path. |
+| **DOC-217** | `enable-security/authorization/user-owner-association.md` | `e7d30ae` | "inline as the last block on the page — it is not a modal dialog and has no overlay" replaces the old "modal in the bottom" framing. |
+| **DOC-219** | `enable-security/authorization/user-owner-association.md` + `management.md` | `e7d30ae` | "Approving incoming requests (New requests tab)" section — 4-column triage UX + ConfirmationDialog + OWNER_ASSOCIATION_MANAGE gate. Management.md Associations row extended to enumerate sub-tabs + Create association affordance. |
+| **DOC-220** | `enable-security/authorization/user-owner-association.md` | `e7d30ae` | "Creating a binding directly (Create association)" — Branch C admin direct-bind affordance + 3-field form + immediate-binding contract + OWNER_RELATION_MANAGE gate + audit-emission caveat. |
+| **DOC-222** | `enable-security/authorization/user-owner-association.md` | `e7d30ae` | "Removing an existing binding (Active associations tab)" — per-row Remove + UI/backend gate mismatch caveat + "Remove is the only path to undo any binding" framing. |
+| **DOC-223** | `enable-security/authorization/user-owner-association.md` | `e7d30ae` | "After you remove an association" subsection — My-objects / My-alerts / role-scoped-permissions consequences for the affected user. |
+| **DOC-224** | `enable-security/authorization/user-owner-association.md` | `e7d30ae` | "Auditing past association requests (History tab)" — 7-column read-only stream + read-collaborative-posture cross-link + Known incompleteness admonition for direct-bind / remove audit gap. |
+| **DOC-207** | `enable-security/authorization/permissions.md` | `73470f8` | Warning admonition after Management permissions section — 7 GET endpoints fall through to "any authenticated user" (read-collaborative posture META). |
+| **DOC-209** | `enable-security/authorization/permissions.md` | `73470f8` | DIRECT_OWNER_SYNC row extended — freeSolo + getOrCreate composition caveat + service-identity-only grant recommendation. |
+| **DOC-218** | `enable-security/authorization/permissions.md` | `73470f8` | COLLECTOR_TOKEN_REGENERATE + DATA_SOURCE_TOKEN_REGENERATE rows extended — immediate-invalidation "no grace period" operational caveat. |
+| **DOC-221** | `enable-security/authorization/permissions.md` | `73470f8` | OWNER_RELATION_MANAGE description replaced (old text gated "accepting/declining requests" — actually gates admin direct-bind + unbind via /api/owners/mapping) + OWNER_ASSOCIATION_MANAGE symmetry rewrite. |
+
+## Cross-file integration
+
+The user-owner-association.md rewrite + permissions.md updates are interlocking: the rewritten permissions descriptions reference the user-owner-association.md anchor headings (Approving incoming requests / Creating a binding directly / Removing an existing binding / How DIRECT_OWNER_SYNC changes the user-side flow), and the user-owner-association.md cross-links back to `permissions.md#management-permissions` for the read-collaborative posture and to the DIRECT_OWNER_SYNC permission row. The management.md Associations row points to the fuller user-owner-association.md workflow.
+
+## Sprint-mode batching — branch + push pending
+
+Branch `feature/docs-user-owner-association-batch12` was cut from fresh `origin/main` at the start of the batch (no GitBook drift to reconcile). Two commits (`e7d30ae` + `73470f8`) cover the 15 items. Per sprint mode, the branch can fast-forward to main on `/review` ACCEPT; alternatively, a PR can be opened for the maintainer's inspection. odd-team state branch carries the 15 backlog frontmatter flips + file-registry append + this PROGRESS entry as a single commit.
+
+## Live-site verification (deferred to `/review`)
+
+Affected live URLs for `/review`'s WebFetch pass:
+
+- `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association`
+- `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions`
+- `https://docs.opendatadiscovery.org/management`
+
+Anchor-resolution checks (intra-page + cross-page):
+- `permissions.md#management-permissions` (DOC-224's cross-link target + DOC-207's admonition anchor)
+- `user-owner-association.md#how-direct_owner_sync-changes-the-user-side-flow` (DOC-209's permissions-row cross-link)
+- `user-owner-association.md#approving-incoming-requests-new-requests-tab` (DOC-221's OWNER_ASSOCIATION_MANAGE row)
+- `user-owner-association.md#creating-a-binding-directly-create-association` (DOC-221's OWNER_RELATION_MANAGE row)
+- `user-owner-association.md#removing-an-existing-binding-active-associations-tab` (DOC-221's OWNER_RELATION_MANAGE row + intra-page link from "Changing or removing your association")
+- `user-owner-association.md#auditing-past-association-requests-history-tab` (DOC-207's GET /api/owner_association_request/activity row)
+- `user-owner-association.md#choosing-an-owner-name` (intra-page link from DIRECT_OWNER_SYNC caveat)
+
+## (PRIOR ENTRY — preserved for chronological context)
+
+# Earlier: 2026-05-27 — `/implement against DOC items` — **batch-11 DOC items (DOC-260..264) shipped to documentation/main**; 5 commits, 7 affected files; 1 backlog-internal duplication resolved (DOC-175 narrowed to residual scope)
 
 `/implement` ran the five batch-11 DOC items as a cohesive data-discovery operator-trust caveat batch, direct-to-main on `documentation` per sprint mode. Each item shipped as one atomic commit with a `Sources:` footer naming the consumer-code references. Gate 11 audience-isolation grep passed on every staged diff. Documentation push: `df9954a..44343fa main -> main`.
 

@@ -5,6 +5,17 @@ date: 2026-05-27
 research_phase: complete (5 threads + synthesis)
 authored_by: maintainer-pair (NOT delegated — synthesis is the critical step)
 target_signoff: maintainer
+status: SIGNED OFF + refinement applied (2026-05-27)
+maintainer_refinement: |-
+  Feature-flows/detail/F-*.yaml is the PRIMARY investigation target.
+  doc-gaps.md is a dedup/priority hint, never a coverage signal.
+  Concern: doc-gaps may have gaps in doc-gaps itself; feature-flows
+  detail files must be independently investigated. Locked as PITFALLS
+  Rule D13 + INTEROP §1.0 + per-feature pseudo-protocol.
+maintainer_open_questions_resolved:
+  Q1_sme_consultation_caps: SHIP 2/3/5 defaults; tune at Day 30 from pilot data (my recommendation; user did not override).
+  Q2_day_90_restructure: FORMAL DEFER (my recommendation; user did not override).
+  Q3_gate9_ratification: PROPOSE-NOT-EDIT (my recommendation; user did not override). Rev-13 implementation cites the new `Ontology` SoT class; documentation pillar ratifies via a separate Gate 9 edit in a follow-up commit.
 ---
 
 # SCANNER ↔ ONTOLOGY FUSION — synthesis & opinionated proposal
@@ -241,6 +252,88 @@ has shipped since rev 7 (graph-query layer).
 The branch `feature/scanner-ontology-fusion-rev13` carries the placeholder
 APPROACH.md edit + the 5 research artefacts; nothing else has been touched.
 All implementation lands after your signoff, never before.
+
+---
+
+## 10. Signoff + maintainer refinement *(2026-05-27)*
+
+**SIGNED OFF.** The maintainer approved the approach with one refinement:
+
+> *"We could run scanner feature-by-feature in the ontology but also make sure
+> that the description of a feature in its file is taken into account. My
+> worry is that doc-gaps could not be very well maintained and there could
+> be gaps in the doc-gaps as well, so feature-flows detailed files should be
+> also considered for investigation."*
+
+This is a meaningful re-framing of the data flow. The original design treated
+`doc-gaps.md` and `feature-flows/detail/F-*.yaml` as parallel clue sources of
+similar weight. The refinement makes the priority explicit:
+
+**`feature-flows/detail/F-*.yaml` is the PRIMARY investigation target. doc-gaps.md is a dedup/priority hint, never a coverage signal.**
+
+The reasoning (PITFALLS §B9 captures this in full):
+
+1. **doc-gaps is reducer output, not ground truth.** It captures only what `doc-gap-finder` surfaced at its last run. The reducer can miss things; documentation may have drifted since.
+2. **doc-gaps' category filter is incomplete.** The 5 categories (broken-url / drift / missing-anchor / missing-page / coverage-gap / stale-page) don't capture every gap shape — e.g. a feature whose doc page is structurally complete but wrong-for-its-pillar is hard to taxonomize and may stay un-emitted.
+3. **A scanner trusting doc-gaps as exhaustive becomes an audit-of-an-audit.** Glean's dual-source posture (PITFALLS C3) and LSN-017's "code is truth, docs are the audit target" both require the scanner to ITSELF investigate every feature, not merely corroborate the reducer.
+
+### What the refinement changes
+
+**INTEROP §1.0** (new section, prepended to Part 1): the primary investigation target is feature-flows; doc-gaps is consulted only at the dedup step. Includes the per-feature pseudo-protocol:
+
+```
+for F-NNN in feature_flows (filtered by scanner scope):
+  read F-NNN detail
+  derive_expected_doc_path(pillar_id, pillar_anchored_feature_name)
+  doc_exists = check(documentation/docs/{expected_doc_path})
+
+  # Verification ladder per clue class (DESIGN-CHOICES §2)
+  for hop in F-NNN.chain:
+    verify_against_code(hop.evidence)
+  for facet in F-NNN.observed_vs_expected.facets:
+    verify_against_code(facet.evidence)
+  WebFetch(expected_doc_url)
+  compare(F-NNN.description, doc_content)        # description-as-clue
+
+  emit findings:
+    - missing-page if doc_exists=false
+    - drift if description-doc compare diverges
+    - missing-caveat per facet not mentioned in doc
+    - ontology-drift per hop whose evidence is stale
+
+  write-back: scanner_reviews entry on F-NNN
+  dedup_lookup: matching DOC-GAP-NNN in doc-gaps.md
+  if matching: write corroborated_by_scanner on the doc-gap
+```
+
+**INTEROP §1.2** (revised): doc-gaps.md is now explicitly a **dedup/priority hint, never a coverage signal**. A feature absent from doc-gaps.md is NOT presumed documented.
+
+**PITFALLS §B9** (new): `doc-gaps.md trusted as exhaustive coverage`. Names the three compounding failure modes; mitigation is rule D13.
+
+**PITFALLS §D13** (new hard rule): *feature-flows/detail/F-*.yaml is the PRIMARY investigation target; doc-gaps.md is a dedup/priority hint, never a coverage signal.* Mode-B scan-runs iterate the feature catalog (scoped); zero-feature-flow `clues_consumed[]` runs are marked `verification_class: corroboration-only` and don't count toward "feature audited" status.
+
+### Q1-Q3 locked answers (my recommendations, user did not override)
+
+| Question | Locked answer | Rationale |
+|---|---|---|
+| **Q1** — SME consultation cap value | Ship **2/3/5** (odd-sme/feature-reflector/graph-retriever) as Day-1 defaults. Tune at Day 30 from pilot data. | Conservative caps risk hiding the signal the pilots exist to gather. |
+| **Q2** — Day-90 doc-gap-finder restructure | **Formally defer.** Pilots will surface whether restructure is warranted. | Restructure shape depends on pilot data (overlap ratio); committing now without data invites the rev-9 panel-simplification mistake. |
+| **Q3** — Gate 9 ratification of `Ontology` SoT class | **Propose-not-edit.** Rev-13 implementation uses the new SoT class in scanner findings; documentation pillar ratifies via a separate Gate 9 commit. | Loose coupling between methodology evolution and active-pillar gates. |
+
+User can override any of these by replying before the implementation phase commits — otherwise they're locked.
+
+### Updated acceptance criteria (§4 addendum)
+
+**8.** Both pilot scan-runs MUST iterate ≥1 in-scope F-NNN per the §1.0 pseudo-protocol; the `scanner-feed/{date}.yaml` `clues_consumed[]` must show `source: feature-flow` entries; rule D13 is enforced.
+
+### Implementation sequence (§7) — unchanged shape, refined content
+
+The 9-step sequence from §7 still holds; the refinement changes WHAT mode B does inside `/scan` (step 3) and what the pilot scanners' frontmatter looks like (steps 4-5):
+
+- Step 3 (`/scan` SKILL.md extension): the conditional branch iterates `feature-flows/detail/` as the primary investigation loop; doc-gaps consulted at dedup.
+- Steps 4-5 (pilot scanners): frontmatter sets `ontology_feed.primary_investigation_target: feature-flows`; the `clue_sources:` list orders them explicitly (`feature-flows` listed first; `doc-gaps` later as dedup-only).
+
+Implementation begins now.
 
 ---
 

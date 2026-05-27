@@ -88,6 +88,16 @@ F-018 declares `chain[2].file_line: TagService.java:142-160`; actual logic is at
 ### B8 — Mixing modes silently
 A scanner declares `ontology_fed: true` and runs against a surface the ontology has not enriched. Ontology returns empty arrays. Scanner silently falls back to standalone heuristic behaviour. Operators see `ontology_fed: true` and assume findings are ontology-enriched; they are not. **Mitigation:** scanner protocol includes explicit `ontology_coverage_check_at_start`: enumerate intended entities; query ontology coverage; if ratio < 50%, ABORT with `INSUFFICIENT-ONTOLOGY-COVERAGE` and emit `coverage_gap_for_scan:`. Silent degradation forbidden; explicit `ontology_blind: true` re-run is the only path to standalone behaviour.
 
+### B9 — doc-gaps.md trusted as exhaustive coverage *(maintainer-flagged 2026-05-27)*
+**Pitfall.** The scanner consumes `doc-gaps.md` as the authoritative list of "what doc gaps exist." But `doc-gaps.md` is REDUCER output — it captures only what `doc-gap-finder` surfaced at its last run. Three failure modes compound:
+1. doc-gap-finder may have missed cross-cutting gaps (its dedup is by URL + sidecar surface — orthogonal gaps slip through).
+2. Documentation may have drifted SINCE the last reducer run, opening new gaps the reducer cannot see.
+3. The reducer's category filter (broken-url / drift / missing-anchor / missing-page / coverage-gap / stale-page) doesn't capture every gap shape — e.g. a feature whose doc page exists but whose page is structurally complete-yet-wrong-for-pillar is harder to taxonomize and may stay un-emitted.
+
+A scanner that treats doc-gaps.md as exhaustive inherits all three blind spots and produces an audit-of-an-audit rather than an independent investigation. **The Glean dual-source posture (C3) AND the LSN-017 "code is truth, docs are the audit target" rule both require the scanner to ITSELF investigate every feature, not just corroborate the reducer.**
+
+**Mitigation:** rule D13 (Part D). The scanner's PRIMARY investigation target is `feature-flows/detail/F-*.yaml` (the catalog of every feature, with `description` + `chain` + `observed_vs_expected.facets`). Per-feature investigation is mandatory; doc-gaps.md is consulted ONLY as a dedup/priority hint and a back-link target. A scan-run that touches `feature-flows/detail/` and never independently investigates any F-NNN (only corroborates doc-gaps) is broken by design — its `scanner-feed/{date}.yaml` `clues_consumed[]` must show ≥1 entry with `source: feature-flow` per scanned scope, OR the run is marked `verification_class: corroboration-only` and does not count toward "feature audited" status.
+
 ---
 
 ## Part C — ecosystem prior art
@@ -125,8 +135,9 @@ A scanner declares `ontology_fed: true` and runs against a surface the ontology 
 | **D10** | Every scanner runs `ontology_coverage_check_at_start`: enumerate intended entities; query ontology coverage; if ratio < 50%, ABORT with `INSUFFICIENT-ONTOLOGY-COVERAGE` and emit `coverage_gap_for_scan:` naming missing entities. Silent fallback to ontology-blind mode forbidden; explicit `ontology_blind: true` is the only path to standalone behaviour. | B8 |
 | **D11** | Scanner coverage metrics denominated by the *conceptual ceiling* (LSN-025 Type-3.5 substrate-coverage probe), NOT substrate enumerated node count. "100% of F-031's UI hops verified" when F-031's UI chain is 1-of-12 components MUST surface "substrate-coverage gap detected — verification incomplete." | A7 |
 | **D12** | Per-scan-run budget: max 3 SME consultations + max 5 probe-runs. Findings beyond budget emit `escalation: pending-sme-review` into the backlog. Hard cap, not soft target. Scanner contracts name the budget and escalation path. | B5 |
+| **D13** *(maintainer-added 2026-05-27)* | **Feature-flows/detail/F-*.yaml is the PRIMARY investigation target; doc-gaps.md is a dedup/priority hint, never a coverage signal.** Every scan-run with `ontology_feed.enabled: true` MUST iterate the feature catalog (subject to scanner scope filter) and independently investigate each F-NNN — reading its `description`, `chain`, `observed_vs_expected.facets`; verifying against code (per ladder D8) AND against the live doc (per ladder rung 4). A doc-gap entry that matches the same F-NNN gets a `corroborated_by_scanner` write-back (INTEROP §2.3) but is NEVER a substitute for the per-feature investigation. A scan-run whose `scanner-feed/{date}.yaml` `clues_consumed[]` contains zero `source: feature-flow` entries in scope is marked `verification_class: corroboration-only` and does not count toward "feature audited" status. | B9 + B4 + C3 |
 
-**Coverage check.** A1 → contract framework (each scanner declares ontology-mode); A2 → D9; A3 → D6; A4 → D7; A5 → D9 + D10; A6 → D1 + D2; A7 → D11; A8 → D5 + D6; A9 → D1; B1 → D1; B2 → D8; B3 → D3; B4 → D4; B5 → D12; B6 → D6 + D8; B7 → D8; B8 → D10; C1 → D1; C2 → D8; C3 → D4. Every pitfall maps; every rule lands.
+**Coverage check.** A1 → contract framework (each scanner declares ontology-mode); A2 → D9; A3 → D6; A4 → D7; A5 → D9 + D10; A6 → D1 + D2; A7 → D11; A8 → D5 + D6; A9 → D1; B1 → D1; B2 → D8; B3 → D3; B4 → D4 + D13; B5 → D12; B6 → D6 + D8; B7 → D8; B8 → D10; B9 → D13; C1 → D1; C2 → D8; C3 → D4 + D13. Every pitfall maps; every rule lands.
 
 ---
 

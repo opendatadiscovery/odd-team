@@ -8,11 +8,46 @@
 
 ## Part 1 — Scanner READING from the ontology (mode B clues)
 
-### 1.1 `feature-flows/detail/F-*.yaml` → scanner
+### 1.0 The PRIMARY investigation target — `feature-flows/detail/F-*.yaml` *(maintainer-locked 2026-05-27)*
+
+**`feature-flows/detail/F-*.yaml` is the primary investigation target. doc-gaps.md is a dedup/priority hint, never a coverage signal.** Per PITFALLS rule D13: the scanner MUST iterate the feature catalog and independently investigate each in-scope F-NNN. doc-gaps.md is consulted only AFTER per-feature investigation, to dedup against findings the reducer has already surfaced.
+
+This re-frames the run shape: a mode-B scan-run is **feature-driven by default**, with doc-gap corroboration as a secondary write-back step. The pseudo-protocol for each in-scope F-NNN:
+
+```
+for F-NNN in feature_flows (filtered by scanner scope):
+  read F-NNN detail                              # 1.1
+  derive_expected_doc_path(F-NNN.pillar_id, F-NNN.pillar_anchored_feature_name)
+  doc_exists = check(documentation/docs/{expected_doc_path})
+
+  # Verification ladder (DESIGN-CHOICES §2) per clue class:
+  for hop in F-NNN.chain:
+    verify_against_code(hop.evidence)             # ladder rung 1/2: file_exists / assertion_about_code
+  for facet in F-NNN.observed_vs_expected.facets:
+    verify_against_code(facet.evidence)           # ladder rung 3 if cross_layer; else 2
+  WebFetch(expected_doc_url)                       # ladder rung 4: doc_drift
+  compare(F-NNN.description, doc_content)         # description-as-clue verification
+
+  emit findings:
+    - missing-page if doc_exists=false
+    - drift if description-doc compare diverges
+    - missing-caveat per facet not mentioned in doc
+    - ontology-drift per hop whose evidence is stale
+
+  write-back: scanner_reviews entry on F-NNN (2.1)
+  dedup_lookup: matching DOC-GAP-NNN in doc-gaps.md (1.2)
+  if matching: write corroborated_by_scanner on the doc-gap (2.3)
+```
+
+Doc-gaps consultation happens at the dedup step ONLY. A scan-run whose `scanner-feed/{date}.yaml` `clues_consumed[]` contains zero `source: feature-flow` entries in scope is marked `verification_class: corroboration-only` and does not count toward "feature audited" status (PITFALLS D13).
+
+### 1.1 `feature-flows/detail/F-*.yaml` → scanner — the primary clue source
 
 **Producer**: feature-flow-builder (writes), maintainer (curates).
-**Consumer**: any scanner with `ontology_feed.enabled: true` listing this glob in `clue_sources`.
+**Consumer**: any scanner with `ontology_feed.enabled: true` (per §1.0 — all mode-B scanners iterate this catalog).
 **File traversal**: glob `lineage/{repo}/feature-flows/detail/F-*.yaml`, sorted lexicographically by `feature_id`. The scanner reads `lineage/{repo}/feature-flows/index.yaml` first; if its `source_monolith_frontmatter.generated_at_commit` is stale by more than `staleness_threshold_commits` (default 50, see Part 5.1), the scanner WARNs and downgrades trust on every ontology citation in its session.
+
+**Scope filtering**: the scanner's frontmatter declares its `feature_scope_filter:` (e.g. `pillar_id: [P-08]` for a management scanner; `target_repo_overlap: documentation+odd-platform` for the canonical accuracy scanner). Features outside scope are NOT investigated by this scanner; they belong to a different scanner's scope.
 
 **Data shape consumed** (required fields):
 
@@ -30,10 +65,11 @@
 
 **Verified-against-code semantics**: a clue ingested from this file is **never** repeated verbatim into a scanner finding. The scanner re-opens `chain[].evidence`'s cited file:line via `Read`, confirms the line still exists at the claimed offset (substrate may have drifted), then re-states the claim in its own finding. If the line moved or vanished, the scanner emits a finding citing `ontology-drift: F-NNN hop-X evidence stale — was 'X' at file:L, now 'Y'` and writes back (Part 2.1) `ontology_corroborated: false` with `notes` naming the drift.
 
-### 1.2 `lineage/{repo}/doc-gaps.md` → scanner
+### 1.2 `lineage/{repo}/doc-gaps.md` → scanner — DEDUP/PRIORITY HINT ONLY (per §1.0 + D13)
 
 **Producer**: doc-gap-finder reducer (independent skill).
-**Consumer**: every doc/* scanner with `ontology_feed.enabled: true`.
+**Consumer**: every doc/* scanner with `ontology_feed.enabled: true`, **AFTER per-feature investigation** (§1.0 + §1.1).
+**Role limitation** *(load-bearing, maintainer-locked 2026-05-27)*: doc-gaps.md is a **dedup hint** (avoid emitting a finding that exactly matches an existing DOC-GAP-NNN) and a **priority hint** (lift triage priority on findings the reducer also surfaced — two independent signals = HIGH-confidence). It is **NEVER a coverage signal**: a feature absent from doc-gaps.md is NOT presumed documented; the scanner has already independently investigated it per §1.0.
 **File traversal**: read `lineage/{repo}/doc-gaps/index.md` for the catalog overview + frontmatter (`findings_by_severity`, `findings_by_category`), then per-finding details from `lineage/{repo}/doc-gaps/detail/DOC-GAP-NNN.md`.
 
 **Per-finding fields consumed**:

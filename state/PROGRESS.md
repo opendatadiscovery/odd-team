@@ -1,8 +1,24 @@
-# Last updated 2026-05-28 — `/implement pending DOC items` — **autonomous doc-sweep iteration 19; batch-19b (Lookup Tables 6-caveat consolidation, 2 critical items) shipped on sweep branch — 51 of 88 items shipped, 26 sweep commits**
+# Last updated 2026-05-28 — `/implement pending DOC items` — **autonomous doc-sweep iteration 20; batch-19c (Query Examples 7-caveat + 3-tab structural section + Relationships 6-caveat, 3 items) shipped on sweep branch — 54 of 88 items shipped, 27 sweep commits — BATCH 19 CLUSTER COMPLETE**
 
 `/loop`-driven autonomous sweep of the remaining 88 pending DOC items into one long-lived branch in the documentation repo (`feature/docs-pending-sweep-2026-05-27`). The plan YAML at `state/doc-batch-plan-2026-05-27.yaml` is the source of truth — each loop iteration picks the first batch with `status: pending`, fires `/implement` on its items, marks the batch `done`, and ScheduleWakeup-fires the next iteration. Sweep ends when no pending batches remain — at that point the loop pushes the branch and emits the PR-creation URL.
 
 Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critical items spanning 8+ files including 2 NEW pages; split into 13a-f sub-batches in the plan to preserve Quality Bar per iteration. Batch-13a shipped 3 items (DOC-168 ingestion auth extension + DOC-194 dataset-stats cross-dataset write + DOC-228 deployment matrix) all extending `enable-security/README.md` plus cross-link augments on `odd-platform.md` and `s2s.md`. Single commit `9c309d9` on the sweep branch. Gate 11 audience-isolation grep returns zero hits.
+
+## Iteration 20 (batch-19c, 3 items shipped on sweep branch — Query Examples 7-caveat + 3-tab structural section + Relationships 6-caveat)
+
+Single commit `9949bb8` across 2 files covers 3 items:
+
+| Item | File | What |
+|---|---|---|
+| **DOC-183** | data-modelling/query-examples.md | 4 caveats: RBAC grid split (7 permissions × 3 controllers), 10-of-13 unscoped reads (catalog-read-collaborative), render-side stored XSS (Markdown renderer without HTML sanitisation), no @ActivityLog audit silence. |
+| **DOC-232** | data-modelling/query-examples.md | 3 additional caveats + 1 new structural H2: authoring-time defence gap + dirty-form data loss, plain-Input authoring vs Markdown render mismatch; new "Query Example Details Page" structural H2 documenting the 3-tab composition (Overview / Linked Entities / Linked Terms via `?tab=` URL state) with WARNING on no-runtime-validation rendering blank body + INFO on linkedTermsHint badge undercount. |
+| **DOC-229** | data-modelling/relationships.md | 6 caveats: DANGER on Target-column copy-paste bug (binds item.sourceDataEntity to both Source and Target cells), DANGER on no RBAC gate (route mounts bare; no SecurityConstants entry; cross-tenant enumeration), WARNING on row-click routing drift (unconditional /dataentities/{id} regardless of relationship type), WARNING on search-scope misnomer (filters relationship-name not source/target-name), WARNING on `?type=` no runtime validation, INFO on `relationship_id` semantic alias (data_entity.id not relationships.id). |
+
+Gate 11 audience-isolation grep returns zero hits.
+
+## Driver state (post-iteration-20)
+
+Plan YAML: batches 13a-f + 14a + 14b + 15a + 15b + 15c + 16 + 17 + 18a + 18b + 18c + 18d + 19a + 19b + 19c flipped `status: done`. **Batch 19 cluster (3 sub-batches, 8 items) complete.** Next pending batch: **20** (Active Platform Features — Alerting / Notifications / Activity Feed / Data Collaboration / GenAI / Metrics Ingestion, 10 items including 1 NEW page — likely needs sub-split).
 
 ## Iteration 19 (batch-19b, 2 CRITICAL items shipped on sweep branch — Lookup Tables 6-caveat consolidation)
 

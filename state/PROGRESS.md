@@ -1,8 +1,23 @@
-# Last updated 2026-05-28 — `/implement pending DOC items` — **autonomous doc-sweep iteration 18; batch-19a (Tagging cluster + 4-page back-link sweep, 3 items) shipped on sweep branch — 49 of 88 items shipped, 25 sweep commits**
+# Last updated 2026-05-28 — `/implement pending DOC items` — **autonomous doc-sweep iteration 19; batch-19b (Lookup Tables 6-caveat consolidation, 2 critical items) shipped on sweep branch — 51 of 88 items shipped, 26 sweep commits**
 
 `/loop`-driven autonomous sweep of the remaining 88 pending DOC items into one long-lived branch in the documentation repo (`feature/docs-pending-sweep-2026-05-27`). The plan YAML at `state/doc-batch-plan-2026-05-27.yaml` is the source of truth — each loop iteration picks the first batch with `status: pending`, fires `/implement` on its items, marks the batch `done`, and ScheduleWakeup-fires the next iteration. Sweep ends when no pending batches remain — at that point the loop pushes the branch and emits the PR-creation URL.
 
 Iteration 1 (batch-13 reduce) — the original batch-13 was scoped at 12 critical items spanning 8+ files including 2 NEW pages; split into 13a-f sub-batches in the plan to preserve Quality Bar per iteration. Batch-13a shipped 3 items (DOC-168 ingestion auth extension + DOC-194 dataset-stats cross-dataset write + DOC-228 deployment matrix) all extending `enable-security/README.md` plus cross-link augments on `odd-platform.md` and `s2s.md`. Single commit `9c309d9` on the sweep branch. Gate 11 audience-isolation grep returns zero hits.
+
+## Iteration 19 (batch-19b, 2 CRITICAL items shipped on sweep branch — Lookup Tables 6-caveat consolidation)
+
+Single commit `05dacd8` on `master-data-management/lookup-tables.md` ships a new "Known operator caveats" section with 6 admonitions + a forward-pointer on the Creating section's rename prose:
+
+| Item | What |
+|---|---|
+| **DOC-182** | 4 caveats: DANGER on global LOOKUP_TABLE_* RBAC (NO_CONTEXT resolver on all 9 rules — Policy per-table scoping ignored); DANGER on cascade-orphan when parent DataEntity deleted directly via /api/dataentities/{id} (registry row + backing PostgreSQL table both remain); DANGER on ALTER TABLE rename silently breaking downstream BI/ETL consumers (no VIEW alias, no rename-blocker); WARNING on XSS surface across row values + column names + table name (LookupCharValidator returns input verbatim). |
+| **DOC-231** | 2 additional caveats: WARNING on silent 30-row truncation (LookupTablesList.tsx scrollableTarget DOM-id mismatch with the Directory page — react-infinite-scroll-component falls back to window scroll which never fires inside the container's overflow:auto); WARNING on no-audit-on-rename (no @ActivityLog on updateLookupTable, no LOOKUP_TABLE_RENAMED enum slot — combined with the rename-break DANGER, post-mortem can't answer "who renamed which table when" from platform logs). |
+
+Gate 11 audience-isolation grep returns zero hits.
+
+## Driver state (post-iteration-19)
+
+Plan YAML: batches 13a-f + 14a + 14b + 15a + 15b + 15c + 16 + 17 + 18a + 18b + 18c + 18d + 19a + 19b flipped `status: done`. Next pending batch: **19c** (Query Examples + Relationships — DOC-183 + DOC-232 + DOC-229).
 
 ## Iteration 18 (batch-19a, 3 items shipped on sweep branch — Tagging cluster + 4-page back-link sweep)
 

@@ -1,3 +1,72 @@
+# Last updated 2026-05-27 — `/triage findings/docs-coverage-undocumented-features/2026-05-27.md` — Mode B pilot run SR-20260527T000000Z; 11 new DOC backlog items + 1 PLT issue draft
+
+`/triage` converted the 19 distinct findings from the first **mode-B (ontology-fed) run** of `docs/coverage/undocumented-features` (scanner-feed log: `lineage/odd-platform/scanner-feed/2026-05-27-SR-20260527T000000Z.yaml`; verification_class: **fully-corroborated**) into 11 atomic backlog DOC items + 1 upstream issue draft. All 19 findings were ACCEPTED — zero rejections as false positives — because the scanner-feed log confirms each finding has a feature-flow clue source (10 F-NNNs consumed: F-001 / F-005 / F-008 / F-022 / F-043 / F-088 / F-104 / F-105 / F-146 / F-207).
+
+## Findings → backlog mapping (with merge decisions)
+
+Pair-wise merges where two scanner sub-findings share a single doc page; singletons where the sub-finding is the page's sole concern.
+
+| Finding(s) | → Item | Affected page(s) | Severity (after rev-13 lift) |
+|---|---|---|---|
+| F-001a + F-001b (PopularStrip DISABLED visibility + click-target Structure→Overview) | **DOC-166** | `data-discovery/catalog-overview.md` | **CRITICAL** (HIGH → CRITICAL; DOC-GAP-101 already corroborated) |
+| F-005a + F-005b (UI d=1 hardcoded + click-through depth compounding) | **DOC-167** | `data-lineage/data-objects.md` + `developer-guides/api-reference.md` | HIGH (MED → HIGH; DOC-GAP-105 corroborated) |
+| F-008a + F-008b (ingestion-filter name misleads + asymmetric filter default) | **DOC-168** | `enable-security/README.md` + `odd-platform.md` + `authentication/s2s.md` | **CRITICAL** (HIGH → CRITICAL; extends DOC-004 + PLT-003) |
+| F-022a (PNG-vs-JSON SLA endpoint drift — headline) | **DOC-169** | `data-quality/sla-statuses.md` | **CRITICAL** (HIGH → CRITICAL) — scanner triage flagged as run's highest-severity finding |
+| F-022b + F-022c (cross-owner DQ reads + default-MAJOR severity inflation) | **DOC-170** (depends_on DOC-169) | `data-quality/sla-statuses.md` | HIGH (MED → HIGH) |
+| F-043a (Multilingual UI / i18n undocumented end-to-end) | **DOC-171** (CREATE) | `multilingual-ui.md` + `SUMMARY.md` + `main-concepts.md` | HIGH (MED → HIGH; extends 2026-05-08 F-047) |
+| F-088a + F-088b (ADMIN username collision + s2s.enabled inert under DISABLED) | **DOC-172** | `authentication/s2s.md` (same-file overlap with DOC-168) | **CRITICAL** (HIGH → CRITICAL) |
+| F-104a (jotai filter-reset on navigation) | **DOC-173** | `data-quality/dashboard.md` | HIGH (MED → HIGH; partial overlap DOC-GAP-254) |
+| F-105a + F-105b (Management recon-disclosure + /management/integrations bare route) | **DOC-174** | `management.md` | HIGH (HIGH → CRITICAL on F-105a; merged carries HIGH) |
+| F-146a (Metadata stale: 5 operator caveats) | **DOC-175** | `data-discovery/metadata-stale.md` (AUGMENT existing) | HIGH (MED → HIGH) |
+| F-207a (Hide-not-disable convention) | **DOC-176** | `enable-security/authorization/README.md` | HIGH (MED → HIGH; partial overlap DOC-GAP-254) |
+| F-043b (i18n fallbackLng one-line code fix) | **PLT-011** | `odd-platform-ui/src/locales/i18n.ts:30` (upstream) | MED — paired with DOC-171 doc-side caveat |
+
+## Rev-13 priority-lift application
+
+Per the rev-13 ontology-corroboration rule in the `/triage` skill: every finding's `findings_produced` is back-linked to a `feature-flow` clue source in the scanner-feed log. The lift fires for ALL 19 findings → every backlog item is **HIGH or CRITICAL**. No item is MEDIUM or LOW after lift.
+
+Two independent signals (ontology AND scanner) flagging the same gap = published-mistake risk per CLAUDE.md's "wrong docs > missing docs" priority bar. DOC-166 / DOC-168 / DOC-169 / DOC-172 are the four CRITICAL items — they hit operator-misleading published-content directly (LSN-001/002 class).
+
+## Dedup write-backs
+
+The scanner-feed log records the following dedup-corroboration write-backs (executed in the scan-run, NOT this triage):
+
+- `DOC-GAP-101` — corroboration appended at `lineage/odd-platform/doc-gaps/detail/DOC-GAP-101-2026-05-27-scanner-append.md` (F-001a + F-001b are NEW dimensions on DOC-GAP-101's inflation-surface base).
+- `DOC-GAP-105` — corroboration appended at `lineage/odd-platform/doc-gaps/detail/DOC-GAP-105-2026-05-27-scanner-append.md` (F-005a + F-005b are NEW UI-side dimensions).
+- `F-001` feature-flow `scanner_reviews:` appended.
+- Deferrals to next run: `scanner_reviews:` append to F-005 / F-008 / F-022 / F-043 / F-088 / F-104 / F-105 / F-146 / F-207 + `corroborated_by_scanner:` append to DOC-GAP-303 / DOC-GAP-254.
+
+## File-conflict notes (for `/implement` scheduling)
+
+- **DOC-169 + DOC-170** both touch `data-quality/sla-statuses.md`. DOC-170 has `depends_on: DOC-169` to enforce sequencing. Folding into one PR is encouraged.
+- **DOC-168 + DOC-172** both touch `authentication/s2s.md` (different sections). Folding into one PR is encouraged OR sequencing DOC-168 first.
+- **DOC-171** touches `SUMMARY.md` + `main-concepts.md` + a CREATE on `multilingual-ui.md` — ordinary multi-file vocabulary surface pattern.
+- No cross-repo file conflicts. PLT-011 is workspace-resident as a draft only (paste-ready for upstream filing).
+
+## Counts (after this triage)
+
+- DOC backlog items: **164 → 175** (+11 new pending).
+- PLT issue drafts: **10 → 11** (+1 PLT-011 draft).
+- `pending` (DOC): +11 — DOC-166..DOC-176 all start `pending`.
+- All other DOC statuses (`in-progress` / `review-ready` / `done` / `blocked` / `rejected` / `superseded`): unchanged this run.
+
+## Mode-B coverage signal
+
+Scanner-feed log records `verification_class: fully-corroborated` for this scan-run. Per the scanner-ontology-fusion ADR, this run counts toward "feature audited" status for the 10 F-NNNs consumed. Remaining 103 in-scope F-NNNs queued for subsequent runs (≈11 more batches of similar size to close the iteration set). Pillars not covered this run: P-02 (Data Modelling), P-06 (Glossary), P-11 (Developer Surface).
+
+## Substrate-coverage gaps surfaced for next /enrich pass
+
+- `springdoc:` YAML namespace has no F-NNN — mint candidate during next /enrich pass on the Spring Doc / Swagger UI surface.
+- `spring.codec.max-in-memory-size` already a 2026-05-08 F-056 finding but not graduated to an F-NNN.
+
+## Hand-off
+
+- **Next `/implement` candidate**: any of the four CRITICAL items (DOC-166 / DOC-168 / DOC-169 / DOC-172). DOC-169 is the most reader-visible miss per the BI-tools-audience framing and is recommended for fast-track.
+- **PLT-011** is paste-ready into the `opendatadiscovery/odd-platform` GitHub Issues tracker; a 5-line PR (`['en','es','ch','fr','ua','hy']` → `'en'` at `i18n.ts:30`) closes it.
+- **Editorial audit** is mandatory on `/review` (per playbooks/doc-product-editorial-read.md) — not on `/triage`. No editorial findings are surfaced here; the triage's job is conversion-of-findings, not coherence-audit.
+
+---
+
 # Last updated 2026-05-07 — `/review` batch:DOC-155-159 (feature/docs-editorial-followups-2026-05-07) — ACCEPTED ×5; editorial audit logs DOC-161
 
 `/review all` (no-arg) ran in a session distinct from the `/implement` session that produced DOC-{155..159}. All five items flipped from `review-ready` → `done`. The mandatory `playbooks/doc-product-editorial-read.md` audit ran end-to-end on the partition described below; one new follow-up — DOC-161 — was logged independently and does not block the per-item flips.

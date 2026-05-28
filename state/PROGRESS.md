@@ -1,4 +1,22 @@
-# Last updated 2026-05-28 — `/review batch:feature/docs-editorial-cleanup-2026-05-28` — **5 items flipped `review-ready` → `done` (DOC-272 / DOC-273 / DOC-274 / DOC-276 / DOC-278); editorial-cleanup batch ACCEPTED in full; 262 docs items done overall**
+# Last updated 2026-05-28 — `/review DOC-195 DOC-248 DOC-256` — Cohort B Gate-8 re-fetch — **3 items flipped `review-ready` → `done` (DOC-195 / DOC-248 / DOC-256); Gate-8 RESOLVED via GitBook sitemap-canonical URLs (`/integrations/integrations`, `/features/features`, `/integrations/integrations/integration-wizard`); 265 docs items done overall**
+
+## /review session 2026-05-28 (later) — Cohort B Gate-8 re-fetch ACCEPTED (3/3 PASS)
+
+`/review DOC-195 DOC-248 DOC-256` — fresh-session re-verification of the 3 Cohort B items that prior `/review` iter 33/34 had DEFERRED on Gate 8 (GitBook publish lag at the time). Items shipped under commits `2614e64` (DOC-195 + DOC-248) and `393f72a` (DOC-256), both on `origin/main` via PR #70. The prior DEFER was a slug-form mismatch — GitBook canonical URL pattern (per `sitemap-pages.xml`) is `/{section}/{section}/...` (double-prefix) for sections under `Features.md` and `integrations/README.md`. All 3 items render new content verbatim on the canonical URL forms.
+
+| Item | Sitemap-canonical URL | Result | Verdict |
+|---|---|---|---|
+| DOC-195 | `/integrations/integrations` + `/developer-guides/api-reference` | ACCEPTED | H2 "Ingestion error contract" + duplicate-ODDRN row + "Ingestion endpoint response contract" all live; code citations re-verified via Read on `IngestionServiceImpl.java` + `IngestionController.java` |
+| DOC-248 | `/features/features` + `/configuration-and-deployment/odd-platform` | ACCEPTED | "Platform-feature toggles are captured at JVM boot…" admonition with both Boot-immutable + Chrome-invariant bullets live; all 3 per-flag "Feature toggling" sentences live; FeatureResolverImpl @Value-injected boot-once Set re-verified |
+| DOC-256 | `/integrations/integrations/integration-wizard` | ACCEPTED | "The wizard endpoints carry no RBAC permission gate…" admonition live; IntegrationController has no `@PreAuthorize` + SecurityConstants has zero `/api/integrations*` rules — both re-verified |
+
+**Quality Bar across the cohort.** Per-item: every gate PASS or N/A (see per-item verdict blocks). Gate 11 mechanical banned-term grep on the 5 affected files returns 0 hits; stop-word hits classify ALLOWED ("lineage" is the public Data Lineage feature; "sidecar" is infrastructure-sense Envoy/proxy). Full editorial Mode-1 sweep already completed today (commits `0e51841`→`3cea727`); per-subtree audit on `integrations/` + `configuration-and-deployment/` + root-pages returned the findings now closed as DOC-274/DOC-276/DOC-278. No new editorial findings on the Cohort B affected pages.
+
+**Methodology note — sitemap is the authority for canonical URLs.** Prior `/review` iter 33/34 tried 5 candidate slug prefixes per page and missed GitBook's `/{section}/{section}/...` doubling pattern. Going forward, `/review` Gate 8 should fetch `sitemap-pages.xml` once when a verbatim-text WebFetch fails on the obvious slug, before declaring DEFERRED.
+
+**Backlog state after this `/review`:** docs done **265** / review-ready **0** / pending 3 / blocked 6 / rejected+superseded 3 / in-progress 0; total 277. Cohort B fully cleared.
+
+## Previous (2026-05-28 earlier) — `/review batch:feature/docs-editorial-cleanup-2026-05-28` — 5 items flipped `review-ready` → `done`
 
 ## /review session 2026-05-28 — editorial-cleanup batch ACCEPTED (5/5 PASS)
 

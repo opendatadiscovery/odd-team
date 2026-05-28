@@ -1,6 +1,30 @@
-# Last updated 2026-05-28 — `/review batch:DOC-275+277+279+280+281` — 5 items flipped to `done` (DOC-275 Gate-8-closure + DOC-277 block-resolved + DOC-279 + DOC-280 + DOC-281); 1 editorial finding logged as DOC-282; **docs done 271 / review-ready 0 / pending 2 (DOC-164 + DOC-282 new) / blocked 5 (DOC-141..145) — total 281**
+# Last updated 2026-05-28 — `/implement DOC-282` — 3 narrative line edits ("five subsystems" → "six subsystems") on `active-platform-features.md` shipped on `feature/docs-doc282-active-platform-features-six-subsystems` (commit `30795b4`, pushed); DOC-282 flipped `pending` → `review-ready`; **docs done 271 / review-ready 1 (DOC-282) / pending 1 (DOC-164) / blocked 5 (DOC-141..145) — total 281**
 
-## /review session 2026-05-28 (latest) — 5-item batch ACCEPTED in full; 1 editorial finding logged (DOC-282)
+## /implement session 2026-05-28 (latest) — DOC-282 active-platform-features narrative drift fix
+
+DOC-282 was logged by the immediately-prior `/review` editorial audit step 5 (commit `29b5732`) — `active-platform-features.md` has 3 narrative lines saying "five subsystems" while description + L9 + L34 + Subsections list (6 entries) agree on "six". The drift was stale from before Metrics Ingestion (DOC-196 commit `2614e64` on 2026-05-27) was added as the 6th subsystem; DOC-280's description rewrite ("Six opt-in subsystems") made it load-bearing — the new authoritative-statement directly disagreed with three body lines on the same page.
+
+**Single-item batch** — no continuation candidates (DOC-164 is much larger scope/different theme; DOC-141..145 are blocked on a carried-forward IA decision). Trivial three-edit fix + one enumeration extension on the same line where the inline-documented-APIs list was missing Metrics Ingestion.
+
+**Branch**: `feature/docs-doc282-active-platform-features-six-subsystems` cut fresh off `origin/main` HEAD `1082f7a` (DOC-281 hotfix merge); commit `30795b4`; pushed.
+
+**Pre-commit mechanical sweeps (per `/implement` step 6.5)** — all PASS:
+- (a) Gate 11 banned-term grep on staged diff: 0 hits
+- (b) Description-length check: 186 bytes ≤ 200 (description frontmatter unchanged by this commit)
+- (c) PyYAML frontmatter parse: PASS
+
+**Affected live URL for `/review` Gate 8**: `https://docs.opendatadiscovery.org/active-platform-features` — post-merge, raw-HTML scrape should return 0 hits for "five subsystem" and the 3 lines should each read "six".
+
+**PR creation URL** (gh CLI not installed per CLAUDE.md):
+https://github.com/opendatadiscovery/documentation/pull/new/feature/docs-doc282-active-platform-features-six-subsystems
+
+Suggested PR title: `docs: active-platform-features.md narrative — three "five subsystems" → "six subsystems" fixes [DOC-282]`
+
+**Backlog state**: docs done 271 / review-ready **1** (DOC-282) / pending **1** (DOC-164) / blocked 5 (DOC-141..145) / rejected+superseded 3; total 281.
+
+## Previous /review session 2026-05-28 — 5-item batch ACCEPTED in full; 1 editorial finding logged (DOC-282)
+
+## /review session 2026-05-28 — 5-item batch ACCEPTED in full; 1 editorial finding logged (DOC-282)
 
 **Session distinct from `/implement`** — separate-session per CLAUDE.md (`/implement` ran in 4 earlier sessions today: cohort-c → implement-doc279 → implement-doc279-fixup + implement-doc280 → implement-doc281-hotfix). This `/review` is the verification phase.
 

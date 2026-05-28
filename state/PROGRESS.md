@@ -1,6 +1,33 @@
-# Last updated 2026-05-28 — DOC-281 hotfix (YAML parse error stalled GitBook sync) shipped on `feature/docs-doc281-yaml-frontmatter-hotfix` (commit d14d692); LSN-028 written; /implement step 6.5 + Gate 8 + playbook all extended with a (c) PyYAML parse sub-check; **docs done 266 / review-ready 4 (DOC-275 + DOC-279 + DOC-280 + DOC-281 new) / pending 1 (DOC-164) / blocked 6 (DOC-141..145 + DOC-277) — total 280**
+# Last updated 2026-05-28 — `/review batch:DOC-275+277+279+280+281` — 5 items flipped to `done` (DOC-275 Gate-8-closure + DOC-277 block-resolved + DOC-279 + DOC-280 + DOC-281); 1 editorial finding logged as DOC-282; **docs done 271 / review-ready 0 / pending 2 (DOC-164 + DOC-282 new) / blocked 5 (DOC-141..145) — total 281**
 
-## /implement session 2026-05-28 (latest) — DOC-281 hotfix + LSN-028 methodology fix
+## /review session 2026-05-28 (latest) — 5-item batch ACCEPTED in full; 1 editorial finding logged (DOC-282)
+
+**Session distinct from `/implement`** — separate-session per CLAUDE.md (`/implement` ran in 4 earlier sessions today: cohort-c → implement-doc279 → implement-doc279-fixup + implement-doc280 → implement-doc281-hotfix). This `/review` is the verification phase.
+
+**Targets, all on origin/main**: DOC-275 (`d12ac52` via PR #71 `5e80de2`), DOC-277 (`d0627de` via PR #71 — block-resolved by this run), DOC-279 (`7533cba` + `b0ddfee` via PR #72 `1846a34` + PR #73 `8d60a2f`), DOC-280 (`1890bde` via PR #73), DOC-281 (`d14d692` via PR #74 `1082f7a`).
+
+**Combined verdict table**:
+
+| Item | Priority | Prior state | Verdict | Notes |
+|---|---|---|---|---|
+| DOC-275 | medium | review-ready (Gate 8 deferred) | **DONE** | 9-aspect cross-link enumeration live-verified on `entity-detail-page`; 14× entity-description / 12× custom-metadata / 12× per-column-annotation hits on raw HTML; 199-char description renders fully. |
+| DOC-277 | medium | blocked on DOC-279 | **DONE** | Block resolved — Vault claim gone (tree-wide 0 hits); 5 over-length pages fixed by DOC-279/280; 13/26 descriptions live-verified across 2 /review sessions (8 prior + 5 this run). |
+| DOC-279 | high | review-ready | **DONE** | 178-char description, no Vault, all 4 surfaces render verbatim; body-faithful per page L11 "Only one provider today". |
+| DOC-280 | high | review-ready | **DONE** | 24-page systematic length fix; tree-wide sweep 0 over-200; 6 live samples across all clusters confirm 4-surface match; body-faithful per page (verified 7 spot-checks including count claims). |
+| DOC-281 | critical | review-ready | **DONE** | 160-char description; PyYAML parses; GitBook sync resumed (PR #74 merged at `1082f7a`); methodology gap closed (step 6.5 (c) + playbook step 3 + Gate 8 + LSN-028 + memory). |
+
+**Doc-product editorial audit (mandatory per `/review` step 5)**:
+- **Coverage this run**: targeted on the description-frontmatter surface that changed since the comprehensive sweep — 24 DOC-280 rewrites + DOC-281 hotfix + DOC-279 fixup + 5 sampled DOC-277 descriptions. The full 13-subtree end-to-end editorial sweep already completed earlier today via `/review batch:feature/docs-editorial-cleanup-2026-05-28` (commits `0e51841`→`3cea727`) + `/review` cohort-c (DOC-272..278 findings closed across PRs #70 + #71). Not re-run end-to-end per "minimal resources, maximum value" — re-running a same-day exhaustive sweep on a mechanical-frontmatter batch has near-zero marginal yield. Focus this run was the SURFACE THAT CHANGED.
+- **Findings — 1**:
+  - **DOC-282** (medium, *internal contradiction / count drift in narrative*) — `docs/active-platform-features.md` description (rewritten under DOC-280) says "Six opt-in subsystems"; L9 + L34 + the Subsections enumeration agree (6 subsystems). But L32, L40, L41 still say **"five subsystems"** — stale from before Metrics Ingestion (DOC-196 commit `2614e64` 2026-05-27) was added as the 6th. The DOC-280 description rewrite makes the drift load-bearing — the new authoritative-statement disagrees with three body lines on the same page. Three trivial one-word edits. Source: `docs/active-platform-features.md:32, 40, 41`.
+
+**Backlog state** (this run): docs done **266 → 271** (+5 from this batch); review-ready **4 → 0** (DOC-275 + DOC-279 + DOC-280 + DOC-281 all flipped); pending **1 → 2** (+1: DOC-282 new); blocked **6 → 5** (DOC-277 resolved); total **280 → 281** (+1: DOC-282).
+
+**Methodology reflection on this batch**: the same-day cycle (cohort-c implement → cohort-c review caught Vault → DOC-279 implement → DOC-279 user-spot-check caught truncation → LSN-027 + step 6.5 (b) + Gate 8 raw-HTML extension → DOC-280 implement caught 24 more truncations → DOC-280 merge stalled GitBook on YAML parse → LSN-028 + step 6.5 (c) + Gate 8 YAML-parse extension → DOC-281 hotfix → /review closure) demonstrates the methodology's reflective-improvement loop in real time. Three classes of "live publisher behaviour the maintainer's local tooling didn't model" CLOSED: truncation, YAML parsing, visible-subtitle rendering. The pre-commit triple-check (Gate 11 banned-term + 200-char length + PyYAML parse) plus the Gate 8 raw-HTML 4-surface inspection now models GitBook's publisher behaviour with high enough fidelity to catch this batch's failure classes at authoring time on the next batch.
+
+**Next actions**: DOC-282 sits in `pending` (medium, trivial effort, three one-word edits) — fold into the next small batch or pair with a defensive landing-page count-claim sweep across the other per-pillar landings. DOC-164 still pending. DOC-141..145 still blocked on the carried-forward decision.
+
+## Previous /implement session 2026-05-28 — DOC-281 hotfix + LSN-028 methodology fix
 
 After PR #73 (DOC-279 + DOC-280) merged at `8d60a2f`, GitBook surfaced a sync-failure banner:
 

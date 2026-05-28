@@ -1,4 +1,24 @@
-# Last updated 2026-05-28 — `/implement DOC-275 DOC-277 DOC-245` — Cohort C — **3 items flipped to `review-ready` on `feature/docs-cohort-c-2026-05-28` (documentation): DOC-275 + DOC-277 implemented this session, DOC-245 admin-flipped (blocker closed by DOC-272 on prior PR #70); 265 docs items done overall**
+# Last updated 2026-05-28 — `/review batch:feature/docs-cohort-c-2026-05-28` — **DOC-245 ACCEPTED → done; DOC-275 ACCEPTED pending Gate-8 merge (review-ready); DOC-277 REJECTED → blocked (Gate 9 fail on collectors-secrets-backend.md description Vault fabrication, logged as DOC-279); docs done 266 / review-ready 1 / blocked 6 / pending 2 (incl. new DOC-279) — total 278**
+
+## /review session 2026-05-28 (latest) — Cohort C — 1 ACCEPTED-done / 1 ACCEPTED-deferred / 1 REJECTED-blocked + 1 follow-up logged
+
+`/review batch:feature/docs-cohort-c-2026-05-28` — fresh-session verification of the 3-item cohort produced by the earlier `/implement` run. Results split by per-item gates:
+
+| Item | Result | Gate 8 | Notes |
+|---|---|---|---|
+| **DOC-245** (critical) | **ACCEPTED → done** | PASS — `docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/ldap` + `.../login-form` both render the Cross-mode user-name collision section with the `/features/active-platform-features/activity-feed.md` cross-link; DOC-272's cross-link fix (already on origin/main via PR #70) is the load-bearing close that made the prior Gate-7 literal-miss disappear | Final-pass verdict appended to DOC-245.md `## Review (2026-05-28, session: doc-review-cohort-c — final pass)`. All 11 gates PASS or N/A. |
+| **DOC-275** (medium) | **ACCEPTED pending Gate-8 deferral → stays review-ready** | DEFERRED — `feature/docs-cohort-c-2026-05-28` not yet pushed/merged; re-fetch `/features/data-discovery/entity-detail-page` after merge | All 4 ACs PASS on disk; bidirectional back-links from 3 NEW aspect pages to `entity-detail-page.md` already in place (verified via grep on `entity-description.md:78`, `custom-metadata.md:121`, `per-column-annotation.md:95`). Re-run `/review` after PR merge to close Gate 8. |
+| **DOC-277** (medium) | **REJECTED → blocked** | DEFERRED + Gate 9 FAIL | 25/26 description frontmatter additions are body-faithful; **1 fabricates Vault support** on `collectors-secrets-backend.md` description while the body explicitly states "Only one provider is available today" (AWS SSM only). `grep -rnE "Vault\|hashicorp" docs/` confirms Vault appears NOWHERE ELSE in the published doc tree — fresh-composed claim that the page contradicts. Sources footer claimed "each description summarises the existing first paragraph"; this specific description does not. Logged as **DOC-279** (one-line description fix; blocks DOC-277). |
+
+**Editorial audit this run** (per `playbooks/doc-product-editorial-read.md`): targeted spot-check on cohort-c affected files — entity-detail-page.md hub coherence + 8/26 DOC-277 descriptions vs body framings + ldap.md/login-form.md cross-mode collision symmetry. Full 13-subtree end-to-end sweep already completed today by prior `/review` sessions (commits `0e51841`→`3cea727` → DOC-272..278 closed); not re-run per "minimal resources, maximum value" stance — the comprehensive sweep was hours ago on a mechanical-frontmatter batch. **One finding surfaced this run**: DOC-279 (above).
+
+**Gate 11 audience-isolation grep**: tree-wide `grep -rnE 'Cornerstone [0-9]+|Gate [0-9]+|\bLSN-[0-9]+\b|…' docs/` returns 0 hits. The published doc tree remains clean of workspace-internal vocabulary.
+
+**Pattern observation logged for case-law**: the file caught by the implementer's pre-commit mechanical re-scan (`collectors-secrets-backend.md` — DOC-277's 26th file, added on top of the original 25-file affected_files list) is also the only file with a fabricated description. Pattern: "files added by late-stage re-scan get less-careful description composition." Worth surfacing in the next playbook revision as a known failure mode.
+
+**Backlog state after this `/review`:** docs done **266** (DOC-245 flipped) / review-ready **1** (DOC-275 — Gate-8 deferred until merge) / pending **2** (DOC-164 substrate + **DOC-279** new) / blocked **6** (DOC-141..145 IA-refactor-sprint cluster + **DOC-277** new — blocked by DOC-279) / rejected+superseded 3; total **278**.
+
+## Previous (earlier today) — `/implement DOC-275 DOC-277 DOC-245` — Cohort C batch implementation
 
 ## /implement session 2026-05-28 (later) — Cohort C batch ready for review
 

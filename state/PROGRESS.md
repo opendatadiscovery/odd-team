@@ -1,4 +1,27 @@
-# Last updated 2026-05-28 — `/review DOC-195 DOC-248 DOC-256` — Cohort B Gate-8 re-fetch — **3 items flipped `review-ready` → `done` (DOC-195 / DOC-248 / DOC-256); Gate-8 RESOLVED via GitBook sitemap-canonical URLs (`/integrations/integrations`, `/features/features`, `/integrations/integrations/integration-wizard`); 265 docs items done overall**
+# Last updated 2026-05-28 — `/implement DOC-275 DOC-277 DOC-245` — Cohort C — **3 items flipped to `review-ready` on `feature/docs-cohort-c-2026-05-28` (documentation): DOC-275 + DOC-277 implemented this session, DOC-245 admin-flipped (blocker closed by DOC-272 on prior PR #70); 265 docs items done overall**
+
+## /implement session 2026-05-28 (later) — Cohort C batch ready for review
+
+`/implement DOC-275 DOC-277 DOC-245` — three items shipped to `review-ready` on `documentation` branch `feature/docs-cohort-c-2026-05-28`:
+
+| Item | Priority | Commit | Scope |
+|---|---|---|---|
+| DOC-275 (was pending) | medium | `d12ac52` | entity-detail-page.md cross-links to the 3 NEW aspect pages (entity-description / custom-metadata / per-column-annotation) — 4 surgical edits in 1 file: intro paragraph aspect-page enumeration + panel-matrix Description row + Structure tab framing + Where-to-next bullet |
+| DOC-277 (was pending) | medium | `d0627de` | description: frontmatter on 26 pages — closes the systematic gap across enable-security/ (15) + use-cases/ (6) + root entry pages (4) + collectors-secrets-backend (1; not in original affected_files but caught by mechanical re-scan); post-commit re-scan returns 0 missing-description files |
+| DOC-245 (was blocked) | critical | n/a (no new code; blocker closed by DOC-272 / `9f4f5a1` already on origin/main via PR #70) | Cross-mode auth bleed caveat (ldap.md + login-form.md) — admin-flipped blocked → review-ready citing the DOC-272 cross-link as the load-bearing close. /review re-runs all 11 gates against the final shape |
+
+**Branch summary.** `feature/docs-cohort-c-2026-05-28` cut from origin/main after the editorial-cleanup PR #70 merge. Two commits authored this session (`d12ac52` DOC-275, `d0627de` DOC-277). DOC-245 needs no new commits; its fix is already on main.
+
+**Quality Bar across the batch.** Gate 11 mechanical banned-term grep on both commits' staged diffs returns 0 hits. Pre-authoring stance check applied per sub-section. Live-site verification deferred to `/review` per the implement/review separation rule. Outbound URL list surfaced in each item's Implementation Record for `/review` Gate 8.
+
+**Affected live URLs for `/review` Gate 8** (sitemap-canonical forms):
+- DOC-275: `https://docs.opendatadiscovery.org/features/data-discovery/entity-detail-page`
+- DOC-277: 26 URLs across `/features/features`, `/architecture`, `/configuration-and-deployment/{trylocally,collectors-secrets-backend,enable-security/...}`, `/use-cases/...` — spot-check 3-5 per cluster (sample-sufficient since mechanical frontmatter insertion has no per-page semantic divergence)
+- DOC-245: `/configuration-and-deployment/enable-security/authentication/ldap` + `/configuration-and-deployment/enable-security/authentication/login-form` (both already verified live in iter 2 review; cross-link to activity-feed.md added by DOC-272)
+
+**Backlog state after this `/implement`:** docs done 265 / review-ready **3** (DOC-275, DOC-277, DOC-245) / pending **1** (DOC-164 — code-lineage substrate, larger/foundational, queued separately) / blocked **5** (DOC-141..145 IA-refactor-sprint cluster — separate decision) / rejected+superseded 3; total 277. Hand off to `/review` in a fresh session for the final flip to `done`.
+
+## Previous (earlier today) — `/review DOC-195 DOC-248 DOC-256` Cohort B Gate-8 re-fetch — 3 items flipped review-ready → done
 
 ## /review session 2026-05-28 (later) — Cohort B Gate-8 re-fetch ACCEPTED (3/3 PASS)
 

@@ -1,4 +1,26 @@
-# Last updated 2026-05-28 — `/implement pending DOC items` — **autonomous doc-sweep iteration 29; batch-22a (metadata-stale clock-skew + DEG membership section + activity-feed/permissions cross-refs) shipped on sweep branch — 72 of 88 items shipped, 36 sweep commits**
+# Last updated 2026-05-28 — `/review batch:feature/docs-editorial-cleanup-2026-05-28` — **5 items flipped `review-ready` → `done` (DOC-272 / DOC-273 / DOC-274 / DOC-276 / DOC-278); editorial-cleanup batch ACCEPTED in full; 262 docs items done overall**
+
+## /review session 2026-05-28 — editorial-cleanup batch ACCEPTED (5/5 PASS)
+
+`/review batch:feature/docs-editorial-cleanup-2026-05-28` — separate-session verification of the 5 small editorial-cleanup items shipped under PR #70 (now in `origin/main` HEAD `5984f25`). All 5 items ACCEPTED; status flipped `review-ready` → `done`.
+
+| Item | Commit | Result | Gate 8 |
+|---|---|---|---|
+| DOC-272 (cross-link ldap/login-form → activity-feed) | 9f4f5a1 | ACCEPTED | PASS — `docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/ldap` renders the cross-link live; target page 200 OK |
+| DOC-273 (multilingual-ui build-and-run link fix) | dbab0fc | ACCEPTED | PASS — `docs.opendatadiscovery.org/features/multilingual-ui` shows the corrected sentence verbatim; target page 200 OK |
+| DOC-274 (build-and-run README adds custom-collectors) | 2a05008 | ACCEPTED | PASS — `docs.opendatadiscovery.org/developer-guides/build-and-run` shows 3-bullet Contents list including "Build a custom collector" |
+| DOC-276 (data-quality.md path fix x3) | 0876833 | ACCEPTED | PASS — `docs.opendatadiscovery.org/features/data-quality` 3 fixed links resolve correctly to `/integrations/integrations/{slug}` via GitBook URL rewrite; target `odd-great-expectations` 200 OK |
+| DOC-278 (Features.md add 4 entries) | 9ae6f4a | ACCEPTED | PASS — `docs.opendatadiscovery.org/features` renders all 4 NEW H2 sections + 4 new TOC bullets; TOC ↔ H2 alignment now 38↔38 |
+
+**Quality Bar across the batch.** All gates PASS or N/A per the per-item verdict blocks in each backlog file. Gate 7 (Features.md TOC ↔ H2 alignment) INDEPENDENTLY VERIFIED at 38↔38 (LSN-005-class regression risk closed). Gate 11 mechanical banned-term grep on `documentation/docs/` returned 0 hits across the entire published doc tree. DOC-NNN backlog-ID leak grep on `docs/` returned 0 hits.
+
+**Editorial audit.** The 13-subtree end-to-end editorial sweep (`/review` Step 5) was completed by the prior session (`a44eda7` PHASE 1 COMPLETE → `3cea727` SWEEP COMPLETE) and produced DOC-272 through DOC-278 as its findings. This `/review` is the verification phase — the 5 items shipped this batch correctly close the editorial-sweep's findings, plus the implementer's defensive sweep (DOC-276) was INDEPENDENTLY VERIFIED. DOC-275 (entity-detail-page aspect-page enumeration gap) and DOC-277 (frontmatter gap on 26 pages) remain `pending` and were correctly NOT in this batch — both are queued for the next `/implement` round.
+
+**Cohort B (DOC-195, DOC-248, DOC-256) left untouched this session** per the user's scope choice (option 1, fresh batch only). Those 3 remain `review-ready` awaiting their separate Gate-8 re-fetch after the GitBook publish lag clears.
+
+**Backlog state after this `/review`:** docs done 262 / review-ready 3 / pending 3 / blocked 6 / in-progress 0; total 277. The 5 done flips this run land the editorial-cleanup batch in `done`.
+
+## Previous (pre-2026-05-28-review-session) — `/implement pending DOC items` — autonomous doc-sweep iteration 29; batch-22a (metadata-stale clock-skew + DEG membership section + activity-feed/permissions cross-refs) shipped on sweep branch — 72 of 88 items shipped, 36 sweep commits
 
 `/loop`-driven autonomous sweep of the remaining 88 pending DOC items into one long-lived branch in the documentation repo (`feature/docs-pending-sweep-2026-05-27`). The plan YAML at `state/doc-batch-plan-2026-05-27.yaml` is the source of truth — each loop iteration picks the first batch with `status: pending`, fires `/implement` on its items, marks the batch `done`, and ScheduleWakeup-fires the next iteration. Sweep ends when no pending batches remain — at that point the loop pushes the branch and emits the PR-creation URL.
 

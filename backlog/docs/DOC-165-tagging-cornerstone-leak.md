@@ -3,7 +3,7 @@ id: DOC-165
 title: "tagging.md: rewrite the 'Cornerstone 5 holds' sentence in operator language (Gate 11 / LSN-026 first-found leak)"
 category: docs
 target_repo: documentation
-status: review-ready
+status: done
 priority: medium
 affected_files:
   - documentation/docs/data-discovery/tagging.md (line 56 — the one sentence to rewrite)
@@ -52,3 +52,11 @@ The rewrite states the same user-observable fact (two pages, two user actions, o
 This is the **first-found leak** under the new Gate 11 (`pillars/documentation/gates.md`, added 2026-05-27 in the same PR as this backlog item). The case-law is `retrospectives/LSN-026-workspace-vocabulary-leaked-to-published-doc.md`. The gap that allowed the leak to ship: the editorial-read stance (mandatory on every `/review`) is a quality stance, not a banned-term grep — single-sentence leaks slip past on long reads. Gate 11 is the mechanical complement; this backlog item proves the rule fires.
 
 Subsequent leaks (future commits) get the same DOC-NNN shape with `scanner_source: "Gate 11 banned-term grep"`. The `retrospectives/LSN-026` reference is the case-law anchor for the class; per-instance backlog items don't need to re-narrate the why.
+
+## Review (2026-05-28, session: doc-review-sweep — iter 18)
+
+- **Result**: ACCEPTED — all 11 gates PASS for DOC-165 (commit ed61136).
+- **Code verification highlights**: The LSN-026 "Cornerstone 5 holds" leak on tagging.md:56 is GONE; replaced with operator-facing "Tags appear in two places, each for a different user action" — VERIFIED via WebFetch + grep on current tagging.md returns 0 banned-term hits.
+- **Live site**: VERIFIED via WebFetch 2026-05-28 — operator-language rewrite is live; cross-link to Management → Tags preserved.
+- **Gate 11**: 0 strict hits on tagging.md (the leak is fixed); diff's commit-message and removed-line references to "Cornerstone 5" are workspace-internal/removal contexts, not new published-content leaks.
+- **Notes**: flipping `review-ready` → `done`. This item is the canonical Gate 11 mechanical-grep success case — the leak that LSN-026 caught is now closed.

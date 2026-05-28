@@ -2,7 +2,7 @@
 name: implement
 description: Work a batch of backlog items end-to-end as a maintainer — hold the Implementation Quality Bar, run the Pre-authoring stance check, log follow-ups on disk, flip items to `review-ready`, and ship one PR per repo per batch.
 argument-hint: <work-item-id>
-allowed-tools: Read Grep Glob Edit Write WebFetch Bash(ls *) Bash(find *) Bash(cd *) Bash(git *) Bash(./gradlew *) Bash(pnpm *) Bash(poetry *) Bash(pytest *) Bash(npm *)
+allowed-tools: Read Grep Glob Edit Write WebFetch Bash(ls *) Bash(find *) Bash(cd *) Bash(git *) Bash(head *) Bash(grep *) Bash(sed *) Bash(wc *) Bash(echo *) Bash(./gradlew *) Bash(pnpm *) Bash(poetry *) Bash(pytest *) Bash(npm *)
 ---
 
 # Implement a Batch
@@ -51,13 +51,32 @@ Repeat per item.
 
 6. **Pillar authoring rules** — for `target_repo: documentation`, hold `pillars/documentation/authoring.md` (no GitBook `"mention"` links; ship page + SUMMARY + index together; in-page TOC sync; `Sources:` footer format; **Gate 11 audience isolation** — the mechanical grep below).
 
-6.5. **Gate 11 audience-isolation grep** *(2026-05-27; mandatory for `target_repo: documentation`)* — before committing any change to `../documentation/docs/**/*.md`, run the banned-term grep on your staged diff. The full rule + registry + exceptions live in `pillars/documentation/gates.md` Gate 11.
+6.5. **Pre-commit mechanical sweeps** *(mandatory for `target_repo: documentation`)* — run BOTH checks on the staged diff before every documentation commit. **Do not commit if either check returns a hit.**
+
+   **(a) Gate 11 audience-isolation grep** *(2026-05-27)* — banned-term sweep. Full rule + registry + exceptions in `pillars/documentation/gates.md` Gate 11. Case-law: `retrospectives/LSN-026`.
    ```bash
    git diff --staged --name-only -- '../documentation/docs' \
      | grep -E '\.md$' \
      | xargs -r grep -nE 'Cornerstone [0-9]+|Gate [0-9]+|\bLSN-[0-9]+\b|\bSHB-[0-9]+\b|\bREFACTOR-[0-9]+\b|\bTEST-GAP-[0-9]+\b|\bDOC-GAP-[0-9]+\b|\bADR-CANDIDATE-[0-9]+\b|feature-flow-builder|feature-reflector|doc-gap-finder|concept-merger|odd-sme|adr-archaeologist|methodology-reviewer|graph-retriever|file-analyser|probe-runner|domain-extractor|Stress Protocol|Quality Bar|Pre-authoring stance|claim-inventory|consumer-read|unset-parameter audit'
    ```
-   For every hit: rewrite in operator language (name the underlying user-observable concept directly) OR delete (often the right call — internal references frequently signal the maintainer talking to themselves through the doc) OR move to an internal artefact. Re-grep until zero hits. **Do not commit a doc change with any banned-term hit.** Case-law: `retrospectives/LSN-026`.
+   For every hit: rewrite in operator language (name the underlying user-observable concept directly) OR delete (often the right call — internal references frequently signal the maintainer talking to themselves through the doc) OR move to an internal artefact. Re-grep until zero hits.
+
+   **(b) Description-length check** *(2026-05-28)* — GitBook truncates the rendered `description:` frontmatter at exactly **200 chars** in four surfaces (`<meta name="description">`, `<meta property="og:description">`, `<meta name="twitter:description">`, AND the visible `<p>...</p></header>` page subtitle directly under the H1). Truncation is mid-word, no ellipsis, operator-visible on every page view. Full rule in `pillars/documentation/gates.md` Gate 8 + `playbooks/live-site-verification.md` step 3. Case-law: `retrospectives/LSN-027`.
+   ```bash
+   git diff --staged --name-only -- '../documentation/docs' \
+     | grep -E '\.md$' \
+     | while read f; do
+         desc=$(head -3 "../documentation/$f" 2>/dev/null | grep '^description:' | head -1 | sed 's/^description: //')
+         if [ -n "$desc" ]; then
+           len=$(echo -n "$desc" | wc -c)
+           if [ "$len" -gt 200 ]; then
+             echo "OVER 200 ($len bytes): $f"
+             echo "  → $desc"
+           fi
+         fi
+       done
+   ```
+   For every hit: shorten the description before commit. Target ≤180 chars for a safety buffer. Preserve operator framing — name the load-bearing concept first; drop secondary clauses, abbreviate ("DB" for "database", "AWS SSM" for "AWS Systems Manager Parameter Store"); avoid trailing "instead of X" or "for Y" payoffs that consume the budget on a verbose framing the reader can absorb from the body's first paragraph. Re-check until the loop returns zero output. **Do not commit a doc change with any description over 200 chars.**
 
 7. **Verify locally** — every acceptance criterion met; every Quality Bar gate has citable evidence; outbound URLs verified per `playbooks/claim-inventory.md` step 3; tests pass.
 

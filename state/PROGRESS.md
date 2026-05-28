@@ -1,4 +1,33 @@
-# Last updated 2026-05-28 — `/implement DOC-279` fixup + LSN-027 methodology fix — **GitBook 200-char truncation gap diagnosed (visible page subtitle under H1, not only SEO); DOC-279 fixup commit b0ddfee reduces collectors-secrets-backend description to 178 chars; DOC-280 logged for the 24 other affected pages; Gate 8 extended with raw-HTML head + subtitle inspection in playbooks/live-site-verification.md + pillars/documentation/gates.md; retrospective LSN-027 written; docs done 266 / review-ready 2 (DOC-275 + DOC-279) / pending 2 (DOC-164 + DOC-280 new) / blocked 6 (DOC-141..145 + DOC-277) — total 279**
+# Last updated 2026-05-28 — `/implement DOC-279 DOC-280` — **DOC-280 systematic 24-page description-length fix shipped on `feature/docs-doc279-vault-description-fix` (commit 1890bde, third commit on branch); all 25 GitBook-truncated descriptions now closed end-to-end (DOC-279's 1 + DOC-280's 24); tree-wide sweep confirms 0 pages over 200 chars; pre-commit mechanical sweeps (Gate 11 + description-length, both new step 6.5 sub-checks) both passed; docs done 266 / review-ready 3 (DOC-275 + DOC-279 + DOC-280) / pending 1 (DOC-164) / blocked 6 (DOC-141..145 + DOC-277) — total 279**
+
+## /implement session 2026-05-28 (latest) — DOC-280 (24-page description-length systematic fix) bundled onto DOC-279 branch
+
+`/implement DOC-279 DOC-280` — DOC-279 was already on `feature/docs-doc279-vault-description-fix` (commits `7533cba` Vault removal + `b0ddfee` length reduction); this session added the 24-page systematic fix as commit `1890bde` on the same branch. One PR will ship both items per CLAUDE.md "One PR per repo per batch".
+
+| Item | Priority | Commit | Scope |
+|---|---|---|---|
+| DOC-279 (already shipped earlier today) | high | 7533cba + b0ddfee | collectors-secrets-backend.md description fix: removed fabricated Vault claim, reduced to 178 bytes |
+| DOC-280 (was pending) | high | 1890bde | 24 docs pages with description: frontmatter rewritten to ≤200 bytes per the GitBook truncation cap; per-page bytes range 161-199; body-faithful (no fabricated claims) |
+
+**Pre-commit mechanical sweeps** (NEW step 6.5 — committed earlier this session as `f1a7de6`):
+- (a) Gate 11 banned-term grep on the 24 staged files: **0 hits**
+- (b) Description-length check on the 24 staged files: **0 hits** (every staged page ≤ 200 bytes)
+- Tree-wide post-fix sweep: **0 pages over 200** across the entire `docs/` tree — the systematic truncation gap is fully closed.
+
+**Methodology validation**: the new step 6.5(b) length check would have **prevented** this DOC-280 batch from shipping under the old methodology (every one of the 24 pages would have triggered the fail-the-commit rule pre-rewrite). The /implement skill update is now load-bearing — without it, the next mechanical-frontmatter batch could reintroduce the same class of failure.
+
+**Affected live URLs for `/review` Gate 8** (24 URLs requiring raw-HTML head + visible-subtitle inspection per `playbooks/live-site-verification.md` step 3, plus DOC-279's 1 = 25 total; sample-coverage is sufficient since the change is mechanical):
+- See `backlog/docs/DOC-280.md` Implementation Record for the full list.
+
+**Branch state**: `feature/docs-doc279-vault-description-fix` now carries 3 commits (`7533cba` + `b0ddfee` + `1890bde`). PR URL unchanged: https://github.com/opendatadiscovery/documentation/pull/new/feature/docs-doc279-vault-description-fix
+
+Suggested PR title: `docs: description-length truncation fix — drop fabricated Vault claim + fit 25 page descriptions within GitBook's 200-char live-render cap [DOC-279 + DOC-280]`
+
+**Backlog state**: docs done **266** / review-ready **3** (DOC-275 + DOC-279 + **DOC-280 new**) / pending **1** (DOC-164) / blocked **6** (DOC-141..145 + DOC-277) / rejected+superseded 3; total **279**.
+
+## Previous (earlier today) — DOC-279 fixup + LSN-027 methodology fix
+
+## /implement session 2026-05-28 (latest-1) — DOC-279 fixup + LSN-027 methodology change (Gate 8 raw-HTML head + visible-subtitle inspection)
 
 ## /implement session 2026-05-28 (latest++) — DOC-279 fixup + LSN-027 methodology change (Gate 8 raw-HTML head + visible-subtitle inspection)
 

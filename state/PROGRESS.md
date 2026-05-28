@@ -1,6 +1,37 @@
-# Last updated 2026-05-28 — `/review batch:feature/docs-cohort-c-2026-05-28` — **DOC-245 ACCEPTED → done; DOC-275 ACCEPTED pending Gate-8 merge (review-ready); DOC-277 REJECTED → blocked (Gate 9 fail on collectors-secrets-backend.md description Vault fabrication, logged as DOC-279); docs done 266 / review-ready 1 / blocked 6 / pending 2 (incl. new DOC-279) — total 278**
+# Last updated 2026-05-28 — `/implement DOC-279` — **one-line Vault description fix shipped on `feature/docs-doc279-vault-description-fix` (commit 7533cba); DOC-279 flipped pending → review-ready; cohort-c PR #71 already merged to origin/main (HEAD `5e80de2`), so DOC-275 Gate 8 + DOC-277 Gate 9 verification now both unblocked for next /review pass; docs done 266 / review-ready 2 (DOC-275 + DOC-279) / pending 1 (DOC-164) / blocked 6 (DOC-141..145 + DOC-277) — total 278**
 
-## /review session 2026-05-28 (latest) — Cohort C — 1 ACCEPTED-done / 1 ACCEPTED-deferred / 1 REJECTED-blocked + 1 follow-up logged
+## /implement session 2026-05-28 (latest) — DOC-279 (Vault description fix) shipped on fresh branch
+
+`/implement DOC-279` — single-item batch (one-line description edit, one file). The pre-existing cohort-c PR #71 had merged to origin/main between sessions (HEAD `5e80de2`); could not fold this fix into the cohort-c branch. Cut a fresh branch `feature/docs-doc279-vault-description-fix` from updated origin/main.
+
+| Item | Priority | Commit | Scope |
+|---|---|---|---|
+| DOC-279 (was pending) | high | `7533cba` | one-line `description:` frontmatter edit on `docs/configuration-and-deployment/collectors-secrets-backend.md` — replaces "AWS SSM Parameter Store, Vault, or another supported provider" (fabricated Vault claim that contradicted the body) with "AWS SSM Parameter Store today, with a pluggable interface for additional providers" (body-faithful per L11 of the same page). |
+
+**Verification post-fix**:
+- `grep -nE "Vault|hashicorp"` on the fixed file → 0 hits
+- `grep -rnE "Vault|hashicorp" docs/` tree-wide → 0 hits (Vault is now nowhere in published docs)
+- Gate 11 mechanical banned-term sweep on staged diff → 0 hits
+
+**Quality Bar across the batch.** Pre-authoring stance check applied (content type: page meta-description / canonical home: page frontmatter / SUMMARY placement: N/A / WHY-preservation: replacing fabricated claim with body-faithful claim; an operator three years from now Googling "ODD Vault secrets" lands here and is not misled / Pride: the dignified choice). Sources footer cites the body line that supports the new framing. Live-site verification deferred to `/review` per the implement/review separation rule.
+
+**Affected live URL for `/review` Gate 8** (DOC-279):
+- `https://docs.opendatadiscovery.org/configuration-and-deployment/collectors-secrets-backend` — meta-description should no longer name Vault after PR merge.
+
+**PR creation URL** (gh CLI not installed per CLAUDE.md):
+https://github.com/opendatadiscovery/documentation/pull/new/feature/docs-doc279-vault-description-fix
+
+Suggested PR title: `docs: collectors-secrets-backend description — drop fabricated Vault claim [DOC-279]`
+
+**DOC-275 + DOC-277 status update** — both items inherited a status change from the cohort-c PR #71 merge that happened between sessions:
+- **DOC-275** (currently `review-ready`) — Gate 8 (live-site verification) is now eligible since the cohort-c branch is on origin/main. A future `/review` pass can fetch `docs.opendatadiscovery.org/features/data-discovery/entity-detail-page` and confirm the 9 aspect-page cross-links render correctly, then flip → done.
+- **DOC-277** (currently `blocked` by DOC-279) — Gate 9 (Vault fabrication) is now LIVE on the merged docs; the issue is publicly visible until DOC-279 merges. DOC-277 stays blocked until DOC-279 hits origin/main. A future `/review` pass (post-DOC-279-merge) can in one combined sweep: (1) verify DOC-279 live, (2) admin-flip DOC-277 `blocked` → `review-ready` (load-bearing block resolves), (3) re-verify DOC-275 + DOC-277 Gates 8 + 9 in the same session.
+
+**Backlog state after this `/implement`:** docs done **266** / review-ready **2** (DOC-275 + **DOC-279 new**) / pending **1** (DOC-164 — code-lineage substrate, larger/foundational) / blocked **6** (DOC-141..145 + **DOC-277** — blocked by DOC-279) / rejected+superseded 3; total **278**.
+
+## Previous (earlier today) — `/review batch:feature/docs-cohort-c-2026-05-28` — DOC-245 done / DOC-275 review-ready / DOC-277 blocked
+
+## /review session 2026-05-28 (earlier) — Cohort C — 1 ACCEPTED-done / 1 ACCEPTED-deferred / 1 REJECTED-blocked + 1 follow-up logged
 
 `/review batch:feature/docs-cohort-c-2026-05-28` — fresh-session verification of the 3-item cohort produced by the earlier `/implement` run. Results split by per-item gates:
 

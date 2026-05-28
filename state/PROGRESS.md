@@ -1,6 +1,28 @@
-# Last updated 2026-05-28 — `/implement DOC-282` — 3 narrative line edits ("five subsystems" → "six subsystems") on `active-platform-features.md` shipped on `feature/docs-doc282-active-platform-features-six-subsystems` (commit `30795b4`, pushed); DOC-282 flipped `pending` → `review-ready`; **docs done 271 / review-ready 1 (DOC-282) / pending 1 (DOC-164) / blocked 5 (DOC-141..145) — total 281**
+# Last updated 2026-05-28 — `/review DOC-282` — ACCEPTED; all 5 AC + 11 Quality Bar gates PASS (Gate 8 live-verified on `bd3cf88` post-PR-#75 merge); 1 editorial finding logged (DOC-283 — `active-platform-features.md` L41 GenAI classification stale w.r.t. dedicated `api-reference/genai.md` sub-page); status flipped `review-ready` → `done`; **docs done 272 / review-ready 0 / pending 2 (DOC-164, DOC-283 new) / blocked 5 (DOC-141..145) — total 282**
 
-## /implement session 2026-05-28 (latest) — DOC-282 active-platform-features narrative drift fix
+## /review session 2026-05-28 — DOC-282 ACCEPTED; 1 editorial finding logged (DOC-283)
+
+**Session distinct from `/implement`** — separate-session per CLAUDE.md (`/implement DOC-282` ran earlier today at commit `43b15c4`). This `/review` is the verification phase against PR #75 (`bd3cf88` merge to origin/main).
+
+**Target**: DOC-282 (`30795b4` on `feature/docs-doc282-active-platform-features-six-subsystems`, merged via PR #75 at `bd3cf88` on origin/main).
+
+**Verdict**: ACCEPTED. All 5 AC PASS; all applicable Quality Bar gates PASS (Gates 2, 3, 5 = N/A — no alias / caveat / SDK in scope).
+
+**Gate 8 live-site verification** (PR merged, not deferred): raw-HTML scrape of `https://docs.opendatadiscovery.org/active-platform-features` returned `all six off` ×2, `behind the six subsystems` ×4, `every one of the six subsystems` ×2, zero `five` hits on the entire rendered page. `<meta name="description">` + `og:description` + `twitter:description` all render the full 186-byte description (≤200 cap). YAML frontmatter parses (PyYAML `safe_load`). VERIFIED.
+
+**Doc-product editorial audit (per `/review` step 5)**:
+- **Coverage this run**: targeted on the DOC-282-touched page + adjacency (6 subsystem subpages + `developer-guides/api-reference.md` + `SUMMARY.md`). Per-page baseline of 70 pages already at 100% audited (dashboard run #11, 2026-05-07); this review's coverage is delta + spot-check on the active-platform-features subtree.
+- **Findings — 1**:
+  - **DOC-283** (medium, A4 — parallel-surfaces / Reference integrity) — `active-platform-features.md` L41 lists "Per-subsystem sub-pages: Alerts, Data Collaboration" but GenAI also has a dedicated `developer-guides/api-reference/genai.md` (verified via `ls` + SUMMARY.md L109 + api-reference.md L14). The stale classification was authored on 2026-05-06 (DOC-131 — pre-genai-sub-page) and became inaccurate on 2026-05-07 (DOC-161 + DOC-184 + DOC-204 commit `0eb0ed1` added the sub-page without back-updating L41). DOC-282 extended L41 to include Metrics Ingestion (correctly) but did not catch the stale GenAI classification on the same line. Single-line edit to fix; trivial effort.
+- **Defensive-sweep recommendation from DOC-282 Implementation Notes**: spot-checked the other per-pillar landings (`data-discovery.md`, `data-modelling.md`, `master-data-management.md`, `management.md`) — NO drift instances of the "all N off" / "behind the N subsystems" / "of the N sub-pages" shape found. The drift shape is specific to `active-platform-features.md` (the only pillar with collectively-referenced opt-in subsystems). NOT VERIFIED → no separate DOC-NNN.
+
+**Backlog state** (this run): docs done **271 → 272** (+1: DOC-282 flipped); review-ready **1 → 0** (DOC-282 → done); pending **1 → 2** (+1: DOC-283 new); blocked **5** (unchanged: DOC-141..145); total **281 → 282** (+1: DOC-283).
+
+**Methodology reflection on this review**: the per-item gates PASSED for what DOC-282 introduced (the three "five → six" word edits + the Metrics Ingestion inline-list extension are all factually correct). The editorial audit step caught a pre-existing inaccuracy adjacent to (but not introduced by) DOC-282 — illustrating exactly the design intent of the playbook's two-track structure: per-item gates verify execution correctness, editorial audit verifies doc-product coherence. The L41 GenAI classification staleness is the kind of "feature X shipped without back-updating a peer page's narrative" that no per-item gate can detect, because the failure shape is across two unrelated implementation chains (DOC-131 + DOC-161/184/204 + DOC-282) on the same line.
+
+**Next actions**: DOC-283 sits in `pending` (medium, trivial effort, single-line edit). Pair with the next small doc batch. DOC-164 still pending. DOC-141..145 still blocked on the carried-forward IA decision.
+
+## Previous /implement session 2026-05-28 — DOC-282 active-platform-features narrative drift fix
 
 DOC-282 was logged by the immediately-prior `/review` editorial audit step 5 (commit `29b5732`) — `active-platform-features.md` has 3 narrative lines saying "five subsystems" while description + L9 + L34 + Subsections list (6 entries) agree on "six". The drift was stale from before Metrics Ingestion (DOC-196 commit `2614e64` on 2026-05-27) was added as the 6th subsystem; DOC-280's description rewrite ("Six opt-in subsystems") made it load-bearing — the new authoritative-statement directly disagreed with three body lines on the same page.
 

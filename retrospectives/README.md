@@ -99,6 +99,11 @@ Do *not* add an LSN for:
 | `LSN-020-activity-userids-filter-binds-to-owner-id-no-top-down-reflection.md` | populated | added 2026-05-21 (rev 5 — Category F + Layer-4b reflection) |
 | `LSN-021-methodology-has-no-independent-oracle.md` | populated | added 2026-05-21 (rev 6 — the Adversarial Review Panel) |
 | `LSN-022-panel-judged-against-implicit-target.md` | populated | added 2026-05-21 (rev 6 — explicit-target anchoring) |
+| `LSN-023-feature-ontology-built-without-the-ui.md` | populated | added 2026-05-22 |
+| `LSN-024-meta-review-panel-reviewed-a-stale-model.md` | populated | added 2026-05-22 |
+| `LSN-025-substrate-axis-enumerated-only-entry-points.md` | populated | added 2026-05-24 |
+| `LSN-026-workspace-vocabulary-leaked-to-published-doc.md` | populated | added 2026-05-27 (Gate 11 audience-isolation mechanical grep) |
+| `LSN-027-meta-description-truncation-not-caught-by-webfetch.md` | populated | added 2026-05-28 (Gate 8 raw-HTML head + visible-subtitle inspection extension; 25 docs pages affected) |
 
 ## Index by gate / playbook informed
 
@@ -124,3 +129,6 @@ When looking up "which retrospectives justify this rule?", grep this section.
 | Documentation authoring rule — ship together | LSN-004 |
 | Documentation authoring rule — fetch origin/main first | LSN-008 |
 | Implementer cannot self-mark `done` | LSN-002 |
+| Gate 8 — Publishing standards (live-site verification) | LSN-004, LSN-027 |
+| Gate 11 — Audience isolation (mechanical banned-term grep) | LSN-026 |
+| Playbook — `live-site-verification.md` raw-HTML head inspection | LSN-027 |

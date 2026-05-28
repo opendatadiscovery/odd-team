@@ -1,6 +1,42 @@
-# Last updated 2026-05-28 — `/implement DOC-279` — **one-line Vault description fix shipped on `feature/docs-doc279-vault-description-fix` (commit 7533cba); DOC-279 flipped pending → review-ready; cohort-c PR #71 already merged to origin/main (HEAD `5e80de2`), so DOC-275 Gate 8 + DOC-277 Gate 9 verification now both unblocked for next /review pass; docs done 266 / review-ready 2 (DOC-275 + DOC-279) / pending 1 (DOC-164) / blocked 6 (DOC-141..145 + DOC-277) — total 278**
+# Last updated 2026-05-28 — `/implement DOC-279` fixup + LSN-027 methodology fix — **GitBook 200-char truncation gap diagnosed (visible page subtitle under H1, not only SEO); DOC-279 fixup commit b0ddfee reduces collectors-secrets-backend description to 178 chars; DOC-280 logged for the 24 other affected pages; Gate 8 extended with raw-HTML head + subtitle inspection in playbooks/live-site-verification.md + pillars/documentation/gates.md; retrospective LSN-027 written; docs done 266 / review-ready 2 (DOC-275 + DOC-279) / pending 2 (DOC-164 + DOC-280 new) / blocked 6 (DOC-141..145 + DOC-277) — total 279**
 
-## /implement session 2026-05-28 (latest) — DOC-279 (Vault description fix) shipped on fresh branch
+## /implement session 2026-05-28 (latest++) — DOC-279 fixup + LSN-027 methodology change (Gate 8 raw-HTML head + visible-subtitle inspection)
+
+User spot-check on the merged collectors-secrets-backend live page surfaced a SECOND issue beyond the Vault fabrication: the replacement description (253 chars) was still over GitBook's 200-char hard truncation, cut mid-clause as the visible page subtitle under the H1. Investigation showed:
+
+1. **GitBook truncates the rendered `description:` frontmatter at exactly 200 chars in FOUR independent surfaces**:
+   - `<meta name="description" content="..."/>` (head — SEO)
+   - `<meta property="og:description" content="..."/>` (head — social previews)
+   - `<meta name="twitter:description" content="..."/>` (head — Twitter cards)
+   - **`<p>...</p></header>`** (body — visible page subtitle directly under H1; operator-visible on every page view in any browser)
+
+2. **The issue is SYSTEMIC across the doc tree** — survey via `for f in $(find docs -name '*.md' …); do wc -c …; done | sort -nr` returned **25 pages over 200 chars** (24 + collectors-secrets-backend.md). Worst offender `multilingual-ui.md` at 285 chars. Pages from much earlier batches affected (`management/namespaces.md`, `alerting.md`, `metrics-ingestion.md` all over 260 chars).
+
+3. **The methodology gap** — `playbooks/live-site-verification.md` step 3 listed body / H2 / cross-link checks but NO check for head metadata or visible subtitle. WebFetch's markdown extraction strips `<head>` and didn't surface the subtitle text in past `/review` prompts. The DOC-277 `/review` flagged 5/26 descriptions as 211-238 chars and dismissed with *"acceptable as accuracy-driven"* — exactly the banned-phrase pattern (Gate 9's banned phrases ban "defensible / probably correct / looks right / etc."; this added "acceptable as {anything}-driven" without `VERIFIED via curl -sL` citation).
+
+**Methodology updates shipped this session** (workspace branch `main`):
+
+| File | Change |
+|---|---|
+| `playbooks/live-site-verification.md` step 3 | Added "Head-rendered metadata + visible page subtitle" sub-step with the `curl -sL` mechanical command for the four-surface verification; case-law section cites LSN-027. |
+| `pillars/documentation/gates.md` Gate 8 | Added documentation-pillar specialisation naming the four GitBook truncation surfaces, the 200-char hard cap, the banned phrase, and citing LSN-027 as canonical failure. |
+| `retrospectives/LSN-027-meta-description-truncation-not-caught-by-webfetch.md` | New retrospective covering the gap + the methodology fix. |
+| `retrospectives/README.md` | Added LSN-027 row in the files table; added Gate-8 + LSN-027 cross-reference in the index. |
+| `backlog/docs/DOC-280.md` | New backlog item — systematic 24-page description-length fix (high priority, medium effort). |
+| `backlog/docs/DOC-279.md` | Appended fixup record covering the second commit + the methodology context. |
+
+**DOC-279 doc-repo fix** (branch `feature/docs-doc279-vault-description-fix`, now 2 commits):
+- `7533cba` (original) — Vault claim removal
+- `b0ddfee` (fixup) — length reduction from 246 → 178 chars / 182 bytes — fits all four rendering surfaces
+
+**PR URL** (gh CLI not installed):
+https://github.com/opendatadiscovery/documentation/pull/new/feature/docs-doc279-vault-description-fix
+
+**Backlog state**: docs done **266** / review-ready **2** (DOC-275 + DOC-279) / pending **2** (DOC-164 + **DOC-280 new**) / blocked **6** (DOC-141..145 + DOC-277) / rejected+superseded 3; total **279**.
+
+## Previous (earlier today) — `/implement DOC-279` original Vault-only fix
+
+## /implement session 2026-05-28 (latest-1) — DOC-279 (Vault description fix) shipped on fresh branch
 
 `/implement DOC-279` — single-item batch (one-line description edit, one file). The pre-existing cohort-c PR #71 had merged to origin/main between sessions (HEAD `5e80de2`); could not fold this fix into the cohort-c branch. Cut a fresh branch `feature/docs-doc279-vault-description-fix` from updated origin/main.
 

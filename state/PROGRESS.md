@@ -1,4 +1,42 @@
-# Last updated 2026-05-28 — `/implement DOC-279 DOC-280` — **DOC-280 systematic 24-page description-length fix shipped on `feature/docs-doc279-vault-description-fix` (commit 1890bde, third commit on branch); all 25 GitBook-truncated descriptions now closed end-to-end (DOC-279's 1 + DOC-280's 24); tree-wide sweep confirms 0 pages over 200 chars; pre-commit mechanical sweeps (Gate 11 + description-length, both new step 6.5 sub-checks) both passed; docs done 266 / review-ready 3 (DOC-275 + DOC-279 + DOC-280) / pending 1 (DOC-164) / blocked 6 (DOC-141..145 + DOC-277) — total 279**
+# Last updated 2026-05-28 — DOC-281 hotfix (YAML parse error stalled GitBook sync) shipped on `feature/docs-doc281-yaml-frontmatter-hotfix` (commit d14d692); LSN-028 written; /implement step 6.5 + Gate 8 + playbook all extended with a (c) PyYAML parse sub-check; **docs done 266 / review-ready 4 (DOC-275 + DOC-279 + DOC-280 + DOC-281 new) / pending 1 (DOC-164) / blocked 6 (DOC-141..145 + DOC-277) — total 280**
+
+## /implement session 2026-05-28 (latest) — DOC-281 hotfix + LSN-028 methodology fix
+
+After PR #73 (DOC-279 + DOC-280) merged at `8d60a2f`, GitBook surfaced a sync-failure banner:
+
+> Failed to parse YAML front matter in "docs/configuration-and-deployment/enable-security/authorization/user-owner-association.md"
+
+PyYAML reproduces the failure: the DOC-280 description for that page carried `: ` (colon-space) after "three write-paths" — YAML 1.2 reads colon-space in an unquoted plain scalar as a nested mapping separator. The parser bailed out at line 2 col 103 ("mapping values are not allowed here"). **GitBook's import pipeline stalled entirely** until hotfixed — no commits after the broken one were imported; the live site was frozen at the prior state.
+
+This is worse than LSN-027's truncation (which degraded content but kept pages rendering). The mechanical sweeps shipped under `/implement` step 6.5 (Gate 11 banned-term grep + 200-char length check) both passed for the DOC-280 batch — neither parses YAML.
+
+**Hotfix shipped this session** (`feature/docs-doc281-yaml-frontmatter-hotfix` commit `d14d692`, pushed; PR URL https://github.com/opendatadiscovery/documentation/pull/new/feature/docs-doc281-yaml-frontmatter-hotfix):
+
+```diff
+- description: Link a signed-in user to an Owner entity for owner-scoped permissions — three write-paths: self-request, ...
++ description: Link a signed-in user to an Owner entity for owner-scoped permissions — three write-paths — self-request, ...
+```
+
+164 bytes post-fix; PyYAML parses cleanly; tree-wide re-sweep returns 0 frontmatter parse errors.
+
+**Methodology updates** (workspace branch `main`, this session):
+
+| File | Change |
+|---|---|
+| `.claude/skills/implement/SKILL.md` step 6.5 | Adds (c) YAML frontmatter parse check via PyYAML + bash fast-fail regex for the `: ` hazard. Triple pre-commit sweep now: (a) Gate 11 banned-term grep, (b) description-length, (c) YAML parse. |
+| `playbooks/live-site-verification.md` step 3 | Adds a YAML-parse sub-step alongside the raw-HTML head + visible-subtitle inspection. Gate 8 review-time check. |
+| `pillars/documentation/gates.md` Gate 8 | Documentation-pillar specialisation extended with the YAML-parse rule + LSN-028 canonical-failure citation. |
+| `retrospectives/LSN-028-yaml-frontmatter-parse-error-stalled-gitbook-sync.md` | New retrospective covering the gap + the methodology fix + the full hazard catalogue. |
+| `retrospectives/README.md` | LSN-028 indexed; Gate 8 + step 6.5 cross-references extended. |
+| `memory/reference_yaml_frontmatter_hazards_in_description.md` | New reference memory with the full hazard table + canonical PyYAML one-liner + bash fast-fail regex. |
+| `memory/MEMORY.md` | New entry indexed for the YAML hazards reference. |
+| `backlog/docs/DOC-281.md` | New backlog item logging the hotfix; status flipped pending → review-ready. |
+
+**Pattern observation** — same class of miss as LSN-027 ("live publisher behaviour the maintainer's local tooling did not model"). Both surfaced in the same session. The Linus-class diagnosis: every commit touching frontmatter must pass through the SAME parser GitBook uses (PyYAML is the closest available local approximation; GitBook's parser is strict-YAML-1.2-compatible).
+
+**Backlog state**: docs done **266** / review-ready **4** (DOC-275 + DOC-279 + DOC-280 + **DOC-281 new**) / pending **1** (DOC-164) / blocked **6** (DOC-141..145 + DOC-277) / rejected+superseded 3; total **280**.
+
+## Previous (earlier today) — `/implement DOC-279 DOC-280` — DOC-280 24-page systematic fix bundled with DOC-279
 
 ## /implement session 2026-05-28 (latest) — DOC-280 (24-page description-length systematic fix) bundled onto DOC-279 branch
 

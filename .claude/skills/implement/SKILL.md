@@ -2,7 +2,7 @@
 name: implement
 description: Work a batch of backlog items end-to-end as a maintainer — hold the Implementation Quality Bar, run the Pre-authoring stance check, log follow-ups on disk, flip items to `review-ready`, and ship one PR per repo per batch.
 argument-hint: <work-item-id>
-allowed-tools: Read Grep Glob Edit Write WebFetch Bash(ls *) Bash(find *) Bash(cd *) Bash(git *) Bash(head *) Bash(grep *) Bash(sed *) Bash(wc *) Bash(echo *) Bash(./gradlew *) Bash(pnpm *) Bash(poetry *) Bash(pytest *) Bash(npm *)
+allowed-tools: Read Grep Glob Edit Write WebFetch Bash(ls *) Bash(find *) Bash(cd *) Bash(git *) Bash(head *) Bash(grep *) Bash(sed *) Bash(wc *) Bash(echo *) Bash(python3 *) Bash(./gradlew *) Bash(pnpm *) Bash(poetry *) Bash(pytest *) Bash(npm *)
 ---
 
 # Implement a Batch
@@ -77,6 +77,40 @@ Repeat per item.
        done
    ```
    For every hit: shorten the description before commit. Target ≤180 chars for a safety buffer. Preserve operator framing — name the load-bearing concept first; drop secondary clauses, abbreviate ("DB" for "database", "AWS SSM" for "AWS Systems Manager Parameter Store"); avoid trailing "instead of X" or "for Y" payoffs that consume the budget on a verbose framing the reader can absorb from the body's first paragraph. Re-check until the loop returns zero output. **Do not commit a doc change with any description over 200 chars.**
+
+   **(c) YAML frontmatter parse check** *(2026-05-28; LSN-028)* — GitBook's import pipeline parses every page's YAML frontmatter with a strict parser. A `: ` (colon-space) inside a plain-scalar `description:` value reads as a nested mapping separator and stalls sync entirely (worse than truncation — the publisher freezes at the prior state until the hotfix lands). Full hazard catalogue + the PyYAML one-liner in `memory/reference_yaml_frontmatter_hazards_in_description.md`. Case-law: `retrospectives/LSN-028`.
+   ```bash
+   # Canonical check via PyYAML — catches every YAML 1.2 plain-scalar hazard
+   git diff --staged --name-only -- '../documentation/docs' \
+     | grep -E '\.md$' \
+     | while read f; do
+         python3 - "../documentation/$f" <<'PY'
+   import yaml, sys
+   path = sys.argv[1]
+   txt = open(path).read()
+   if txt.startswith('---'):
+       end = txt.find('---', 3)
+       if end != -1:
+           try:
+               yaml.safe_load(txt[3:end])
+           except yaml.YAMLError as e:
+               print(f'YAML PARSE FAIL: {path}: ' + str(e).split(chr(10))[0])
+               sys.exit(1)
+   PY
+       done
+
+   # Bash fast-fail for the `: ` hazard (the most common pattern; runs without Python)
+   git diff --staged --name-only -- '../documentation/docs' | grep -E '\.md$' | while read f; do
+     desc=$(head -3 "../documentation/$f" 2>/dev/null | grep '^description:' | head -1 | sed 's/^description: //')
+     if [ -n "$desc" ]; then
+       if echo "$desc" | grep -qE ': [a-zA-Z]'; then
+         echo "YAML HAZARD ': ' in $f"
+         echo "  → $desc"
+       fi
+     fi
+   done
+   ```
+   For every hit: replace `: ` with ` — ` (em-dash, consistent with the existing description style) OR restructure the sentence OR wrap the whole value in double quotes. Re-check until both checks return zero output. **Do not commit a doc change whose frontmatter does not parse cleanly via PyYAML.**
 
 7. **Verify locally** — every acceptance criterion met; every Quality Bar gate has citable evidence; outbound URLs verified per `playbooks/claim-inventory.md` step 3; tests pass.
 

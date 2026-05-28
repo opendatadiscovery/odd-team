@@ -38,7 +38,25 @@ The trigger fires after the PR has merged to `origin/main` and the publisher (Gi
    - **In-page TOC entries** match the H2s on the page (Gate 7 cross-check; relevant when the page carries an in-page TOC, e.g., `docs/Features.md`).
    - **Cross-links resolve.** Click-through targets render the intended page. The body must not contain any `github.com/.../blob/main/...` substring — that signals a fallback-cache event (`retrospectives/LSN-004-s2s-fallback-cache.md`).
    - **In-bound links from other pages** resolve to the new page (for new pages: WebFetch the SUMMARY-parent page; verify the link is not still pointing at a stale GitHub URL).
-   - **Head-rendered metadata + visible page subtitle** *(2026-05-28; mandatory whenever the change touches `description:` frontmatter or any other head-rendered element — title, og tags, canonical URL).* WebFetch's markdown extraction strips `<head>` and does not surface the visible page subtitle reliably. Use `curl -sL` for raw HTML and verify each affected element:
+   - **YAML frontmatter parses cleanly** *(2026-05-28; LSN-028; mandatory whenever the change touches frontmatter).* Run PyYAML's `safe_load` on every affected page's frontmatter. FAIL if any file's frontmatter does not parse. The most common hazard is `: ` (colon-space) inside an unquoted `description:` value — reads as a nested mapping separator and stalls GitBook sync entirely until hotfixed. Full hazard catalogue: `memory/reference_yaml_frontmatter_hazards_in_description.md`.
+     ```bash
+     for f in {affected-pages}; do
+       python3 - "$f" <<'PY'
+     import yaml, sys
+     path = sys.argv[1]
+     txt = open(path).read()
+     if txt.startswith('---'):
+         end = txt.find('---', 3)
+         if end != -1:
+             try:
+                 yaml.safe_load(txt[3:end])
+             except yaml.YAMLError as e:
+                 print(f'YAML PARSE FAIL: {path}: ' + str(e).split(chr(10))[0])
+                 sys.exit(1)
+     PY
+     done
+     ```
+   - **Head-rendered metadata + visible page subtitle** *(2026-05-28; LSN-027; mandatory whenever the change touches `description:` frontmatter or any other head-rendered element — title, og tags, canonical URL).* WebFetch's markdown extraction strips `<head>` and does not surface the visible page subtitle reliably. Use `curl -sL` for raw HTML and verify each affected element:
      - `<meta name="description" content="..."/>` — content length + text must match source frontmatter.
      - `<meta property="og:description" content="..."/>` — same.
      - `<meta name="twitter:description" content="..."/>` — same.
@@ -77,3 +95,4 @@ The trigger fires after the PR has merged to `origin/main` and the publisher (Gi
 
 - `retrospectives/LSN-004-s2s-fallback-cache.md` — separate-PR ship of page vs SUMMARY caused GitBook to cache a `github.com/.../blob/main/...` fallback for the index link; live-site fetch was the only thing that would have caught it (build-time rendering passed).
 - `retrospectives/LSN-027-meta-description-truncation-not-caught-by-webfetch.md` — WebFetch markdown extraction missed `<meta>` truncation in `<head>` AND the visible `<p>` page-subtitle directly under H1; 25 docs pages shipped truncated descriptions across multiple batches because Gate 8 had no raw-HTML inspection step. Added the step above.
+- `retrospectives/LSN-028-yaml-frontmatter-parse-error-stalled-gitbook-sync.md` — `: ` (colon-space) inside an unquoted description: frontmatter value parses as a YAML mapping separator and stalls GitBook sync entirely (worse than truncation — the publisher couldn't import the merged commit at all). Pre-commit + Gate 8 now run a PyYAML parse check.

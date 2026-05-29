@@ -101,6 +101,130 @@ def scan(
     click.echo(result.summary)
 
 
+@main.command("docs-ingest")
+@click.argument("repo")
+@click.option("--dry-run", is_flag=True, help="Emit summary without writing artifacts.")
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Workspace root (default: parent of lineage/).",
+)
+def docs_ingest_cmd(repo: str, dry_run: bool, workspace: Path | None) -> None:
+    """Ingest the live documentation manual into REPO's lineage as Doc nodes.
+
+    Walks `../documentation/docs/**/*.md`, splits each page by heading/anchor,
+    and writes `lineage/{repo}/doc-nodes.jsonl` + `documentation/_manifest.yaml`.
+    Mechanical, no LLM, no network — doc prose stays in ../documentation (the
+    embedder reads it at graph-build). The agentic reverse-links (DESCRIBES) are
+    the separate `doc-analyser` pass. See adrs/drafts/ground-truth-lineage.md.
+
+    REPO is the lineage to attach docs to (e.g., 'odd-platform') — the docs join
+    that graph so doc↔code cross-modal queries work in one index.
+    """
+    from lineage_extractor.extractors.docs import DOC_REPO, ingest_docs
+
+    workspace_root = workspace or _default_workspace_root()
+    documentation_path = resolve_repo_path(workspace_root, DOC_REPO)
+    if not documentation_path.is_dir():
+        raise click.ClickException(f"documentation repo not found: {documentation_path}")
+    lineage_dir = workspace_root / "lineage" / repo
+    lineage_dir.mkdir(parents=True, exist_ok=True)
+
+    result = ingest_docs(documentation_path, lineage_dir, dry_run=dry_run)
+    if not result.ok:
+        click.echo(f"docs-ingest failed: {result.error}", err=True)
+        sys.exit(1)
+    click.echo(result.summary)
+    if result.missing:
+        click.echo(f"  WARNING — {len(result.missing)} SUMMARY page(s) missing on disk: "
+                   f"{', '.join(result.missing[:5])}{'…' if len(result.missing) > 5 else ''}")
+    if result.orphan:
+        click.echo(f"  note — {len(result.orphan)} page(s) on disk not in SUMMARY: "
+                   f"{', '.join(result.orphan[:5])}{'…' if len(result.orphan) > 5 else ''}")
+    if dry_run:
+        click.echo("--- dry-run: artifacts NOT written ---")
+
+
+@main.command("docs-verify")
+@click.argument("repo")
+@click.option("--json", "as_json", is_flag=True, help="Emit JSON for machine consumers.")
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Workspace root (default: parent of lineage/).",
+)
+def docs_verify_cmd(repo: str, as_json: bool, workspace: Path | None) -> None:
+    """Consistency dashboard for REPO's documentation lineage (mechanical, cheap).
+
+    Reports the three drift/consistency axes from `adrs/drafts/ground-truth-lineage.md`:
+    completeness (SUMMARY denominator), content drift (committed hash vs live
+    upstream prose), and agentic-enrichment coverage (pages with a DESCRIBES
+    sidecar + their live-URL verification status). No network, no LLM — the
+    drift check is the loader recomputing each section's hash against upstream.
+    """
+    import json as _json
+
+    from lineage_extractor.graph_query.loaders import load_substrate
+
+    lineage_dir = _resolve_lineage_dir(repo, workspace)
+    sub = load_substrate(lineage_dir)
+    if not sub.doc_nodes:
+        raise click.ClickException(
+            f"no doc-nodes.jsonl in {lineage_dir} — run `docs-ingest {repo}` first"
+        )
+
+    pages = {dn.repo_rel_path for dn in sub.doc_nodes}
+    drifted = [dn.node_id for dn in sub.doc_nodes if dn.drifted]
+    bodyless = sum(1 for dn in sub.doc_nodes if not dn.body.strip())
+    enriched_pages = {du.doc_page for du in sub.doc_understanding}
+    unenriched = sorted(pages - enriched_pages)
+    live_status: dict[str, int] = {}
+    for du in sub.doc_understanding:
+        s = du.live_url_verified_status or "unverified"
+        live_status[s] = live_status.get(s, 0) + 1
+
+    manifest_path = lineage_dir / "documentation" / "_manifest.yaml"
+    completeness: dict = {}
+    if manifest_path.is_file():
+        from ruamel.yaml import YAML
+
+        data = YAML(typ="safe").load(manifest_path.read_text()) or {}
+        completeness = data.get("completeness", {})
+
+    report = {
+        "repo": repo,
+        "doc_sections": len(sub.doc_nodes),
+        "doc_pages": len(pages),
+        "completeness": completeness,
+        "drift": {"drifted_sections": len(drifted), "examples": drifted[:5]},
+        "embeddable_sections": len(sub.doc_nodes) - bodyless,
+        "enrichment": {
+            "pages_enriched": len(enriched_pages & pages),
+            "pages_unenriched": len(unenriched),
+            "unenriched_examples": unenriched[:5],
+            "live_url_status": live_status,
+        },
+    }
+    if as_json:
+        click.echo(_json.dumps(report, indent=2, default=str))
+        return
+    click.echo(f"doc-lineage consistency — {repo}")
+    click.echo(f"  sections: {report['doc_sections']} ({report['embeddable_sections']} embeddable)"
+               f"  pages: {report['doc_pages']}")
+    comp_ok = completeness.get("complete")
+    click.echo(f"  completeness: {'OK' if comp_ok else 'INCOMPLETE'}"
+               f"  missing={len(completeness.get('missing', []))}"
+               f"  orphan={len(completeness.get('orphan', []))}")
+    click.echo(f"  content drift: {len(drifted)} section(s) differ from upstream"
+               + (f" (e.g. {drifted[0]})" if drifted else ""))
+    click.echo(f"  enrichment (DESCRIBES): {report['enrichment']['pages_enriched']}/{report['doc_pages']}"
+               f" pages; {report['enrichment']['pages_unenriched']} await doc-analyser")
+    if live_status:
+        click.echo(f"  live-url status: {live_status}")
+
+
 @main.command("validate-sidecar")
 @click.argument("paths", nargs=-1, type=click.Path(exists=True, dir_okay=False, path_type=Path))
 @click.option(

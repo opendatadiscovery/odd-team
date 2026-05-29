@@ -94,6 +94,55 @@ class ConceptRecord:
 
 
 @dataclass
+class DocNodeRecord:
+    """One row of `doc-nodes.jsonl` — a documentation section's committed
+    addressing (ground-truth-lineage layer). `body` is NOT in the file
+    (reference-upstream); the loader fills it by reading the referenced section
+    from `../documentation` and sets `drifted` if the live prose no longer
+    hashes to `content_hash`. `body` is the embedding target."""
+
+    node_id: str
+    repo: str                 # "documentation"
+    repo_rel_path: str
+    page_title: str
+    heading: str
+    heading_path: list[str]
+    anchor: str
+    level: int
+    content_hash: str
+    live_url: str
+    summary_group: str
+    in_summary: bool
+    links: list[dict] = field(default_factory=list)
+    body: str = ""            # filled by the loader from upstream prose (reference-upstream)
+    drifted: bool = False     # live prose hash != committed content_hash
+    source_file: str = "doc-nodes.jsonl"
+    source_line: int = 0
+
+
+@dataclass
+class DocUnderstandingRecord:
+    """One agentic per-page doc sidecar (`doc-understanding/*.md`) — the reverse
+    doc→ontology links (ground-truth-lineage). The `doc-analyser` subagent emits
+    these; the projector turns `describes_*` into DESCRIBES edges from the page's
+    Doc node to the concepts / features / code it documents. `prose` is an
+    optional embeddable narrative."""
+
+    doc_page: str                 # docs-relative path, e.g. docs/data-discovery/attachments.md
+    page_title: str
+    describes_concepts: list[str] = field(default_factory=list)
+    describes_features: list[str] = field(default_factory=list)
+    describes_code: list[str] = field(default_factory=list)
+    audience: list[str] = field(default_factory=list)
+    doc_claim_vs_code: list[str] = field(default_factory=list)
+    live_url: str = ""
+    live_url_verified_status: str = ""
+    prose: str = ""
+    source_file: str = ""
+    source_line: int = 1
+
+
+@dataclass
 class Substrate:
     """Everything the loaders parsed out of `lineage/{repo}/` — projector input."""
 
@@ -103,5 +152,7 @@ class Substrate:
     sidecars: list[SidecarRecord] = field(default_factory=list)
     reducer_nodes: list[ReducerNodeRecord] = field(default_factory=list)
     concepts: list[ConceptRecord] = field(default_factory=list)
+    doc_nodes: list[DocNodeRecord] = field(default_factory=list)
+    doc_understanding: list[DocUnderstandingRecord] = field(default_factory=list)
     # Files that could not be parsed — surfaced, never silently dropped.
     skipped: list[tuple[str, str]] = field(default_factory=list)   # (path, reason)

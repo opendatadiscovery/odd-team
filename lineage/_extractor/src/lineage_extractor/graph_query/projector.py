@@ -16,6 +16,7 @@ rustworkx node indices are stable.
 """
 from __future__ import annotations
 
+import posixpath
 import re
 from collections import defaultdict
 from dataclasses import dataclass, field
@@ -239,6 +240,11 @@ def project(substrate: Substrate) -> OntologyGraph:
             )
         )
 
+    # 1.5 — Documentation: content-bearing Doc nodes (ground-truth-lineage).
+    # Projected before sidecars so the sidecar LINKS_DOC step can resolve a
+    # code→doc URL to a real anchored section instead of a bare-URL stub.
+    doc_url_index, doc_path_index = _project_doc_nodes(g, substrate)
+
     # 2 — Sidecars + Findings + Docs; wire ENRICHED_BY / SURFACES_FINDING / LINKS_DOC.
     for sc in substrate.sidecars:
         sc_key = _sidecar_key(sc.node_id)
@@ -299,19 +305,26 @@ def project(substrate: Substrate) -> OntologyGraph:
                     GraphEdge(config.E_SURFACES_FINDING, sc.source_file, section.line),
                 )
         # LINKS_DOC — Sidecar -> Doc, one per unique URL in docs_link_semantic.
+        # Resolve the WebFetched URL to a content-bearing Doc node when the live
+        # URL matches an ingested section; otherwise fall back to a bare-URL stub
+        # (an unresolved stub is itself a signal: code links to a doc URL that is
+        # not in the ingested manual — a slug rewrite or a broken/external link).
         for section in sc.sections:
             if section.name != "docs_link_semantic":
                 continue
             for url in sorted(set(_URL_RE.findall(section.body))):
-                doc_key = f"doc::{url}"
-                if not g.has(doc_key):
-                    g.add_node(
-                        GraphNode(
-                            label=config.L_DOC, key=doc_key, node_id=url,
-                            title=url, source_file=sc.source_file,
-                            source_line=section.line, props={"url": url},
+                doc_key = _resolve_doc_url(url, doc_url_index)
+                if doc_key is None:
+                    doc_key = f"doc::{url}"
+                    if not g.has(doc_key):
+                        g.add_node(
+                            GraphNode(
+                                label=config.L_DOC, key=doc_key, node_id=url,
+                                title=url, source_file=sc.source_file,
+                                source_line=section.line,
+                                props={"url": url, "ingested": False},
+                            )
                         )
-                    )
                 g.add_edge(sc_key, doc_key,
                            GraphEdge(config.E_LINKS_DOC, sc.source_file, section.line))
 
@@ -418,8 +431,153 @@ def project(substrate: Substrate) -> OntologyGraph:
                     g.add_edge(sc_key, c_key,
                                GraphEdge(config.E_MENTIONS_CONCEPT, sc.source_file, section.line))
 
+    # 9 — DESCRIBES — Doc(page) -> Concept|Feature|CodeNode, from the agentic
+    #     doc-understanding sidecars (the reverse of LINKS_DOC).
+    _project_describes(g, substrate, doc_path_index, concept_name_index)
+
+    # 10 — DOC_REFERENCES — Doc -> Doc, from each section's intra-manual links.
+    _project_doc_references(g, substrate, doc_path_index)
+
     _assert_provenance(g)
     return g
+
+
+# --------------------------------------------------------------------------
+# Documentation projection (ground-truth-lineage)
+
+
+def _doc_key(node_id: str) -> str:
+    return f"doc::{node_id}"
+
+
+def _project_doc_nodes(
+    g: OntologyGraph, substrate: Substrate
+) -> tuple[dict[str, str], dict[str, str]]:
+    """Project content-bearing Doc nodes and return two resolution indices:
+
+    - ``doc_url_index``  — normalised live-URL (with and without #fragment) -> key,
+      for resolving a sidecar's WebFetched code→doc URL.
+    - ``doc_path_index`` — docs-relative path (and path#anchor) -> key, for
+      resolving an intra-manual hyperlink to its target section.
+
+    The embedding target is the heading breadcrumb + the upstream prose the
+    loader attached (reference-upstream); a body-less node (docs repo absent, or
+    drift) is graph-only — still traversable, just not a vector seed."""
+    doc_url_index: dict[str, str] = {}
+    doc_path_index: dict[str, str] = {}
+    for dn in substrate.doc_nodes:
+        key = _doc_key(dn.node_id)
+        breadcrumb = " > ".join(dn.heading_path)
+        embed_units = []
+        if dn.body.strip():
+            embed_units = [("doc", f"{dn.page_title} — {breadcrumb}\n{dn.body}")]
+        g.add_node(
+            GraphNode(
+                label=config.L_DOC,
+                key=key,
+                node_id=dn.node_id,
+                title=dn.heading if dn.level > 1 else dn.page_title,
+                source_file=dn.source_file,
+                source_line=dn.source_line,
+                props={
+                    "url": dn.live_url,
+                    "repo_rel_path": dn.repo_rel_path,
+                    "anchor": dn.anchor,
+                    "level": dn.level,
+                    "page_title": dn.page_title,
+                    "summary_group": dn.summary_group,
+                    "in_summary": dn.in_summary,
+                    "drifted": dn.drifted,
+                    "ingested": True,
+                },
+                embed_units=embed_units,
+            )
+        )
+        if dn.live_url:
+            doc_url_index.setdefault(_norm_url(dn.live_url), key)
+            # Page-level (fragment-stripped) — the H1 page-root owns it.
+            if dn.level == 1:
+                doc_url_index.setdefault(_norm_url(dn.live_url.split("#")[0]), key)
+        # Path index: the H1 owns the bare path; every section owns path#anchor.
+        if dn.level == 1:
+            doc_path_index.setdefault(dn.repo_rel_path, key)
+        doc_path_index.setdefault(f"{dn.repo_rel_path}#{dn.anchor}", key)
+    return doc_url_index, doc_path_index
+
+
+def _project_describes(
+    g: OntologyGraph,
+    substrate: Substrate,
+    doc_path_index: dict[str, str],
+    concept_name_index: dict[str, str],
+) -> None:
+    """Wire DESCRIBES (Doc page-root -> Concept|Feature|CodeNode) from each
+    agentic doc-understanding sidecar. Concepts resolve by canonical name/alias,
+    features by `F-NNN`, code by node_id (stub if the id is not yet scaffolded).
+    A sidecar for a page that was never mechanically ingested is skipped — the
+    mechanical doc-nodes pass is the prerequisite."""
+    for du in substrate.doc_understanding:
+        page_key = doc_path_index.get(du.doc_page) or doc_path_index.get(
+            "docs/" + du.doc_page.lstrip("/")
+        )
+        if page_key is None or not g.has(page_key):
+            continue
+        for name in du.describes_concepts:
+            c_key = concept_name_index.get(name.strip().lower())
+            if c_key and g.has(c_key):
+                g.add_edge(page_key, c_key,
+                           GraphEdge(config.E_DESCRIBES, du.source_file, du.source_line))
+        for fid in du.describes_features:
+            f_key = _reducer_key(config.L_FEATURE, fid.strip())
+            if g.has(f_key):
+                g.add_edge(page_key, f_key,
+                           GraphEdge(config.E_DESCRIBES, du.source_file, du.source_line))
+        for node_id in du.describes_code:
+            node_id = node_id.strip()
+            ck = _code_key(node_id)
+            if not g.has(ck):
+                _add_stub_code_node(g, node_id, du.source_file)
+            g.add_edge(page_key, ck,
+                       GraphEdge(config.E_DESCRIBES, du.source_file, du.source_line))
+
+
+def _project_doc_references(
+    g: OntologyGraph, substrate: Substrate, doc_path_index: dict[str, str]
+) -> None:
+    """Wire DOC_REFERENCES (Doc -> Doc) from each section's intra-manual `.md`
+    links, resolving the link target relative to the page's own directory.
+    External links, images, and within-page anchors are skipped (no target
+    Doc node); unresolved targets are silently dropped — a doc→doc link to a
+    page outside the manual is not an ontology edge."""
+    for dn in substrate.doc_nodes:
+        src_key = _doc_key(dn.node_id)
+        page_dir = posixpath.dirname(dn.repo_rel_path)
+        for link in dn.links:
+            if link.get("kind") != "doc":
+                continue
+            target = link.get("target", "")
+            base, _, frag = target.partition("#")
+            if not base:
+                continue
+            resolved = posixpath.normpath(posixpath.join(page_dir, base))
+            dst_key = (
+                doc_path_index.get(f"{resolved}#{frag}") if frag else None
+            ) or doc_path_index.get(resolved)
+            if dst_key and dst_key != src_key:
+                g.add_edge(src_key, dst_key,
+                           GraphEdge(config.E_DOC_REFERENCES, dn.source_file, dn.source_line))
+
+
+def _norm_url(url: str) -> str:
+    """Normalise a doc URL for matching — lowercase, strip trailing slash."""
+    return url.strip().rstrip("/").lower()
+
+
+def _resolve_doc_url(url: str, doc_url_index: dict[str, str]) -> str | None:
+    """Resolve a sidecar's WebFetched doc URL to a content-bearing Doc key:
+    exact (with fragment) first, then page-level (fragment stripped)."""
+    n = _norm_url(url)
+    return doc_url_index.get(n) or doc_url_index.get(_norm_url(url.split("#")[0]))
 
 
 # --------------------------------------------------------------------------

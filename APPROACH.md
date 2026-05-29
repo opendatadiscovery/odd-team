@@ -1258,3 +1258,34 @@ Rule 21 (added below in section 5) condenses the 13 rules from `adrs/drafts/rese
 - `.claude/skills/scan/SKILL.md` — extended with the conditional branch for mode B.
 - `.claude/skills/triage/SKILL.md` — extended to ingest `scanner-feed/` logs and lift priority on ontology-corroborated findings.
 - Trigger: maintainer-identified gap on 2026-05-27 — the two pipelines have been complementary but parallel since rev 1; the maintainer was the manual broker. **The maintainer-applied refinement** ("feature-flows is primary; doc-gaps not exhaustive") is baked into PITFALLS rule D13 and INTEROP §1.0.
+
+---
+
+## 21. Ground-truth lineage — anchoring to external surfaces *(rev 14)*
+
+### 21.1 Why this layer exists — the positive-space gap
+
+Sections 1-20 build a graph that is rich in **derived knowledge and gaps** — `Concept`, `Feature`, `Finding`, and the gap-shaped `ImplicitADR` / `DocGap` / `TestGap` / `RefactoringScope`. That is half of a Principal engineer's mental model. The other half is pinned to **real, addressable external reality**: the published documentation an operator Googles, the agreed **ADR** log, the **GitHub issue** tracker, and the **test** suite. The graph derived *knowledge about* those surfaces but had **no node for the thing itself** — `Doc` nodes were bare URLs with no body; there was no node for a ratified ADR, a real issue, or an existing test. This layer adds the **positive-space anchor nodes** so every finding can point at the real thing and every real thing is searchable and traversable.
+
+### 21.2 The universal shape
+
+For each external surface, ingest a **derived-but-committed mirror** (the `go.sum`/generated-code pattern), embed it into the existing shared vector index, and link it to the derived/gap nodes with an **OSLC-derived edge vocabulary** (`DESCRIBES`, `REALISES`, `PROMOTED_TO`, `SUPERSEDED_BY`, `FILED_AS`, `TRACKS`, `CLOSED_BY`, `COVERS`, `VALIDATES`, `REGRESSES`, `ENFORCES`). New labels are bare-noun **positive-space** counterparts kept SEPARATE from their gap siblings (`ADR` vs `ImplicitADR`, `Test` vs `TestGap`, content-bearing `Doc` vs `DocGap`) — collapsing them would let a regenerated candidate overwrite a human-ratified fact. The full label/edge catalogue with source-of-truth files and identity rules is `lineage/GRAPH-TOPOLOGY.md` (the human map of the graph).
+
+### 21.3 The consistency contract (universal)
+
+The guarantee reduces to **one enforced rule: a mirror is generated, never hand-authored** (humans edit only a survive-refresh curation block). A never-hand-authored file can only be *fresh* or *stale*, never a competing source of truth — nobody fears `go.sum`. Drift is two-tier (upstream commit anchor + per-node content hash → re-embed only the delta); completeness is checked against the **upstream's own index** (never the mirror's own listing — the fix for the recurring "100% of my own subset" failure); the mirror body is **mechanical transcription, not LLM re-summarisation** (else perpetual false drift); refresh is git-diff-driven + on-demand, **never a daemon** (Rule 12). Human-deliberate links (filing an issue, ratifying an ADR) are recorded from committed frontmatter *after the fact*, never triggered by the graph.
+
+### 21.4 Documentation specifically — reference, don't copy
+
+The doc prose is **referenced, not copied**: the published manual's own repo stays the sole prose SoT; the ontology commits only addressing (`doc-nodes.jsonl`, split by heading/anchor) + agentic per-page sidecars (`doc-understanding/*.md`, the `DESCRIBES` reverse-links) + a drift/completeness manifest; the embedder reads the upstream prose at build time. The live URL is a **re-verified attribute, never the identity** (GitBook rewrites slugs from page titles). Mechanical ingest (`docs-ingest`) is deterministic and LLM-free; the `doc-analyser` subagent adds the semantic doc→ontology links + doc-claim-vs-code drift; `/ingest-docs` orchestrates; `docs-verify` is the consistency dashboard.
+
+### 21.5 Bootstrapping a new project
+
+Point the doc extractor at the project's manual (markdown repo, or fetch+cache a website), keep the project's ADR log / issue tracker / test suite as the other three upstreams, author the project-specific identity rules (path→URL resolver, issue id scheme, test classifier), and reuse the universal labels/edges + the consistency contract verbatim.
+
+### Cross-references
+
+- `adrs/drafts/ground-truth-lineage.md` — the decision (all four surfaces; Phase 1 documentation shipped).
+- `adrs/drafts/research/ground-truth-lineage/{DOC-INGESTION,TRACEABILITY-TAXONOMY,CONSISTENCY-MAINTENANCE}.md` — the research.
+- `lineage/GRAPH-TOPOLOGY.md` — the human map of every label + edge + SoT + identity rule.
+- `.claude/agents/doc-analyser.md` · `.claude/skills/ingest-docs/SKILL.md` — the doc-side enrichment subagent + orchestrator.

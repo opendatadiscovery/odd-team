@@ -20,6 +20,8 @@ from lineage_extractor.graph_query import config
 from lineage_extractor.graph_query.records import (
     CodeNodeRecord,
     ConceptRecord,
+    DocNodeRecord,
+    DocUnderstandingRecord,
     EdgeRecord,
     ReducerNodeRecord,
     Section,
@@ -50,6 +52,8 @@ def load_substrate(lineage_dir: Path) -> Substrate:
     _load_edges(lineage_dir, sub)
     _load_sidecars(lineage_dir, sub)
     _load_concepts(lineage_dir, sub)
+    _load_doc_nodes(lineage_dir, sub)
+    _load_doc_understanding(lineage_dir, sub)
     _load_test_map(lineage_dir, sub)
     _load_feature_flows(lineage_dir, sub)
     _load_feature_reflections(lineage_dir, sub)
@@ -226,6 +230,126 @@ def _load_concepts(lineage_dir: Path, sub: Substrate) -> None:
                     source_line=1,
                 )
             )
+
+
+# --------------------------------------------------------------------------
+# Documentation axis — the ground-truth doc-lineage (reference-upstream).
+
+
+def _load_doc_nodes(lineage_dir: Path, sub: Substrate) -> None:
+    """Load `doc-nodes.jsonl` and fill each node's `body` from the referenced
+    upstream prose in `../documentation` (reference-upstream — the prose is not
+    committed). Recomputes the section hash against live prose and sets `drifted`
+    when it no longer matches the committed `content_hash`. If the documentation
+    repo is absent, doc nodes load body-less (graph-only) and the absence is
+    surfaced in `skipped`, never silently dropped."""
+    path = lineage_dir / "doc-nodes.jsonl"
+    if not path.is_file():
+        return  # docs not ingested for this repo — not an error, just no Doc layer
+    rows: list[dict[str, Any]] = []
+    for lineno, line in enumerate(path.read_text().splitlines(), start=1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            rows.append({"_lineno": lineno, **json.loads(line)})
+        except json.JSONDecodeError as exc:
+            sub.skipped.append((f"doc-nodes.jsonl:{lineno}", f"bad JSON: {exc}"))
+
+    docs_repo = _documentation_dir(lineage_dir)
+    # Per-file section cache: read + split each upstream page at most once.
+    from lineage_extractor.extractors.docs import section_content_hash, split_sections
+
+    section_bodies: dict[str, dict[str, str]] = {}   # repo_rel_path -> {anchor: body}
+
+    def _bodies_for(repo_rel: str) -> dict[str, str] | None:
+        if repo_rel in section_bodies:
+            return section_bodies[repo_rel]
+        if docs_repo is None:
+            return None
+        upstream = docs_repo / repo_rel
+        if not upstream.is_file():
+            sub.skipped.append((f"doc prose {repo_rel}", "upstream file absent"))
+            section_bodies[repo_rel] = {}
+            return {}
+        mapping = {s.anchor: s.body for s in split_sections(upstream.read_text(encoding="utf-8"))}
+        section_bodies[repo_rel] = mapping
+        return mapping
+
+    for row in rows:
+        node_id = row.get("id")
+        if not node_id:
+            sub.skipped.append((f"doc-nodes.jsonl:{row['_lineno']}", "row has no `id`"))
+            continue
+        repo_rel = row.get("repo_rel_path", "")
+        committed_hash = row.get("content_hash", "")
+        bodies = _bodies_for(repo_rel)
+        body = (bodies or {}).get(row.get("anchor", ""), "")
+        drifted = bool(body) and committed_hash and section_content_hash(body) != committed_hash
+        sub.doc_nodes.append(
+            DocNodeRecord(
+                node_id=node_id,
+                repo=row.get("repo", "documentation"),
+                repo_rel_path=repo_rel,
+                page_title=row.get("page_title", ""),
+                heading=row.get("heading", ""),
+                heading_path=list(row.get("heading_path") or []),
+                anchor=row.get("anchor", ""),
+                level=int(row.get("level", 1)),
+                content_hash=committed_hash,
+                live_url=row.get("live_url", ""),
+                summary_group=row.get("summary_group", ""),
+                in_summary=bool(row.get("in_summary", False)),
+                links=list(row.get("links") or []),
+                body=body,
+                drifted=bool(drifted),
+                source_file="doc-nodes.jsonl",
+                source_line=row["_lineno"],
+            )
+        )
+
+
+def _load_doc_understanding(lineage_dir: Path, sub: Substrate) -> None:
+    """Load the agentic per-page doc sidecars (`doc-understanding/*.md`) — the
+    reverse doc→ontology links. Frontmatter-style (a `--- yaml --- prose` block,
+    like feature-reflections). A sidecar with no `doc_page` is skipped+reported."""
+    base = lineage_dir / "doc-understanding"
+    if not base.is_dir():
+        return
+    for path in sorted(base.glob("*.md")):
+        rel = f"doc-understanding/{path.name}"
+        fm, body_line = _split_frontmatter(path.read_text())
+        doc_page = fm.get("doc_page")
+        if not doc_page:
+            sub.skipped.append((rel, "doc-understanding sidecar has no doc_page"))
+            continue
+        describes = fm.get("describes") or {}
+        prose = "\n".join(path.read_text().splitlines()[body_line - 1:]).strip()
+        sub.doc_understanding.append(
+            DocUnderstandingRecord(
+                doc_page=str(doc_page),
+                page_title=str(fm.get("page_title", "")),
+                describes_concepts=[str(c) for c in (describes.get("concepts") or [])],
+                describes_features=[str(f) for f in (describes.get("features") or [])],
+                describes_code=[str(n) for n in (describes.get("code_nodes") or [])],
+                audience=[str(a) for a in (fm.get("audience") or [])],
+                doc_claim_vs_code=[str(d) for d in (fm.get("doc_claim_vs_code") or [])],
+                live_url=str(fm.get("live_url", "")),
+                live_url_verified_status=str(fm.get("live_url_verified_status", "")),
+                prose=prose,
+                source_file=rel,
+                source_line=1,
+            )
+        )
+
+
+def _documentation_dir(lineage_dir: Path) -> Path | None:
+    """Resolve the upstream documentation repo from the lineage dir layout
+    (`{workspace}/lineage/{repo}` → `{workspace}/../documentation`). Returns
+    None if it is not present (graph-only doc nodes)."""
+    workspace_root = lineage_dir.parent.parent
+    candidate = (workspace_root / ".." / "documentation").resolve()
+    return candidate if candidate.is_dir() else None
 
 
 # --------------------------------------------------------------------------

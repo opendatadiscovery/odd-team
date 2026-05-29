@@ -458,14 +458,22 @@ _SUBSTRATE_DIRS = (
     "understanding", "concepts/detail", "implicit-adrs/detail",
     "refactoring-scopes/detail", "doc-gaps/detail", "test-map/detail",
     "feature-flows/detail", "feature-reflections/detail",
+    "doc-understanding",
 )
 
 
 def _build_signature(lineage_dir: Path) -> str:
     """A content signature of every canonical substrate file — (path, mtime,
-    size). Any edit to any file changes it, correctly invalidating the cache."""
+    size). Any edit to any file changes it, correctly invalidating the cache.
+
+    For the documentation axis the doc PROSE lives in `../documentation`
+    (reference-upstream — not committed here), so an upstream prose edit would
+    otherwise not invalidate the cache. When `doc-nodes.jsonl` exists we fold the
+    upstream docs files' (path, mtime, size) into the signature too, so editing a
+    doc page and rebuilding re-embeds it (only the changed sections, via the
+    embed cache)."""
     parts: list[tuple[str, int, int]] = []
-    for name in ("nodes.jsonl", "edges.jsonl"):
+    for name in ("nodes.jsonl", "edges.jsonl", "doc-nodes.jsonl"):
         p = lineage_dir / name
         if p.is_file():
             st = p.stat()
@@ -477,6 +485,12 @@ def _build_signature(lineage_dir: Path) -> str:
                 if f.is_file():
                     st = f.stat()
                     parts.append((str(f.relative_to(lineage_dir)), st.st_mtime_ns, st.st_size))
+    if (lineage_dir / "doc-nodes.jsonl").is_file():
+        docs_root = (lineage_dir.parent.parent / ".." / "documentation" / "docs").resolve()
+        if docs_root.is_dir():
+            for f in sorted(docs_root.rglob("*.md")):
+                st = f.stat()
+                parts.append((f"upstream::{f.relative_to(docs_root)}", st.st_mtime_ns, st.st_size))
     return hashlib.sha256(repr(sorted(parts)).encode()).hexdigest()[:16]
 
 

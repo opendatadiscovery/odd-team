@@ -1,4 +1,26 @@
-# Last updated 2026-05-29 — `/implement batch:feature/docs-harvest-high-medium-caveats` (15 items → all **review-ready**): 13 HIGH/MEDIUM harvest caveat-additions (DOC-290/291/292/293/295/296/297/299/300/301/302/303/304) + 2 re-implemented criticals (DOC-294 cross-table column-PATCH danger admonition + matcher-mismatch; DOC-298 DISABLED-bypass danger admonition + link fix — both clearing the prior `/review` block). 52 commits on one branch, ~50 pages; un-triaged MEDIUM harvest findings folded inline (cited by HARVEST-NNN in commit footers). docs review-ready 0 → 15, blocked 7 → 5, pending 18 → 5; total 306. **PR pending review (NOT merged).** Prior same day: `/review` 6 done/2 blocked/3 follow-ups; `/implement` 8 criticals; `/triage` harvest → 21 DOC + 11 PLT.
+# Last updated 2026-05-29 — `/implement batch:feature/docs-harvest-review-followups` (3 items → review-ready): DOC-305 (critical — custom-framework test-results endpoint propagation fix on 3 secondary surfaces), DOC-306 (medium — attachment codec is per-chunk-not-total-file + `/tmp/odd/chunks` staging precision), DOC-307 (low — `sla_ref` wire name + `{data_entity_id}` path-var consistency). 3 commits, 5 pages, PR pending. **Prior two doc PRs now MERGED to origin/main (#77 criticals, #78 HIGH+MEDIUM = `168b9b9`)** — their 15 backlog items remain review-ready pending `/review`. docs review-ready 15 → 18, pending 5 → 2; total 306. Cleared the entire review-generated follow-up backlog (DOC-287→305 / DOC-288→306 / DOC-285→307).
+
+## /implement session 2026-05-29 (3) — review-generated follow-ups DOC-305/306/307 → review-ready
+
+Batch branch `feature/docs-harvest-review-followups`, cut from current `origin/main` (`168b9b9` — now contains the merged critical-8 #77 AND HIGH+MEDIUM #78). Cleared the three follow-ups the prior `/review` of the critical batch logged (each from a reviewed-and-accepted item that revealed an adjacent gap). **Branch-base note**: DOC-305 touches Features.md + dq-visibility.md, which #78 had just edited — cutting from the merged main (not the pre-merge point) was required to avoid editing stale copies / a merge conflict (LSN-008). All code re-verified by the implementer @ ede5d277 (== odd-platform HEAD); all three pre-commit sweeps PASS.
+
+| Item | Pri | Page(s) | Fix | Commit |
+|---|---|---|---|---|
+| DOC-305 | critical | data-quality.md, Features.md, use-cases/dq-visibility.md | custom-framework **test results** → `POST /ingestion/entities` (was `/datasets/stats`, which silently drops a `DataEntityList`) on 3 secondary surfaces; dq-visibility:22 disambiguated as test outcomes; stats caveat re-anchored to the profiler + cross-linked (Cornerstone 5) | `769658e` |
+| DOC-306 | medium | configuration-and-deployment/odd-platform.md | codec bounds the per-chunk in-memory buffer, **not** the total file → no effective server-side total-file size cap (uploads chunked/streamed); chunk staging hardcoded to `/tmp/odd/chunks` independent of `attachment.local.path` | `bc25eaa` |
+| DOC-307 | low | data-quality/sla-statuses.md (+ data-quality.md:17 folded) | `slaRef` → spec wire `sla_ref`; read-posture caveat `{id}` → `{data_entity_id}` | `dbdbac0` |
+
+**DOC-305 disambiguation (the judgment AC4 required)**: dq-visibility.md:22's Scenario-4 Consistency/Accuracy KPIs are cross-dataset reconciliation/integrity check OUTCOMES shown "next to the framework-produced [test] results" — these do not fit the per-field `DatasetStatisticsList` schema (a "does sales reconcile with other sources" KPI is not a per-column statistic), so they are custom DQ test outcomes → `/ingestion/entities`. The four CORRECT `/datasets/stats` occurrences (test-results-import.md canonical warning, integrations/README, odd-collector-profiler, enable-security/README ×3) were left intact (Gate 1 sweep confirmed).
+
+**Code-truth re-verified @ ede5d277**: `IngestionController.java:38` (`postDataEntityList`←`DataEntityList`) / `:82` (`postDataSetStatsList`←`DatasetStatisticsList`); `FileServiceImpl.java:58-62` (chunk `transferTo`, no size guard); `FileUtils.java:24` (`/tmp/odd/chunks`); `application.yml:15` (codec 20MB); `components.yaml:1149` (`sla_ref` required).
+
+**Follow-ups**: none new beyond a noted-in-commit deferral — `data-quality.md:18` history endpoint `/dataentities/{id}/history` path-var is an unverified parallel surface (test-run-history feature), left for a future pass rather than authored unverified.
+
+**Live-URL list for `/review` Gate 8**: `/features/data-quality`, `/features` (Features.md), `/use-cases/dq-visibility`, `/configuration-and-deployment/odd-platform`, `/features/data-quality/sla-statuses`.
+
+**Backlog state**: docs review-ready **15 → 18** (+DOC-305/306/307); pending **5 → 2** (DOC-164, DOC-283); done 278; blocked 5; rejected 2; superseded 1; total docs 306. The 15 prior review-ready items (DOC-290..304) remain review-ready — the doc PRs merged, but the backlog `done` flip is `/review`'s job.
+
+**Next actions**: (1) `/review` (separate session) over all 18 review-ready items + the queued editorial-audit subtrees. (2) Remaining pending: DOC-164, DOC-283. (3) Harvest LOW (37) + substrate-refinement (19) + slug-rewrite (9) signals deferred.
 
 ## /implement session 2026-05-29 — HIGH+MEDIUM harvest caveats (13) + 2 re-implemented criticals → 15 review-ready
 

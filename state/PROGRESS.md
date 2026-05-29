@@ -3970,3 +3970,24 @@ Reviewed all 18 `review-ready` doc-understanding-harvest items (DOC-290..DOC-307
   - DOC-292 — code-truth ACCEPTED; AC5 (`odd-collector.md` no-grace cross-link) absent + AC1 (token caveat on `odd-platform.md`) homed elsewhere. Surgical unblock (~2 cross-links).
   - DOC-293 — `de-deprecation.md:34` frames DELETED as designed permanence + commit body's "no TTL exists" is FALSE. A 30-day hard-purge (incl. object-storage files) exists (`DataEntityHousekeepingJob:72-127`) but is held off only by the `DataEntityMapperImpl.applyStatus:247-251` dead-guard bug (status_updated_at never written; PLT-027). Contradicts the canonical statuses.md. Unblock: reframe + cross-link statuses.md. LSN-001 deletion-decision class — caught by the editorial cross-reference.
 - **Editorial / follow-ups logged**: DOC-308 (medium — phantom `show-values=WHEN_AUTHORIZED` on odd-platform.md + replicated in DOC-242/DOC-239 framing; application.yml@ede5d277 sets none), DOC-309 (low — two wrong DQ endpoint path strings on sla-statuses.md:48). Verified non-finding recorded: statuses.md:32 soft-delete-TTL known-limitation is TRUE (applyStatus dead-guard confirmed; PLT-027).
+
+
+## /implement — DOC-292/293/308/309 unblocks + follow-ups (2026-05-29)
+
+Worked the two review-harvest-batch2 blocks + the two logged follow-ups end-to-end. SoT was already
+established during /review (code @ ede5d277), so this was authoring + footers. Shipped on
+`feature/docs-harvest-review-followups` (commits afd7dd0 / 566c16c / ec3433b / 59eafb5); all flipped
+blocked|pending -> review-ready.
+
+- DOC-292 (review-ready) — odd-collector.md no-grace token-rotation warning + cross-link to canonical
+  management.md#collectors-known-caveats (AC5); AC1 reclassified to the canonical home (Cornerstone 5).
+- DOC-293 (review-ready) — de-deprecation.md DELETED reframed as soft-delete-with-retention-window
+  (intended 30-day hard-purge incl. object-storage files; currently held off by the applyStatus dead-guard
+  defect, PLT-027); cross-links statuses.md#the-soft-delete-ttl; corrects the false "no TTL exists" claim.
+- DOC-308 (review-ready) — odd-platform.md /actuator/env show-values corrected (no key set -> default
+  NEVER masks all values; key-schema is the leak, not the JDBC URL value); DOC-242/DOC-239 context
+  annotated with the correction so the phantom value is not re-propagated.
+- DOC-309 (review-ready) — sla-statuses.md two wrong DQ endpoint paths fixed against the spec.
+
+These 4 join DOC-305/306/307 on the unmerged review-followups branch -> one PR. /review (separate
+session) handles Gate 8 (live-site) after the branch is pushed + merged.

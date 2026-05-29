@@ -849,6 +849,8 @@ This is a **maintainer triage list**, not a sharded registry write. Each entry c
 
 ## LOW severity
 
+> **TRIAGED 2026-05-29 → DOC-311** (all 37 entries, HARVEST-134..170): 23 fixed, 8 already-correct, 4 dropped-not-a-bug (incl. HARVEST-155 — spec confirms 16 query-example endpoints, the hypothesised 17 was a harvest error), 2 fixed earlier this batch (141→DOC-310, 165→DOC-292). Shipped on `feature/docs-low-tail-cleanup`. See `backlog/docs/DOC-311.md` for the per-entry verdicts.
+
 - **HARVEST-134** [drift; NEW] Features chrome-invariant caveat says GenAI tab governed by feature-flag mechanism; GenAI not driven by WithFeature wrapper — stated mechanism does not apply — `doc-understanding/Features.md:doc_claim_vs_code[1]`; live `https://docs.opendatadiscovery.org/features/features` (200, 2026-05-29).
 - **HARVEST-135** [drift; NEW] README claims ODD 'auto-generated ML experiment lineage' as top-line value prop; platform only renders ML entity types, auto-generation is collector-side — `doc-understanding/README.md:doc_claim_vs_code[0]`; live `https://docs.opendatadiscovery.org/introduction` (200, 2026-05-29).
 - **HARVEST-136** [drift; NEW] Data-collaboration page under-states channel-autocomplete: startsWith not contains, only public channels bot added to (existing DOC-GAP-290 family) — `doc-understanding/active-platform-features__data-collaboration.md:doc_claim_vs_code[3]`; live `https://docs.opendatadiscovery.org/features/active-platform-features/data-collaboration` (200, 2026-05-29).

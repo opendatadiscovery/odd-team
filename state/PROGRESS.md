@@ -1,4 +1,20 @@
-# Last updated 2026-05-28 — `/review DOC-282` — ACCEPTED; all 5 AC + 11 Quality Bar gates PASS (Gate 8 live-verified on `bd3cf88` post-PR-#75 merge); 1 editorial finding logged (DOC-283 — `active-platform-features.md` L41 GenAI classification stale w.r.t. dedicated `api-reference/genai.md` sub-page); status flipped `review-ready` → `done`; **docs done 272 / review-ready 0 / pending 2 (DOC-164, DOC-283 new) / blocked 5 (DOC-141..145) — total 282**
+# Last updated 2026-05-29 — `/triage` doc-understanding harvest (HIGH tier) → **21 DOC items (DOC-284..304, pending) + 11 PLT issue drafts (PLT-098..108, draft)**; root-cause grouped, doc/code split, DOC↔PLT cross-linked; **docs pending 2 → 23, docs total 282 → 303; odd-platform issue drafts 94 → 105**. Prior: 2026-05-28 `/review DOC-282` ACCEPTED (docs done 272 / blocked 5).
+
+## /triage session 2026-05-29 — doc-understanding harvest → 21 DOC items + 11 PLT drafts (HIGH tier)
+
+Triaged the **63 HIGH** findings from `lineage/odd-platform/doc-gaps/doc-understanding-harvest-2026-05-29.md` (the ground-truth-lineage `doc-analyser` harvest over all 102 doc pages). Root-cause grouped + split per protocol: genuine doc errors → DOC backlog; upstream platform code bugs the docs exposed → PLT issue drafts.
+
+**Created**:
+- **21 DOC backlog items** `DOC-284..304` (status `pending`): 8 critical, 12 high, 1 medium. Pages span data-discovery, data-quality, lineage, reference-data, security/auth, integrations.
+- **11 PLT issue drafts** `PLT-098..108` (`issues/odd-platform/`, status `draft`): RBAC holes (reference-data, terms, lineage, data-collaboration), unsigned Slack webhook, `/actuator/env` secret exposure, view_count integrity (LSN-017), config boot-robustness, token-rotation no-grace, SMTP case-sensitivity, unaudited stats write. 10 DOC↔PLT pairs cross-linked two-way.
+
+**Dedup caveat (maintainer triages at filing time)**: several PLT drafts substantially overlap EXISTING drafts — PLT-104↔PLT-091 (view_count loop), PLT-103↔PLT-078 (actuator), PLT-098↔PLT-019 (lookup NO_CONTEXT), PLT-106↔PLT-044 (stats parent-child), PLT-108↔PLT-085 (token plaintext), PLT-101↔PLT-059/061/013, PLT-105↔PLT-068/007. Each new draft cross-references the existing one, states its distinct delta, and carries a "consider folding if filed together" note. DOC items likewise cross-reference adjacent prior DOC-NNN.
+
+**Deferred (remain in the harvest report, triageable on demand)**: 70 MEDIUM + 37 LOW candidates + 19 substrate-refinement signals (for `/enrich`) + 9 mechanical slug-rewrite signals (for doc-nodes regen).
+
+**Backlog state**: docs pending **2 → 23** (+21: DOC-284..304); docs done 272 (unchanged); blocked 5 (unchanged); total docs **282 → 303**. odd-platform issue drafts: **94 → 105** (+11 PLT-098..108, all `draft`).
+
+**Next**: `/implement` the critical DOC items first (DOC-284..289, 294, 298 — actively-misleading content). PLT drafts are paste-ready handoffs; file the non-overlapping ones, fold the flagged-overlap ones into their existing drafts.
 
 ## /review session 2026-05-28 — DOC-282 ACCEPTED; 1 editorial finding logged (DOC-283)
 

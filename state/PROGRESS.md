@@ -1,4 +1,42 @@
-# Last updated 2026-05-29 — `/review batch:feature/docs-harvest-critical-corrections` (8 critical harvest corrections): **6 ACCEPTED → done** (DOC-284/285/286/287/288/289), **2 BLOCKED** (DOC-294 + DOC-298 — narrow AC gaps, fix lists in items), **3 follow-ups logged** (DOC-305 critical / DOC-306 medium / DOC-307 low). **Gate 8 live-verified — PR #76 was ALREADY MERGED to `origin/main` (`46d55c2`); corrections are LIVE** (implementer's "PR pending" note was stale — verified via remote refs per CLAUDE.md). docs done 272 → 278, review-ready 8 → 0, blocked 5 → 7, pending 15 → 18, total 303 → 306. Prior same day: `/implement` 8 corrections; `/triage` harvest → 21 DOC + 11 PLT.
+# Last updated 2026-05-29 — `/implement batch:feature/docs-harvest-high-medium-caveats` (15 items → all **review-ready**): 13 HIGH/MEDIUM harvest caveat-additions (DOC-290/291/292/293/295/296/297/299/300/301/302/303/304) + 2 re-implemented criticals (DOC-294 cross-table column-PATCH danger admonition + matcher-mismatch; DOC-298 DISABLED-bypass danger admonition + link fix — both clearing the prior `/review` block). 52 commits on one branch, ~50 pages; un-triaged MEDIUM harvest findings folded inline (cited by HARVEST-NNN in commit footers). docs review-ready 0 → 15, blocked 7 → 5, pending 18 → 5; total 306. **PR pending review (NOT merged).** Prior same day: `/review` 6 done/2 blocked/3 follow-ups; `/implement` 8 criticals; `/triage` harvest → 21 DOC + 11 PLT.
+
+## /implement session 2026-05-29 — HIGH+MEDIUM harvest caveats (13) + 2 re-implemented criticals → 15 review-ready
+
+Batch branch `feature/docs-harvest-high-medium-caveats`, cut from current `origin/main` (`46d55c2`, = the merged critical-8 PR #76). **52 commits, ~50 pages, one PR pending review.** This run cleared the remaining HIGH tier + the one triaged MEDIUM item + folded the un-triaged MEDIUM harvest findings inline + re-implemented the two criticals the prior `/review` blocked. Throughput model (per maintainer direction "group much more, cover MEDIUM today"): parallel per-page/cluster subagents, each consumer-reading `odd-platform@ede5d277` (= substrate `last_scan_commit`, so harvest `file:line` evidence verifies exactly), each writing its own page + per-item commit with a `Sources:` footer. All three pre-commit sweeps (Gate 11 audience-isolation / description ≤200 / YAML parse) PASS across the batch.
+
+**13 HIGH/MEDIUM caveat-additions (pending → review-ready):**
+
+| Item | Page(s) | Caveat added |
+|---|---|---|
+| DOC-290 | active-platform-features/activity-feed.md | `odd.activity.partition-period` sets partition WIDTH, not retention (no auto-purge) |
+| DOC-291 | active-platform-features/alerting.md | the **All** tab lists open AND resolved alerts (global query, no status filter) |
+| DOC-292 | integrations/{build-and-run-odd-collectors, odd-cli}.md | collector-token regeneration has no grace window — a running collector breaks at rotation |
+| DOC-293 | data-lineage/** | lineage endpoints have no RBAC (any authenticated user) + depth/NPE caveats |
+| DOC-295 | active-platform-features/notifications.md | SMTP protocol value is case-sensitive lowercase `smtp`; + two related corrections |
+| DOC-296 | Features.md | bare-SpEL `${datacollaboration.enabled}` boot-failure footgun |
+| DOC-297 | data-discovery (view_count) | `view_count` is the SOLE Popular-strip ranking signal + trivially incrementable |
+| DOC-299 | data-collaboration + data-glossary | none of the 4 data-collaboration endpoints carry an RBAC gate; glossary caveats |
+| DOC-300 | developer-guides/api-reference (relationships) | `{relationship_id}` on `/erd` + `/graph` is silently ignored |
+| DOC-301 | integrations/{README, custom-collectors, odd-collector-profiler}.md | ingestion security severity + accuracy |
+| DOC-302 | enable-security/{README, authentication, authorization, EKS} | `auth.type=DISABLED` is the shipped default (permit-all, no sign-in) |
+| DOC-303 (med) | integrations/ingestion-filters.md | disambiguate collector-side regex filters from the platform ingestion filter (homonym) |
+| DOC-304 | multilingual-ui.md | 14+ missing translation keys (incl. 3 top-level) — drift understated |
+
+**2 re-implemented criticals (blocked → review-ready)** — addressing the prior `/review` block lists; odd-platform HEAD == `ede5d277`, so all code facts re-verified by the implementer against the exact commit the review used:
+- **DOC-294** (`reference-data.md`, commit `9d7296f`): added the cross-table column-`PATCH`/`DELETE` danger admonition (resolves by `column_id`, ignores `{lookup_table_id}`; read path validates, mutating paths don't; global permission scope) + the singular/plural matcher-mismatch note (gate may not fire → auth-only); softened the two endpoint rows; extended footer (`ReferenceDataController.java:131-141`/`:87-92`, `ReferenceDataServiceImpl.java:126-143`, `SecurityConstants.java:337,341`, `openapi.yaml:3917`, `AuthorizationCustomizer.java:29-30`).
+- **DOC-298** (`roles.md`, commit `c2bf28c`): wrapped the `auth.type=DISABLED` authorization-bypass note as a `{% hint style="danger" %}` admonition + fixed the link (`README.md` → `../authentication/disabled-authentication.md`) + footer (`DisabledAuthSecurityConfiguration.java:14-17`, `AuthorizationCustomizer.java:25-30`).
+
+**MEDIUM harvest findings folded inline** (no separate backlog item — cited by HARVEST-NNN in the relevant commit footers; full catalogue in the harvest report): dashboard.md (034/035/097/098/099), custom-metadata.md (086/087/146), vector-stores.md (089), use-cases dc-data-compliance/dq-visibility/viz-preparation (127/130/131/132/133), master-data-management.md (124), namespaces.md (122/123), main-concepts.md (120/121), Features.md (002/064), authorization owners/user-owner-association (081/082/083), and others.
+
+**No-op pages** (read, verified accurate, no change needed): `authentication/login-form.md`, `authorization/README.md`.
+
+**Live-URL list for `/review` Gate 8** (WebFetch each post-merge; `/review` resolves any GitBook slug rewrites): `/features/activity-feed` · `/features/alerting` · `/configuration-and-deployment/integrations/build-and-run-odd-collectors` (+ `/odd-cli`, `/integrations`, `/custom-collectors`, `/odd-collector-profiler`, `/ingestion-filters`) · `/features/data-lineage/*` · `/features/notifications` · `/features` (Features.md) · `/features/data-discovery` (view_count) · `/features/data-collaboration` (+ `/data-glossary`) · `/developer-guides/api-reference/relationships` · `/developer-guides/api-reference/reference-data` · `/configuration-and-deployment/enable-security` (+ `/authentication/*`, `/authorization/roles`, EKS deploy page) · `/features/multilingual-ui`. (Editorial-audit subtrees still queued from the prior /review: integrations/**, data-lineage/**, data-modelling/**, data-glossary/**, management/**, use-cases/** beyond dq-visibility, configuration-and-deployment/** beyond touched.)
+
+**Discipline note**: subagents skipped/deleted unverified claims rather than ship them — a retracted false LDAP-security claim deleted; a nonexistent 30-day-retention job and an outbound-codec sub-claim not authored. No new backlog items beyond the harvest's existing LOW tier; the PLT-099..108 upstream drafts from triage remain on disk.
+
+**Backlog state**: docs review-ready **0 → 15** (DOC-290..304); blocked **7 → 5** (DOC-294/298 cleared); pending **18 → 5** (DOC-164, DOC-283, DOC-305, DOC-306, DOC-307); done 278; rejected+superseded 3; total docs **306**.
+
+**Next actions**: (1) run `/review` in a separate session over the 15 review-ready items + the queued editorial-audit subtrees; the PR is pending (NOT merged). (2) DOC-305 (critical, live) still open from the prior /review — the `/datasets/stats` endpoint error survives on 3 high-traffic pages. (3) Harvest LOW tier (37) + substrate-refinement (19) + slug-rewrite (9) signals remain deferred in the harvest report.
 
 ## /review session 2026-05-29 — batch:feature/docs-harvest-critical-corrections — 6 ACCEPTED / 2 BLOCKED / 3 follow-ups
 

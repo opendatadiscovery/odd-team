@@ -1,4 +1,31 @@
-# Last updated 2026-05-29 — `/triage` doc-understanding harvest (HIGH tier) → **21 DOC items (DOC-284..304, pending) + 11 PLT issue drafts (PLT-098..108, draft)**; root-cause grouped, doc/code split, DOC↔PLT cross-linked; **docs pending 2 → 23, docs total 282 → 303; odd-platform issue drafts 94 → 105**. Prior: 2026-05-28 `/review DOC-282` ACCEPTED (docs done 272 / blocked 5).
+# Last updated 2026-05-29 — `/implement` batch: **8 critical doc-accuracy corrections** shipped to `documentation` (DOC-284/285/286/287/288/289/294/298 → `review-ready`) on `feature/docs-harvest-critical-corrections`; **docs review-ready 0 → 8, pending 23 → 15**; PR pending review (NOT merged). Prior same day: `/triage` harvest → 21 DOC + 11 PLT drafts; `/review DOC-282` ACCEPTED (docs done 272 / blocked 5).
+
+## /implement session 2026-05-29 — 8 critical doc-accuracy corrections (doc-understanding harvest, HIGH tier)
+
+Batch branch `feature/docs-harvest-critical-corrections` off `origin/main` (`bd3cf88`). Implemented the 8 **critical** DOC items from the harvest triage — the actively-misleading, code-verified factual errors. Each: consumer-read against `odd-platform@ede5d277` (the substrate's `last_scan_commit`, so the harvest's `file:line` evidence verifies exactly), per-item commit with a `Sources:` footer, all three pre-commit sweeps PASS (Gate 11 audience-isolation / description ≤200 / YAML parse), status flipped to `review-ready` (NOT done — `/review` closes in a separate session).
+
+**Shipped — 8 commits, one PR pending review:**
+
+| Item | Page(s) | Correction | Commit |
+|---|---|---|---|
+| DOC-284 | data-discovery/statuses.md | transposed status enum-id SQL legend → DRAFT(2)/STABLE(3)/DEPRECATED(4) | `85abad3` |
+| DOC-285 | data-quality.md + data-quality/sla-statuses.md | BI import endpoint is `/sla_report` (JSON), not `/sla` (PNG badge) | `5758dd0` |
+| DOC-286 | data-discovery/entity-description.md | `DESCRIPTION_UPDATED` carries full before+after text (inverted claim) | `4aa721d` |
+| DOC-287 | data-quality/test-results-import.md | framework results → `POST /ingestion/entities`, not `/datasets/stats` | `b76fecb` |
+| DOC-288 | Architecture.md + configuration-and-deployment/odd-platform.md | LOCAL attachment default `/tmp/odd/attachments` (ephemeral); `max-file-size` is a UI-only filter | `16ec6f3` |
+| DOC-289 | data-discovery/business-names.md | column rename emits `DATASET_FIELD_INTERNAL_NAME_UPDATED`, not `BUSINESS_NAME_UPDATED` | `30c5ad0` |
+| DOC-294 | developer-guides/api-reference/reference-data.md + master-data-management/lookup-tables.md | false per-table-RBAC claim; reads ungated; global scope (pairs PLT-098) | `14b06bb` |
+| DOC-298 | .../enable-security/authorization/policies.md + roles.md | invalid `in` policy operator → `any`/`eq`; Owner-role override conditional on non-empty role set + DISABLED note | `49e383e` |
+
+**PR (pending review, NOT merged)**: https://github.com/opendatadiscovery/documentation/pull/new/feature/docs-harvest-critical-corrections
+
+**Live-URL list for `/review` Gate 8** (WebFetch post-merge): `/features/data-discovery/statuses` · `/features/data-quality` (+ `/features/data-quality/sla-statuses`) · `/features/data-discovery/entity-description` · `/features/data-quality/test-results-import` · `/introduction/architecture` (+ `/configuration-and-deployment/odd-platform`) · `/features/data-discovery/business-names` · `/developer-guides/api-reference/reference-data` (+ `/features/master-data-management/lookup-tables`) · `.../enable-security/authorization/policies` (+ `.../roles`). (Security/auth + developer-guides pages resolve at single-prefix slugs; the harvest's mechanical-slug-rewrite appendix lists the doubled-slug sections to watch.)
+
+**Not in this batch (next /implement)**: the remaining 13 DOC items (DOC-290..293, 295..297, 299..304 — HIGH/MEDIUM, mostly security-posture **caveat additions**) form a cohesive "security & RBAC caveats" theme that pairs with PLT-099..108. MEDIUM/LOW harvest findings remain in the harvest report.
+
+**Follow-ups**: none newly logged — every consumer-read confirmed the harvest's cited evidence; no out-of-scope discoveries beyond the PLT drafts already filed in the triage pass.
+
+**Backlog state**: docs review-ready **0 → 8** (DOC-284/285/286/287/288/289/294/298); docs pending **23 → 15**; docs done 272; blocked 5; total docs 303.
 
 ## /triage session 2026-05-29 — doc-understanding harvest → 21 DOC items + 11 PLT drafts (HIGH tier)
 

@@ -3958,3 +3958,15 @@ Effect on counts: review-ready 0 → 2 (DOC-004, DOC-012); pending 34 → 32; to
 - WebFetch `https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication/login-form` — confirm DANGER admonition with shipped defaults named, YAML + env-var tabs with corrected `AUTH_LOGIN_FORM_CREDENTIALS` form.
 - Gate 9 outbound-URL sweep: no new absolute URLs introduced; all cross-links are relative in-tree.
 - After Gate 8 PASS, flip both items `review-ready` → `done`.
+
+
+## /review — batch review-harvest-batch2 (2026-05-29)
+
+Reviewed all 18 `review-ready` doc-understanding-harvest items (DOC-290..DOC-307) in one batch. Code-truth verified against odd-platform @ ede5d277 (5 fan-out verification agents, reviewer-confirmed for load-bearing claims); Gate 8 live-site verified via raw `curl -sL` (WebFetch gave 4 false negatives on long/redirected pages — raw HTML authoritative); Gate 11 mechanical banned-term grep clean on all 31 touched files; doc-product editorial audit run.
+
+- **ACCEPTED → done (13)**: DOC-290, 291, 294, 295, 296, 297, 298, 299, 300, 301, 302, 303, 304. (DOC-294 + DOC-298 = prior review-harvest-critical blocks, re-implemented, now PASS.) All caveats render live; every cited file:line confirmed @ ede5d277.
+- **ACCEPTED (code-truth) → stays review-ready, Gate 8 DEFERRED (3)**: DOC-305, 306, 307 — on `feature/docs-harvest-review-followups`, NOT yet merged to origin/main; re-run /review post-merge for Gate 8. (DOC-305 critical DQ-routing proven against the AlertIngestionTest runtime harness.)
+- **REJECTED → blocked (2)**:
+  - DOC-292 — code-truth ACCEPTED; AC5 (`odd-collector.md` no-grace cross-link) absent + AC1 (token caveat on `odd-platform.md`) homed elsewhere. Surgical unblock (~2 cross-links).
+  - DOC-293 — `de-deprecation.md:34` frames DELETED as designed permanence + commit body's "no TTL exists" is FALSE. A 30-day hard-purge (incl. object-storage files) exists (`DataEntityHousekeepingJob:72-127`) but is held off only by the `DataEntityMapperImpl.applyStatus:247-251` dead-guard bug (status_updated_at never written; PLT-027). Contradicts the canonical statuses.md. Unblock: reframe + cross-link statuses.md. LSN-001 deletion-decision class — caught by the editorial cross-reference.
+- **Editorial / follow-ups logged**: DOC-308 (medium — phantom `show-values=WHEN_AUTHORIZED` on odd-platform.md + replicated in DOC-242/DOC-239 framing; application.yml@ede5d277 sets none), DOC-309 (low — two wrong DQ endpoint path strings on sla-statuses.md:48). Verified non-finding recorded: statuses.md:32 soft-delete-TTL known-limitation is TRUE (applyStatus dead-guard confirmed; PLT-027).

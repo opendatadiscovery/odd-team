@@ -296,7 +296,14 @@ def _live_url_guess(docs_rel: str, summary_group: str, anchor: str, level: int) 
     # title-derived slug rewrite is still the verifier's job.
     stem = "/".join(slugify(seg) for seg in stem.split("/") if seg)
     prefix = slugify(summary_group) if summary_group else ""
-    parts = [p for p in (prefix, stem) if p]
+    # When the page already lives in a directory named like its SUMMARY group
+    # (docs/configuration-and-deployment/* under "Configuration and Deployment"),
+    # GitBook uses that directory as the URL segment — prepending the group again
+    # would double it. Only prepend when the path does not already start with it.
+    if prefix and (stem == prefix or stem.startswith(prefix + "/")):
+        parts = [stem]
+    else:
+        parts = [p for p in (prefix, stem) if p]
     url = BASE_URL + "/" + "/".join(parts) if parts else BASE_URL
     # The page-root (H1) addresses the page; deeper headings add the fragment.
     if level > 1 and anchor:

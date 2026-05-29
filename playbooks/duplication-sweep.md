@@ -32,6 +32,7 @@ Any change that adds a new page, a new term, a new outbound URL, a new repo refe
      - **Consolidate** — existing mention is a redundant copy; collapse into a teaser pointing to the canonical page. Update `affected_files`.
      - **New alias entry** — existing mention uses a different name for the same thing; the item must also add a row to the alias table (for documentation: `docs/main-concepts.md` Terms & Aliases).
    - Record each decision in the item's Context: `- {file:line} — {classification} — {brief reason}`.
+   - **Correction completeness (accuracy-fix items).** When the item *corrects a wrong factual claim* rather than adding new content, a hit carrying the same wrong claim is **not** Link / Expand / Consolidate — it is **Fix-here**: correct it in the same commit. The item's `affected_files` is a **floor, not a ceiling** — `/implement` re-runs this sweep and fixes **every** surface it finds, and `/review` confirms a re-sweep returns **zero residue** before the item closes. Fixing one surface and logging the rest as a new item is the fix → review → log → fix loop. The unit of work is the *claim, swept to zero residue*, not the page. Canonical failure: DOC-308 → DOC-310 (2026-05-29) — `/actuator/env` value-masking corrected on one page while four more carried the same phantom claim.
 
 2. **New-content sweep** (catches: unverified URLs, terminology collisions, unregistered aliases).
 
@@ -66,3 +67,4 @@ Any change that adds a new page, a new term, a new outbound URL, a new repo refe
 - `retrospectives/LSN-003-dbt-wrong-repo-link.md` — new outbound URL authored from memory; the new-content sweep would have grepped `docs/` for `dbt` and found the correct target on `github-organization-overview.md`.
 - `retrospectives/LSN-004-s2s-fallback-cache.md` — new term ("M2M") introduced without an alias-table row; the existing alias ("S2S") was the canonical name.
 - `retrospectives/LSN-009-backlog-internal-duplication.md` — a proposed DOC-062 was already covered by DOC-042 in richer form; the backlog-internal sweep would have caught it before creation.
+- DOC-308 → DOC-310 chain (2026-05-29) — the correction-completeness rule (step 1). An accuracy correction was shipped on one surface while four more carried the same wrong `/actuator/env` claim; the `affected_files`-is-a-floor + re-sweep-to-zero-residue rule (run at `/implement` and confirmed at `/review`) closes the whole claim in one item instead of one-surface-per-review.

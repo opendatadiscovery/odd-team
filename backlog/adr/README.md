@@ -51,9 +51,9 @@ at PR-merge** (Cornerstone 5) — triage never auto-publishes.
 | ADR | from | Pri | Effort | Status | Flags | Decision |
 |---|---|---|---|---|---|---|
 | ADR-0001 | -001 | high | small | in-review | — | Contract-first HTTP layer: controllers implement OpenAPI-generated interfaces |
-| ★ ADR-0002 | -002 | high | small | backlog | — | Centralised path-matcher authorization (no `@PreAuthorize`) |
-| ★ ADR-0007 | -007 | high | small | backlog | — | Uniform `Mono<ResponseEntity<T>>` controller pipeline |
-| ★ ADR-0008 | -008 | medium | small | backlog | — | OpenAPI tag-per-resource scoping → resource-shaped `*Api` interfaces |
+| ★ ADR-0002 | -002 | high | small | in-review | — | Centralised path-matcher authorization (no `@PreAuthorize`) |
+| ★ ADR-0007 | -007 | high | small | in-review | — | Uniform `Mono<ResponseEntity<T>>` controller pipeline |
+| ★ ADR-0008 | -008 | medium | small | backlog | ⚠ | OpenAPI tag-per-resource scoping → resource-shaped `*Api` interfaces |
 | ★ ADR-0018 | -018 | high | small | backlog | — | Outbound-integration config is fail-fast at boot |
 | ★ ADR-0012 | -012 | high | small | backlog | 📌 | Attachment storage backend selected at boot via `@ConditionalOnProperty` (`LOCAL` default) |
 | ★ ADR-0004 | -004 | high | small | backlog | 🔒📌 | GenAI ships disabled-by-default; enabled-defaults are deliberately minimal |

@@ -4,6 +4,37 @@
 
 The published ADR (docs PR #82 → `origin/main`, live HTTP 200) asserts three times that `AlertManagerController` is the **lone** hand-mapped controller exception to the contract-first pattern. A full 36-controller sweep of odd-platform `ede5d277` finds **two** hand-mapped exceptions in the same `odd-platform-api` module: `AlertManagerController` (Alertmanager webhook) **and** `EventApiController` (`/api/slack/events`, data-collaboration Slack-events webhook). Gate 6 + Gate 9 FAIL — incorrect documentation, now live & public. Same reducer-incompleteness class as DOC-315 / LSN-002: a universal asserted from an 18-sidecar sample without the exhaustive code sweep. Gates 1/4/7/8/10/11 + AC#1/3/4/5/7 PASS (AlertController, build.gradle openApiGenerate, generated-not-committed `*Api`, SUMMARY/README, ontology node all re-verified). Fix converges 5 surfaces (page Consequences + Evidence, backlog Description, `adr-nodes.jsonl`, `implicit-adrs.md` framing); recommended reframe = "deliberate exceptions are hand-mapped external-webhook receivers (Alertmanager + Slack events)", which strengthens the rationale. Correction ships as a follow-on docs PR → re-run `/review` after merge. **Backlog**: adr review-ready 1 → 0; blocked +1 (ADR-0001). Editorial audit: covered new `architecture-decision-log/**` subtree; broader tree freshly swept by today's 94e246a — no new findings.
 
+# Last updated 2026-05-30 — `/implement` (ADR pillar, HTTP+authz backbone batch)
+
+**ADR-0002 + ADR-0007 → `review-ready`.** Two published ADRs authored on docs branch
+`feature/docs-adr-http-authz-backbone` (off `origin/main` `6fcb1a8`, **pushed** — docs PR
+pending review): `4d75e34` ADR-0002 (centralised path-matcher authz, no `@PreAuthorize`) and
+the branch-HEAD ADR-0007 (uniform `Mono<ResponseEntity<T>>` pipeline + centralised
+`ControllerAdvice`). Each ships page + log-index row + SUMMARY entry in one commit (Gate 7 —
+the ADR-0002 commit was amended after the SUMMARY edit initially failed, restoring the trio).
+
+- **Evidence re-verified at substrate `ede5d277`** (= odd-platform HEAD), Gate A2:
+  `AuthorizationCustomizer.java:20-31` sole `SECURITY_RULES` consumer + `SecurityConstants.java:95-98`
+  (WHITELIST + 82 rules) + **0** `@PreAuthorize`/`@Secured` in `odd-platform-api/src/main`;
+  `ControllerAdvice.java` sole `@RestControllerAdvice` + DataEntityController 40/(34+3) +
+  SearchController 7/7 + TermController 23 + whole-module 0 deviations.
+- **Pre-commit sweeps PASS** on both pages: Gate 11 = 0, description 176/178 bytes (≤200),
+  colon-space clean, PyYAML OK.
+- **ADR-0008 kept `backlog` (⚠ in ledger).** The spec sweep CONFIRMED single-tag-per-operation
+  (0 of 194 multi-tag) but REFUTED the drafted "every operation under a tag shares an
+  `/api/<plural-noun>` prefix" — 3 of 33 tags (`dataEntity` 37 ops, `ownerAssociationRequest`,
+  `dataCollaboration`) span multiple path roots. Authoring deferred rather than ship the
+  overclaim (ADR-0001 lesson); the required reframe + sweep method recorded in `backlog/adr/ADR-0008.md`.
+- **ADR-0001** confirmed already fixed & merged (docs PR #83 → `origin/main`; live page says
+  "Two deliberate exceptions" — `AlertManagerController` + `EventApiController`; zero "lone").
+  Its backlog item stays `blocked` pending a separate-session `/review` re-flip to `done`.
+- **Ontology AC#6** (graph-build projection of the new ADR nodes) deferred to a graph-build
+  pass — extractor venv absent this session.
+- **Backlog:** adr review-ready 0 → 2 (ADR-0002/0007). Live URLs for `/review` Gate 8 in each item.
+- **Harness note:** a malformed shell command (`echo` jammed against a non-ASCII word) mid-session
+  triggered a parallel-batch cancellation cascade; no partial writes survived (fail-closed), state
+  re-verified clean before resuming. Lesson: small sequential batches, no liveness-probe spam.
+
 ## ADR process established 2026-05-30 — new `adr` pillar + pilot ADR-0001 + ontology Phase 2
 
 Established the ADR maintenance process, mirroring documentation, on the maintainer's directive (thorough-thinking-first; plan approved: rails + ontology + 1 pilot; governance: maintainer ratifies before live publish). Source = adr-archaeologist's implicit-ADR candidates (`lineage/odd-platform/implicit-adrs.md`, ~61); output = published, descriptive, code-evidenced Architecture Decision Records under docs Developer Guides → "Architectural Decision Log", reviewed to the doc bar, referenced in the ontology.

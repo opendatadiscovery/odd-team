@@ -53,10 +53,10 @@ at PR-merge** (Cornerstone 5) — triage never auto-publishes.
 | ADR-0001 | -001 | high | small | in-review | — | Contract-first HTTP layer: controllers implement OpenAPI-generated interfaces |
 | ★ ADR-0002 | -002 | high | small | in-review | — | Centralised path-matcher authorization (no `@PreAuthorize`) |
 | ★ ADR-0007 | -007 | high | small | in-review | — | Uniform `Mono<ResponseEntity<T>>` controller pipeline |
-| ★ ADR-0008 | -008 | medium | small | backlog | ⚠ | OpenAPI tag-per-resource scoping → resource-shaped `*Api` interfaces |
-| ★ ADR-0018 | -018 | high | small | backlog | — | Outbound-integration config is fail-fast at boot |
-| ★ ADR-0012 | -012 | high | small | backlog | 📌 | Attachment storage backend selected at boot via `@ConditionalOnProperty` (`LOCAL` default) |
-| ★ ADR-0004 | -004 | high | small | backlog | 🔒📌 | GenAI ships disabled-by-default; enabled-defaults are deliberately minimal |
+| ★ ADR-0008 | -008 | medium | small | in-review | — | OpenAPI tags scope the generated `*Api` interfaces (single-tag-per-op; 30/33 single-prefix, 3 multi-root) |
+| ★ ADR-0018 | -018 | high | small | in-review | — | Outbound-integration config is fail-fast at boot |
+| ★ ADR-0012 | -012 | high | small | in-review | 📌 | Attachment storage backend selected at boot via `@ConditionalOnProperty` (`LOCAL` default) |
+| ★ ADR-0004 | -004 | high | small | in-review | 🔒📌 | GenAI ships disabled-by-default; runtime-guard (not boot-gate); minimal enabled-defaults |
 | ADR-0003 | -003 | high | small | mapped | 📌 | GET reads outside `SECURITY_RULES` — read-collaborative, authenticated-only |
 
 ### Authorization & auth-mode family

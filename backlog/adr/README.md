@@ -124,8 +124,8 @@ at PR-merge** (Cornerstone 5) — triage never auto-publishes.
 
 | ADR | from | Pri | Effort | Status | Flags | Decision |
 |---|---|---|---|---|---|---|
-| ADR-0021 | -021 | medium | small | mapped | — | Activity streams use cursor pagination (no offset/limit) |
-| ADR-0022 | -022 | medium | small | mapped | — | Activity view-modes are one `type` enum parameter, not separate endpoints |
+| ADR-0021 | -021 | medium | small | in-review | — | Activity streams use cursor pagination (no offset/limit) |
+| ADR-0022 | -022 | medium | small | in-review | — | Activity view-modes are one `type` enum parameter, not separate endpoints |
 | ADR-0028 | -028 | medium | medium | mapped | — | Activity partition lifecycle: 2× overlap + dual-lock + List-injection + continue-on-failure |
 | ADR-0045 | -045 | medium | small | mapped | — | Housekeeping is a separate subsystem from partition management |
 | ADR-0046 | -046 | medium | small | mapped | 📌 | Housekeeping is opt-OUT (ships `enabled: true`) |

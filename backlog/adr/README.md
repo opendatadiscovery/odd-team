@@ -153,3 +153,23 @@ The backbone ADRs (section A) will cross-link the published instances rather tha
 
 **Net effect of the filter:** ~48 mapped candidates → ~8 backbone + ~9 keep ADRs to author;
 the rest fold or close. Few load-bearing ADRs over many tactical ones.
+
+---
+
+## Open pillar-guide follow-up (logged 2026-05-31, found while authoring 0073/0071)
+
+**Drift: `pillars/adr/authoring.md` template vs. published practice — needs maintainer steer.**
+The `authoring.md` page template (and Gate A4 wording in `gates.md`) shows `promoted_from`,
+`realises`, and `superseded_by` **in the published page's YAML frontmatter**. But every one of the
+19 published ADRs carries only `adr_id / title / status / date / description` on the page; the
+ontology edges live in the **backlog item's `realises:`** + the generated `lineage/odd-platform/
+adr-nodes.jsonl` (the `adrs-ingest` extractor joins page + backlog item — see PROGRESS 2026-05-30
+"Ontology Phase 2"). Following the template literally would print `promoted_from: ADR-CANDIDATE-NNN`
+on a public page — a **Gate 11 (audience-isolation) leak**. The live pages also have **six** body
+sections (Status / Context / Decision / Consequences / Evidence / **See also**), not the five the
+template lists. 0073 + 0071 followed *practice*, not the template.
+**Action for maintainer:** either (a) correct `authoring.md`/`gates.md` to match practice (page
+frontmatter is minimal; ontology fields live in the backlog item + adr-nodes.jsonl; add the `See
+also` section), or (b) decide page frontmatter *should* carry the ontology fields and change the
+extractor + audience-isolation rule accordingly. Recommendation: (a) — practice is the safer,
+already-shipped convention and keeps internal candidate IDs off the public manual.

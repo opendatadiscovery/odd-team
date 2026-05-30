@@ -112,13 +112,13 @@ at PR-merge** (Cornerstone 5) — triage never auto-publishes.
 
 | ADR | from | Pri | Effort | Status | Flags | Decision |
 |---|---|---|---|---|---|---|
-| ADR-0019 | -019 | medium | small | mapped | — | Data Collaboration ships disabled-by-default (`@ConditionalOnDataCollaboration`) |
-| ADR-0020 | -020 | medium | medium | mapped | — | Slack delivery decoupled via 202 + queue + Postgres advisory-lock |
-| ADR-0040 | -040 | medium | small | mapped | — | Notifications ship off-by-default via single `Condition` + meta-annotation |
-| ADR-0041 | -041 | medium | small | mapped | — | Each notification channel activated by presence of its URL/sender key |
-| ADR-0042 | -042 | medium | small | mapped | 📌 | Notification fan-out is fail-soft per channel |
-| ADR-0043 | -043 | medium | medium | mapped | — | Notifications WAL subscriber is leader-elected single-thread (advisory-lock 100) |
-| ADR-0044 | -044 | medium | small | mapped | — | Notifications use lazy-create-no-drop for Postgres replication artefacts |
+| ADR-0019 | -019 | medium | small | in-review | — | Data Collaboration ships disabled-by-default (`@ConditionalOnDataCollaboration`) |
+| ADR-0020 | -020 | medium | medium | in-review | — | Slack delivery decoupled via 202 + queue + Postgres advisory-lock |
+| ADR-0040 | -040 | medium | small | in-review | — | Notifications ship off-by-default via single `Condition` + meta-annotation |
+| ADR-0041 | -041 | medium | small | in-review | — | Each notification channel activated by presence of its URL/sender key |
+| ADR-0042 | -042 | medium | small | in-review | 📌 | Notification fan-out is fail-soft per channel |
+| ADR-0043 | -043 | medium | medium | in-review | — | Notifications WAL subscriber is leader-elected single-thread (advisory-lock 100) |
+| ADR-0044 | -044 | medium | small | in-review | — | Notifications use lazy-create-no-drop for Postgres replication artefacts |
 
 ### Activity / partition / housekeeping
 

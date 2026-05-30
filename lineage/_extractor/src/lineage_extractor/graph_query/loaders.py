@@ -18,6 +18,7 @@ from ruamel.yaml import YAML
 
 from lineage_extractor.graph_query import config
 from lineage_extractor.graph_query.records import (
+    ADRNodeRecord,
     CodeNodeRecord,
     ConceptRecord,
     DocNodeRecord,
@@ -54,6 +55,7 @@ def load_substrate(lineage_dir: Path) -> Substrate:
     _load_concepts(lineage_dir, sub)
     _load_doc_nodes(lineage_dir, sub)
     _load_doc_understanding(lineage_dir, sub)
+    _load_adr_nodes(lineage_dir, sub)
     _load_test_map(lineage_dir, sub)
     _load_feature_flows(lineage_dir, sub)
     _load_feature_reflections(lineage_dir, sub)
@@ -339,6 +341,47 @@ def _load_doc_understanding(lineage_dir: Path, sub: Substrate) -> None:
                 prose=prose,
                 source_file=rel,
                 source_line=1,
+            )
+        )
+
+
+def _load_adr_nodes(lineage_dir: Path, sub: Substrate) -> None:
+    """Load `adr-nodes.jsonl` — the published ADR nodes (ground-truth-lineage
+    Phase 2). Each row carries the ADR identity + the ontology join
+    (promoted_from / realises / superseded_by) the projector turns into
+    PROMOTED_TO / REALISES / SUPERSEDED_BY edges. Absent file is not an error
+    (a repo with no ADR layer); a bad row is skipped+reported, never crashes."""
+    path = lineage_dir / "adr-nodes.jsonl"
+    if not path.is_file():
+        return  # ADRs not ingested for this repo — not an error, just no ADR layer
+    for lineno, line in enumerate(path.read_text().splitlines(), start=1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            sub.skipped.append((f"adr-nodes.jsonl:{lineno}", f"bad JSON: {exc}"))
+            continue
+        adr_id = row.get("adr_id")
+        if not adr_id:
+            sub.skipped.append((f"adr-nodes.jsonl:{lineno}", "row has no `adr_id`"))
+            continue
+        sub.adr_nodes.append(
+            ADRNodeRecord(
+                adr_id=adr_id,
+                title=row.get("title", ""),
+                status=row.get("status", ""),
+                date=row.get("date", ""),
+                repo_rel_path=row.get("repo_rel_path", ""),
+                anchor=row.get("anchor", ""),
+                live_url=row.get("live_url", ""),
+                content_hash=row.get("content_hash", ""),
+                promoted_from=row.get("promoted_from", ""),
+                realises=[str(r) for r in (row.get("realises") or [])],
+                superseded_by=row.get("superseded_by", ""),
+                source_file="adr-nodes.jsonl",
+                source_line=lineno,
             )
         )
 

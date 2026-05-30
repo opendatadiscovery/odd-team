@@ -64,6 +64,27 @@ class SidecarRecord:
 
 
 @dataclass
+class ADRNodeRecord:
+    """A published ADR node parsed from `adr-nodes.jsonl` (ground-truth-lineage
+    Phase 2). Identity is `adr_id`; the join fields carry the edges the projector
+    wires (`PROMOTED_TO` / `REALISES` / `SUPERSEDED_BY`)."""
+
+    adr_id: str
+    title: str
+    status: str
+    date: str
+    repo_rel_path: str
+    anchor: str
+    live_url: str
+    content_hash: str
+    promoted_from: str
+    realises: list[str]
+    superseded_by: str
+    source_file: str
+    source_line: int
+
+
+@dataclass
 class ReducerNodeRecord:
     """A reducer-derived node — ImplicitADR / RefactoringScope / DocGap / TestGap /
     Feature / FeatureReflection. One per reducer `detail/` entry."""
@@ -154,5 +175,6 @@ class Substrate:
     concepts: list[ConceptRecord] = field(default_factory=list)
     doc_nodes: list[DocNodeRecord] = field(default_factory=list)
     doc_understanding: list[DocUnderstandingRecord] = field(default_factory=list)
+    adr_nodes: list[ADRNodeRecord] = field(default_factory=list)
     # Files that could not be parsed — surfaced, never silently dropped.
     skipped: list[tuple[str, str]] = field(default_factory=list)   # (path, reason)

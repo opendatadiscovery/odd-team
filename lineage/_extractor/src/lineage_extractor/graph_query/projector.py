@@ -206,6 +206,10 @@ def _reducer_key(label: str, entry_id: str) -> str:
     return f"{label.lower()}::{entry_id}"
 
 
+def _adr_key(adr_id: str) -> str:
+    return f"adr::{adr_id}"
+
+
 # --------------------------------------------------------------------------
 # Projection
 
@@ -408,6 +412,12 @@ def project(substrate: Substrate) -> OntologyGraph:
             g.add_edge(feature_key, refl_key,
                        GraphEdge(config.E_REFLECTED_BY, rn.source_file, rn.source_line))
 
+    # 6.5 — Published ADRs (ground-truth-lineage Phase 2): ADR nodes +
+    #       PROMOTED_TO / REALISES / SUPERSEDED_BY. Projected after the reducer
+    #       nodes (so the ImplicitADR a PROMOTED_TO points back from exists) and
+    #       after the code nodes (so a REALISES resolves to a real CodeNode).
+    _project_adr_nodes(g, substrate)
+
     # 7 — Structural edges from edges.jsonl (uppercased type), stub missing ends.
     for edge in substrate.edges:
         for endpoint in (edge.src, edge.dst):
@@ -566,6 +576,151 @@ def _project_doc_references(
             if dst_key and dst_key != src_key:
                 g.add_edge(src_key, dst_key,
                            GraphEdge(config.E_DOC_REFERENCES, dn.source_file, dn.source_line))
+
+
+def _project_adr_nodes(g: OntologyGraph, substrate: Substrate) -> None:
+    """Project published ADR nodes + their three ground-truth edges.
+
+    - ``ADR`` node (``L_ADR``), id = ``adr_id``, carrying title/status/live_url/
+      content_hash. Non-code ``realises`` refs (e.g. the openapi.yaml spec) are
+      kept as a ``realises_external`` node attribute — they are not graph edges.
+    - ``PROMOTED_TO`` — the ``ImplicitADR`` whose id == ``promoted_from``
+      (``ADR-CANDIDATE-NNN``) -> the ``ADR``. The candidate was ratified into the
+      published decision. If the ImplicitADR is not in the graph (the candidate
+      reducer hasn't been run, or the id is stale) the edge is skipped and the
+      absence recorded on ``g.skipped`` — never a crash.
+    - ``REALISES`` — each ``realises`` entry that matches an existing ``CodeNode``
+      node_id yields a ``CodeNode -> ADR`` edge (the code realises the decision,
+      OSLC satisfiedBy). A non-code ref is NOT stubbed — it becomes the external
+      attribute above.
+    - ``SUPERSEDED_BY`` — ``ADR -> ADR`` when ``superseded_by`` names another
+      ADR node that exists.
+
+    Two passes (nodes, then edges) so a SUPERSEDED_BY to a not-yet-added ADR
+    resolves regardless of ingest order.
+
+    A ``realises`` ref is matched to a CodeNode by a forgiving identity (see
+    ``_resolve_code_ref``): exact node_id first, then a unique
+    ``repo lang …:descriptor`` match so a hand-authored ref need not reproduce
+    the mechanically-generated package segment / kind suffix verbatim
+    (`…controller-class:AlertController` resolves to the substrate's
+    `…controller:AlertController`). A ref that resolves to no real code node is
+    the ``realises_external`` attribute — never a stub, never an edge."""
+    code_ids = {cn.node_id for cn in substrate.code_nodes}
+    code_descriptor_index = _build_code_descriptor_index(substrate)
+
+    def _resolve(ref: str) -> str | None:
+        return _resolve_code_ref(ref, code_ids, code_descriptor_index)
+
+    # Pass 1 — nodes (so every SUPERSEDED_BY endpoint can resolve).
+    for adr in substrate.adr_nodes:
+        # A ref is external iff it resolves to no real code node — keep the
+        # edge decision and the external-attribute decision on one rule so a
+        # resolved ref is never also listed as external.
+        realises_external = sorted(
+            ref for ref in adr.realises if _resolve(ref) is None
+        )
+        g.add_node(
+            GraphNode(
+                label=config.L_ADR,
+                key=_adr_key(adr.adr_id),
+                node_id=adr.adr_id,
+                title=adr.title or adr.adr_id,
+                source_file=adr.source_file,
+                source_line=adr.source_line,
+                props={
+                    "status": adr.status,
+                    "date": adr.date,
+                    "url": adr.live_url,
+                    "repo_rel_path": adr.repo_rel_path,
+                    "anchor": adr.anchor,
+                    "content_hash": adr.content_hash,
+                    "realises_external": realises_external,
+                },
+                embed_units=[("adr", f"{adr.title}".strip())] if adr.title else [],
+            )
+        )
+    # Pass 2 — the three ground-truth edges.
+    for adr in substrate.adr_nodes:
+        adr_key = _adr_key(adr.adr_id)
+        # PROMOTED_TO — ImplicitADR(ADR-CANDIDATE-NNN) -> ADR.
+        if adr.promoted_from:
+            cand_key = _reducer_key(config.L_IMPLICIT_ADR, adr.promoted_from)
+            if g.has(cand_key):
+                g.add_edge(cand_key, adr_key,
+                           GraphEdge(config.E_PROMOTED_TO, adr.source_file, adr.source_line))
+            else:
+                g.skipped.append((
+                    adr.source_file,
+                    f"{adr.adr_id}: PROMOTED_TO source ImplicitADR "
+                    f"{adr.promoted_from} not in graph (edge skipped)",
+                ))
+        # REALISES — CodeNode -> ADR, only for refs matching a real code node.
+        for ref in adr.realises:
+            resolved = _resolve(ref)
+            if resolved is not None:
+                g.add_edge(_code_key(resolved), adr_key,
+                           GraphEdge(config.E_REALISES, adr.source_file, adr.source_line))
+        # SUPERSEDED_BY — ADR -> ADR (target must exist).
+        if adr.superseded_by:
+            target_key = _adr_key(adr.superseded_by)
+            if g.has(target_key):
+                g.add_edge(adr_key, target_key,
+                           GraphEdge(config.E_SUPERSEDED_BY, adr.source_file, adr.source_line))
+            else:
+                g.skipped.append((
+                    adr.source_file,
+                    f"{adr.adr_id}: SUPERSEDED_BY target {adr.superseded_by} "
+                    f"not in graph (edge skipped)",
+                ))
+
+
+def _build_code_descriptor_index(substrate: Substrate) -> dict[tuple[str, str, str], list[str]]:
+    """Index CodeNodes by a kind-insensitive identity for forgiving REALISES
+    resolution: ``(repo, lang, descriptor)`` -> [node_id, ...].
+
+    The substrate node grammar is ``<repo> <lang> <segment> <kind>:<descriptor>``;
+    a hand-authored `realises` ref usually has the right repo/lang/descriptor but
+    a guessed `<segment>` (package) and/or a near-miss `<kind>` (`controller-class`
+    vs `controller`). Keying on the kind-free identity lets such a ref resolve
+    when — and only when — exactly one code node carries that identity."""
+    index: dict[tuple[str, str, str], list[str]] = defaultdict(list)
+    for cn in substrate.code_nodes:
+        descriptor = _node_descriptor(cn.node_id)
+        if descriptor:
+            index[(cn.repo, cn.lang, descriptor)].append(cn.node_id)
+    return index
+
+
+def _node_descriptor(node_id: str) -> str:
+    """The ``<descriptor>`` of a ``<repo> <lang> <segment> <kind>:<descriptor>``
+    node id — the part after the last colon. "" if the id has no colon."""
+    return node_id.rsplit(":", 1)[1] if ":" in node_id else ""
+
+
+def _resolve_code_ref(
+    ref: str,
+    code_ids: set[str],
+    descriptor_index: dict[tuple[str, str, str], list[str]],
+) -> str | None:
+    """Resolve a ``realises`` ref to a substrate CodeNode node_id, or None.
+
+    Exact match first (the precise / future-proof path). Else, when the ref has
+    the ``<repo> <lang> <segment> <kind>:<descriptor>`` shape, fall back to the
+    kind-insensitive ``(repo, lang, descriptor)`` identity and accept it **only
+    when exactly one** code node carries it (an ambiguous descriptor stays
+    unresolved → it becomes an external ref, never a wrong edge). A ref that is
+    not a code-node shape at all (e.g. ``odd-platform-specification: openapi.yaml
+    …``) resolves to None and is handled as external."""
+    if ref in code_ids:
+        return ref
+    parts = ref.split(" ")
+    if len(parts) < 4 or ":" not in parts[-1]:
+        return None
+    repo, lang = parts[0], parts[1]
+    descriptor = parts[-1].split(":", 1)[1]
+    candidates = descriptor_index.get((repo, lang, descriptor), [])
+    return candidates[0] if len(candidates) == 1 else None
 
 
 def _norm_url(url: str) -> str:

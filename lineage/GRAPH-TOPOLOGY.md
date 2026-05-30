@@ -216,3 +216,14 @@ doc page and rebuilding correctly re-embeds the changed sections.
 - `APPROACH.md` — the full methodology.
 - `lineage/_extractor/src/lineage_extractor/graph_query/config.py` — the machine
   list of every label + edge constant (the authority this doc describes).
+
+## ADR layer — ACTIVE (2026-05-30, ground-truth Phase 2)
+
+The `ADR` node + `PROMOTED_TO` / `REALISES` edges are now projected (pilot: ADR-0001). As-built source-of-truth (refines the original `adrs/`-frontmatter sketch above):
+
+- **`ADR` node** — identity `ADR-NNNN`; sourced from the **published** ADR pages under `../documentation/docs/developer-guides/architecture-decision-log/ADR-*.md` (frontmatter `adr_id`/`title`/`status`/`date`), materialised by `extractors/adrs.py` (`adrs-ingest`) into `lineage/{repo}/adr-nodes.jsonl` (generated mirror; `content_hash` for drift).
+- **`PROMOTED_TO`** — `ImplicitADR` (`ADR-CANDIDATE-NNN`) → `ADR`, from the workspace backlog item `backlog/adr/ADR-NNNN.md` frontmatter `promoted_from` (kept out of the published page for audience isolation; recorded only after human ratification — the graph records, never triggers).
+- **`REALISES`** — `CodeNode` → `ADR`, from the backlog item's `realises` list (code-node ids resolve to edges; non-code refs become the `realises_external` attribute).
+- **`SUPERSEDED_BY`** — `ADR` → `ADR`, from `superseded_by`.
+
+Verified clean `graph-build`: `ADR`=1, `PROMOTED_TO`=1 (ADR-CANDIDATE-001→ADR-0001), `REALISES`=1 (AlertController→ADR-0001), `SUPERSEDED_BY`=0; `adrs-ingest` deterministic; pytest 43 passed. Pillar: `pillars/adr/`. Process mirrors documentation: implicit-adrs → `/triage` → `backlog/adr` → `/implement` (published page) → `/review` → ontology.

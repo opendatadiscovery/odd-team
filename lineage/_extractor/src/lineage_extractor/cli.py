@@ -146,6 +146,51 @@ def docs_ingest_cmd(repo: str, dry_run: bool, workspace: Path | None) -> None:
         click.echo("--- dry-run: artifacts NOT written ---")
 
 
+@main.command("adrs-ingest")
+@click.argument("repo")
+@click.option("--dry-run", is_flag=True, help="Emit summary without writing artifacts.")
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Workspace root (default: parent of lineage/).",
+)
+def adrs_ingest_cmd(repo: str, dry_run: bool, workspace: Path | None) -> None:
+    """Ingest the published Architecture Decision Records into REPO's lineage as ADR nodes.
+
+    Walks `../documentation/docs/developer-guides/architecture-decision-log/ADR-*.md`
+    (the published, human-ratified decisions — the positive-space counterpart to
+    the derived ImplicitADR candidates), joins each `adr_id` to its workspace
+    sidecar `backlog/adr/{adr_id}.md` for the ontology links (promoted_from /
+    realises / superseded_by), and writes `lineage/{repo}/adr-nodes.jsonl`.
+    Mechanical, no LLM, no network. See adrs/drafts/ground-truth-lineage.md (Phase 2).
+
+    Prints the ADR count and any unresolved joins (a published page with no
+    workspace sidecar, a sidecar with no published page).
+    """
+    from lineage_extractor.extractors.adrs import ingest_adrs
+    from lineage_extractor.extractors.docs import DOC_REPO
+
+    workspace_root = workspace or _default_workspace_root()
+    documentation_path = resolve_repo_path(workspace_root, DOC_REPO)
+    if not documentation_path.is_dir():
+        raise click.ClickException(f"documentation repo not found: {documentation_path}")
+    lineage_dir = workspace_root / "lineage" / repo
+    lineage_dir.mkdir(parents=True, exist_ok=True)
+
+    result = ingest_adrs(documentation_path, lineage_dir, workspace_root, dry_run=dry_run)
+    if not result.ok:
+        click.echo(f"adrs-ingest failed: {result.error}", err=True)
+        sys.exit(1)
+    click.echo(result.summary)
+    if result.unresolved:
+        click.echo(f"  WARNING — {len(result.unresolved)} unresolved join(s):")
+        for line in result.unresolved:
+            click.echo(f"    - {line}")
+    if dry_run:
+        click.echo("--- dry-run: artifacts NOT written ---")
+
+
 @main.command("docs-verify")
 @click.argument("repo")
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON for machine consumers.")

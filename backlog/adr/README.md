@@ -50,9 +50,9 @@ my already-published tactical ADRs as *instances* (cross-linked, not retired —
 
 | ADR | Status | Decision | Absorbs as instances |
 |---|---|---|---|
-| **ADR-0070** (new) | mapped | **Pull/Push ingestion architecture** — collectors *pull* on a cadence, push-adapters *push* on the source's cadence, both speaking one ODD Specification wire contract; the split is only at ingest, every later stage is identical | — (the defining choice; cross-link `Architecture.md`, the spec) |
+| **ADR-0070** (new) | in-review | **Pull/Push ingestion architecture** — collectors *pull* on a cadence, push-adapters *push* on the source's cadence, both speaking one ODD Specification wire contract; the split is only at ingest, every later stage is identical | — (the defining choice; cross-link `Architecture.md`, the spec) |
 | **ADR-0071** (new) | in-review | **PostgreSQL is the only runtime dependency** — no broker / ZK / Redis; cross-instance coordination, queuing, notifications, lineage, and partitioning are all built on Postgres features | `0020` (advisory-lock Slack queue), `0043` (advisory-lock WAL leader), `0044` (lazy-create-no-drop), `0028` (range partitioning), `0057` (recursive-CTE lineage), `0052` (FTS search session) |
-| **ADR-0072** (new) | mapped | **Contract-first, reactive, two-language stack** — Java/Spring **WebFlux (reactive, R2DBC)** backend + React/TS SPA, with OpenAPI as the generated contract between them | `0001` (controllers over generated ifaces), `0007` (uniform Mono pipeline), `0008` (tag scoping), `0067` (reactive TX boundary) |
+| **ADR-0072** (new) | in-review | **Contract-first, reactive, two-language stack** — Java/Spring **WebFlux (reactive, R2DBC)** backend + React/TS SPA, with OpenAPI as the generated contract between them | `0001` (controllers over generated ifaces), `0007` (uniform Mono pipeline), `0008` (tag scoping), `0067` (reactive TX boundary) |
 | **ADR-0073** (new) | in-review | **ODDRN as universal entity identity** — every entity carries a stable Open Data Discovery Resource Name; same-ODDRN = same entity across ingests/producers/time → makes idempotent ingest, cross-system lineage, and alert routing possible | — (arguably the most load-bearing data decision; cross-link `main-concepts.md#oddrn`) |
 | **ADR-0003** | mapped 📌 | **Read-collaborative authorization posture** — mutations are gated in `SECURITY_RULES`; reads fall through to authenticated-only (any logged-in user reads any entity, lineage, search, activity) | `0015` (`/my*` owner-scoped reads are the *opt-in* exception to this) |
 | **ADR-0074** (new) | mapped 🔒⚖ | **Pluggable auth modes — enum-by-construction** — `auth.type` selects exactly one of DISABLED / LOGIN_FORM / OAUTH2 / LDAP via mutually-exclusive `SecurityWebFilterChain` beans; DISABLED is the shipped default; S2S composes additively on top | `0029/0030/0031/0032/0033/0035/0036` (all facets of the one auth-mode architecture) |
@@ -142,10 +142,12 @@ The backbone ADRs (section A) will cross-link the published instances rather tha
    · ADR-0058 (soft-delete model). These are the high-value core; each cross-links the published
    instances. (0070–0073 are new ids beyond the candidate range; record `promoted_from: none
    (top-down backbone)` in frontmatter.)
-   **Progress (2026-05-31):** ADR-0073 + ADR-0071 authored → `review-ready` on docs branch
-   `feature/docs-adr-backbone` (off docs `5d9b1b7`); mutual cross-link + four published-instance
-   links, 8/8 resolve; evidence re-verified at `ede5d277`. Remaining backbone: ADR-0070 (Pull/Push),
-   ADR-0072 (contract-first reactive), ADR-0003 (read-collaborative), ADR-0058 (soft-delete).
+   **Progress (2026-05-31):** ADR-0073 + ADR-0071 + ADR-0070 + ADR-0072 authored → `review-ready`
+   on docs branch `feature/docs-adr-backbone` (off docs `5d9b1b7`); fully interlinked (0070↔0072,
+   0073↔0071, + the published instances 0001/0007/0008/0020/0028/0043/0044), every link resolves;
+   evidence re-verified at `ede5d277`. **Remaining backbone: ADR-0003 (read-collaborative),
+   ADR-0058 (soft-delete)** — both have candidates (📌 / standalone), so they are bottom-up promotes,
+   not top-down `promoted_from: none`.
 2. **Then KEEP (section B)** by value: 0050, 0053, 0049, then the 🔒 set (0017/0027/0006/0063)
    with maintainer framing, then 0005/0026.
 3. **Auth backbone ADR-0074 + feature-gating ADR-0075** — fold their instance-candidates in.

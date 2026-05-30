@@ -68,6 +68,7 @@ The workspace is being reorganised into a layered architecture so the framework 
 | tests | — | not yet activated |
 | features | — | not yet activated |
 | code-quality | — | not yet activated |
+| adr | `pillars/adr/pillar.md` | active — implicit-adrs → backlog `ADR-NNNN` → published ADR-log (docs Developer Guides) → ontology (`PROMOTED_TO`/`REALISES`); pilot ADR-0001 shipped |
 
 **Session boot — what to load:**
 

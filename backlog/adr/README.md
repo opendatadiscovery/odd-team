@@ -55,8 +55,8 @@ my already-published tactical ADRs as *instances* (cross-linked, not retired —
 | **ADR-0072** (new) | in-review | **Contract-first, reactive, two-language stack** — Java/Spring **WebFlux (reactive, R2DBC)** backend + React/TS SPA, with OpenAPI as the generated contract between them | `0001` (controllers over generated ifaces), `0007` (uniform Mono pipeline), `0008` (tag scoping), `0067` (reactive TX boundary) |
 | **ADR-0073** (new) | in-review | **ODDRN as universal entity identity** — every entity carries a stable Open Data Discovery Resource Name; same-ODDRN = same entity across ingests/producers/time → makes idempotent ingest, cross-system lineage, and alert routing possible | — (arguably the most load-bearing data decision; cross-link `main-concepts.md#oddrn`) |
 | **ADR-0003** | in-review 📌 | **Read-collaborative authorization posture** — mutations are gated in `SECURITY_RULES`; reads fall through to authenticated-only (any logged-in user reads any entity, lineage, search, activity) | `0015` (`/my*` owner-scoped reads are the *opt-in* exception to this) |
-| **ADR-0074** (new) | mapped 🔒⚖ | **Pluggable auth modes — enum-by-construction** — `auth.type` selects exactly one of DISABLED / LOGIN_FORM / OAUTH2 / LDAP via mutually-exclusive `SecurityWebFilterChain` beans; DISABLED is the shipped default; S2S composes additively on top | `0029/0030/0031/0032/0033/0035/0036` (all facets of the one auth-mode architecture) |
-| **ADR-0075** (new) | mapped 📌 | **Feature-gating posture** — heavyweight/outbound features ship **off** by default (require external wiring); operational-hygiene ships **on** by default (bounded growth) | `0004/0019/0040` (off) + `0046` (the deliberate on inversion) |
+| **ADR-0074** (new) | in-review 🔒⚖ | **Pluggable auth modes — enum-by-construction** — `auth.type` selects exactly one of DISABLED / LOGIN_FORM / OAUTH2 / LDAP via mutually-exclusive `SecurityWebFilterChain` beans; DISABLED is the shipped default; S2S composes additively on top | `0029/0030/0031/0032/0033/0035/0036` (all facets of the one auth-mode architecture) |
+| **ADR-0075** (new) | in-review 📌 | **Feature-gating posture** — heavyweight/outbound features ship **off** by default (require external wiring); operational-hygiene ships **on** by default (bounded growth) | `0004/0019/0040` (off) + `0046` (the deliberate on inversion) |
 | **ADR-0058** | in-review | **Soft-delete as the deletion model** — `DELETED` is a status, not a row removal; physical purge deferred to housekeeping TTL; closed status enum with `isSwitchable` | `0055` (detail read surfaces soft-deleted via `includeDeleted`) |
 
 **Already-published genuine backbone (keep, no change):** ADR-0001, ADR-0002 (centralised authz),
@@ -147,10 +147,15 @@ The backbone ADRs (section A) will cross-link the published instances rather tha
    (bottom-up promotes of candidates 003/058, folding 015/055) all authored → `review-ready` on docs
    branch `feature/docs-adr-backbone`. Fully interlinked; **all 73 inter-ADR links resolve**; evidence
    re-verified at `ede5d277`; security-adjacent ADR-0003 held Gate A3 (design posture, not exploit;
-   DISABLED-bypass + enumeration gaps stay in `REFACTOR-185/073/024/200/203`). **Remaining backbone
-   (section A): ADR-0074 (pluggable auth modes, 🔒⚖) + ADR-0075 (feature-gating posture, 📌)** — both
-   fold large instance-clusters and need the descriptive-vs-disclosure steer. Then section B KEEP
-   (0050/0053/0049, the 🔒 set, 0005/0026).
+   DISABLED-bypass + enumeration gaps stay in `REFACTOR-185/073/024/200/203`).
+   **Update (2026-05-31, later):** **Section A backbone is now COMPLETE** — ADR-0074 (pluggable auth
+   modes, 🔒⚖) + ADR-0075 (feature-gating posture, 📌) authored → `review-ready` on the same branch.
+   ADR-0074 is the 🔒⚖ one: held Gate A3 with a deliberate disclosure boundary (the four-mode
+   architecture + a LOUD "DISABLED is fully open, local-eval-only, enable a real mode for production"
+   warning ON the page; the DISABLED-bypass *weakness* framing stays in `REFACTOR-185/108/099` OFF the
+   page) — **`/review` should confirm the disclosure tone on the live page.** All 8 section-A backbone
+   ADRs done (0070-0075 + 0003/0058). **Remaining: section B KEEP only** — 0050/0053/0049, the 🔒 set
+   (0017/0027/0006/0063), 0005/0026.
 2. **Then KEEP (section B)** by value: 0050, 0053, 0049, then the 🔒 set (0017/0027/0006/0063)
    with maintainer framing, then 0005/0026.
 3. **Auth backbone ADR-0074 + feature-gating ADR-0075** — fold their instance-candidates in.

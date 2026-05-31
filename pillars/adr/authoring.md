@@ -82,6 +82,10 @@ Section order is fixed: **Status → Context → Decision → Consequences → E
 - `##` for the five sections; keep the in-page hierarchy shallow.
 - Code blocks fenced and language-tagged.
 
+### Live URL slug (the Gate 8 target)
+
+GitBook derives each page's live URL from the **filename stem**, not the H1 title. An ADR file `ADR-0074-pluggable-auth-modes.md` is served at `.../architecture-decision-log/adr-0074-pluggable-auth-modes` — **not** the long H1-derived slug (`.../adr-0074-authentication-is-a-pluggable-mode-selected-by-auth-type-defaulting-to-disabled`). When you record the "Live URL for Gate 8" line in the backlog item, use the **filename-stem** slug; the long H1 slug 404s. (Empirically confirmed across the 2026-05-31 `/review`: every backbone item that recorded an H1-derived URL pointed at a 404, while the filename-stem URL the index actually links resolves.)
+
 ### Ship together (Gate 7)
 
 A new ADR ships as **three changes in one commit**: the page (`ADR-NNNN-{slug}.md`), the `SUMMARY.md` entry under Developer Guides → Architectural Decision Log, and the row in the log index `README.md`. A page not in SUMMARY is unreachable; a log index missing the row misleads.
@@ -116,6 +120,7 @@ The footer is the provenance trail: a reviewer reads it to re-verify each claim 
 - Descriptive voice throughout; no internal IDs in prose.
 - `Evidence` mirrors `realises:`; every `file:line` re-verified at the substrate commit.
 - Page + SUMMARY entry + log-index row in the same commit.
+- Gate 8 URL recorded in the item is the **filename-stem** slug (`adr-NNNN-{slug}`), not the H1-derived long slug.
 - Related operator/feature pages cross-linked.
 - `Sources:` footer present and complete.
 

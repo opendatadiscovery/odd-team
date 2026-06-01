@@ -5,7 +5,6 @@ _generated 2026-06-01 · `lineage-extractor alignment odd-platform` · determini
 ## Contract-test readiness: 🟡 PILOT-READY
 
 **Blockers:**
-- [D] Test layer built (66 nodes) but every test is ORPHAN + 0 ADRs enforced — gates not yet authored
 - [E] reflection 1/112 → alignment unverified at scale
 
 **Ready-now subset** (contract-testable today — reflected + bridged): F-021
@@ -15,7 +14,7 @@ _generated 2026-06-01 · `lineage-extractor alignment odd-platform` · determini
 > Is this scorecard itself trustworthy? Every alignment metric below is discounted by reflection coverage.
 
 - `GREEN` substrate scan == code HEAD — scan ede5d277 @ 2026-05-26 · HEAD ede5d277 @ 2026-04-03
-- `GREEN` graph embeddings present — built 2026-06-01 · vectors 7555
+- `GREEN` graph embeddings present — built 2026-06-01 · vectors 7623
 - `AMBER` latest /panel verdict — changes-needed
 - `RED` reflection coverage (alignment discount) — 1/112 features reflected → alignment UNKNOWN over 99% of features
 
@@ -48,16 +47,16 @@ _generated 2026-06-01 · `lineage-extractor alignment odd-platform` · determini
 
 ### D — Test-Traceability Ledger  (RED)
 
-- `AMBER` **Test nodes ingested (+ COVERS to code)** — 0/66 · 66 existing tests ingested · 0 COVERS edges resolved to substrate code — 0 resolve: substrate is axis-selective (services/repos aren't code nodes) and test names don't all map to a descriptor
-- `AMBER` **tests/gaps carrying a typed gate (why)** — 456/1104 · 66/66 EXISTING tests are ORPHAN (no typed gate → add @enforces/@validates/@regresses); 582/1038 gaps orphan (lenient match)
-- `RED` **ADRs with an enforcing test/gap** — 0/27 · are we checking ADR ALIGNMENT? 0/27 ADRs gated (0 via real ENFORCES edge, rest via gated gaps)
+- `AMBER` **Test nodes ingested (+ COVERS to code)** — 0/68 · 68 existing tests ingested · 0 COVERS edges resolved to substrate code — 0 resolve: substrate is axis-selective (services/repos aren't code nodes) and test names don't all map to a descriptor
+- `AMBER` **tests/gaps carrying a typed gate (why)** — 458/1106 · 66/68 EXISTING tests are ORPHAN (no typed gate → add @enforces/@validates/@regresses); 582/1038 gaps orphan (lenient match)
+- `AMBER` **ADRs with an enforcing test/gap** — 1/27 · are we checking ADR ALIGNMENT? 1/27 ADRs gated (1 via real ENFORCES edge, rest via gated gaps)
 - `AMBER` **features with a validating test/gap** — 23/112 · are we checking FUNCTIONALITY? 23/112 features gated (0 via real VALIDATES edge)
 - `AMBER` **bugs/scopes with a regress/guard test** — 41/1355 · are we checking REGRESSION? 41/1355 findings/scopes gated · LSN-001/002 landmines captured as 24 gated TestGaps but NO regression test authored yet
 - `RED` **probes executed / defined** — 9/148 · 9/148 run · 1 probe-stack(s) · named-integration keyword hits 1/4 (great-expectations, ✗airflow-lineage, ✗postgres-ingestion, ✗webhook-notifications) — KEYWORD scan, NOT verified e2e
 
 ## Top actionable items
 
-1. Annotate the 66/66 ORPHAN existing tests with @enforces/@validates/@regresses gates — the Test layer is built but no test is yet wired to a decision/feature/bug
+1. Annotate the 66/68 ORPHAN existing tests with @enforces/@validates/@regresses gates — the Test layer is built but no test is yet wired to a decision/feature/bug
 2. Author the landmine regression tests WITH @regresses gates (TEST-GAP-024, TEST-GAP-047, TEST-GAP-049, TEST-GAP-051, TEST-GAP-052…) — LSN-001/002 pins, project as REGRESSES edges [CRITICAL]
 3. Raise reflection coverage on ADR-bearing features (1/112) — the layer that proves alignment
 4. GE / Airflow / Postgres-ingestion / webhooks have no dedicated probe stack (only odd-minimal: postgres+platform) → add multi-service stacks + regresses/validates-gated TestGaps

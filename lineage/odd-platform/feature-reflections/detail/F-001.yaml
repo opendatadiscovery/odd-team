@@ -1,0 +1,582 @@
+---
+feature_id: F-001
+pillar_anchored_id: P-01:F-001
+pillar: P-01 Data Discovery
+feature_name: "Popular Entities Ranking"
+reflected_at: 2026-06-01T00:00:00Z
+reflected_at_commit: 43d13eb
+prompt_version: feature-reflector/0.2.0
+contributing_sidecars_read:
+  - odd-platform__ts__react-component__component__DataEntityDetails.md
+  - odd-platform__ts__react-component__component__PopularStrip.md
+  - odd-platform__ts__react-component__component__Overview.md
+  - odd-platform__java__DataEntityController__controller-method__getPopular.md
+  - odd-platform__java__repository_reactive__repository__ReactiveDataEntityRepositoryImpl.md
+  # The hop-2/hop-3/hop-3.5 sidecars (fetchDataEntityDetails thunk, getDataEntityDetails
+  # controller, DataEntityServiceImpl) were consulted via the F-001 chain evidence blocks
+  # and cross-citations in the five read above; their per-hop multiplicity=1 invariants are
+  # PRIMARY-SOURCE CONFIRMED in F-001.yaml (batch J / I / H) and not re-litigated here.
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-discovery/catalog-overview"
+    last_verified_at: "2026-06-01T00:00:00Z"
+    last_verified_status: 200
+hypothesis_summary:
+  total: 13
+  confirmed: 3
+  contradicted: 6
+  partial: 2
+  probe_needed: 2
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: "Opening an entity detail page once registers as +2 views (LSN-017 dep-array doubling), so the Popular ranking double-counts every UI-driven page-open versus a direct API call."
+related_feature_flows: [F-001, F-003]   # F-003 (getPopular consumer) is merge_candidate_with F-001 per the flow; this reflection spans the full producer+consumer loop
+related_concepts:
+  - "Popular Entities Ranking"
+  - "Data Entity"
+related_drift_classes:                   # confirmed from F-001.yaml drift_class_summary
+  - ui_amplification
+  - disabled_mode_bypass
+  - structural_amplification_surface
+  - spec_says_X_impl_does_Y             # NOTE: now RESOLVED in live docs (see doc_drift_findings) — the drift class is historical, not current
+new_drift_classes_proposed:
+  - available_but_unused_filter        # EXCLUDE_FROM_SEARCH exists on every row, is honoured by 9 list-shapes, and is silently ignored by the Popular CTE — a column-available-but-unused drift the user-facing ranking inherits
+---
+
+# Popular Entities Ranking — product-owner reflection
+
+## product_owner_narrative
+
+**What it is.** "Popular" is the home-page strip a returning user sees under the *Recommended* heading on the ODD catalog overview — a short list (five tiles) of the data entities that are most-viewed across the whole catalog (per `getPopular.md:understanding` + the live doc, WebFetched 2026-06-01: *"The most-viewed data entities across the catalog, ranked by view count alone (highest first)"*). Its job is the platform's first impression: a new joiner who lands on the home page is meant to learn, in one glance, *what matters here* — which tables, models, and pipelines the rest of the team actually opens. It is served to every signed-in user who has an associated Owner, and (via the API) to any caller at all (per `getPopular.md:concepts.audiences`).
+
+**How a user interacts with it.** There are two halves to the feature, and they form a closed loop. The *consumer* half is `GET /api/dataentities/popular?page=1&size=5` — a four-line reactive pass-through (`DataEntityController.getPopular` → `DataEntityServiceImpl.listPopular` → `ReactiveDataEntityRepositoryImpl.listPopular`) that ranks rows by `DATA_ENTITY.VIEW_COUNT DESC` with an `id DESC` tiebreaker and returns a 9-field `DataEntityRef` projection (per `getPopular.md:operations` + `ReactiveDataEntityRepositoryImpl.java:633`). The *producer* half is the view counter: every time a user opens an entity's detail page, the SPA's `DataEntityDetails` component fires `fetchDataEntityDetails` → `GET /api/dataentities/{id}` → `DataEntityServiceImpl.getDetails` (which carries `@ReactiveTransactional`) → `ReactiveDataEntityRepositoryImpl.incrementViewCount` → `UPDATE data_entity SET view_count = view_count + 1` (per `DataEntityDetails.md:downstream_side_effects` + `ReactiveDataEntityRepositoryImpl.java:173-180`). A user never "votes" explicitly — the act of reading *is* the vote.
+
+**The working parts.** The ranking signal is deliberately the simplest possible thing: cumulative reads, one column, descending, no time-decay, no per-class weight, no per-owner partition, no anti-abuse signal (per `getPopular.md:implicit_adrs[0]`). On the home page the Popular column is rendered by the fourth `DataEntityList` inside `OwnerEntitiesList` (the substrate's logical "PopularStrip" node — there is no dedicated `PopularStrip.tsx`; per `PopularStrip.md:understanding`), fetched once on mount with `{page:1, size:5}`, and each tile is a `<Link>` to `/dataentities/{id}/overview`. Clicking a tile therefore navigates straight into the read-as-write endpoint — *clicking the most-popular entity makes it more popular* (per `PopularStrip.md:bugs_limitations_corner_cases[0]`). The whole Recommended panel is gated on `appInfo.authType !== 'DISABLED'` at the home-page chrome layer (`Overview.tsx:25-27`), so on auth-disabled deployments the strip is hidden from the home page entirely (the API endpoint stays open).
+
+**The integration story.** This feature sits at the centre of the Data Discovery pillar (P-01) and is one of the platform's three read-collaborative cross-owner surfaces (alongside catalog Search and the Activity feed; per `system-mission.md` P-09 maintainer notes + `concepts.yaml` read-collaborative cluster). The Popular column shares the *Recommended* heading with three sibling columns — My Objects, Upstream, Downstream — which ARE owner-scoped; Popular alone is catalog-wide (per `Overview.md:bugs_limitations_corner_cases[1]`). It also inherits the platform-wide soft-delete-via-STATUS and hollow-exclusion conventions, but — uniquely among list-shaped surfaces — it does NOT inherit the `EXCLUDE_FROM_SEARCH` convention (per `ReactiveDataEntityRepositoryImpl.md:invariants[2]`).
+
+**Edge cases a demo would highlight.** On a fresh deployment with zero historical traffic, `view_count = 0` everywhere and the ranking degenerates to the `id DESC` tiebreaker — so "Popular" silently shows the *newest-ingested* entities, not the most-viewed (per `getPopular.md:bugs_limitations_corner_cases[6]`). The strip caches per home-page mount (no polling), so a back-button navigation re-fetches and the user can watch their own click change the ranking in real time (per `PopularStrip.md:downstream_side_effects`). And the response never carries `view_count` itself — the order leaks, the magnitude does not (per `getPopular.md:doc_drift_findings[2]`).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When a user opens the catalog home page, the 'Popular' strip shows the data entities with the highest cumulative view counts across the catalog, ranked highest-first."
+  derivation: "Feature name 'Popular Entities Ranking' + UI label 'Popular' under the Recommended panel + the repository's sole orderBy on VIEW_COUNT DESC."
+  seed_source: pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The chain ranks exactly as the label promises. `ReactiveDataEntityRepositoryImpl.listPopular`
+      builds the CTE with `.orderBy(DATA_ENTITY.VIEW_COUNT.sort(SortOrder.DESC))` as the sole ranking
+      signal (id DESC is only the tiebreaker), and `view_count` is the cumulative read counter. The
+      service and controller add no other ordering. The live doc agrees verbatim ("ranked by view
+      count alone (highest first)").
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getPopular.md
+        section: concepts.invariants
+        cite: "ReactiveDataEntityRepositoryImpl.java:633"
+        note: "Sole orderBy is VIEW_COUNT DESC; getOrderFields appends only id DESC tiebreaker."
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveDataEntityRepositoryImpl.md
+        section: downstream_side_effects
+        cite: "ReactiveDataEntityRepositoryImpl.java:629-649"
+        note: "listPopular CTE config; no time-decay, no per-class weight, no owner predicate."
+    confidence: HIGH
+    routes_to_finding: none
+
+- id: H-002
+  hypothesis: "When a user opens an entity's detail page once, the catalog records exactly one view for that entity (so the Popular ranking reflects one human read per page-open)."
+  derivation: "A 'view count' a product owner demos is one-read-one-count by definition; the home-page Popular strip is sold as 'most-viewed', which presumes the counter tracks reads faithfully."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Opening a detail page once registers as +2, not +1. `DataEntityDetails.tsx:56-64` has a useEffect
+      whose dependency array includes the response-derived value `details.status?.status`: the effect
+      fires once on mount (status undefined → dispatch → +1), the fulfilled response flips status from
+      undefined to a concrete enum, the dep-array changes, the effect re-fires (→ second dispatch → +1),
+      and the cycle quiesces at +2 because the second response carries the same status. This is the
+      LSN-017 canonical bug, empirically pinned by probe P-004 (xhr_count=2 + DB delta=2, regex-filtered
+      exact path). The hop-1 useEffect is the SOLE source of the doubling; every other hop in the chain
+      has multiplicity=1. The fix is one line (remove line 63 from the dep array). The live doc now
+      openly documents the bug ("opening a detail page registers as +2, not +1"), which makes it an
+      honest-but-shipped defect rather than a hidden one.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataEntityDetails.md
+        section: bugs_limitations_corner_cases
+        cite: "DataEntityDetails.tsx:56-64"
+        note: "5th dep-array entry details.status?.status is response-derived → self-feeding refire."
+      - sidecar: odd-platform__ts__react-component__component__DataEntityDetails.md
+        section: downstream_side_effects
+        cite: "lineage/odd-platform/probe-runs/2026-05-19-P-004.yaml"
+        note: "Empirical pin: xhr_count=2 + view_count delta=2 per single page-open."
+    operator_visible_failure: |
+      (1) The Popular ranking double-counts every UI-driven page-open relative to a direct API read —
+      the home page over-weights entities people reach by clicking versus entities reached by scripts or
+      deep links. (2) The doubling makes UI-driven inflation exactly 2x cheaper than API-driven inflation
+      (one page-render = +2 votes vs one curl = +1), compounding the inflatability surface in H-003.
+      (3) Every legitimate re-fetch (a DEG-membership change, a status edit) also fires twice, doubling
+      hot-row write contention on data_entity.view_count and flickering the page chrome twice. (4) An
+      operator reading the Popular strip to decide what to deprecate / promote is reasoning over a signal
+      that is silently 2x-skewed toward click-reachable entities.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-003
+  hypothesis: "The Popular ranking reflects organic interest — a single user cannot trivially promote an entity of their choosing to the top of the home-page strip."
+  derivation: "A 'most-popular' surface that is the platform's first impression carries an implicit anti-abuse requirement: an operator of a catalog like this expects the ranking to resist gaming, the way DataHub/Amundsen 'popular'/'frequently-used' surfaces aggregate distinct-user or query-frequency signals rather than a single forgeable counter."
+  seed_source: negative-space
+  sme_consultation_recommended: true
+  sme_consultation_question: "How do industry data catalogs (DataHub 'usage', Amundsen 'popular tables', OpenMetadata) define and harden their popularity/usage signal — is a single cumulative read-counter with no distinct-viewer dimension considered acceptable, or is distinct-user / query-frequency the canonical baseline?"
+  sme_consultation_archetype: comparative
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The ranking is trivially pumpable by any single caller. The producer (`incrementViewCount`) has no
+      rate-limit, no idempotency key, no per-user/per-session view cap, no time-decay; the consumer
+      (`listPopular`) orders exclusively by the resulting counter; neither endpoint carries an
+      authorization gate beyond `.authenticated()`, and under `auth.type=DISABLED` (a shipped config)
+      neither requires authentication at all. A scripted loop of `GET /api/dataentities/{id}` from one
+      caller pushes that entity to position 0 of the home-page strip with no resistance — confirmed from
+      primary source in getPopular.md and empirically demonstrated for the DISABLED-mode anonymous case
+      by probe P-002 (10 anon GETs → +10 view_count). The signal has exactly one dimension (cumulative
+      reads); there is no distinct-viewer count, no recency weighting, no human-curated override.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getPopular.md
+        section: bugs_limitations_corner_cases
+        cite: "ReactiveDataEntityRepositoryImpl.java:173-180 + :633"
+        note: "Unconditional +1 increment (no throttle) + sole orderBy on the same column = pumpable loop."
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveDataEntityRepositoryImpl.md
+        section: security.known_security_gaps
+        cite: "ReactiveDataEntityRepositoryImpl.java:173-180, 630-649"
+        note: "view_count inflation surface is structural — method-only increment, no per-caller throttle."
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getPopular.md
+        section: tests_coverage_semantic
+        cite: "lineage/odd-platform/probe-runs/2026-05-19-P-002.yaml"
+        note: "DISABLED-mode anonymous inflation empirically confirmed (10 anon GETs → +10)."
+    operator_visible_failure: |
+      (1) A malicious or merely-curious caller can promote ANY entity — including a deceptively-named one
+      ("production-database-credentials") — to the top of every user's home page, turning the platform's
+      first impression into an attacker-controlled surface. (2) Under the DEFAULT auth.type=DISABLED, the
+      attacker needs no credentials at all. (3) Even absent malice, the ranking conflates legitimate
+      interest with bot traffic, hot-link traffic, and the H-002 doubling, so an operator trusting Popular
+      to surface "what the team values" is misled by "what got fetched most, by anyone, including
+      non-humans." (4) There is no operator lever (no curated-override, no per-tenant scope) to correct it.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-004
+  hypothesis: "When an operator marks an entity 'exclude from search' (to hide an internal / staging / scratch entity), that entity does not appear in the home-page Popular strip."
+  derivation: "Request-input / column-name alignment (Category-F shape): the column EXCLUDE_FROM_SEARCH names a hide-from-discovery intent; a user setting it reasonably expects the entity hidden from all discovery list surfaces, and 9 of the codebase's list-shapes honour it — so the Popular strip (also a discovery list) should too."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The Popular strip surfaces exclude-from-search entities. The shared CTE-builder `cteDataEntitySelect`
+      (lines 909-939), which `listPopular` consumes, applies `HOLLOW.isFalse()` and the soft-delete filter
+      but NOT `EXCLUDE_FROM_SEARCH` — confirmed from primary source. Every other list-shaped surface in the
+      codebase respects the flag (countByState, findByState via JooqFTSHelper, the 9 search/facet/statistics
+      locations); Popular (along with by-owner, by-term, by-DEG, and single-entity details) is the one
+      discovery list that ignores it. If an internal entity has accumulated view_count (operator-team reads,
+      or inflation), it bubbles to the public home page despite the operator's hide-from-discovery intent.
+      The live doc now documents this explicitly ("exclude_from_search is a full-text-search signal only —
+      it does not hide entities from the Recommended panel"), which converts a silent contradiction into a
+      documented caveat — but the behaviour still contradicts the natural reading of the column name.
+    evidence:
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveDataEntityRepositoryImpl.md
+        section: invariants
+        cite: "ReactiveDataEntityRepositoryImpl.java:909-939 vs :448, :974"
+        note: "cteDataEntitySelect omits EXCLUDE_FROM_SEARCH; getDataEntityDefaultConditions applies it."
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getPopular.md
+        section: bugs_limitations_corner_cases
+        cite: "ReactiveDataEntityRepositoryImpl.java:909-939"
+        note: "Popular is the sole list-shape that ignores the flag respected in 9 other locations."
+    operator_visible_failure: |
+      (1) An operator who marks a sensitive / internal / scratch entity exclude-from-search to keep it off
+      discovery surfaces finds it can still appear on the home page's Popular strip, visible to every
+      signed-in user (and anonymously under DISABLED). (2) For a regulated-data deployment this is a
+      potential disclosure path — the operator's mental model ("hidden from discovery") is violated on the
+      single most prominent discovery surface. (3) Because the column is named for a search-hiding intent,
+      the operator has no signal that Popular is exempt unless they read the (now-updated) doc caveat.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-005
+  hypothesis: "Clicking a tile in the Popular strip opens that entity's detail page (so a user can drill from 'what's popular' into the entity itself)."
+  derivation: "UI label/affordance: each Popular tile is a navigable link; the live doc describes the click target."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      Each tile is a `<Link to={dataEntityDetailsPath(item.id)}>` which defaults to `/dataentities/{id}/overview`
+      (DataEntityList.tsx:38 + dataEntitiesRoutes.ts:66-73). Clicking navigates to the entity's Overview
+      tab, mounting DataEntityDetails. The live doc (WebFetched 2026-06-01) agrees verbatim: "Clicking a
+      tile opens that entity's detail page, defaulting to the Overview tab." NOTE: the sidecars (enriched
+      2026-05-19) recorded a doc-drift here — the live doc THEN said "Structure page" — but that drift is
+      now RESOLVED in the live doc (see doc_drift_findings). Code and current doc agree.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__PopularStrip.md
+        section: operations
+        cite: "DataEntityList.tsx:38 + dataEntitiesRoutes.ts:66-73"
+        note: "Tile link resolves to /dataentities/{id}/overview (default path='overview')."
+      - sidecar: odd-platform__ts__react-component__component__PopularStrip.md
+        section: docs_link_semantic
+        cite: "WebFetch https://docs.opendatadiscovery.org/features/data-discovery/catalog-overview 2026-06-01 status 200"
+        note: "Live doc now says 'Overview tab' — prior 'Structure page' drift resolved."
+    confidence: HIGH
+    routes_to_finding: none
+
+- id: H-006
+  hypothesis: "Clicking a Popular tile is a navigation only — it does not itself change the entity's popularity ranking."
+  derivation: "Negative-space: a user expects browsing TO a thing to be read-only with respect to the thing's ranking; a ranking that moves because you looked at it is a feedback loop a product owner would flag."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Clicking a Popular tile DOES change the ranking. The tile navigates to /dataentities/{id}/overview,
+      which mounts DataEntityDetails, which fires the read-as-write fetchDataEntityDetails → +1 (in fact +2,
+      per H-002) view_count → the clicked entity ranks higher on the next Popular render. The UI closes the
+      inflation loop: clicking the most-popular tile makes it more popular. There is no client-side
+      debounce, no per-session "already counted" guard, no idempotency key, no analytics-only mode. A
+      back-button navigation remounts the strip and re-fetches, so a user can observe the ranking shift in
+      real time within one SPA session. The same closure exists at a SECOND entry point — the Directory
+      level-4 EntityItem also links via dataEntityDetailsPath (per F-001.yaml ui-review-2026-05-26 facet).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__PopularStrip.md
+        section: bugs_limitations_corner_cases
+        cite: "DataEntityList.tsx:38 + dataEntitiesRoutes.ts:66-73"
+        note: "Unguarded Link into the read-as-write Overview tab — closes the loop client-side."
+      - sidecar: odd-platform__ts__react-component__component__PopularStrip.md
+        section: downstream_side_effects
+        cite: "PopularStrip.md downstream_side_effects (back-nav remount re-fires popular fetch)"
+        note: "Loop is observable to the user in real time; no client-side mitigation at any layer."
+    operator_visible_failure: |
+      (1) The home page's Popular ranking is a self-reinforcing rich-get-richer loop: whatever surfaces on
+      Popular draws clicks, which raise its rank, which draws more clicks — independent of underlying value.
+      (2) Routine browsing (clicking Popular tiles, or browsing the Directory) silently inflates the very
+      ranking it reads, so the signal measures "what is easy to click from the home page" as much as "what
+      the team values." (3) Combined with H-002 the per-click cost is +2. (4) An operator cannot opt out of
+      contributing to the loop — there is no read-only / analytics-only browse mode.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-007
+  hypothesis: "On an auth-disabled deployment, the Popular strip behaves as documented for that mode (a user lands on the home page and the panel renders, just without per-user personalisation)."
+  derivation: "Doc-claim seed: the sidecars recorded a live-doc claim that under DISABLED 'the panel is visible but the per-user filtering does not apply'; this is the doc-vs-code hypothesis."
+  seed_source: doc-claim
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      Code and CURRENT live doc agree: under auth.type=DISABLED the entire Recommended panel (including
+      Popular) is HIDDEN from the home page. Overview.tsx:25-27 gates the OwnerAssociation wrapper on
+      `Boolean(appInfo?.authType && appInfo.authType !== 'DISABLED')`, which is false under DISABLED, so the
+      whole panel (and the Popular column inside it) does not render. The live doc (WebFetched 2026-06-01)
+      now states verbatim: "On auth-disabled deployments (auth.type=DISABLED) the panel is hidden from the
+      home page entirely." The sidecars (2026-05-19) flagged a contradiction because the live doc THEN said
+      "the panel is visible" — that drift is now RESOLVED (see doc_drift_findings). IMPORTANT caveat: the
+      home-page UI gate is a SAFETY/UX decision, not a security control — the API path /api/dataentities/popular
+      remains anonymously reachable under DISABLED (H-008).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Overview.md
+        section: invariants
+        cite: "Overview.tsx:25-27, :53-59"
+        note: "isShowOwnerAssociation false under DISABLED → whole Recommended panel hidden."
+      - sidecar: odd-platform__ts__react-component__component__PopularStrip.md
+        section: docs_link_semantic
+        cite: "WebFetch https://docs.opendatadiscovery.org/features/data-discovery/catalog-overview 2026-06-01 status 200"
+        note: "Live doc now matches code (panel hidden under DISABLED) — prior drift resolved."
+    confidence: HIGH
+    routes_to_finding: none
+
+- id: H-008
+  hypothesis: "The Popular ranking is only available to authenticated users in a secured deployment (the home-page strip is gated, so the ranking data is too)."
+  derivation: "Endpoint shape + the home-page UI gate: a user who sees the panel disappear under DISABLED would assume the data is gated; an operator would assume the catalog's popularity data follows the deployment's auth posture."
+  seed_source: endpoint-shape
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The UI gate and the API gate diverge. The home-page Popular STRIP is hidden under DISABLED (H-007) and
+      requires identity+ownership under the three authenticated modes (per OwnerAssociation.tsx:84-86). BUT
+      the underlying endpoint GET /api/dataentities/popular has NO @PreAuthorize and NO SecurityRule entry —
+      it falls through to pathMatchers("/**").authenticated(), and under auth.type=DISABLED that filter chain
+      is not wired at all, so the endpoint is anonymously reachable. A signed-in user with no Owner (who sees
+      the OwnerAssociation form instead of the strip) can still curl the endpoint with their session cookie
+      and get the full ranking. So the answer is "gated in the UI, open at the API" — the data is more
+      exposed than the UI suggests.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getPopular.md
+        section: security
+        cite: "SecurityConstants.java (no rule for /api/dataentities/popular) + AuthorizationCustomizer.java:29-30"
+        note: "No @PreAuthorize, no SecurityRule; falls through to .authenticated(); DISABLED = anonymous."
+      - sidecar: odd-platform__ts__react-component__component__PopularStrip.md
+        section: security.known_security_gaps
+        cite: "OwnerAssociation.tsx:84-86 (UI gate) + getPopular.md authorization_assertions: []"
+        note: "UI owner-association gate is UX, not security; API has no equivalent precondition."
+    operator_visible_failure: |
+      (1) An operator who relies on the home-page panel hiding under DISABLED as a defence-in-depth measure
+      is mistaken — the ranking (names, oddrns, statuses, alert flags, staleness flags of top-viewed
+      entities) is anonymously readable via the API on the DEFAULT config. (2) The UI's owner-association
+      gate gives a false impression that Popular is a personalised/gated feature; it is catalog-wide and
+      API-open. (3) This is part of the read-collaborative posture, but the gap between "panel hidden" and
+      "endpoint open" is a specific trap.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-009
+  hypothesis: "The Popular strip shows the calling user a ranking relevant to them or their team (it sits under 'Recommended', next to My Objects / Upstream / Downstream, which are all personalised)."
+  derivation: "UI-label + cross-pillar: the 'Recommended' heading and the three sibling owner-scoped columns imply the fourth column shares the same per-user/per-owner scoping."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Popular is catalog-wide, not personalised — the only column under 'Recommended' that is NOT owner-scoped.
+      My Objects / Upstream / Downstream consult the signed-in user's owner-associated entities; Popular's
+      backend (listPopular) has no owner/tenant predicate anywhere on the chain (no OwnerPojo parameter at
+      controller, service, or repository). Every signed-in user with an associated Owner sees the IDENTICAL
+      catalog-wide ranking — including users whose Owner has zero data entities, and including entities owned
+      by other teams in a multi-tenant deployment. The 'Recommended' heading therefore over-promises
+      personalisation for one of its four columns.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Overview.md
+        section: bugs_limitations_corner_cases
+        cite: "OwnerEntitiesList.tsx:99-105 + F-003 facet 'service tier is a 1-line pass-through'"
+        note: "Popular column rendered identically for all users; no owner-scoping at any backend layer."
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getPopular.md
+        section: security.owner_scoping
+        cite: "DataEntityController.java:307-313 + DataEntityServiceImpl.java:227-231 + ReactiveDataEntityRepositoryImpl.java:629-649"
+        note: "No owner predicate on any layer; BYPASSES owner-scoping by design (read-collaborative)."
+    operator_visible_failure: |
+      (1) A user reading 'Recommended' reasonably assumes Popular is tailored to them; it is not, so a
+      brand-new user with no relevant entities still sees the same global strip — confusing for onboarding.
+      (2) In a multi-tenant / team-scoped deployment, the Popular column surfaces other teams' entity names,
+      oddrns, alert state, and staleness to every user — cross-owner enumeration on the home page. (3) This
+      is the read-collaborative posture applied to the platform's first impression; the live doc now notes
+      Popular appears across surfaces, but the 'Recommended = personalised' implication remains.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-010
+  hypothesis: "On a brand-new deployment (entities ingested, no user traffic yet), the Popular strip is either empty or clearly indicates 'no popularity data yet'."
+  derivation: "Negative-space / empty-state: a senior PO asks what a fresh install shows; an empty or honest-empty state is the expected, non-misleading behaviour."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      On a fresh deployment the Popular strip silently shows the NEWEST-ingested entities, not "no data."
+      With view_count=0 everywhere (the migration default), the primary orderBy is a flat tie and the
+      `id DESC` tiebreaker takes over — so the strip ranks most-recently-ingested first and presents them
+      under 'Popular' as if they were most-viewed. There is no empty-state, no "no popularity data yet"
+      message, and no documentation of this bootstrap behaviour. (Separately, the generic
+      EmptyContentPlaceholder text "No information to display" appears only when the page=1 slice is
+      genuinely empty, which gives no hint about WHY.)
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getPopular.md
+        section: bugs_limitations_corner_cases
+        cite: "ReactiveDataEntityRepositoryImpl.java:945-967 + V0_0_10__add_counters.sql"
+        note: "view_count=0 default → id DESC tiebreaker → 'Popular' shows newest entities pre-traffic."
+      - sidecar: odd-platform__ts__react-component__component__PopularStrip.md
+        section: bugs_limitations_corner_cases
+        cite: "DataEntityList.tsx:65-67 + EmptyContentPlaceholder.tsx:46"
+        note: "Generic 'No information to display' empty-state gives no diagnostic for the bootstrap case."
+    operator_visible_failure: |
+      (1) A new operator evaluating ODD sees a 'Popular' strip on day one and concludes those entities are
+      genuinely most-viewed, when they are merely newest — a misleading first impression. (2) There is no
+      signal distinguishing "ranked by real views" from "degenerate id-DESC tiebreak", so the operator
+      cannot tell when the ranking becomes meaningful. (3) This is cosmetic-to-medium: it does not break
+      anything, but it silently misrepresents the feature's signal during the exact window (onboarding)
+      when first impressions matter most.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-011
+  hypothesis: "The home-page Recommended panel renders correctly for every valid deployment auth mode (the operator picks DISABLED / LOGIN_FORM / OAUTH2 / LDAP and the panel shows or hides as intended)."
+  derivation: "Endpoint/config seed: the panel's visibility is driven by appInfo.authType; a robust feature handles every documented value of that knob."
+  seed_source: pillar
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The gate is correct for exact, well-formed values but fails open/closed silently for malformed ones.
+      Overview.tsx:25-27 does a case-sensitive string-equality check against the single literal 'DISABLED'
+      with no enum validation and no fallback. If the operator sets AUTH_TYPE='' (empty) the panel hides (as
+      if DISABLED) AND every backend @ConditionalOnProperty fails to match → no SecurityWebFilterChain wired
+      → unguarded deployment. If the operator typos AUTH_TYPE=OUATH2 or sets 'disabled' lowercase, the gate
+      evaluates TRUE → the panel SHOWS on a deployment whose backend has no matching security config. The UI
+      mis-gating compounds the backend's identical lack of validation. The Popular strip's visibility is thus
+      reliable only when auth.type is one of the four exact uppercase literals.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Overview.md
+        section: bugs_limitations_corner_cases
+        cite: "Overview.tsx:25-27 + AppInfoController.java:18"
+        note: "Case-sensitive equality vs single literal; no enum validation; compounds backend no-default."
+      - sidecar: odd-platform__ts__react-component__component__Overview.md
+        section: invariants
+        cite: "Overview.tsx:25-27"
+        note: "Empty/typo/lowercase/whitespace auth.type all produce a surprising panel-visibility outcome."
+    operator_visible_failure: |
+      (1) A typo'd or unset auth.type can render the Popular/Recommended panel on a deployment that has no
+      authentication wired — the panel's presence falsely signals a working secured deployment. (2) The
+      inverse (empty string) hides the panel AND silently disables security, masking the misconfiguration
+      from an operator who only looks at the home page. (3) There is no console warning, toast, or fallback
+      UI naming the unrecognised value. This is a deployment-time trap that no integration test catches
+      because typos are operator-side.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-012
+  hypothesis: "Two operators opening the same popular entity's detail page concurrently each have their read counted correctly (no lost updates), and a client paging through the full Popular list sees each entity exactly once."
+  derivation: "Concurrency / pagination negative-space: a counter feeding a ranking must be race-correct, and a paginated ranking must be stable enough not to skip/duplicate under concurrent writes — a senior PO asks both."
+  seed_source: response-shape
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      Two distinct sub-questions, neither settle-able from the sidecars alone:
+      (a) Lost-update on view_count: the increment is `UPDATE ... SET view_count = view_count + 1`, which is
+      atomic per-statement in Postgres, so the sidecar reasons there is NO lost update "by SQL semantics, not
+      by test" (ReactiveDataEntityRepositoryImpl.md performance). That is a STATIC claim about concurrent
+      single-row increments — the methodology's bar (run it, don't reason it) wants this measured under real
+      concurrency, especially since the +2 doubling means each page-open fires TWO increments inside (and
+      across) @ReactiveTransactional boundaries.
+      (b) Pagination stability: getPopular is non-transactional and offset-based ((page-1)*size); a client
+      iterating page=1,2,3 while concurrent detail-reads mutate view_count can see an entity twice or miss
+      one entirely (getPopular.md bugs[8]). The UI fetches page=1 only, so this is latent for the UI but
+      real for API consumers. Whether it manifests in practice needs a concurrent-load probe.
+    evidence:
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveDataEntityRepositoryImpl.md
+        section: performance
+        cite: "ReactiveDataEntityRepositoryImpl.java:173-180"
+        note: "Lost-update absence asserted by SQL semantics, NOT by test — wants empirical confirmation."
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getPopular.md
+        section: bugs_limitations_corner_cases
+        cite: "DataEntityServiceImpl.java:227-231 (no @ReactiveTransactional) + ReactiveDataEntityRepositoryImpl.java:629-649"
+        note: "Non-transactional offset pagination → possible skip/duplicate under concurrent writes."
+    probe_id: P-301
+    routes_to_finding: none
+
+- id: H-013
+  hypothesis: "Performance of the Popular strip stays acceptable as the catalog grows — opening the home page does not get materially slower at 50K-100K entities."
+  derivation: "Pillar/performance negative-space: the home page is the most-trafficked surface; a senior PO asks whether it scales with the catalog."
+  seed_source: pillar
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      The Popular query is `ORDER BY view_count DESC` against data_entity with NO index on view_count
+      (verified across all 91 migration files in getPopular.md). For small catalogs the LIMIT lets Postgres
+      use a top-N sort; but at 50K-100K+ entities every home-page render is a sequential scan + sort over the
+      whole table, on the platform's hottest surface, with no service-layer or HTTP cache to absorb repeated
+      home-page loads / back-button re-fetches. The cost is bounded today (UI fetches page=1, size=5, once
+      per mount) but the H-002 doubling raises the distinct-view-value count over time, growing the scan-cost
+      curve. The actual p99 at scale is unmeasured — P-003 baselined only a small seed (p50=106ms). A seeded
+      large-catalog + concurrent-load probe is required to know whether the home page degrades.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getPopular.md
+        section: performance.known_performance_gaps
+        cite: "ReactiveDataEntityRepositoryImpl.java:633 + migration audit (no view_count index)"
+        note: "Unindexed ORDER BY view_count DESC → seq-scan + sort per render; no caching layer."
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getPopular.md
+        section: tests_coverage_semantic
+        cite: "lineage/odd-platform/probe-runs/2026-05-19-P-003.yaml"
+        note: "Latency baseline at SMALL seed only (p50=106ms); scale behaviour unmeasured."
+    probe_id: P-302
+    routes_to_finding: none
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: "Opening an entity detail page once registers +2 views (LSN-017 dep-array doubling), skewing the Popular ranking 2x toward click-reachable entities and making UI inflation 2x cheaper."
+  dedup_status: already_tracked
+  tracked_as: PLT-104
+  proposed_fix_anchor: "DataEntityDetails.tsx:63 — remove details.status?.status from the useEffect dep array (1-line fix; regression-pin = TEST-GAP-310 / probe P-004 flipped to assert delta=1)."
+- hypothesis_id: H-003
+  severity: HIGH
+  one_line: "Popular ranking is trivially pumpable — single forgeable view_count signal, no rate-limit/idempotency/auth/anti-abuse; anonymous under DISABLED."
+  dedup_status: already_tracked
+  tracked_as: PLT-104
+  proposed_fix_anchor: "Server-side per-(session,entity) debounce/idempotency on incrementViewCount + secondary ranking signal (distinct-viewer / recency) at ReactiveDataEntityRepositoryImpl.java:173-180 + :633."
+- hypothesis_id: H-006
+  severity: MEDIUM
+  one_line: "Clicking a Popular tile inflates the very ranking it reads (self-reinforcing loop), with no client-side debounce / analytics-only mode; same closure at the Directory entry point."
+  dedup_status: already_tracked
+  tracked_as: PLT-104
+  distinct_from: PLT-091
+  proposed_fix_anchor: "Client-side per-(session,entityId) guard on the Popular/Directory click OR an analytics-only navigation that does not trigger incrementViewCount (DataEntityList.tsx:38). NOTE: PLT-091 tracks the SEARCH-row-click instance of the same loop; this is the Popular-strip + Directory-tile instance — both fold into PLT-104's chain-level fix."
+- hypothesis_id: H-011
+  severity: MEDIUM
+  one_line: "Home-page Recommended/Popular panel visibility mis-gates on empty / typo'd / lowercase / whitespace auth.type (case-sensitive equality, no enum validation), compounding the backend's identical no-default gap."
+  dedup_status: already_tracked
+  tracked_as: PLT-077
+  proposed_fix_anchor: "PLT-077 already names Overview.tsx:25-27 as the UI-side closure of the AppInfoController.java:18 @Value-no-default root cause; the fix (validate auth.type against the enum at boot + normalise in the UI gate) lands there."
+
+### caveat_candidates
+- hypothesis_id: H-004
+  one_line: "exclude_from_search is NOT applied to the Popular strip (the sole discovery list-shape that ignores it) — operator-hidden entities can surface on the home page."
+  dedup_status: already_tracked
+  tracked_as: DOC-GAP-101
+- hypothesis_id: H-008
+  one_line: "The Popular STRIP is UI-gated under DISABLED but the /api/dataentities/popular ENDPOINT stays anonymously reachable — UI gate is UX, not security."
+  dedup_status: already_tracked
+  tracked_as: DOC-GAP-101
+- hypothesis_id: H-009
+  one_line: "Popular is the only column under 'Recommended' that is catalog-wide, not owner-scoped — cross-owner entity names/alert-state surface to every user; 'Recommended' over-promises personalisation."
+  dedup_status: already_tracked
+  tracked_as: DOC-260
+  distinct_from: DOC-GAP-082
+- hypothesis_id: H-010
+  one_line: "On a fresh deployment (view_count=0 everywhere) Popular silently shows NEWEST-ingested entities via the id-DESC tiebreaker, with no empty-state and no doc note — misleading first impression."
+  dedup_status: net_new
+  recommended_log_as: "caveat in https://docs.opendatadiscovery.org/features/data-discovery/catalog-overview (bootstrap-ranking-degeneration note) OR fold into DOC-GAP-101's catalog-overview update"
+
+### probes_emitted
+- probe_id: P-301
+  hypothesis_id: H-012
+  probe_path: "lineage/odd-platform/probes/P-301.yaml"
+- probe_id: P-302
+  hypothesis_id: H-013
+  probe_path: "lineage/odd-platform/probes/P-302.yaml"
+
+### validation_gaps
+- sidecar: odd-platform__ts__react-component__component__PopularStrip.md
+  field_insufficient: "docs_link_semantic.last_verified_status (carried 2026-05-19; recorded live-doc claims 'Structure page' + 'panel visible under DISABLED' that are NO LONGER true as of 2026-06-01)"
+  proposed_refresh: "Re-WebFetch catalog-overview and refresh PopularStrip + DataEntityDetails + getPopular doc_drift_findings — the three doc-vs-code drifts are now RESOLVED in the live doc; the sidecars still assert them as open."
+- sidecar: odd-platform__java__repository_reactive__repository__ReactiveDataEntityRepositoryImpl.md
+  field_insufficient: "performance — view_count concurrent-increment lost-update absence is asserted 'by SQL semantics, not by test'"
+  proposed_refresh: "After probe P-301 runs, fold its measured concurrent-increment result back into the repository sidecar's performance block to replace the static-reasoned claim with an empirical one."
+
+### doc_drift_findings
+- hypothesis_id: H-005
+  doc_url: "https://docs.opendatadiscovery.org/features/data-discovery/catalog-overview"
+  doc_says: "Clicking a tile opens that entity's detail page, defaulting to the Overview tab (verified 2026-06-01)."
+  code_does: "Navigates to /dataentities/{id}/overview — MATCHES. The prior sidecar-recorded drift (doc said 'Structure page' on 2026-05-19) is now RESOLVED."
+  recommended_log_as: "none — drift resolved in live doc; logged here so the sidecar refresh closes the stale doc_drift_findings entries (DOC-GAP-101 already CLOSED per doc-gaps.md)."
+- hypothesis_id: H-007
+  doc_url: "https://docs.opendatadiscovery.org/features/data-discovery/catalog-overview"
+  doc_says: "On auth-disabled deployments the panel is hidden from the home page entirely (verified 2026-06-01)."
+  code_does: "Overview.tsx:25-27 hides the whole Recommended panel under DISABLED — MATCHES. The prior sidecar-recorded drift (doc said 'panel is visible' on 2026-05-19) is now RESOLVED."
+  recommended_log_as: "none — drift resolved in live doc; sidecar refresh should close the stale entry."
+- hypothesis_id: H-001
+  doc_url: "https://docs.opendatadiscovery.org/features/data-discovery/catalog-overview"
+  doc_says: "Ranked by view count alone (highest first) (verified 2026-06-01)."
+  code_does: "Sole orderBy VIEW_COUNT DESC — MATCHES. The prior sidecar-recorded vagueness (doc said 'most-viewed OR most-used') is now RESOLVED to the precise single-signal statement."
+  recommended_log_as: "none — drift resolved in live doc."
+
+## maintainer_notes
+
+(reserved — no prior reflection to inherit; first reflection for F-001 at feature-reflector/0.2.0)
+
+Convergent-validation note for the triager: this top-down pass independently re-derived, from the
+product-owner seat, three findings already tracked by the bottom-up + scanner pipelines — the +2 doubling
+and inflatability (PLT-104), the auth.type UI mis-gating (PLT-077), and the EXCLUDE_FROM_SEARCH / DISABLED-
+API / read-collaborative caveats (DOC-GAP-101, now CLOSED; DOC-260). Two independent methods agreeing is a
+high-confidence signal, NOT duplicate work — recorded here, not re-filed. The single net-new finding is
+H-010 (fresh-deployment id-DESC ranking degeneration shown silently as 'Popular'). The reflection also
+catches that THREE doc-vs-code drifts the F-001 sidecars still assert (Structure-vs-Overview click target,
+panel-visible-under-DISABLED, most-viewed-or-most-used) are RESOLVED in the live doc as of 2026-06-01 — a
+sidecar-refresh action, surfaced as validation_gaps.

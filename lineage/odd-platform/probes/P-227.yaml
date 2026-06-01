@@ -1,0 +1,154 @@
+---
+probe_id: P-227
+emitted_by: feature-reflector
+emitted_in_reflection: lineage/odd-platform/feature-reflections/detail/F-011.yaml
+emitted_for_hypothesis: H-001
+emitted_at: 2026-06-01T00:00:00Z
+status: pending-reflection-verification
+feature_id: F-011
+test_class: security
+verified_against_commit: 43d13eb
+maintainer_curated: false
+stack_profile: odd-minimal-plus-ldap
+expected_outcome: |
+  Reflection hypothesis F-011 H-001 (verbatim): "When a deployment runs two non-OAUTH2
+  auth modes (e.g. it migrates LOGIN_FORM → LDAP), and two GENUINELY DIFFERENT people
+  happen to have the same username string in each (a LOGIN_FORM user 'alice' and a later
+  LDAP user 'alice'), the platform treats them as two distinct identities — the LDAP
+  'alice' does NOT see the LOGIN_FORM 'alice''s My Objects, My Alerts, owner-scoped
+  mutations, or role bindings."
+
+  Predicted (CONTRADICTED) outcome from the code trace: AuthIdentityProviderImpl.java:29-33
+  collapses both the LOGIN_FORM 'alice' and the LDAP 'alice' to UserDto("alice", null);
+  ReactiveUserOwnerMappingRepositoryImpl.getConditions:116-127 builds
+  `WHERE OIDC_USERNAME='alice' AND DELETED_AT IS NULL AND PROVIDER IS NULL` for BOTH; the
+  DB partial unique index user_owner_mapping_oidc_username_provider_deleted_key
+  (V0_0_89:9-15) permits at most one active (alice, null) row. Therefore the LDAP 'alice'
+  resolves to the SAME OwnerPojo as the LOGIN_FORM 'alice' — a cross-mode identity
+  takeover. The probe stands up a LOGIN_FORM deployment, creates 'alice' bound to Owner
+  alpha, then re-points the same container at LDAP (with an LDAP directory entry 'alice'
+  that is a DIFFERENT person), authenticates as the LDAP 'alice', and asserts that
+  /api/identity/whoami + an owner-scoped read return Owner alpha's data — confirming the
+  bleed.
+
+  PASS of the assertions = the bleed is REAL (hypothesis CONTRADICTED, the resolver fix at
+  AuthIdentityProviderImpl.java:32 is warranted). FAIL = the platform somehow distinguishes
+  the two (would invalidate the static trace — re-read AuthIdentityProviderImpl.java:29-33).
+local_execution_blocked: false
+arrange:
+  - kind: docker-compose-up
+    notes: |
+      odd-platform + Postgres + an OpenLDAP container (e.g. osixia/openldap) seeded with
+      one inetOrgPerson uid=alice. Two-phase run: phase 1 boots with auth.type=LOGIN_FORM,
+      phase 2 re-boots the SAME Postgres volume with auth.type=LDAP pointed at the OpenLDAP
+      container. The shared Postgres volume is the load-bearing element — the
+      USER_OWNER_MAPPING row created in phase 1 must persist into phase 2.
+  - kind: sql
+    query: |
+      -- Two distinct Owners so a takeover is observable.
+      INSERT INTO owner (id, name, deleted_at)
+      VALUES (8501, 'probe_owner_loginform_alice', NULL),
+             (8502, 'probe_owner_ldap_alice',      NULL);
+  - kind: sql
+    query: |
+      -- A data entity owned by owner 8501 (the LOGIN_FORM alice's owner) so an
+      -- owner-scoped read has something to leak.
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id)
+      VALUES (8600, '//probe-src/p227/entity', 'p227_alpha_entity', 1, 1);
+      INSERT INTO ownership (id, data_entity_id, owner_id)
+      VALUES (8700, 8600, 8501);
+act:
+  - kind: rest
+    description: |
+      PHASE 1 (auth.type=LOGIN_FORM). Bind the form user 'alice' → owner 8501 via the
+      OwnerAssociation admin direct-bind path (or seed it directly — see the SQL fallback).
+    method: POST
+    path: /api/owners/8501/association   # admin direct-bind; exact path per OwnerAssociationController
+    headers:
+      Content-Type: application/json
+    body: |
+      {"oidcUsername": "alice"}
+    capture_as: phase1_binding
+  - kind: sql
+    description: |
+      Fallback / assertion of phase-1 state: confirm exactly one active mapping
+      (alice, provider=null) → owner 8501.
+    query: |
+      SELECT oidc_username, provider, owner_id
+      FROM user_owner_mapping
+      WHERE oidc_username = 'alice' AND deleted_at IS NULL;
+    capture_as: phase1_mapping
+  - kind: docker-compose-restart
+    description: |
+      Re-boot the SAME container/volume with auth.type=LDAP pointed at the OpenLDAP
+      container that holds uid=alice (a DIFFERENT person — different cn/mail). No new
+      USER_OWNER_MAPPING row is created on LDAP login (no auto-create).
+    env_override:
+      AUTH_TYPE: LDAP
+  - kind: rest
+    description: |
+      PHASE 2 (auth.type=LDAP). Authenticate as the LDAP 'alice' and call whoami.
+    method: GET
+    path: /api/identity/whoami
+    auth: ldap-alice
+    capture_as: ldap_alice_whoami
+  - kind: rest
+    description: |
+      PHASE 2. The LDAP 'alice' reads an owner-scoped surface (their "My" objects).
+    method: GET
+    path: /api/datasources?my_objects=true   # or the /my owner-scoped read available in this build
+    auth: ldap-alice
+    capture_as: ldap_alice_my_objects
+observe:
+  - kind: sql
+    description: |
+      Truth: the only active mapping for 'alice' is still the phase-1 (alice, null) →
+      owner 8501 row; LDAP login created nothing new.
+    query: |
+      SELECT oidc_username, provider, owner_id, deleted_at IS NULL AS active
+      FROM user_owner_mapping
+      WHERE oidc_username = 'alice'
+      ORDER BY id;
+    capture_as: final_mappings
+assert:
+  - "phase1_mapping.provider IS NULL  # LOGIN_FORM alice stored with provider=null"
+  - "phase1_mapping.owner_id == 8501"
+  - "ldap_alice_whoami.owner.id == 8501  # CROSS-MODE BLEED: LDAP alice inherits the LOGIN_FORM alice's Owner"
+  - "len(ldap_alice_my_objects.body) >= 1  # the LDAP alice sees owner 8501's owned entity (8600) — data they should never see"
+  - "len([m for m in final_mappings if m.active]) == 1  # only ONE active mapping exists; the DB index blocked a distinct LDAP-alice row"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM ownership WHERE id = 8700;
+      DELETE FROM data_entity WHERE id = 8600;
+      DELETE FROM user_owner_mapping WHERE oidc_username = 'alice';
+      DELETE FROM owner WHERE id IN (8501, 8502);
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__service__service__AuthIdentityProviderImpl
+    - odd-platform__java__repository__reactive__repository__ReactiveUserOwnerMappingRepositoryImpl
+    - odd-platform__java__LoginFormSecurityConfiguration
+    - odd-platform__java__org.opendatadiscovery.oddplatform.auth__config-properties-class__ODDLDAPProperties
+  feature_flows:
+    - F-011
+  retrospectives:
+    - LSN-018
+  issues:
+    - PLT-065   # the READ-SIDE activity-feed mirror of the same bleed (distinct fix-site)
+  doc_gaps:
+    - DOC-GAP-103   # the cross-mode bleed doc caveat
+realism_caveats: |
+  This is the HIGHEST-leverage F-011 probe the control_summary names as unrealized. The
+  two-phase LOGIN_FORM→LDAP restart against a shared Postgres volume is the realistic
+  migration scenario; the bleed also manifests in a SINGLE deployment running both modes
+  concurrently (a simpler arrange that skips the restart). The OwnerAssociation admin
+  direct-bind path (act #1) may require an authenticated admin session under LOGIN_FORM —
+  if the test harness cannot drive that flow, substitute the SQL-seed fallback
+  (INSERT INTO user_owner_mapping (oidc_username, provider, owner_id, deleted_at) VALUES
+  ('alice', NULL, 8501, NULL)) which produces the identical phase-1 state. If
+  ldap_alice_whoami.owner.id resolves to something OTHER than 8501, re-read
+  AuthIdentityProviderImpl.java:29-33 — a code change emitting a distinct provider literal
+  for LDAP since commit 43d13eb would (correctly) close the bleed and invalidate the
+  CONTRADICTED prediction.

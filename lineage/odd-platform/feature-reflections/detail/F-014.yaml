@@ -1,0 +1,635 @@
+---
+feature_id: F-014
+pillar_anchored_id: P-07:F-003
+pillar: "P-07 Active Platform Features"
+feature_name: "Per-entity alert read — cross-owner alert enumeration via /api/dataentities/{id}/alerts"
+reflected_at: 2026-06-01T00:00:00Z
+reflected_at_commit: 43d13eb
+prompt_version: feature-reflector/0.2.0
+contributing_sidecars_read:
+  - odd-platform__java__DataEntityController__controller-method__getDataEntityAlerts.md
+  - odd-platform__java__service__service__AlertServiceImpl.md
+  - odd-platform__java__repository_reactive__repository__ReactiveAlertRepositoryImpl.md
+  - odd-platform__ts__react-component__component__Alerts.md   # shared AlertItem row component (per-entity tab reuses it); NOT a DataEntityAlerts.tsx sidecar
+  # NOTE: ReactiveDataEntityRepositoryImpl.md exists but the existsIncludingSoftDeleted body is fully quoted inside the getDataEntityAlerts + AlertServiceImpl sidecars; not re-opened end-to-end.
+  # NOTE: NO enriched sidecar exists for DataEntityAlerts.tsx, NotificationSettings.tsx, or DataEntityAlertItem.tsx — see validation_gaps (Rule 9 UI-incompleteness).
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/active-platform-features/alerting"
+    last_verified_at: "2026-05-29T00:00:00Z"   # via DOC-291 (done) live-site verification; not re-fetched this reflection session
+    last_verified_status: 200
+    note: |
+      The live page has been MATERIALLY UPDATED since the F-014 sidecars were enriched (2026-05-19).
+      DOC-200 (done, 2026-05-28) added a "Workaround completeness notes" + "Listing constraints today"
+      section that NOW documents, verbatim per the DOC-200 acceptance criteria: (a) the pagination shape
+      ("set size=1000 for full audit windows; default values can truncate without warning"), (b) the
+      soft-delete-inclusive read posture, (c) the cross-owner posture (cross-link DOC-GAP-157 /
+      REFACTOR-024), (d) the per-entity tab hardcoded size-30 / no-filter / no-export framing. DOC-291
+      (done, 2026-05-29) corrected the All-tab "open and resolved" claim to OPEN-only and documents that
+      the per-entity tab is where resolved alerts CAN be seen. So most DOC-side gaps the F-014 sidecars
+      flagged are CLOSED; the CODE gaps remain. Several verdicts below are therefore "code-contradicts-
+      secure-expectation, doc already warns" rather than fresh doc-drift.
+  - url: "https://docs.opendatadiscovery.org/developer-guides/api-reference/alerts"
+    last_verified_at: "2026-05-29T00:00:00Z"   # via DOC-291 (done)
+    last_verified_status: 200
+    note: |
+      The api-reference/alerts page was qualified by DOC-291 to say the GLOBAL listing endpoints return
+      OPEN alerts only. It does NOT enumerate the per-entity GET /api/dataentities/{id}/alerts shape
+      (DOC-GAP-009: the per-entity dataentity operations are still missing from api-reference) — the
+      per-entity read's only operator-facing doc surface is the alerting feature page's workaround text.
+hypothesis_summary:
+  total: 13
+  confirmed: 3
+  contradicted: 7
+  partial: 2
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-001
+    severity: HIGH
+    one_line: "GET /api/dataentities/{id}/alerts has no SECURITY_RULES entry and the SQL has no OWNERSHIP join — any authenticated caller (anonymous under DISABLED) reads the full alert history of any entity by enumerating data_entity_id; the sibling alert_config PUT IS permission-gated."
+related_feature_flows: [F-007, F-021, F-022, F-010]   # F-007 sibling alert surface; F-021 per-entity Activity tab (same soft-delete/cross-owner class); F-022 per-entity DQ tab (same UI-route-vs-backend soft-delete contradiction, PLT-117); F-010 housekeeping (the bug the audit-export workaround exists for)
+related_concepts:
+  - Alert
+  - AlertList
+  - "Cross-Owner Enumeration"
+  - "Soft-Delete (Data Entity STATUS)"
+  - "Per-Entity Alert View"
+  - "read-collaborative posture (REFACTOR-024)"
+related_drift_classes:
+  # from the F-014 feature-flow drift_class_summary that this reflection re-confirmed top-down
+  - cross_owner_per_entity_alert_read
+  - soft_delete_inclusive_existence_check
+  - no_alert_status_filter_asymmetric_with_sibling_counts
+  - unbounded_pagination_size_at_every_layer
+  - read_write_security_rule_asymmetry
+  - disabled_mode_bypass
+  - workaround_doc_silent_on_pagination_and_scoping
+  - cross_channel_leak_soft_deleted_entity_alerts
+  - audit_export_use_case_uncovered_by_tests
+  - alertitem_post_action_permission_discovery_button_enabled_until_click_reveals_no_access
+  - dataentityalerts_size_30_hardcoded_no_filter_ui_no_status_filter_ux
+  - notification_settings_with_permissions_is_context_not_render_block
+new_drift_classes_proposed:
+  - soft_deleted_entity_alerts_served_by_api_but_per_entity_tab_route_redirects_isStatusDeleted_cross_channel_split   # H-005 — the F-022/PLT-117 contradiction class applied to the Alerts tab
+---
+
+# Per-entity alert read — product-owner reflection
+
+## product_owner_narrative
+
+Per-Entity Alert View is the surface that answers one operator question: *"show me every alert ODD has ever raised on THIS data entity."* It is mounted at `GET /api/dataentities/{data_entity_id}/alerts` (a one-line WebFlux delegation at `DataEntityController.java:315-321`, per the getDataEntityAlerts sidecar `understanding`) and returns the entity's full alert history — open, resolved, auto-resolved, with alert chunks and status history — as a paginated `AlertList`. It serves two distinct audiences that the feature-flow deliberately stitches together: the **odd-platform-ui-end-user** who clicks the per-entity "Alerts" tab on a data-entity detail page, and the **platform-operator / compliance audience** the live alerting page explicitly directs here as the *audit-export workaround* for a housekeeping bug (F-010) that hard-deletes manually-resolved alerts. The live page names the endpoint verbatim — "export the alert audit data before manually resolving" (per getDataEntityAlerts sidecar `docs_link_semantic.inferred_docs[0]`). So the user-observable promise has two halves: an operator can see an entity's alert timeline on screen, and can export it durably before the housekeeping cleanup eats it.
+
+How a user interacts with it splits across the two surfaces. The **API surface** is what the doc-recommended workaround drives: a caller supplies `data_entity_id`, `page`, and `size`, and gets back an `AlertList` (per the getDataEntityAlerts sidecar `concepts.operations`). The **UI surface** is the per-entity Alerts tab — the React `DataEntityAlerts` component, mounted under the data-entity detail page's route tree, which fetches with a hardcoded `size=30` and infinite-scrolls (per the F-014 feature-flow `chain` hop `0-ui` evidence). Each alert row is rendered by the shared `AlertItem` component (the SAME component used on the global `/alerts/*` page, per the F-014 feature-flow hop `0-ui-item` + the Alerts.tsx sidecar `understanding`), which exposes a Resolve/Reopen button. A halt-config affordance (`NotificationSettings`) sits on the tab, wrapped in a `WithPermissions` block keyed on `DATA_ENTITY_ALERT_CONFIG_UPDATE` (per the feature-flow hop `0-ui` evidence + PLT-034 `Where`).
+
+The working parts, as the operator experiences them. The read is **unscoped by entity-ownership**: the SQL is `WHERE DATA_ENTITY.ID = :id` with no `OWNERSHIP` join and no principal predicate (per the ReactiveAlertRepositoryImpl sidecar `invariants` + `getAlertsByDataEntityId` row in `downstream_side_effects`), in deliberate structural contrast to the sibling `listByOwner` query which DOES `.join(OWNERSHIP)` and DOES filter `STATUS != DELETED` (per the same sidecar `bugs_limitations_corner_cases` + the getDataEntityAlerts sidecar `implicit_adrs[2]`). The existence guard is **soft-delete-inclusive** by name and intent — `existsIncludingSoftDeleted` (per the getDataEntityAlerts sidecar `implicit_adrs[1]`), the helper's name encoding the audit-preservation choice. The read returns **all statuses** (OPEN / RESOLVED / RESOLVED_AUTOMATICALLY) with no `status` filter, even though the sibling `getDataEntityAlertsCounts` endpoint DOES accept a `status` param (per the getDataEntityAlerts sidecar `concepts.invariants[4]`). Pagination is **unbounded at every layer** — no `@Min`/`@Max` on the controller params, no `minimum:`/`maximum:` in the OpenAPI `PageParam`/`SizeParam`, no clamp at the repository's `OFFSET = (page-1)*size` (per the getDataEntityAlerts sidecar `bugs_limitations_corner_cases[2]`). And the read endpoint has **no SECURITY_RULES entry at all**, while the sibling mutation `PUT /api/dataentities/{id}/alert_config` IS rule-gated with `DATA_ENTITY_ALERT_CONFIG_UPDATE` (per the getDataEntityAlerts sidecar `security.known_security_gaps[1]` + `SecurityConstants.java:304-307`).
+
+The integration story places F-014 inside the same read-collaborative family as its siblings. The cross-owner read posture is the **REFACTOR-024** read-collaborative stance (system-mission P-09 maintainer notes: "every authenticated user can enumerate the entire catalog") applied to a per-entity surface; the doc-gap registry tracks it as DOC-GAP-157 ("the SECOND DOC-GAP naming a cross-owner read posture on an alert read path after DOC-GAP-002"). The soft-delete-inclusive read is structurally identical to the per-entity **Activity** tab (F-021 / PLT-031) and the per-entity **DQ Test-reports** tab (F-022 / PLT-117) — three per-entity surfaces where the backend deliberately preserves data for soft-deleted entities. The alerts this view displays were WRITTEN by F-007 (the AlertManager webhook + in-platform ingestion), and the housekeeping job (F-010) is the reason the audit-export workaround exists at all (system-mission P-07 cross-pillar relationships + the AlertServiceImpl sidecar `dependencies_semantic.requires-config` housekeeping coupling).
+
+Edge cases a product owner would flag in a demo. (1) The endpoint is unauthenticated-authorization by design — under any non-DISABLED auth mode any *authenticated* user reads any entity's alerts; under DISABLED any *anonymous* network caller does (per the getDataEntityAlerts sidecar `security.data_exposure[0,1]`). (2) The audit-export workaround the docs recommend for compliance reaches ACROSS owners — an operator exporting "their" entity's alerts is using an endpoint that has no notion of "their." (3) Soft-deleted entities' alert history is served by the API but the per-entity tab ROUTE is gated on `!isStatusDeleted` (per PLT-031 `Where` — the alerts tab uses `RestrictedRoute condition={!isStatusDeleted}` + `WithPermissionsProvider`), so a UI user and an API caller get DIFFERENT answers for the same soft-deleted entity — the F-022/PLT-117 cross-channel split. (4) The per-entity tab has no status filter and no export button, so an operator wanting only OPEN alerts, or wanting to export, must leave the UI for the API. (5) The endpoint has ZERO automated test coverage (verified by file-system search in the getDataEntityAlerts sidecar `tests_coverage_semantic`) — every behaviour below is traced from primary source, not from a passing test.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When user A (authenticated, with NO ownership of data entity X) calls GET /api/dataentities/{X-id}/alerts, the platform either denies the read or scopes it — A cannot read the full alert history of an entity they have no ownership association with."
+  derivation: "Endpoint-shape + P-09 security posture: the path lives under the data-entity namespace and the SIBLING mutation (alert_config PUT) IS permission-gated; a senior PO expects the read to be at least owner-scoped, the way the doc names 'owners' for the My Objects tab filter."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The read is fully cross-owner. The endpoint has NO @PreAuthorize, NO entry in SecurityConstants.SECURITY_RULES
+      for the GET path (SecurityConstants.java:98-355 contains only mutations), and falls through to the catch-all
+      pathMatchers("/**").authenticated() (AuthorizationCustomizer.java:29-30). The downstream SQL at
+      ReactiveAlertRepositoryImpl.getAlertsByDataEntityId (lines 182-199) is WHERE DATA_ENTITY.ID = :id with NO
+      OWNERSHIP join and NO principal-derived predicate — in deliberate structural contrast to listByOwner (lines
+      160-178) which DOES .join(OWNERSHIP). Any authenticated caller who learns a data_entity_id (via search,
+      directory, getDataEntityDetails) reads every alert ever raised on that entity, including alert chunks that
+      carry raw AlertManager-derived generator-URL text. This is the REFACTOR-024 read-collaborative posture applied
+      to a per-entity surface.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getDataEntityAlerts.md
+        section: security.known_security_gaps[0] + security.owner_scoping
+        cite: "DataEntityController.java:315-321 + SecurityConstants.java:98-355 + AuthorizationCustomizer.java:29-30 + ReactiveAlertRepositoryImpl.java:182-199"
+        note: "no rule entry; catch-all .authenticated(); SQL has no OWNERSHIP join"
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveAlertRepositoryImpl.md
+        section: downstream_side_effects (getAlertsByDataEntityId row) + bugs_limitations_corner_cases[0]
+        cite: "ReactiveAlertRepositoryImpl.java:182-199 vs 160-178"
+        note: "getAlertsByDataEntityId no owner predicate; listByOwner DOES join OWNERSHIP — the asymmetry confirms the unscoped intent"
+    operator_visible_failure: |
+      Two failure modes. (a) Cross-owner enumeration: an attacker (or a curious authenticated user) iterates
+      data_entity_id and reads the complete alert history of every catalogued entity across every team — including
+      alert chunk descriptions that can leak internal monitoring host names (Prometheus generator URLs). (b) The
+      compliance trap: the live page recommends THIS endpoint as the audit-export workaround; an operator wiring it
+      into a compliance pipeline for "their" entities is using an endpoint with no owner notion, so the export
+      systematically reaches across owners — the opposite of what "export my entity's audit trail" implies.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    dedup_note: "DOC side TRACKED+DONE (DOC-200 ships the cross-owner caveat; DOC-GAP-157 is the registry META). CODE side is net_new — no PLT proposes an owner-scope/SECURITY_RULES fix for the per-entity alert read (PLT-100 is the lineage analogue; alerts per-entity read has none). Routed caveat-candidate because the platform-wide RBAC posture is a REFACTOR-024-family architectural decision, not a local patch."
+
+- id: H-002
+  hypothesis: "When auth.type=DISABLED, GET /api/dataentities/{id}/alerts requires SOME network-edge gate before an anonymous caller can read an entity's alert history."
+  derivation: "Pillar P-09 ('enabling one surface does not protect the other') + the DISABLED-bypass pattern recurring across batches; a senior PO checks the anonymous-reachability of a read that carries audit data."
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Under auth.type=DISABLED the missing SECURITY_RULES entry combined with the security chain's permit-all means
+      any unauthenticated client on the network reads every alert on every entity by enumerating data_entity_id. The
+      endpoint is on the UI/API surface (not /ingestion/**), so the auth.ingestion.filter.enabled flag is irrelevant
+      to it (per getDataEntityAlerts sidecar security.ingestion_filter_relevance). There is no in-platform toggle
+      that closes the read under DISABLED — the only control is the operator's network edge.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getDataEntityAlerts.md
+        section: bugs_limitations_corner_cases[4] + security.data_exposure[1]
+        cite: "DataEntityController.java:315-321 + SecurityConstants.java:98-355"
+        note: "no rule entry → anonymous reach under DISABLED; same pattern as the getAllAlerts batch endpoint"
+    operator_visible_failure: |
+      An operator who runs DISABLED on a network they believe is private (a lab, a VPC they trust) exposes the full
+      alert audit trail of every catalogued entity to anyone who can reach the port — including AlertManager-pushed
+      payload chunks with raw generator-URL text. DISABLED is documented as dev-only, but the consequence here is
+      whole-catalog alert exposure with no actor attribution, not just a single-feature leak.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    dedup_note: "Subsumed under the same REFACTOR-024 / DOC-GAP-157 read-collaborative cluster as H-001 (the DISABLED dimension is the anonymous-reach amplification of the same unscoped read). DOC-200 names the cross-owner posture; the DISABLED-specific anonymous reach is the platform-wide dev-only-mode caveat already carried across the security docs. Not a separate filing — corroborates H-001 + DOC-GAP-157."
+
+- id: H-003
+  hypothesis: "When a caller passes size=1000000 (or page=0) to GET /api/dataentities/{id}/alerts, the platform clamps or rejects the request rather than executing an unbounded query / a negative OFFSET."
+  derivation: "Endpoint-shape robustness + the doc-named audit-export use case: a senior PO expects an export-recommended endpoint to bound page size so a naive large request cannot degrade the server, and to reject nonsensical page indices cleanly."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Pagination is unbounded at every layer this method touches. The controller params are bare Integer page,
+      Integer size with no @Min/@Max (DataEntityController.java:317-318); the OpenAPI PageParam/SizeParam carry no
+      minimum:/maximum: (components.yaml:4213-4229); the repository computes OFFSET = (page-1)*size with no clamp
+      (ReactiveAlertRepositoryImpl.java:189). size=1000000 triggers a single jOOQ query + in-memory AlertList
+      mapping bounded only by Postgres/network buffers; page=0 produces OFFSET = -size, which Postgres rejects with
+      "OFFSET must not be negative" — surfacing as a 500-class error, not a clean 400.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getDataEntityAlerts.md
+        section: bugs_limitations_corner_cases[2] + performance.known_performance_gaps[0]
+        cite: "DataEntityController.java:317-318 + components.yaml:4213-4229 + ReactiveAlertRepositoryImpl.java:189"
+        note: "no @Min/@Max, no OpenAPI min/max, no repo clamp; (page-1)*size negative OFFSET on page=0"
+    operator_visible_failure: |
+      The doc explicitly recommends a LARGE size for audit exports ("set size=1000 for full audit windows") to
+      minimise round-trips — so operators are nudged toward exactly the large-page request that has no upper bound.
+      A careless or malicious size=1000000 on a high-volume entity produces an arbitrarily large response body and
+      an unbounded query (a memory/latency amplification vector, the LSN-001/002 class). A page=0 request returns an
+      opaque server error instead of a clear validation message — the first boundary an integration author hits.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    dedup_note: "DOC side TRACKED+DONE (DOC-200 documents the pagination shape + recommends size=1000 as the operator workaround; DOC-GAP-022 is the cross-cutting unbounded-size registry gap). CODE side is net_new — no PLT adds @Max + a defensive clamp for the alerts endpoint. PLT-100 caps lineage depth (@Max + clamp) — this is the structurally identical alerts-size hardening with no item. distinct_from PLT-100 (different endpoint family)."
+
+- id: H-004
+  hypothesis: "When an operator passes status=OPEN to the per-entity alert read (wanting only open alerts on this entity, mirroring the counts endpoint), the listing is filtered to OPEN."
+  derivation: "Category-F request-input alignment + endpoint-shape symmetry: the SIBLING endpoint getDataEntityAlertsCounts accepts a status param; a senior PO expects the listing to accept the same param the counts endpoint does."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The listing endpoint has NO status parameter — it always returns ALL statuses (OPEN, RESOLVED,
+      RESOLVED_AUTOMATICALLY). The sibling getDataEntityAlertsCounts (DataEntityController.java:324-330) DOES accept
+      an AlertStatus status query param and filters by it at ReactiveAlertRepositoryImpl.java:202-215. So a caller
+      can get a status-filtered COUNT but not a status-filtered LISTING — to display only OPEN alerts they must
+      page the full set and filter client-side, and the count from the counts endpoint (status-filtered) will not
+      match the page from the listing endpoint (unfiltered). No inline comment defends the asymmetry.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getDataEntityAlerts.md
+        section: concepts.invariants[4] + bugs_limitations_corner_cases[3]
+        cite: "DataEntityController.java:315-321 (no status param) vs :324-330 (counts has one) + ReactiveAlertRepositoryImpl.java:182-199 vs :202-215"
+        note: "listing returns all statuses; counts endpoint filters by status — asymmetric pair"
+    operator_visible_failure: |
+      An integration author building a "show open alerts for this entity" view calls the counts endpoint with
+      status=OPEN and the listing endpoint without it, then sees the badge count and the visible rows disagree.
+      For the audit-export use case the unfiltered listing returns RESOLVED rows that may be deleted on the next
+      housekeeping cycle (intentional for export) mixed with OPEN rows the operator may not want — with no
+      server-side way to separate them.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    dedup_note: "DOC side TRACKED+DONE (DOC-200's 'Listing constraints today' frames the per-entity tab as having no status filter and recommends the API workaround; DOC-291 documents that resolved alerts are visible per-entity). CODE side is net_new as an API-enhancement (add the status param to the listing to match the counts endpoint) but LOW severity — folds naturally into the PLT-050 Alerts-UX cluster's status-filter work rather than its own filing. distinct_from PLT-050 only in that PLT-050 is UI-tier; the API-param symmetry is the backend half."
+
+- id: H-005
+  hypothesis: "When a data entity is soft-deleted, an operator gets a CONSISTENT answer about its alert history across the UI and the API — either both show it (audit-preservation) or both hide it."
+  derivation: "Negative-space + cross-feature consistency: the backend's existsIncludingSoftDeleted is a deliberate audit-preservation choice; a senior PO expects the human surface (the tab) to honour the same capability the API exposes, the way F-022/PLT-117 frames the identical DQ-tab case."
+  seed_source: negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The two channels DISAGREE — the F-022/PLT-117 cross-channel split applied to the Alerts tab. The BACKEND
+      deliberately serves soft-deleted entities' alert history: AlertServiceImpl.getDataEntityAlerts gates on
+      existsIncludingSoftDeleted (AlertServiceImpl.java:327-335 → ReactiveDataEntityRepositoryImpl.java:150-155),
+      whose body has no soft-delete predicate (contrast the sibling existsNonDeletedByDataSourceId which DOES apply
+      addSoftDeleteFilter). A direct API caller passing a soft-deleted data_entity_id receives 200 OK with the
+      pre-deletion alert history. BUT the per-entity Alerts TAB route is gated on !isStatusDeleted — per PLT-031's
+      primary-source UI walk the alerts route is wrapped RestrictedRoute condition={!isStatusDeleted} +
+      WithPermissionsProvider (DataEntityDetailsRoutes.tsx:70-84), so a UI user on a soft-deleted entity cannot
+      reach the tab at all. Net: the API serves it, the screen hides it. The hypothesis is PARTIAL — "consistent"
+      fails (the two channels diverge), and the divergence is the inverse of F-022 (there the UI redirects away
+      from data the API serves — the SAME shape).
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getDataEntityAlerts.md
+        section: implicit_adrs[1] + bugs_limitations_corner_cases[1] + security.data_exposure[2]
+        cite: "AlertServiceImpl.java:327-335 + ReactiveDataEntityRepositoryImpl.java:150-155"
+        note: "backend serves soft-deleted entities' alerts by deliberate existsIncludingSoftDeleted choice"
+      - sidecar: "(PLT-031 primary-source UI walk — no enriched DataEntityDetailsRoutes.tsx sidecar)"
+        section: PLT-031 Where (alerts route contrast)
+        cite: "DataEntityDetailsRoutes.tsx:70-84"
+        note: "per-entity Alerts tab route IS gated RestrictedRoute condition={!isStatusDeleted} — UI hides what API serves"
+        source_read_for_validation: false   # taken from PLT-031's cited UI walk, not re-read here (see validation_gaps — the DataEntityAlerts route tree has no enriched sidecar)
+    operator_visible_failure: |
+      Two operators looking at the same soft-deleted entity get different answers: the UI user concludes "this
+      deleted entity has no alert history" (the tab is unreachable / redirected), while a direct API caller gets
+      the full history one curl away. The exact forensic workflow existsIncludingSoftDeleted was built to support
+      ("what alerts fired on this entity just before it was deprecated?") is defeated at the human surface. AND the
+      API half is a cross-channel data-reach surface (an entity hidden from the catalog list endpoints is still
+      readable via the alerts API by anyone who knows the stable id). Identical class to PLT-117 (DQ tab) and the
+      F-021/PLT-031 Activity tab.
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: bug-candidate
+    dedup_note: "DOC side TRACKED+DONE (DOC-200 documents the soft-delete-inclusive read posture). CODE side is net_new as the Alerts-tab instance of the soft-deleted-read cross-channel split, but it is the SAME CLASS as PLT-117 (F-022 DQ tab) and PLT-031 (F-021 Activity tab + which explicitly notes the Alerts route IS gated). distinct_from PLT-117/PLT-031 in LOCUS (the Alerts tab) but it is the same architectural-intent decision — route this as a corroborating instance under the PLT-031/PLT-117 cross-channel cluster, NOT a fresh standalone PLT. New drift class proposed (soft_deleted_entity_alerts_served_by_api_but_per_entity_tab_route_redirects). Confidence MEDIUM because the alerts-route gating is from PLT-031's UI walk, not an enriched sidecar I could re-trace."
+
+- id: H-006
+  hypothesis: "When an operator opens the per-entity Alerts tab, they can filter (by status / date) and export the alert history from the screen — the tab gives them the tools the audit-export use case needs."
+  derivation: "Senior-PO customisation + workflow question ('can the user do the task from the screen?'): the alerting workaround is the headline use case for this endpoint; a senior PO expects the tab that backs it to expose at least a status filter or an export affordance, consistent with the 7-facet Activity page."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The per-entity Alerts tab has no filter UI, no sort control, no status selector, and no export/download
+      affordance; it fetches with a hardcoded size=30 and infinite-scrolls (per the F-014 feature-flow chain hop
+      0-ui evidence: DataEntityAlerts.tsx:31 size=30, lines 78-80 render the list with no filter scaffolding). The
+      sibling Activity page has a 7-facet filter panel; this tab has nothing. An operator wanting only OPEN alerts
+      on this entity, or wanting to export the history, must leave the UI for the API workaround — which the doc now
+      explicitly tells them to do (DOC-200). A deep alert history requires infinite-scroll walking 30 rows at a time.
+    evidence:
+      - sidecar: "(F-014 feature-flow chain hop 0-ui — DataEntityAlerts.tsx has no enriched sidecar)"
+        section: feature-flow F-014 chain[hop 0-ui] evidence + observed_vs_expected facet dataentityalerts_size_30_hardcoded_no_filter_ui_no_status_filter_ux
+        cite: "DataEntityAlerts.tsx:31, 78-80"
+        note: "hardcoded size=30; no filter/sort/status/export UI"
+    operator_visible_failure: |
+      The tab is an "alert history viewer" with none of the affordances its primary (audit/compliance) use case
+      needs. An operator on a noisy entity cannot narrow to OPEN, cannot jump to a date, and cannot export — they
+      scroll, or they go to the API. The inconsistency with the richly-filtered Activity page on the same detail
+      surface makes the platform feel internally inconsistent.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    dedup_note: "ALREADY TRACKED both sides: DOC-200 (done) frames the per-entity tab constraints as operator caveats + recommends the API workaround; PLT-050 is the Alerts-UX code-side cluster (filter/bulk/page-size) and PLT-031 is the per-entity-tab routing item. The F-014c finding underlying this is the same one DOC-200/PLT-050 already carry."
+
+- id: H-007
+  hypothesis: "When a viewer who lacks DATA_ENTITY_ALERT_RESOLVE permission looks at an alert row on the per-entity tab, they do NOT see a Resolve/Reopen action they cannot use (the UI hides actions the user is not entitled to)."
+  derivation: "Senior-PO UX consistency ('does the UI show only what I can do?') + UI-label seed on the Resolve button (the same shared AlertItem the global Alerts list uses)."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The Resolve/Reopen button is rendered on EVERY alert row unconditionally; the permission probe fires only AFTER
+      the click. The shared AlertItem component renders the button enabled (disableResolve starts false) and on click
+      dispatches fetchResourcePermissions(...), THEN conditionally calls updateAlertStatus OR sets disableResolve=true
+      and shows a small "No access!" caption (per Alerts.tsx sidecar bugs_limitations_corner_cases[1]: AlertItem.tsx
+      :159-166 render + :48-70 permission-on-click). Because the per-entity tab reuses the SAME AlertItem (F-014
+      feature-flow hop 0-ui-item), the anti-pattern surfaces here identically. The user learns their lack of
+      permission by clicking, not from a visual cue.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Alerts.md
+        section: bugs_limitations_corner_cases[1] + tests_coverage_semantic.uncovered_behaviours (Resolve security test)
+        cite: "AlertItem.tsx:159-166 + AlertItem.tsx:48-70"
+        note: "button rendered unconditionally; permission resolved post-click; late 'No access!' — shared component, both surfaces"
+      - sidecar: "(F-014 feature-flow chain hop 0-ui-item)"
+        section: feature-flow F-014 chain[hop 0-ui-item] evidence
+        cite: "AlertItem.tsx:48-70 (shared with AlertsList.tsx:95-97)"
+        note: "the per-entity tab uses the same AlertItem as the global Alerts list — the anti-pattern is shared"
+    operator_visible_failure: |
+      A read-only steward on an entity's Alerts tab sees a Resolve button on every alert, clicks expecting it to
+      work, and is denied after the fact with a small inline caption. The affordance is misleading and inconsistent
+      with permission-gated controls elsewhere. Compounded: per PLT-053 the Resolve dispatch has no confirmation
+      dialog, and manually-resolved alerts get hard-deleted by housekeeping — so a single speculative click that
+      DOES have permission can destroy audit history the platform itself recommends preserving.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    dedup_note: "ALREADY TRACKED. The post-action-permission-discovery class is PLT-034 (WithPermissions is a context not a gate — F-014d is its canonical anchor) for the systemic fix, and the destructive-no-confirmation interaction is PLT-053 (Resolve/Reopen no confirmation dialog, cites DataEntityAlertItem.tsx + names the F-014 family). This is the per-entity-tab locus of both."
+
+- id: H-008
+  hypothesis: "When an operator sees the halt-config affordance (NotificationSettings) on the per-entity Alerts tab, its visibility is gated on DATA_ENTITY_ALERT_CONFIG_UPDATE — an unprivileged user does not see it."
+  derivation: "UI-label seed: the affordance is wrapped in <WithPermissions permissionTo={DATA_ENTITY_ALERT_CONFIG_UPDATE}>; a senior PO reads that wrapper as a render-gate."
+  seed_source: ui-label
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The wrapper's NAME implies a gate; its BEHAVIOR is a permission CONTEXT. Per PLT-034 (F-014d is its canonical
+      anchor), WithPermissions.tsx:12-49 has ALL THREE render branches unconditionally render the child — loading,
+      success, and error all render children. It provides the permission via context; the descendant
+      (NotificationSettings) must consult the context defensively. So the affordance is gated ONLY if (a) the
+      descendant consults the context AND (b) the context is hydrated on first render. The hypothesis is PARTIAL:
+      in the steady state where the descendant cooperates the button is effectively hidden, but the rendering relies
+      on the descendant's defensive coding, NOT on the wrapper short-circuiting — and on first render (context not
+      yet hydrated) the halt-config control can briefly flash to an unprivileged user, then the post-action probe
+      (the F-014d anti-pattern) is the only enforcement at mutation time.
+    evidence:
+      - sidecar: "(PLT-034 primary-source — WithPermissions.tsx has no enriched sidecar)"
+        section: PLT-034 What + Where
+        cite: "WithPermissions.tsx:12-49 + DataEntityAlerts.tsx:53"
+        note: "all three branches render children — context, not gate; F-014d is the canonical instance"
+        source_read_for_validation: false   # from PLT-034's cited primary source; WithPermissions.tsx / NotificationSettings.tsx have no enriched sidecar (validation_gaps)
+    operator_visible_failure: |
+      On first render of an entity's Alerts tab, an unprivileged user can briefly see the halt-config control before
+      the permission context resolves; if a descendant anywhere in the tree forgets to consult the context, the gate
+      is silently absent. The contributor reading <WithPermissions> reasonably assumes a render-block and may add a
+      new gated control that leaks. The name-vs-behaviour mismatch is the load-bearing defect.
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: bug-candidate
+    dedup_note: "ALREADY TRACKED as PLT-034 (WithPermissions context-not-gate — the systemic fix; F-014d facet is its named canonical anchor, and PLT-034's Where cites DataEntityAlerts.tsx:53 directly). This reflection corroborates PLT-034 from the product-owner angle. Confidence MEDIUM because neither WithPermissions.tsx nor NotificationSettings.tsx has an enriched sidecar — verdict rests on PLT-034's primary-source cite."
+
+- id: H-009
+  hypothesis: "When the per-entity Alerts tab fetches an entity's alert history, the response payload does not leak another user's personal identity (an OIDC/LDAP login name) to viewers who should not see it."
+  derivation: "Negative-space + privacy: the AlertDto carries status_updated_by → the human who triaged the alert; a senior PO treats raw login names rendered on a cross-owner-readable surface as a privacy concern (the read-collaborative posture's known PII edge)."
+  seed_source: negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The per-entity read resolves status_updated_by (an OIDC username string on the ALERT row) to an OwnerPojo via
+      a USER_OWNER_MAPPING LEFT JOIN with DELETED_AT IS NULL (per ReactiveAlertRepositoryImpl sidecar invariants +
+      implicit_adrs). When the user→owner binding is still active the UI shows the Owner display name; when the
+      binding is absent/soft-deleted the join resolves NULL and (per the F-007 Alerts-list reflection, same shared
+      AlertItem) the raw username can fall through to a verbatim render. Because the per-entity read is itself
+      cross-owner (H-001), the human who last triaged an alert on ANY entity is visible to any authenticated user
+      who reads that entity. PARTIAL: in the common case the Owner display name (not the raw login) is shown; the
+      raw-username fall-through is the edge, and it is the same statusUpdatedBy-username class flagged on the global
+      Alerts list under the read-collaborative-posture family.
+    evidence:
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveAlertRepositoryImpl.md
+        section: invariants (USER_OWNER_MAPPING DELETED_AT IS NULL join) + implicit_adrs[2]
+        cite: "ReactiveAlertRepositoryImpl.java:83-86, 499-502"
+        note: "username → owner via LEFT JOIN; NULL owner on unlink → raw username durable on the row"
+    operator_visible_failure: |
+      On a cross-owner-readable surface, the login name of whoever last triaged an alert (often an email-local-part
+      or corporate SSO id) can surface to colleagues across teams when the owner binding doesn't resolve. In a
+      compliance-sensitive multi-tenant deployment this is a personal-identifier leak. It is the per-entity instance
+      of the platform-wide read-collaborative-posture / anonymous-fingerprint finding.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+    dedup_note: "Corroborates the read-collaborative-posture / statusUpdatedBy-username class (DOC-GAP-082 META, cross-linked from the F-007 reflection's H-011). This is the per-entity-read locus; record as a corroborating instance under DOC-GAP-082, NOT a fresh filing. Confidence MEDIUM because the exact AlertItem render path (Owner name vs raw username fall-through) is not pinned in an enriched per-entity-tab sidecar."
+
+- id: H-010
+  hypothesis: "When the audit-export workaround is exercised end-to-end (cross-owner read + soft-deleted-entity read + a large page) the platform behaves as the doc-recommended workaround implies — a complete, owner-irrelevant export of the entity's alert history."
+  derivation: "Pillar primary user action ('export the alert audit data') + the control_summary's named highest-leverage unprobed cells; a senior PO wants the end-to-end workaround behaviour pinned as one measured artefact before trusting it for compliance."
+  seed_source: pillar
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      Static trace says cross-owner read (H-001), soft-deleted read (H-005), and unbounded size (H-003) are each
+      CONTRADICTED with HIGH/MEDIUM confidence per the cited sidecars — so the workaround DOES export owner-irrelevant
+      data including soft-deleted entities at any size. I mark this probe-needed (not contradicted) ONLY because the
+      COMPOUND across auth modes (anonymous-under-DISABLED read AND authenticated-cross-owner read of an entity the
+      caller doesn't own AND a soft-deleted entity's pre-deletion history AND a size large enough to characterise the
+      response) has never been run, and the F-014 control_summary names exactly these as the highest-leverage
+      unprobed cells ("0 of 4 cells COVERED"). The probe pins the workaround's real cross-owner + soft-delete +
+      unbounded-size behaviour as one local artefact; the per-hop static verdicts are not in doubt.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getDataEntityAlerts.md
+        section: security.owner_scoping + bugs_limitations_corner_cases[1] + bugs_limitations_corner_cases[2]
+        cite: "ReactiveAlertRepositoryImpl.java:182-199 + AlertServiceImpl.java:327-335 + ReactiveAlertRepositoryImpl.java:189"
+        note: "the three per-hop contradictions (cross-owner, soft-delete, unbounded size) the probe composes into one measured run"
+    operator_visible_failure: |
+      Until measured, an operator wiring the audit-export workaround for compliance cannot know empirically that it
+      reaches across owners and includes entities the catalog has hidden. The probe converts the static cluster into
+      a regression-pin so a future security tightening (owner-scope or soft-delete-exclude) breaks the build with a
+      concrete failing assertion rather than silently changing the workaround's behaviour.
+    severity: HIGH
+    confidence: HIGH
+    probe_id: P-320
+    routes_to_finding: caveat-candidate
+    dedup_note: "The probe is convergent confirmation of the H-001/H-005/H-003 cluster (DOC-200 + DOC-GAP-157 doc side; code side net_new). Not a new finding — it pins the existing cluster as one measured artefact. Probe id P-320 per parallel-batch-mode numbering."
+
+- id: H-011
+  hypothesis: "When a caller passes a data_entity_id that does not exist at all, GET /api/dataentities/{id}/alerts returns 404 (not an empty 200 that hides the bad id)."
+  derivation: "Endpoint-shape robustness + negative-space: an integration author needs to distinguish 'entity has no alerts' from 'entity does not exist'; a senior PO expects a missing entity to 404, not to masquerade as an empty result."
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      A fully-absent data_entity_id returns 404. The service gates the read on checkDataEntityExistence
+      (AlertServiceImpl.java:140, 327-335), which emits NotFoundException("Data Entity", dataEntityId) when the
+      existence check fails (AlertServiceImpl.java:330), surfacing as HTTP 404 via the global handler. A
+      soft-deleted id still returns 200 (existsIncludingSoftDeleted admits it — H-005); only a fully-purged /
+      never-existed id 404s. So "entity has no alerts" (200 with empty list) is correctly distinguished from "entity
+      does not exist" (404), with the documented soft-delete exception.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getDataEntityAlerts.md
+        section: concepts.operations + concepts.entities (NotFoundException)
+        cite: "AlertServiceImpl.java:140, 327-335, 330"
+        note: "checkDataEntityExistence → NotFoundException → 404 on absent id; 200 empty list on existing-but-alertless"
+    confidence: HIGH
+    routes_to_finding: none
+
+- id: H-012
+  hypothesis: "When an entity HAS alerts, GET /api/dataentities/{id}/alerts returns them as a well-formed paginated AlertList (the core read promise works end to end on the happy path)."
+  derivation: "Pillar primary user action ('view an entity's alert history') — the baseline confirm that the feature delivers its core read when correctly called."
+  seed_source: pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The happy path is intact. DataEntityController.getDataEntityAlerts delegates to
+      AlertServiceImpl.getDataEntityAlerts (lines 138-143), which composes checkDataEntityExistence.then(
+      alertRepository.getAlertsByDataEntityId(id, page, size)).map(alertMapper::mapAlerts). The repository issues
+      SELECT ALERT.* FROM ALERT JOIN DATA_ENTITY ON DATA_ENTITY.ODDRN = ALERT.DATA_ENTITY_ODDRN WHERE
+      DATA_ENTITY.ID = :id, paginated via pageifyResult (window-fn COUNT + ROW_NUMBER), and the result maps to an
+      AlertList with 200 OK. The chain mechanically returns the entity's alert history (all statuses, with chunks
+      and status-updated-by owner identity). (The read is cross-owner — H-001 — but for the HAPPY-PATH read of an
+      entity the caller is entitled to, the chain works.)
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getDataEntityAlerts.md
+        section: understanding + concepts.operations
+        cite: "DataEntityController.java:315-321 + AlertServiceImpl.java:138-143 + ReactiveAlertRepositoryImpl.java:182-199"
+        note: "existence-check → paginated alert select → AlertMapper.mapAlerts → 200 OK AlertList"
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveAlertRepositoryImpl.md
+        section: downstream_side_effects (getAlertsByDataEntityId) + invariants (pageifyResult)
+        cite: "ReactiveAlertRepositoryImpl.java:182-199"
+        note: "the SQL + pagination that materialises the AlertList the read returns"
+    confidence: HIGH
+    routes_to_finding: none
+
+- id: H-013
+  hypothesis: "When two alerts on the same entity share the same ordering key, the per-entity listing orders them deterministically so paginating does not skip or duplicate a row at the page boundary."
+  derivation: "Negative-space + response-shape: a paginated list (and the infinite-scroll tab on top of it) needs a stable total order, or boundary rows are skipped/duplicated; a senior PO expects deterministic ordering, as the sibling global Alerts list achieves with (LAST_CREATED_AT DESC, ID DESC)."
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The per-entity listing shares the same createAlertJoinQuery ordering as the global lists: the join query
+      declares (ALERT.LAST_CREATED_AT DESC, ALERT.ID DESC) applied to both the inner paginate CTE and the outer
+      select (per ReactiveAlertRepositoryImpl sidecar — the global Alerts reflection F-007 H-014 pinned the same
+      ordering at ReactiveAlertRepositoryImpl.java:474-483, 505). ALERT.ID is monotonic per insert, so ties on
+      last_created_at break by id DESC — a stable total order. So offset pagination on getAlertsByDataEntityId is
+      duplicate/skip-free at page boundaries for a static dataset. (Caveat: page=0 yields a negative OFFSET that
+      Postgres rejects — a visible error, not a silent skip — per H-003.)
+    evidence:
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveAlertRepositoryImpl.md
+        section: invariants (pagination via pageifyResult) + couples-to (JooqQueryHelper.paginate)
+        cite: "ReactiveAlertRepositoryImpl.java:474-483, 505"
+        note: "(LAST_CREATED_AT DESC, ID DESC) total order shared across the join queries — stable boundaries"
+    confidence: MEDIUM
+    routes_to_finding: none
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-003
+  severity: MEDIUM
+  one_line: "Per-entity alert read has no @Min/@Max on page/size, no OpenAPI min/max, no repo clamp — size=1000000 runs unbounded (the doc nudges operators toward large sizes for export), page=0 yields a negative OFFSET surfacing as an opaque server error not a 400."
+  dedup_status: net_new
+  distinct_from: PLT-100
+  recommended_log_as: BUG-NNN (or upstream-issue opendatadiscovery/odd-platform)
+  proposed_fix_anchor: "Add @Max (platform-appropriate, e.g. 1000) + @Min(1) on DataEntityController.java:317-318 page/size; add minimum:/maximum: to PageParam/SizeParam in components.yaml:4213-4229; defensive clamp at ReactiveAlertRepositoryImpl.java:189 before computing OFFSET. Structurally identical to PLT-100's lineage-depth @Max+clamp; distinct endpoint family. DOC side already done (DOC-200 documents the shape + recommends size=1000)."
+- hypothesis_id: H-005
+  severity: MEDIUM
+  one_line: "Backend serves soft-deleted entities' alert history (existsIncludingSoftDeleted) but the per-entity Alerts tab route is gated RestrictedRoute condition={!isStatusDeleted} — the API and the UI give different answers for the same soft-deleted entity (cross-channel split, same class as the F-022 DQ tab / F-021 Activity tab)."
+  dedup_status: already_tracked
+  tracked_as: PLT-031
+  proposed_fix_anchor: "Same architectural-intent decision as PLT-031 (per-entity Activity tab) + PLT-117 (per-entity DQ tab): either align the Alerts tab route with the backend's soft-delete preservation (drop !isStatusDeleted), or document the asymmetry as intentional (render an 'archived — history via API' state instead of a silent redirect). PLT-031 already owns the per-entity-tab routing posture and explicitly cites the Alerts route as the gated contrast; record the Alerts-tab locus there. distinct_from PLT-117 only in locus (Alerts vs DQ tab) — same class."
+- hypothesis_id: H-007
+  severity: MEDIUM
+  one_line: "The per-entity tab reuses the shared AlertItem whose Resolve/Reopen button is rendered unconditionally and probes permission only after click ('No access!' late) — compounded by no confirmation dialog before a Resolve that housekeeping then hard-deletes."
+  dedup_status: already_tracked
+  tracked_as: PLT-034
+  proposed_fix_anchor: "Systemic WithPermissions render-block / fail-closed (PLT-034 Option B) closes the post-action-discovery class across both Alerts surfaces; the confirmation-dialog-before-destructive-Resolve half is PLT-053 Defect 2 (cites DataEntityAlertItem.tsx). The per-entity tab is a shared-component locus of both."
+- hypothesis_id: H-008
+  severity: MEDIUM
+  one_line: "The NotificationSettings halt-config affordance is wrapped in <WithPermissions> whose three branches all render children (a context, not a gate) — gating depends on the descendant consulting the context, and the control can flash to unprivileged users on first render."
+  dedup_status: already_tracked
+  tracked_as: PLT-034
+  proposed_fix_anchor: "PLT-034 (F-014d is its canonical anchor; its Where cites DataEntityAlerts.tsx:53 directly) — refactor WithPermissions to short-circuit/fail-closed."
+
+### caveat_candidates
+- hypothesis_id: H-001
+  one_line: "GET /api/dataentities/{id}/alerts is cross-owner (no SECURITY_RULES entry, no OWNERSHIP join) — any authenticated user reads any entity's full alert history by enumerating data_entity_id; the doc-recommended audit-export workaround therefore reaches across owners."
+  dedup_status: already_tracked
+  tracked_as: DOC-GAP-157
+  recommended_log_as: "DOC side done (DOC-200 ships the cross-owner caveat; DOC-GAP-157 is the registry META). CODE side (owner-scope / SECURITY_RULES on the per-entity alert read) is net_new and architectural — a REFACTOR-024-family decision; surface as a candidate when the platform-wide read-collaborative RBAC posture is taken up (no standalone PLT today; PLT-100 is the lineage analogue)."
+- hypothesis_id: H-002
+  one_line: "Under auth.type=DISABLED the per-entity alert read is anonymously reachable (no rule entry; UI/API surface, not gated by auth.ingestion.filter.enabled) — anyone with network reach reads the whole catalog's alert history with no actor attribution."
+  dedup_status: already_tracked
+  tracked_as: DOC-GAP-157
+  recommended_log_as: "Corroborates H-001 / DOC-GAP-157 (the DISABLED anonymous-reach amplification of the same unscoped read) + the platform-wide dev-only-DISABLED caveat. No separate filing."
+- hypothesis_id: H-004
+  one_line: "The per-entity listing endpoint has no status filter while the sibling counts endpoint does — a status-filtered count cannot be paired with a status-filtered listing; callers must page the full set and filter client-side."
+  dedup_status: already_tracked
+  tracked_as: DOC-200
+  recommended_log_as: "DOC side done (DOC-200 'Listing constraints today' + DOC-291 resolved-visible-per-entity). The API-symmetry enhancement (add status to the listing) is a LOW-severity backend item that folds into the PLT-050 Alerts-UX cluster rather than its own filing."
+- hypothesis_id: H-006
+  one_line: "The per-entity Alerts tab has no status filter, no date filter, no export affordance, and a hardcoded size=30 — the audit-export use case it backs is unsupported from the screen; operators must use the API."
+  dedup_status: already_tracked
+  tracked_as: PLT-050
+  recommended_log_as: "DOC side done (DOC-200 frames the tab constraints + recommends the API workaround); code side is PLT-050 (Alerts-UX cluster) + PLT-031 (per-entity-tab routing). Same F-014c finding."
+- hypothesis_id: H-009
+  one_line: "status_updated_by (an OIDC/LDAP login name) can fall through verbatim on the cross-owner-readable per-entity Alerts surface when the user→owner binding doesn't resolve — a personal-identifier leak across teams (read-collaborative-posture edge)."
+  dedup_status: already_tracked
+  tracked_as: DOC-GAP-082
+  recommended_log_as: "Corroborates DOC-GAP-082 META (read-collaborative posture / anonymous-fingerprint; cross-linked from the F-007 reflection H-011). Record as the per-entity-read locus; no fresh filing."
+- hypothesis_id: H-010
+  one_line: "End-to-end audit-export compound (cross-owner + soft-deleted-entity + unbounded size) is statically contradicted but never measured — P-320 pins it as one local regression artefact so a future tightening fails the build with a concrete assertion."
+  dedup_status: already_tracked
+  tracked_as: DOC-GAP-157
+  recommended_log_as: "Convergent confirmation of the H-001/H-005/H-003 cluster; the probe (P-320) is the measured pin, not a new finding."
+
+### probes_emitted
+- probe_id: P-320
+  hypothesis_id: H-010
+  probe_path: "lineage/odd-platform/probes/P-320.yaml"
+  note: "End-to-end audit-export compound (cross-owner read of an un-owned entity + soft-deleted-entity read + large-size characterisation) under DISABLED + a real auth mode — the F-014 control_summary's named highest-leverage unprobed cells, pinned as one local docker-compose artefact. Confirms the H-001/H-005/H-003 cluster as a regression pin. P-320 per parallel-batch-mode numbering (P-301/P-302 claimed concurrently)."
+
+### validation_gaps
+- sidecar: "(no enriched sidecar for DataEntityAlerts.tsx / NotificationSettings.tsx / DataEntityAlertItem.tsx)"
+  field_insufficient: |
+    RULE 9 UI-INCOMPLETENESS (first-class). F-014 is a user-facing feature whose per-entity Alerts tab UI surface
+    is NOT enriched — the F-014 feature-flow marks hops 0-ui and 0-ui-item sidecar: unresolved. The only UI evidence
+    available is (a) the SHARED AlertItem behaviour captured in the GLOBAL Alerts.tsx sidecar (which covers AlertItem
+    as the shared row), and (b) the route-gating + size-30 + WithPermissions facts quoted in PLT-031 / PLT-034 /
+    PLT-053 from their own primary-source UI walks. So the UI hypotheses (H-005 route gating, H-006 tab affordances,
+    H-007 shared button, H-008 halt-config wrapper, H-009 username render) are traced through borrowed primary source,
+    NOT through an enriched per-entity-tab sidecar this reflection could re-verify — hence the MEDIUM confidences on
+    H-005/H-008/H-009 and the partial verdicts. This is the reflection-layer equivalent of the F-031 risk
+    (retrospectives/LSN-023): a confident UI judgement from a surface that has no sidecar. The API half (H-001..H-004,
+    H-010..H-013) IS fully enriched and high-confidence.
+  proposed_refresh: |
+    Enrich DataEntityAlerts.tsx (the per-entity tab), DataEntityAlertItem.tsx (or confirm it IS the shared AlertItem),
+    and NotificationSettings.tsx as first-class file-analyser sidecars (Failure-F / Rev-12 substrate-surface coverage),
+    plus DataEntityDetailsRoutes.tsx for the per-entity tab route-gating posture. That would (a) confirm the alerts
+    route's RestrictedRoute condition={!isStatusDeleted} + WithPermissionsProvider directly (H-005), (b) pin the
+    AlertItem render path for status_updated_by (Owner-name vs raw-username fall-through) to settle H-009, and (c)
+    confirm whether NotificationSettings consults the permission context defensively (H-008). Until then the per-entity
+    tab is a borrowed-source surface in this reflection.
+- sidecar: "odd-platform__java__repository_reactive__repository__ReactiveAlertRepositoryImpl.md (per-entity ordering)"
+  field_insufficient: "The (LAST_CREATED_AT DESC, ID DESC) order is confirmed for the join queries generally, but the sidecar's getAlertsByDataEntityId row does not separately re-cite the order applied to THIS specific per-entity query — H-013 leans on the shared createAlertJoinQuery ordering (pinned for the global lists in the F-007 reflection), hence MEDIUM confidence."
+  proposed_refresh: "On the next ReactiveAlertRepositoryImpl refresh, explicitly cite the ORDER BY on getAlertsByDataEntityId (lines 182-199) so the per-entity pagination-stability verdict (H-013) rests on a direct cite rather than the shared-query inference."
+
+### doc_drift_findings
+- hypothesis_id: H-001
+  doc_url: "https://docs.opendatadiscovery.org/features/active-platform-features/alerting"
+  doc_says: "Since DOC-200 (done, 2026-05-28), the page DOCUMENTS the cross-owner posture, the soft-delete-inclusive read, and the pagination shape of the audit-export workaround (cross-link DOC-GAP-157 / REFACTOR-024). No residual doc-drift on the read posture."
+  code_does: "The code is cross-owner + soft-delete-inclusive + unbounded-size as documented — the doc now MATCHES the code. The remaining gap is CODE-side (no owner-scope / no @Max), not doc-side."
+  recommended_log_as: "no new doc-gap — DOC-200 + DOC-291 closed the doc side. Listed here only to record that the F-014 sidecars' original doc_drift_findings (silent-on-scoping, silent-on-pagination) are now STALE/closed; a file-analyser refresh of the getDataEntityAlerts sidecar should downgrade them against the current live page."
+- hypothesis_id: H-004
+  doc_url: "https://docs.opendatadiscovery.org/developer-guides/api-reference/alerts"
+  doc_says: "The api-reference/alerts page (qualified by DOC-291 for the global listings) does NOT enumerate the per-entity GET /api/dataentities/{id}/alerts operation at all (the per-entity dataentity operations are missing — DOC-GAP-009)."
+  code_does: "The per-entity read exists and returns all statuses unfiltered; its only operator-facing doc surface is the alerting feature page's workaround text, not the api-reference."
+  recommended_log_as: "corroborates DOC-GAP-009 (api-reference missing the per-entity dataentity operations, of which getDataEntityAlerts is one). No fresh filing — record as a DOC-GAP-009 instance."
+
+## maintainer_notes
+
+(none — net-new reflection. Observations for the maintainer:
+
+1. TWO-SURFACE feature (API audit-export workaround + per-entity Alerts tab UI). The API half is FULLY enriched
+   (getDataEntityAlerts + AlertServiceImpl + ReactiveAlertRepositoryImpl sidecars) and high-confidence; the UI half
+   is NOT enriched (no DataEntityAlerts.tsx / NotificationSettings.tsx sidecar — the feature-flow marks both hops
+   unresolved). Per Rule 9 the FIRST validation_gap names exactly that: the UI hypotheses (H-005..H-009) are traced
+   through BORROWED primary source (the shared AlertItem in the global Alerts.tsx sidecar + the route/wrapper cites
+   in PLT-031/PLT-034/PLT-053), not through an enriched per-entity-tab sidecar — hence MEDIUM confidences + partial
+   verdicts there. This is deliberately NOT presented as a confident all-confirmed UI read (the F-031 / LSN-023
+   anti-pattern).
+
+2. DEDUP is the headline. F-014 sits inside a DENSE, already-tracked cluster. DOC side is essentially CLOSED:
+   DOC-200 (done) ships the cross-owner + soft-delete + pagination + per-entity-tab-constraints caveats and
+   STRENGTHENS DOC-GAP-157; DOC-291 (done) corrected the All-tab open-only claim and documents the per-entity tab as
+   where resolved alerts ARE visible. UI/UX code side is tracked: PLT-050 (Alerts-UX cluster — filter/bulk/size),
+   PLT-031 (per-entity-tab routing + soft-delete reach — explicitly cites the Alerts route as the gated contrast),
+   PLT-034 (WithPermissions context-not-gate — F-014d is its canonical anchor), PLT-053 (Resolve no-confirmation +
+   NotificationSettings concurrency). So 7 of the 9 caveat/bug candidates are already_tracked; this reflection is
+   largely CONVERGENT VALIDATION (the top-down PO pass independently re-deriving the scanner-pipeline findings),
+   captured (not re-filed) via dedup_status: already_tracked.
+
+3. The NET-NEW value is CODE-SIDE, on the backend half the doc-side already covers descriptively:
+   (a) H-003 — no @Max + no clamp on the per-entity alert read pagination (DOC-200 documents the shape; no PLT caps
+       it; structurally identical to PLT-100's lineage-depth cap — net_new, distinct_from PLT-100).
+   (b) H-001 — the cross-owner read as a CODE finding (owner-scope / SECURITY_RULES) has NO standalone PLT, only the
+       doc-side DOC-200/DOC-GAP-157; surfaced as a REFACTOR-024-family architectural caveat, not a fresh local PLT.
+   (c) H-005 — the Alerts-tab instance of the soft-deleted-read cross-channel split; same CLASS as PLT-117 (DQ tab)
+       and PLT-031 (Activity tab), recorded as a corroborating locus, with a new drift class proposed.
+
+4. REFACTOR-073 NAMING CAUTION: the AlertServiceImpl sidecar's coherence_sweep labels the cross-owner per-entity
+   read "REFACTOR-073 family", but in THIS workspace REFACTOR-073 is "no boot-time security-posture validator"
+   (backlog/adr/ADR-0003.md:60). The per-entity cross-owner read is a REFACTOR-024-family / DOC-GAP-157 finding, NOT
+   REFACTOR-073. Correct the sidecar's label on its next refresh.
+
+5. One new drift class proposed:
+   soft_deleted_entity_alerts_served_by_api_but_per_entity_tab_route_redirects_isStatusDeleted_cross_channel_split
+   (H-005) — the F-022/PLT-117 + F-021/PLT-031 cross-channel split applied to the Alerts tab.
+
+6. Contradiction density: 7 of 13 contradicted + 2 partial + 1 probe-needed (3 confirmed). The HIGH-severity
+   headline (H-001 cross-owner per-entity read) is the read-collaborative spine DOC-GAP-157 already owns on the doc
+   side; the highest NET-NEW code finding is H-003 (unbounded pagination, no @Max). The confirmed cells (H-011 404
+   on absent id, H-012 happy-path read, H-013 deterministic ordering) show the core read mechanically delivers — the
+   contradictions are all about scoping, bounds, and the UI/API consistency the feature does NOT deliver.
+
+7. Bug-candidate dedup tally: 4 bug_candidates — 3 already_tracked (H-005 -> PLT-031 [same class as PLT-117];
+   H-007 -> PLT-034 + PLT-053; H-008 -> PLT-034), 1 net_new (H-003, distinct_from PLT-100). Caveat-candidate tally:
+   6 caveats — all 6 already_tracked / corroborating (H-001 -> DOC-GAP-157 [code side architectural]; H-002 ->
+   DOC-GAP-157; H-004 -> DOC-200; H-006 -> PLT-050; H-009 -> DOC-GAP-082; H-010 -> DOC-GAP-157). The single
+   genuinely net_new finding a triager should file is H-003 (the alerts-read @Max/clamp + OpenAPI bounds), plus the
+   architectural H-001 code-side owner-scope when the REFACTOR-024 RBAC posture is taken up.)

@@ -1,0 +1,900 @@
+---
+feature_id: F-011
+pillar_anchored_id: P-09:F-002
+pillar: "P-09 Security & Access Control"
+feature_name: "Principal-to-Owner resolution — the per-request chokepoint that resolves Spring Authentication → UserDto(username, provider) → OwnerPojo via USER_OWNER_MAPPING JOIN"
+reflected_at: 2026-06-01T00:00:00Z
+reflected_at_commit: 43d13eb
+prompt_version: feature-reflector/0.2.0
+contributing_sidecars_read:
+  - odd-platform__java__service__service__AuthIdentityProviderImpl.md
+  - odd-platform__ts__components_shared_elements_AppToolbar__ui-shell-widget__AppToolbar.md
+  # The remaining contributing nodes were consulted via the F-011 feature-flow
+  # detail's exhaustively-transcribed observed_vs_expected facets + per-batch notes
+  # (K/N/O/P/Q/R/T/X/ZJ/ZK + shoebox-F + ZL) rather than re-read in full this
+  # invocation (Rule 8 — the feature flow already transcribed each sidecar's
+  # load-bearing claims with file:line citations). Specifically:
+  #   ReactiveUserOwnerMappingRepositoryImpl (batch N — SQL-layer getConditions:116-127),
+  #   GoogleUserHandler / GithubUserHandler / AzureLogoutSuccessHandler /
+  #   CognitoLogoutSuccessHandler (batch O — OAuth handler tier),
+  #   OwnerController.updateOwner + OwnerServiceImpl (batch P — rename + role-rebind),
+  #   ReactiveActivityRepositoryImpl (batch R — read-side cross-mode mirror),
+  #   AppInfoController (batch T — auth.type report endpoint),
+  #   LoginFormSecurityConfiguration (batch X — LOGIN_FORM config tier),
+  #   ToolbarTabs + AppErrorPage (batch ZJ — UI chrome + error display),
+  #   ODDLDAPProperties (batch ZK — LDAP config tier),
+  #   S2sAuthenticationFilter / DisabledAuthSecurityConfiguration / LDAPSecurityConfiguration
+  #   / GrantedAuthorityExtractor / UserDto / UserProviderRole (hop-1/hop-2 context).
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association"
+    last_verified_at: "2026-05-19T00:00:00Z"
+    last_verified_status: 200
+    note: |
+      Verified live status 200 in the AuthIdentityProviderImpl sidecar (batch K,
+      2026-05-19). The load-bearing user-facing promise: "One user can be associated
+      only with one owner and vice versa" + "If a user doesn't have an association with
+      any owner, it's impossible for them to manage data entities or have an
+      owner-based security role." SILENT on: (a) how "one user" is identified (the
+      compound (username, provider) key); (b) auto-creation on first login (does not
+      happen); (c) the provider strings LOGIN_FORM / LDAP / OAUTH2. The empty-results
+      onboarding consequence of "no association" is not described as a UX state.
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication"
+    last_verified_at: "2026-05-19T00:00:00Z"
+    last_verified_status: 200
+    note: |
+      Verified live status 200 (batch K). Enumerates the auth mechanisms
+      (Disable / Login form / OAUTH2-OIDC / LDAP / S2S). Does NOT discuss how users
+      link to Owners, does NOT mention auto-creation on first login, does NOT mention
+      the cross-mode provider=null collapse. WebFetch not re-exercised this invocation;
+      status carried from the batch-K sidecar record.
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/login-form"
+    last_verified_at: "2026-05-20T00:00:00Z"
+    last_verified_status: 200
+    note: |
+      Verified live status 200 in the LoginFormSecurityConfiguration sidecar (batch X,
+      2026-05-20). DOES document "All users authenticated through this method receive
+      ADMIN privileges in the platform" — so the admin-for-all behaviour is doc-disclosed.
+      Does NOT mention that SECURITY_RULES (the Policy/Role/Owner authorization table) is
+      inert under LOGIN_FORM, does NOT mention auth.login-form-redirect, does NOT mention
+      the framework-default login page customisation path.
+hypothesis_summary:
+  total: 13
+  confirmed: 0
+  contradicted: 10
+  partial: 3
+  probe_needed: 0
+  # Two CONFIRMATORY probes (P-227, P-228) are emitted to empirically pin the two
+  # highest-severity CONTRADICTED findings (H-001 cross-mode bleed, H-002 S2S 'ADMIN'
+  # collision) — the two security-boundary cases the F-011 control_summary names as the
+  # "HIGHEST-LEVERAGE probe candidates". The static trace is HIGH-confidence (primary-source
+  # SQL predicate + filter literals), so the verdicts are CONTRADICTED, not probe-needed;
+  # the probes raise the evidence from code-trace to end-to-end-observed for the
+  # security class (APPROACH Rule 6 — running the system resolves the last doubt on a
+  # security-boundary takeover).
+  probes_emitted_count: 2
+  highest_severity_contradiction:
+    hypothesis_id: H-001
+    severity: HIGH
+    one_line: |
+      Two genuinely different people who happen to share a username across two
+      non-OAUTH2 auth modes (LOGIN_FORM 'alice' and LDAP 'alice') resolve to the
+      SAME OwnerPojo — and therefore to the same My Objects, My Alerts, owner-scoped
+      mutations, and role bindings — because AuthIdentityProviderImpl.java:32
+      collapses every non-OAUTH2 mode to provider=null; the migration step that
+      causes the takeover is silent (no warning, no fail-fast, no log).
+related_feature_flows:
+  - F-006   # P-09:F-001 RBAC — the authorization half; F-011 is the identity half ("who is this user"), F-006 is "who is admin / what may they mutate"
+  - F-019   # P-08:F-003 Owner Lifecycle — the Owner CRUD half; F-011 batch-P updateOwner is the rename/role-rebind contrast surface
+  - F-020   # P-10 Collector Lifecycle — F-011 consumes Collector S2S tokens (the S2S 'ADMIN' principal originates here)
+  - F-021   # P-07:F-004 Activity Feed — provider-agnostic actor resolution read-side mirror (batch R); the cross-mode bleed manifests in the audit feed
+  - F-023   # P-02 Directory — the NEGATIVE case; Directory bypasses owner-scoping (does NOT call fetchAssociatedOwner)
+related_concepts:
+  - "Principal-to-Owner Resolution"
+  - "USER_OWNER_MAPPING"
+  - "UserDto (compound key)"
+  - "Anchor-Set Defence-in-Depth"
+  - "Server-to-Server (S2S) Authentication"
+  - "Auth Mode"
+  - "OAuth Provider-Quirks Strategy (ADR-CANDIDATE-034)"
+  - "Owner-Mapping Stability (rename hazard surface)"
+related_drift_classes:
+  # Confirmed by this reflection from the feature-flow's drift_class_summary:
+  - login_form_ldap_provider_null_cross_mode_bleed
+  - provider_null_cross_mode_bleed_sql_primary_source
+  - s2s_admin_username_collision_security_boundary
+  - no_auto_create_on_first_login
+  - empty_security_context_silent_propagation
+  - single_chokepoint_no_caching
+  - compound_key_silent_in_docs
+  - github_ghes_hard_coded_login_rename_orphan
+  - azure_logout_npe_no_token_revoke_local_only
+  - login_form_authorization_customizer_not_wired_security_rules_inert
+  - login_form_admin_for_all_hardcoded_no_role_discrimination
+  - login_form_redirect_open_redirect_no_scheme_or_host_allowlist
+  - owner_update_empty_roles_silently_destroys_bindings
+  - owner_update_no_audit_log_no_per_owner_scope
+  - login_form_provider_null_cross_mode_bleed_config_layer_primary_source
+new_drift_classes_proposed:
+  # NEW from H-001 — the resolver IS the fix-site; the single one-line change at
+  # AuthIdentityProviderImpl.java:32 (emit distinct provider literals per non-OAUTH2
+  # mode) closes the cross-mode bleed at the source. The feature-flow catalogues the
+  # bleed at three vertices (principal / SQL / schema) but names no single fix-anchor.
+  - cross_mode_bleed_root_cause_is_resolver_not_repository_one_line_provider_literal_fix
+  # NEW from H-005 — the user-facing onboarding consequence of no_auto_create_on_first_login
+  # framed as the user sees it: a brand-new authenticated user lands on a fully-rendered
+  # platform whose every personalised surface is silently empty, with no in-product
+  # affordance directing them to the OwnerAssociationRequest flow.
+  - first_login_user_sees_silently_empty_personalised_surfaces_no_onboarding_affordance
+---
+
+# Principal-to-Owner resolution — product-owner reflection
+
+## product_owner_narrative
+
+Principal-to-Owner resolution is the **single per-request chokepoint** that answers "who is the human making this call, and which catalog Owner are they?" for ODD Platform. A product owner introduces it like this: "When you sign in — by form, by your corporate LDAP, by Google/GitHub/Azure/Cognito SSO, or as a server-to-server API client — the platform resolves your login into a catalog **Owner** entity. That Owner is what makes 'My Objects', 'My Alerts', and 'my' activity show *your* things, and what your role bindings attach to. One service, `AuthIdentityProviderImpl`, does this resolution for all 15 places in the platform that need to know who you are" (per `AuthIdentityProviderImpl.md` understanding + the F-011 chain `description`). The audiences are the platform-operator (who picks the auth mode), the odd-platform-ui-end-user (who experiences My-Objects scoping), the odd-api-consumer (S2S callers), and the data-steward-owner (the Owner identity being resolved) — per `system-mission.md:249-268` (P-09) + `:334-335`.
+
+A user interacts with this feature mostly *implicitly*. There is no "resolve my identity" button. The visible surfaces are: the **top-right user-name label** in the persistent `AppToolbar` (which renders `owner?.name ?? identity?.username`, preferring the catalog Owner display-name over the raw login — `AppToolbar.md` operations + `AppToolbar.tsx:74`); the **Logout link** in the same toolbar (a full-page `window.location.href = '/logout'` that hands all session-termination to the backend handler chain — `AppToolbar.tsx:35-37`); and, behind the scenes, every owner-scoped read (`/my` objects, `/my` alerts, the MY_OBJECTS activity view, per-Owner discussions). The login screen itself is **not** an ODD React component — there is no `LoginForm` in `odd-platform-ui/src` (Grep-confirmed zero matches, per the batch-Q `AppToolbar` substitution note); LOGIN_FORM and LDAP render Spring Security's framework-default HTML page, OAUTH2 redirects to the IdP's hosted login, and DISABLED skips login entirely.
+
+The working parts, as a product owner would demo them: **mode dispatch** (`auth.type` selects exactly one of DISABLED / LOGIN_FORM / OAUTH2 / LDAP, with S2S composing additively — per `system-mission.md:262-264` + backlog ADR-0074); **identity construction** (`AuthIdentityProviderImpl.java:29-33` builds `UserDto(username, provider)` where `provider` is the OAuth2 client-registration id *only* for OAUTH2 — every other mode gets `provider=null`); **role extraction** (the first GrantedAuthority becomes ADMIN or USER — `AuthIdentityProviderImpl.java:41-46`); and **owner resolution** (a single jOOQ `SELECT owner.* FROM user_owner_mapping JOIN owner WHERE oidc_username=? AND deleted_at IS NULL AND (provider=? OR provider IS NULL)` — `ReactiveUserOwnerMappingRepositoryImpl.java:77-85, 116-127`). The customer's mental model — "the platform knows who I am and shows me my stuff" — is honoured on the happy path of a single, stable, OAUTH2-or-consistently-named deployment. The reflection's job is to find where the assembled product diverges from what an operator running a *real* deployment (multi-mode, migrated, SSO-renamed, multi-admin) would expect.
+
+The integration story (per `system-mission.md` cross-pillar graph + the F-011 `cross_pillar_relationships`): this feature **feeds every owner-scoped pillar**. `fetchAssociatedOwner()` is the load-bearing primitive consumed by Data Discovery's `/my` reads (P-01), Lineage's `/my/{up,down}stream` anchor-set defence (P-05 — the POSITIVE case; `LineageServiceImpl` is the NEGATIVE case that skips it, the F-005/PLT-100 surface), the Glossary's per-Term permission gate (P-06), and Alerts/Activity/Discussions per-Owner scoping (P-07). It **feeds-from** the OAuth handler tier (which produces the `OAuth2AuthenticationToken`) and the S2S filter and the four `*SecurityConfiguration` beans (which populate the SecurityContext). It is **read-side mirrored** in the Activity Feed (F-021), where the cross-mode collapse becomes an audit-integrity problem.
+
+A product owner would flag five edge cases in a demo. (a) **Two different people with the same username across modes become the same person** — the cross-mode bleed; the highest-severity finding. (b) **A brand-new SSO user sees a completely empty personalised platform with no explanation** — no Owner is auto-created on first login, and `fetchAssociatedOwner` returns empty-Mono (HTTP 200 + `[]`), not a 403 or an onboarding prompt. (c) **An S2S API-key client can silently inherit a human user's Owner** if that user happens to be named `ADMIN` (uppercase). (d) **Editing an Owner's name to update *only* the name silently wipes all that Owner's role assignments** if the API client omits the `roles` field. (e) **Under the default `auth.type=DISABLED`, the toolbar shows everyone as "admin", every tab including Management is visible, and clicking Logout 404s** — the as-shipped posture is fully open, and the UI gives no signal of it.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |
+    When a deployment runs two non-OAUTH2 auth modes (e.g. it migrates LOGIN_FORM → LDAP),
+    and two GENUINELY DIFFERENT people happen to have the same username string in each
+    (a LOGIN_FORM user 'alice' and a later LDAP user 'alice'), the platform treats them
+    as two distinct identities — the LDAP 'alice' does NOT see the LOGIN_FORM 'alice''s
+    My Objects, My Alerts, owner-scoped mutations, or role bindings.
+  derivation: |
+    The live user-owner-association doc promises "one user can be associated only with
+    one owner and vice versa"; a senior operator reads "one user" as "one PERSON". The
+    code identifies a user by the (username, provider) tuple, and provider is null for
+    every non-OAUTH2 mode — so "one user" is actually "one username string", not one
+    person.
+  seed_source: doc-claim + negative-space + cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      AuthIdentityProviderImpl.java:29-33 casts on OAuth2AuthenticationToken to read
+      the registrationId; the else-branch hard-codes provider=null for LOGIN_FORM,
+      LDAP, and S2S alike. The downstream owner lookup
+      (ReactiveUserOwnerMappingRepositoryImpl.java:116-127, getConditions) builds
+      `WHERE OIDC_USERNAME='alice' AND DELETED_AT IS NULL AND PROVIDER IS NULL` for
+      BOTH the LOGIN_FORM 'alice' and the LDAP 'alice' — the same predicate matches the
+      same single USER_OWNER_MAPPING row. The DB partial unique index
+      `user_owner_mapping_oidc_username_provider_deleted_key` (V0_0_89:9-15) ENFORCES
+      at-most-one active (username=alice, provider=null) row, so the LDAP 'alice'
+      cannot even get a distinct mapping — they inherit the LOGIN_FORM 'alice''s
+      Owner. IdentityServiceImpl.java:38-39 (.defaultIfEmpty(new OwnerPojo())) masks
+      the collision in the whoami response. There is no mode-check, no warning log,
+      no fail-fast at the migration step (per the F-011 chain observed_vs_expected
+      facet `login_form_ldap_provider_null_cross_mode_bleed` + batch-ZL primary-source
+      strengthening). The bleed propagates to all 15 fetchAssociatedOwner consumers.
+    evidence:
+      - sidecar: odd-platform__java__service__service__AuthIdentityProviderImpl.md
+        section: bugs_limitations_corner_cases[0] + implicit_adrs[1] + security.known_security_gaps[0]
+        cite: "AuthIdentityProviderImpl.java:29-33"
+        note: "Else-branch collapses LOGIN_FORM/LDAP/S2S to provider=null — the resolver IS the fix-site."
+      - sidecar: "(F-011 chain hop-3 + batch-ZL notes 1-4)"
+        section: provider_null_cross_mode_bleed_sql_primary_source
+        cite: "ReactiveUserOwnerMappingRepositoryImpl.java:116-127 + V0_0_89__update_user_owner.sql:9-15"
+        note: "SQL IS-NULL predicate + the partial unique index that forces the second user to inherit the first's row."
+    operator_visible_failure: |
+      (a) Silent cross-mode identity takeover: after a LOGIN_FORM→LDAP migration, the
+          LDAP person named 'alice' lands on a fully-populated account that is actually
+          the previous LOGIN_FORM person's — their data entities, alerts, role-granted
+          permissions, and discussions. No error; the takeover is invisible to both
+          parties and to the operator who performed the migration.
+      (b) Even WITHOUT migration, a deployment that runs LOGIN_FORM and LDAP
+          concurrently with any overlapping username has the same collapse — the second
+          person to sign in cannot get their own Owner because the DB index blocks a
+          second (alice, null) row.
+      (c) The whoami endpoint actively HIDES the problem (defaultIfEmpty(new OwnerPojo))
+          so an operator inspecting the API cannot distinguish "correctly resolved" from
+          "inherited someone else's Owner".
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-002
+  hypothesis: |
+    When a server-to-server (S2S) API-key client performs an owner-scoped operation,
+    it resolves to a dedicated system identity (or to no Owner at all) — it does NOT
+    silently act as some human operator's account.
+  derivation: |
+    Endpoint-shape (S2S is a distinct auth surface per system-mission.md:263) +
+    negative-space — a senior security reviewer expects a machine principal to be
+    isolated from human principals; an API key inheriting a person's data scope is a
+    boundary failure.
+  seed_source: pillar-mission + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      S2sAuthenticationFilter.java:31-34 hard-codes `User.withUsername("ADMIN")` into
+      the UsernamePasswordAuthenticationToken; this collapses to provider=null at
+      AuthIdentityProviderImpl.java:32. Any S2S call into a service that uses
+      fetchAssociatedOwner therefore looks up `WHERE OIDC_USERNAME='ADMIN' AND
+      PROVIDER IS NULL`. If an operator has named a LOGIN_FORM or LDAP user 'ADMIN'
+      (exact case — the SQL uses eq, not equalsIgnoreCase), the S2S caller resolves to
+      THAT human's Owner and inherits their owner-scoped reads and mutations (per
+      AuthIdentityProviderImpl.md bugs[1] + security.known_security_gaps[1] + the
+      F-011 facet s2s_admin_username_collision_security_boundary). There is no
+      system-Owner and no no-owner sentinel for S2S.
+    evidence:
+      - sidecar: odd-platform__java__service__service__AuthIdentityProviderImpl.md
+        section: bugs_limitations_corner_cases[1] + tests_coverage_semantic.uncovered_behaviours[8]
+        cite: "S2sAuthenticationFilter.java:31-34 + AuthIdentityProviderImpl.java:29-33"
+        note: "Hard-coded 'ADMIN' username, provider=null — collides with operator-named 'ADMIN' user."
+    operator_visible_failure: |
+      (a) An S2S API key (intended for collector/programmatic access) silently gains a
+          specific human user's owner-scoped data access whenever an operator has
+          created an Owner/mapping for a user literally named 'ADMIN'. The key holder
+          sees and can mutate that user's owned entities.
+      (b) The collision is naming-dependent and case-sensitive, so it is intermittent
+          across deployments — it works fine until an operator names a user 'ADMIN',
+          then silently changes the S2S blast radius with no signal.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-003
+  hypothesis: |
+    When an operator authors a complete RBAC configuration (Policies, Roles attached to
+    Owners) and runs the platform under auth.type=LOGIN_FORM, those Policies and Roles
+    actually GATE what each authenticated user can do.
+  derivation: |
+    Pillar-mission — P-09's primary user action is "author Policies + Roles; attach
+    Roles to Owners" (system-mission.md:252); an operator who builds the RBAC config
+    expects it to be enforced under whichever auth mode they enabled.
+  seed_source: pillar-mission + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      LoginFormSecurityConfiguration.java:55-57 wires only
+      `.authorizeExchange(... pathMatchers(permittedPaths).permitAll()
+      .pathMatchers("/**").authenticated())` — it never constructs
+      `new AuthorizationCustomizer(permissionService, extractors)` (contrast
+      OAuthSecurityConfiguration.java:98 + LDAPSecurityConfiguration.java:145 which DO).
+      AuthorizationCustomizer.java:14-32 is what walks SecurityConstants.SECURITY_RULES
+      and applies per-Policy/Role/Owner access managers. So under LOGIN_FORM the entire
+      SECURITY_RULES table is INERT — and every LOGIN_FORM user is already ADMIN
+      unconditionally (LoginFormSecurityConfiguration.java:81 calls
+      getAuthorities(true)). The authored Policies/Roles are silently ignored (per the
+      F-011 batch-X facets login_form_authorization_customizer_not_wired_security_rules_inert
+      + login_form_admin_for_all_hardcoded_no_role_discrimination).
+    evidence:
+      - sidecar: "(F-011 chain batch-X LoginFormSecurityConfiguration notes 1-3)"
+        section: login_form_authorization_customizer_not_wired_security_rules_inert
+        cite: "LoginFormSecurityConfiguration.java:55-57, 81 vs OAuthSecurityConfiguration.java:98 + LDAPSecurityConfiguration.java:145"
+        note: "AuthorizationCustomizer not wired under LOGIN_FORM; admin-for-all hardcoded."
+    operator_visible_failure: |
+      (a) An operator who configures LOGIN_FORM and builds a careful least-privilege
+          RBAC model via the Management UI gets a platform where every form-authenticated
+          user is ADMIN and can call every endpoint — the RBAC config they authored has
+          ZERO effect, with no warning that it is inert.
+      (b) The admin-for-all behaviour IS documented on the login-form page, but the
+          SECURITY_RULES-inert consequence is NOT — an operator reading only "users get
+          ADMIN" may still believe per-resource Policies narrow it; they do not.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-004
+  hypothesis: |
+    When an API client updates ONLY an Owner's name via PUT /api/owners/{owner_id}
+    (sending the new name and omitting the roles field, meaning "leave roles alone"),
+    the Owner's existing role assignments are preserved.
+  derivation: |
+    Endpoint-shape — OwnerFormData.roles is OpenAPI-optional (no required marker); the
+    universal REST expectation for an omitted optional field on an update is
+    "unchanged". A senior operator renaming an Owner does not expect a side effect on
+    role bindings.
+  seed_source: endpoint-shape + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      OwnerServiceImpl.getRoleIdsList (OwnerServiceImpl.java:117-122) collapses BOTH
+      null AND empty list to List.of(). The update transaction then calls
+      `deleteOwnerRelationsExcept(ownerId, List.of()).then(createRelations(ownerId,
+      List.of()))` — the first half deletes ALL current role-links (no existing link
+      is in the empty set), the second half inserts nothing. So omitting roles means
+      "remove all roles", not "leave roles alone" (per the F-011 batch-P note (3) +
+      facet owner_update_empty_roles_silently_destroys_bindings). The UI in practice
+      always re-sends the current roles list, masking the hazard in normal flows — but
+      any script/integration omitting roles silently strips every role from the Owner.
+    evidence:
+      - sidecar: "(F-011 chain batch-P updateOwner notes, finding (3))"
+        section: owner_update_empty_roles_silently_destroys_bindings
+        cite: "OwnerServiceImpl.java:117-122 + components.yaml:419-422"
+        note: "getRoleIdsList collapses null+empty to List.of(); delete-except-empty + insert-nothing."
+    operator_visible_failure: |
+      (a) A maintenance script that renames an Owner (or edits any single field) without
+          re-sending the full roles array silently revokes every role from that Owner —
+          which, via the F-006 RBAC chain, revokes the permissions of every user
+          associated with that Owner. No error, no confirmation, and (per H-013) no
+          audit-log entry to reconstruct what happened.
+      (b) The PUT-vs-PATCH surprise: REST clients reasonably treat an omitted optional
+          field as "no change"; this endpoint treats it as "set to empty".
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-005
+  hypothesis: |
+    When a brand-new user authenticates for the first time under OAUTH2 or LDAP, the
+    platform either auto-creates their Owner or clearly directs them to request one —
+    they are not left on a silently-empty platform with no explanation.
+  derivation: |
+    Pillar-mission ("process User-owner associations" — system-mission.md:252) +
+    negative-space — a senior product owner treats first-run onboarding as a
+    first-class flow; a new user who sees empty My Objects with no guidance is an
+    onboarding failure.
+  seed_source: pillar-mission + negative-space + doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      No auth-mode flow auto-creates a USER_OWNER_MAPPING row on first login — the
+      OwnerAssociationRequest request-and-approval round-trip is mandatory
+      (AuthIdentityProviderImpl.md dependencies_semantic.requires-feature[2] +
+      OwnerAssociationRequestServiceImpl.java:54-76). For a new OAUTH2/LDAP user,
+      fetchAssociatedOwner emits empty Mono (line 50-53, no switchIfEmpty); every
+      owner-scoped consumer (My Objects, My Alerts, MY_OBJECTS activity, my
+      discussions) degrades to empty results with HTTP 200 — not 401/403/404. The
+      AppToolbar shows their username but no owner-association prompt. The Overview
+      OwnerAssociation card DOES exist (Overview.tsx) but is gated on auth.type and
+      is a separate surface the user must find (per the F-011 facet
+      no_auto_create_on_first_login + the batch-ZA Overview gating notes).
+    evidence:
+      - sidecar: odd-platform__java__service__service__AuthIdentityProviderImpl.md
+        section: bugs_limitations_corner_cases[2] + docs_link_semantic.doc_drift_findings[1]
+        cite: "AuthIdentityProviderImpl.java:50-53 + OwnerAssociationRequestServiceImpl.java:54-76"
+        note: "Empty-Mono propagation; no auto-create; request flow is explicit-only."
+    operator_visible_failure: |
+      (a) A new SSO user signs in successfully, sees the full navigation chrome and
+          their own name in the toolbar, but every personalised view (My Objects, My
+          Alerts, my activity) is empty — with no banner, toast, or empty-state message
+          explaining that they must request an owner association. They reasonably
+          conclude the platform is broken or that they have no access.
+      (b) The live docs are silent on this entire onboarding step, so neither the user
+          nor the operator can discover from the documentation that the association
+          request is required.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-006
+  hypothesis: |
+    When a GitHub-SSO user renames their GitHub login (a routine, supported GitHub
+    action), they sign back in and still see their My Objects, owned entities, and
+    role bindings — their identity survives the rename.
+  derivation: |
+    Negative-space — SSO providers routinely allow username changes; a senior operator
+    of an SSO-integrated platform expects identity to key on a stable identifier, not a
+    mutable display name.
+  seed_source: negative-space + endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      GithubUserHandler keys the principal on the GitHub `login` string
+      (GithubUserHandler.java:35-36 USER_LOGIN="login"; read via
+      provider.getUserNameAttribute() with no fallback). GitHub login is mutable; after
+      a rename alice→alice2, the user presents (alice2, github); fetchAssociatedOwner
+      looks up (alice2, github) → empty; the prior (alice, github) USER_OWNER_MAPPING
+      row is orphaned. There is no stable-id (numeric GitHub `id`) fallback and no
+      migration tool (per the F-011 batch-O facet github_ghes_hard_coded_login_rename_orphan
+      + the shoebox-F escrow scenario). Worse, after GitHub's 90-day escrow a new person
+      can claim 'alice' and, if the orphan row persists, INHERIT the prior alice's Owner
+      (the github_login_escrow_recycle facet — a security boundary failure).
+    evidence:
+      - sidecar: "(F-011 chain batch-O GithubUserHandler notes + shoebox-F SHB-104)"
+        section: github_ghes_hard_coded_login_rename_orphan + github_login_escrow_recycle_new_user_inherits_orphaned_owner_link_security_boundary
+        cite: "GithubUserHandler.java:35-36 + AuthIdentityProviderImpl.java:29-30 + ReactiveUserOwnerMappingRepositoryImpl.java:116-127"
+        note: "Mutable login as key; no id fallback; orphan-on-rename; recycle-inherits on escrow."
+    operator_visible_failure: |
+      (a) A GitHub user who changes their handle signs in and finds their My Objects
+          empty and their ownership stranded under the old name — silently, with no
+          error and no re-link path short of an admin manually re-binding.
+      (b) Identity-reassignment risk: a recycled GitHub handle (claimable after 90 days)
+          lets a NEW person inherit the prior owner of that handle's data scope if the
+          orphan row was never administratively cleared.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-007
+  hypothesis: |
+    When an Azure-SSO operator deploys the platform without setting the optional
+    logout-uri, the platform either boots with a clear validation error or logs the
+    user out gracefully — it does not boot fine and then crash on the first logout.
+  derivation: |
+    Endpoint-shape (logout flow) + negative-space — a senior operator expects an
+    optional-looking config key to either be validated at boot or degrade gracefully,
+    consistent with how the sibling Cognito handler behaves.
+  seed_source: negative-space + cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      AzureLogoutSuccessHandler.java:39 calls URI.create(provider.getLogoutUri()) with
+      NO null-guard; the props validator (ODDOAuth2Properties.java:17-28) checks
+      clientId + provider but NOT logoutUri. The sibling
+      CognitoLogoutSuccessHandler.java:33-35 carries the StringUtils.isEmpty early-return
+      guard; Azure does not. An Azure operator who omits logout-uri boots successfully
+      and hits NPE → HTTP 500 at the first logout attempt (per the F-011 batch-O facet
+      azure_logout_npe_no_token_revoke_local_only). Additionally the handler invalidates
+      only the local Spring WebSession (line 47) — no token is revoked at Azure, so the
+      session stays valid at the IdP until natural TTL.
+    evidence:
+      - sidecar: "(F-011 chain batch-O AzureLogoutSuccessHandler notes (3))"
+        section: azure_logout_npe_no_token_revoke_local_only
+        cite: "AzureLogoutSuccessHandler.java:39,47 + CognitoLogoutSuccessHandler.java:33-35 + ODDOAuth2Properties.java:17-28"
+        note: "No null-guard on logoutUri (NPE); local-only logout (no IdP token revoke)."
+    operator_visible_failure: |
+      (a) An Azure operator following the docs but omitting the optional-looking
+          logout-uri ships a deployment where every Logout click returns a 500 error
+          page — the user cannot log out at all, and the failure only appears at
+          runtime, not at boot.
+      (b) Even when logout-uri is set, the local-only logout means a user on a shared
+          workstation who clicks Logout still has a live Azure session — a real
+          security-posture gap the UI gives no signal about.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-008
+  hypothesis: |
+    When a user clicks the Logout link in the toolbar, they are logged out and shown a
+    sensible post-logout page, regardless of the deployment's auth mode.
+  derivation: |
+    UI-label — the toolbar exposes a labelled "Logout" affordance (AppToolbar.tsx);
+    a senior product owner expects a labelled control to work consistently across the
+    platform's supported configurations.
+  seed_source: ui-label + view-mode
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The toolbar Logout is a hardcoded full-page nav to /logout (AppToolbar.tsx:35-37),
+      identical across all four auth modes. Under LOGIN_FORM/LDAP/OAUTH2 a backend
+      /logout handler is registered and clears the session (and, for OAUTH2, chains to
+      the per-provider LogoutSuccessHandler). But under auth.type=DISABLED — the SHIPPED
+      DEFAULT (application.yml:34) — DisabledAuthSecurityConfiguration.java:11-19 has NO
+      .logout(...) call, so /logout has no handler and the click yields a 404 page the
+      user must back out of (per AppToolbar.md bugs[3] + batch-ZJ ToolbarTabs note (3)).
+      The control works in 3 of 4 modes and breaks (404) in the default mode.
+    evidence:
+      - sidecar: odd-platform__ts__components_shared_elements_AppToolbar__ui-shell-widget__AppToolbar.md
+        section: bugs_limitations_corner_cases[3] + security.known_security_gaps[2]
+        cite: "AppToolbar.tsx:35-37 + DisabledAuthSecurityConfiguration.java:11-19 + LoginFormSecurityConfiguration.java:59"
+        note: "Hardcoded /logout link; no handler under DISABLED → 404; works under the other 3 modes."
+    operator_visible_failure: |
+      (a) On the default (DISABLED) deployment that most first-time evaluators run,
+          clicking the visible Logout button produces a confusing 404 — the platform
+          appears broken on a core, labelled affordance during the exact first-impression
+          window.
+      (b) The toolbar shows the same Logout control regardless of whether a working
+          backend handler exists, so the UI promise (a working Logout) is mode-dependent
+          with no on-screen indication.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-009
+  hypothesis: |
+    When the user-name label in the toolbar shows a name, that name is the identity of
+    the person currently using the session — so an operator reading the top-right corner
+    can trust who they (or a colleague at a shared screen) are signed in as.
+  derivation: |
+    Response-shape / UI-label — the toolbar renders owner?.name ?? identity?.username as
+    the user-identifier; a senior product owner expects an identity label to reflect the
+    actual authenticated principal.
+  seed_source: ui-label + response-shape + view-mode
+  validation:
+    verdict: partial
+    actual_behavior: |
+      Under LOGIN_FORM/LDAP/OAUTH2 the label correctly shows the resolved Owner display
+      name or the authenticated username (AppToolbar.tsx:74). But under auth.type=DISABLED
+      (the shipped default), IdentityController returns a synthetic dummyOwner with
+      username="admin" and owner=null, so the toolbar renders the literal "admin" to
+      EVERY anonymous network caller — the UI symptom of REFACTOR-185 (per AppToolbar.md
+      bugs[2] + security.known_security_gaps[0]). Separately, if fetchIdentity fails
+      (401/500) the App.tsx:48 .catch(() => {}) swallows the error and the label renders
+      empty-string indefinitely with no spinner or error banner. So the label is
+      trustworthy under enabled auth but actively misleading under DISABLED and silently
+      blank on fetch failure.
+    evidence:
+      - sidecar: odd-platform__ts__components_shared_elements_AppToolbar__ui-shell-widget__AppToolbar.md
+        section: bugs_limitations_corner_cases[2,5] + security.known_security_gaps[0]
+        cite: "AppToolbar.tsx:74 + IdentityController.java:30-33 + App.tsx:48"
+        note: "DISABLED renders 'admin' to anyone; fetchIdentity failure renders blank silently."
+    operator_visible_failure: |
+      (a) Under DISABLED, any anonymous visitor sees themselves rendered as "admin" with
+          every action available and NO banner indicating they are unauthenticated — an
+          evaluator may believe the platform has authenticated them.
+      (b) On a transient identity-fetch failure the corner goes blank with no error, so
+          a user cannot tell whether they are logged in, logged out, or hitting a bug.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-010
+  hypothesis: |
+    When a user opens a page that renders several owner-scoped surfaces at once (catalog
+    home with My Objects + My Alerts + Activity), the platform resolves their identity
+    efficiently — it does not re-run the same identity DB query several times for one
+    page load.
+  derivation: |
+    Pillar-mission (this is the per-request chokepoint for 15 callsites) +
+    negative-space — a senior engineer expects a per-request identity to be resolved
+    once and reused, not recomputed per consumer.
+  seed_source: negative-space + response-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      AuthIdentityProviderImpl is deliberately stateless with no caching and no
+      per-request memoisation (implicit_adrs[3]); every fetchAssociatedOwner /
+      getCurrentUser call issues a fresh ReactiveSecurityContextHolder.getContext() and
+      (for owner resolution) a fresh `SELECT ... FROM user_owner_mapping JOIN owner`
+      (AuthIdentityProviderImpl.java:50-53 + ReactiveUserOwnerMappingRepositoryImpl.java:77-85).
+      A single catalog-home page-load triggers 3-5 sequential identical queries because
+      the controller, the permission extractor, and the activity-logging path each
+      resolve independently (per the F-011 amplification_factor + facet
+      single_chokepoint_no_caching). The query is small and indexed, so correctness is
+      preserved, but the duplicate work is real and unbounded as more owner-scoped
+      surfaces are added to a page.
+    evidence:
+      - sidecar: odd-platform__java__service__service__AuthIdentityProviderImpl.md
+        section: bugs_limitations_corner_cases[4] + performance.known_performance_gaps[0] + implicit_adrs[3]
+        cite: "AuthIdentityProviderImpl.java:50-53 + ReactiveUserOwnerMappingRepositoryImpl.java:77-85"
+        note: "No per-request memoisation; 3-5 identical principal-lookup queries per page-load."
+    operator_visible_failure: |
+      (a) Under heavy UI activity or many concurrent users, the identity-lookup query
+          fires at a multiple of the request rate (3-5x per page-load), consuming
+          connection-pool capacity that scales linearly with how many owner-scoped
+          widgets a page renders — a latent throughput drag with no architectural guard.
+      (b) The cost is invisible to operators (no metric, no counter) so it cannot be
+          observed or alarmed before it bites at scale.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-011
+  hypothesis: |
+    When an operator who has NO administrative permissions signs in, the navigation does
+    not present them an admin surface they cannot use — the Management tab is hidden, as
+    it is in comparable data-catalog products.
+  derivation: |
+    UI-consistency / senior-product-owner UX seed ("is it consistent with how the same
+    task is done elsewhere; can the user understand what they can do from what is on
+    screen") — a permission-gated admin area is conventionally hidden, not shown-then-403.
+  seed_source: ui-label + pillar-mission + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      ToolbarTabs.tsx:34-82 hardcodes all 9 top-level tabs (including Management) in a
+      useMemo with NO permission read, NO role check, NO feature-flag gate (Grep across
+      the AppToolbar subtree for usePermissions|getGlobalPermissions|Permission. returns
+      ZERO matches — batch-ZJ ToolbarTabs note (1)). The Management destination pages are
+      permission-gated at the page level, but the TAB is visible to every authenticated
+      user AND every anonymous caller under DISABLED. A user with zero *_MANAGE
+      permissions sees the Management tab and, clicking through, gets a permission-denied
+      page rather than a hidden-tab UX (per AppToolbar.md bugs[1] +
+      security.known_security_gaps[1] + the F-011 facet
+      management_tab_rendered_to_all_authenticated_users_ux_visibility).
+    evidence:
+      - sidecar: odd-platform__ts__components_shared_elements_AppToolbar__ui-shell-widget__AppToolbar.md
+        section: bugs_limitations_corner_cases[1] + security.known_security_gaps[1]
+        cite: "ToolbarTabs.tsx:34-82"
+        note: "9 tabs hardcoded; no permission/role/feature gate on the tab strip."
+    operator_visible_failure: |
+      (a) A non-admin user sees a Management tab they cannot meaningfully use; clicking it
+          yields a 403 / permission-denied page (AppErrorPage with "Forbidden" and no
+          actionable hint per batch-ZJ note (2)) — a dead-end UX inconsistent with the
+          convention of hiding unavailable admin areas.
+      (b) The tab presence leaks the existence of an admin surface to every authenticated
+          user (and every anonymous caller under DISABLED) — reconnaissance information.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    sme_consultation_recommended: true
+    sme_consultation_question: |
+      Do operators of comparable data-catalog products (DataHub / Amundsen /
+      OpenMetadata) expect permission-gated admin areas to be HIDDEN from the nav for
+      non-admins, or shown-then-denied? This determines whether the unconditional
+      Management tab is a genuine UX defect or an accepted convenience.
+    sme_consultation_archetype: comparative
+
+- id: H-012
+  hypothesis: |
+    When an operator migrates between auth modes (e.g. LOGIN_FORM → OAUTH2), their
+    existing user-owner associations carry over — a user who was 'alice' keeps their
+    Owner after the migration.
+  derivation: |
+    Doc-claim + cross-pillar — the user-owner-association doc says "one user, one owner"
+    and is silent on identity stability across modes; a senior operator planning a
+    migration expects associations to be preserved or expects explicit migration
+    guidance.
+  seed_source: doc-claim + cross-pillar + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Identity is the compound (username, provider) key. A LOGIN_FORM user is
+      (alice, null); the same person via OAUTH2 GitHub is (alice, github). These are
+      DIFFERENT keys, so after a LOGIN_FORM→OAUTH2 migration the existing (alice, null)
+      USER_OWNER_MAPPING row no longer matches; the OAUTH2 alice has no association and
+      lands on the empty-results onboarding state (H-005). The compound-key dependence is
+      undocumented (per AuthIdentityProviderImpl.md doc_drift_findings[0] + the F-011
+      facet compound_key_silent_in_docs). The registrationId is also the operator-chosen
+      YAML key, so even renaming auth.oauth2.client.github → github_corp orphans every
+      mapping (shoebox-F facet oauth2_registration_id_yaml_key_rename_orphans...).
+    evidence:
+      - sidecar: odd-platform__java__service__service__AuthIdentityProviderImpl.md
+        section: docs_link_semantic.doc_drift_findings[0] + concepts.invariants[0]
+        cite: "AuthIdentityProviderImpl.java:29-33 + ReactiveUserOwnerMappingRepositoryImpl.java:116-127"
+        note: "(username, provider) compound key; provider differs across modes → associations don't carry over."
+    operator_visible_failure: |
+      (a) An operator migrating LOGIN_FORM → OAUTH2 discovers every user's owner
+          association silently broken — all users land on empty My-Objects with no
+          association, and there is no migration runbook in the docs to backfill the
+          provider column.
+      (b) A purely cosmetic rename of the OAuth client's YAML key has the same
+          orphaning effect — a deployment-time footgun the docs do not warn about.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-013
+  hypothesis: |
+    When an Owner is renamed via PUT /api/owners/{owner_id}, the historical activity
+    and the user-owner associations attached to that Owner remain intact — and the
+    rename is recorded so an auditor can see who changed the Owner and when.
+  derivation: |
+    Endpoint-shape (updateOwner) + pillar-mission (audit posture) + negative-space — a
+    senior operator expects a rename to be FK-stable and to be auditable, especially on
+    a security-relevant identity entity.
+  seed_source: endpoint-shape + negative-space + cross-pillar
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The FK-stability HALF is CONFIRMED-SAFE: user_owner_mapping.owner_id REFERENCES
+      owner(id) — the bigserial PK, stable across name changes
+      (V0_0_4__add_user_owner_mapping.sql:3). Renaming owner.name via
+      OwnerMapper.applyToPojo + updateOne does NOT orphan USER_OWNER_MAPPING (the
+      load-bearing CONTRAST to the OIDC_USERNAME rename hazard of H-006; per the F-011
+      batch-P note (1)). BUT the audit HALF is CONTRADICTED: OwnerServiceImpl.update
+      (lines 68-85) has no @ActivityLog, no logger — the rename and the role-rebind diff
+      are recorded NOWHERE (batch-P note (2), the 6th audit-silence sidecar). And
+      OWNER_UPDATE is a GLOBAL permission (SecurityConstants.java:144-145 NO_CONTEXT) — a
+      caller with OWNER_UPDATE can rename ANY Owner, including ones they have no
+      association with (batch-P additional finding).
+    evidence:
+      - sidecar: "(F-011 chain batch-P updateOwner notes (1),(2) + additional finding)"
+        section: owner_name_rename_safe_for_user_owner_mapping_fk_by_id_not_name + owner_update_no_audit_log_no_per_owner_scope
+        cite: "V0_0_4__add_user_owner_mapping.sql:3 (safe) + OwnerServiceImpl.java:68-85 (no audit) + SecurityConstants.java:144-145 (global scope)"
+        note: "Rename is FK-safe (confirmed); but no audit log and global update scope (contradicted)."
+    operator_visible_failure: |
+      (a) An auditor asking "who renamed this Owner / who changed its roles, and when"
+          gets no answer — the Activity Feed records nothing for Owner updates.
+      (b) Any user with OWNER_UPDATE can rename any Owner platform-wide regardless of
+          association; the live permissions doc says only "Allows editing an existing
+          owner" — silent on the unbounded scope.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-001
+  severity: HIGH
+  one_line: |
+    Cross-mode bleed: LOGIN_FORM 'alice' and LDAP 'alice' (two different people) resolve
+    to the same Owner because AuthIdentityProviderImpl.java:32 collapses all non-OAUTH2
+    modes to provider=null; the one-line resolver fix (emit distinct provider literals)
+    closes it at the source.
+  dedup_status: net_new
+  distinct_from: PLT-065
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: |
+    AuthIdentityProviderImpl.java:31-32 — emit distinct provider literals ("LOGIN_FORM" /
+    "LDAP" / "S2S" / "DISABLED") instead of null in the else-branch; existing (username,
+    null) rows stay and the DB partial unique index naturally segregates new mappings.
+    NOTE: PLT-065 fixes the READ-SIDE activity-feed JOIN sites (adds AND PROVIDER=? to the
+    4 LEFT JOINs) — a complementary but DISTINCT fix-site; the resolver root-cause change
+    is not tracked by any existing PLT. The cross-mode DOC caveat is DOC-GAP-103.
+
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: |
+    S2S API-key clients hard-code username='ADMIN' (provider=null) and silently inherit
+    any operator-named human user 'ADMIN's Owner-scoped data access.
+  dedup_status: already_tracked
+  tracked_as: PLT-072
+  proposed_fix_anchor: |
+    PLT-072 Defect 3 already covers the admin/ADMIN literal collision (IdentityController.java:32
+    lowercase 'admin' + S2sAuthenticationFilter.java:31-34 uppercase 'ADMIN'); resolve S2S to a
+    dedicated system-Owner or a no-owner sentinel. Convergent re-derivation from the
+    feature-reflection product-owner lens — corroboration, not a new filing.
+
+- hypothesis_id: H-003
+  severity: HIGH
+  one_line: |
+    Under LOGIN_FORM the entire SECURITY_RULES Policy/Role/Owner authorization table is
+    inert (AuthorizationCustomizer not wired) and every user is unconditionally ADMIN —
+    an authored RBAC config has zero effect.
+  dedup_status: already_tracked
+  tracked_as: PLT-064
+  proposed_fix_anchor: |
+    PLT-064 Defect 1 already covers AuthorizationCustomizer-not-wired under LOGIN_FORM
+    (wire it OR fail-fast with a warn log when Policies exist). Corroboration from the
+    product-owner lens.
+
+- hypothesis_id: H-004
+  severity: HIGH
+  one_line: |
+    PUT /api/owners/{id} that omits the optional roles field silently DELETES all of the
+    Owner's role bindings (PUT-vs-PATCH surprise via getRoleIdsList null+empty collapse).
+  dedup_status: already_tracked
+  tracked_as: PLT-066
+  proposed_fix_anchor: |
+    PLT-066 already covers this exactly (OwnerServiceImpl.java:117-122 getRoleIdsList +
+    deleteOwnerRelationsExcept(empty); PLT-084 is a superseded duplicate). Convergent
+    re-derivation — corroboration.
+
+- hypothesis_id: H-005
+  severity: HIGH
+  one_line: |
+    A new OAUTH2/LDAP user lands on a fully-rendered platform whose every personalised
+    surface is silently empty (HTTP 200 + []) with no onboarding affordance directing
+    them to the OwnerAssociationRequest flow; no Owner is auto-created on first login.
+  dedup_status: net_new
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: |
+    Minimum-viable: emit a first-login WARN log + an in-product banner/empty-state on the
+    owner-scoped surfaces when fetchAssociatedOwner is empty, linking to the
+    OwnerAssociation request flow (AuthIdentityProviderImpl.java:50-53 is the empty-Mono
+    detection point; the SHB-180 follow-up named (c) the UI banner as the MVP mitigation).
+    Doc-side first-login silence is a doc-gap (authentication page), but the IN-PRODUCT
+    onboarding affordance is a code gap NOT tracked by any existing PLT.
+
+- hypothesis_id: H-006
+  severity: HIGH
+  one_line: |
+    A GitHub login rename orphans the user-owner mapping (identity keyed on the mutable
+    login, no stable-id fallback); a recycled handle can let a new person inherit the
+    prior owner's data scope.
+  dedup_status: already_tracked
+  tracked_as: PLT-111
+  proposed_fix_anchor: |
+    PLT-111 already covers this (key on the stable GitHub numeric id + migration; or
+    id-based fallback; doc caveat paired at DOC-312). The escrow-recycle security-boundary
+    facet (shoebox-F) is the same code locus — corroboration.
+
+- hypothesis_id: H-007
+  severity: MEDIUM
+  one_line: |
+    Azure logout NPEs to a 500 when the optional logout-uri is unset (no null-guard,
+    unlike the sibling Cognito handler); and Azure logout is local-only (no IdP token
+    revoke).
+  dedup_status: net_new
+  distinct_from: PLT-075
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: |
+    AzureLogoutSuccessHandler.java:39 — add the StringUtils.isEmpty early-return guard
+    matching Cognito (CognitoLogoutSuccessHandler.java:33-35) AND add logoutUri to
+    ODDOAuth2Properties.validate when provider=azure; document the no-token-revoke caveat.
+    NOTE: PLT-075 covers the logout-handler OPEN-REDIRECT (no base-url allowlist across all
+    5 handlers) — a DIFFERENT defect; the Azure NPE-on-null-logoutUri + no-revoke is not
+    tracked by PLT-075.
+
+- hypothesis_id: H-008
+  severity: MEDIUM
+  one_line: |
+    The toolbar Logout link 404s under the default auth.type=DISABLED (no /logout handler
+    registered) — the labelled control breaks in the most common evaluation mode.
+  dedup_status: already_tracked
+  tracked_as: PLT-072
+  proposed_fix_anchor: |
+    The DISABLED-mode synthetic-admin / no-logout-handler surface is the REFACTOR-185
+    family that PLT-072 (F-085 Identity Probe & DISABLED-Mode Synthetic Admin) tracks;
+    the /logout-404-under-DISABLED is the UI symptom. Corroboration from the UI tier.
+    Doc caveat at DOC-239 (DISABLED-mode). Routed as caveat (the deeper fix is "don't ship
+    DISABLED open by default", a larger decision tracked under ADR-0074 / REFACTOR-185).
+
+### caveat_candidates
+- hypothesis_id: H-009
+  one_line: |
+    The toolbar user-name label shows the literal 'admin' to every anonymous caller under
+    DISABLED, and renders blank silently on identity-fetch failure — the identity label is
+    not always trustworthy.
+  dedup_status: already_tracked
+  tracked_as: PLT-072
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication
+
+- hypothesis_id: H-010
+  one_line: |
+    No per-request memoisation of identity resolution — a catalog-home page-load fires
+    3-5 identical user_owner_mapping JOIN queries; bounded but unguarded at scale.
+  dedup_status: already_tracked
+  tracked_as: PLT-063
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association
+
+- hypothesis_id: H-011
+  one_line: |
+    The Management tab (and all 9 tabs) renders unconditionally with no permission/role
+    gate — a non-admin sees an admin surface that dead-ends in a 403 page.
+  dedup_status: net_new
+  recommended_log_as: doc-gap-NNN (ui-overview page is 404; the tab-vs-permission UX should be documented) + a REFACTOR candidate to gate the Management tab on global permissions
+
+- hypothesis_id: H-012
+  one_line: |
+    User-owner associations do NOT carry across an auth-mode migration (compound
+    (username, provider) key differs per mode); even renaming the OAuth client's YAML key
+    orphans every mapping. No migration runbook exists.
+  dedup_status: already_tracked
+  tracked_as: DOC-312
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association
+
+- hypothesis_id: H-013
+  one_line: |
+    Owner rename is FK-safe for associations (confirmed) BUT emits no audit-log entry and
+    OWNER_UPDATE is a global (any-Owner) permission — the live permissions doc is silent on
+    both.
+  dedup_status: net_new
+  recommended_log_as: doc-gap-NNN (live owners + permissions pages: name rename mechanics, audit-log absence, OWNER_UPDATE global scope) — the F-011 batch-P related_doc_gaps candidates
+
+### probes_emitted
+- probe_id: P-227
+  hypothesis_id: H-001
+  probe_path: "lineage/odd-platform/probes/P-227.yaml"
+  note: "CONFIRMATORY — empirically pins the H-001 cross-mode bleed (verdict already CONTRADICTED with HIGH confidence from the static trace); the highest-leverage probe candidate the F-011 control_summary names."
+- probe_id: P-228
+  hypothesis_id: H-002
+  probe_path: "lineage/odd-platform/probes/P-228.yaml"
+  note: "CONFIRMATORY — empirically pins the H-002 S2S 'ADMIN' collision security boundary (verdict already CONTRADICTED with HIGH confidence); the second highest-leverage probe candidate the F-011 control_summary names."
+
+### validation_gaps
+- sidecar: "(F-011 chain hop-4 — the 15 fetchAssociatedOwner consumers)"
+  field_insufficient: |
+    hop-4 is marked unresolved: true in the feature flow — the 15 consumer callsites
+    (services + permission extractors) are referenced from the AuthIdentityProviderImpl
+    audiences list but have no per-consumer sidecars enumerated. The cross-mode bleed
+    (H-001) and S2S collision (H-002) blast radii are asserted at the resolver, but
+    whether EACH of the 15 consumers actually threads the resolved owner-id into a
+    WHERE OWNERSHIP.OWNER_ID=? predicate (vs. some consuming it differently) is not
+    individually traced.
+  proposed_refresh: |
+    A future file-analyser pass should enrich the highest-risk consumers
+    (SearchServiceImpl my_objects, AlertServiceImpl.listByOwner, the 4 permission
+    extractors) so the blast-radius claim is per-consumer cited rather than aggregated.
+
+### doc_drift_findings
+- hypothesis_id: H-001
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association"
+  doc_says: "One user can be associated only with one owner and vice versa."
+  code_does: |
+    "one user" is the (username, provider) tuple, and provider is null for every
+    non-OAUTH2 mode — so two different people sharing a username across LOGIN_FORM/LDAP
+    are ONE user to the code; the doc's "one user" implies one person.
+  recommended_log_as: doc-gap-NNN (cross-mode bleed already partly covered by DOC-GAP-103 + DOC-272; this is the resolution-layer framing)
+- hypothesis_id: H-005
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authentication"
+  doc_says: "(silent — no mention of first-login Owner creation or the association requirement)"
+  code_does: |
+    No Owner is auto-created on first login; every new user must complete the
+    OwnerAssociationRequest round-trip before any personalised surface is non-empty.
+  recommended_log_as: doc-gap-NNN (authentication + user-owner-association pages: document the mandatory first-login association step)
+- hypothesis_id: H-012
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/user-owner-association"
+  doc_says: "(silent on the compound key + cross-mode migration behaviour)"
+  code_does: |
+    Identity is keyed on (username, provider); migrating auth modes or renaming the
+    OAuth client YAML key orphans existing associations. No migration runbook exists.
+  recommended_log_as: DOC-312 (partly tracked — GitHub-rename) + a broader cross-mode migration runbook doc-gap
+
+## maintainer_notes
+
+(Reserved for hand-curated notes that survive future enrichment passes.)

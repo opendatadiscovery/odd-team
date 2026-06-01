@@ -1,0 +1,484 @@
+---
+feature_id: F-008
+pillar_anchored_id: P-10:F-001
+pillar: "P-10 — Integrations & Ingestion"
+feature_name: "Ingestion-replace destruction surface — silent metadata-delete + lineage-replace-on-call (Batch Ingestion / S2S API)"
+reflected_at: 2026-06-01T00:00:00Z
+reflected_at_commit: 43d13eb
+prompt_version: feature-reflector/0.2.0
+contributing_sidecars_read:
+  - odd-platform__java__auth__filter__IngestionDataEntitiesFilter.md
+  - odd-platform__java__service__service__IngestionServiceImpl.md
+  - odd-platform__java__service__service__DataSourceIngestionServiceImpl.md
+  - odd-platform__ts__react-component__component__CollectorsList.md
+  - odd-platform__java__IngestionController__controller-class__IngestionController.md (via feature-flow batch-ZF consolidation)
+  - odd-platform__java__service__service__IngestionService.md (interface-axis, via feature-flow chain)
+  - odd-platform__java__service__service__LineageServiceImpl.md (via feature-flow chain hop-4a)
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security"
+    last_verified_at: "2026-06-01T00:00:00Z"
+    last_verified_status: 200
+hypothesis_summary:
+  total: 14
+  confirmed: 0
+  contradicted: 11
+  partial: 2
+  probe_needed: 1
+  note: "0 confirmed is faithful to F-008's nature, not overcalling: this is the platform's canonical destruction-surface feature. Each hypothesis is framed as a user/security EXPECTATION (merge semantics, an authenticated write endpoint, durable operator edits, a meaningful token, a complete audit trail); the assembled chain diverges from every one of them. The two `partial` verdicts (H-007 cross-datasource protection, H-012 audit trail) hold in one configuration/case and fail in others."
+  highest_severity_contradiction:
+    hypothesis_id: H-001
+    severity: HIGH
+    one_line: "On the shipped default deployment (auth.type=DISABLED + auth.ingestion.filter.enabled=false), POST /ingestion/entities is anonymously reachable and any caller can write to — and silently destroy — any datasource's metadata and lineage by naming its ODDRN in the body."
+related_feature_flows:
+  - F-007   # AlertManager webhook — the alertmanager-side mirror of the path-coverage gap
+  - F-020   # Collector Lifecycle — the credential-minting side of the plaintext-everywhere claim
+  - F-023   # Directory Browsing — the cross-owner enumeration consumer of F-008's ingestion output
+  - F-028   # Namespace Lifecycle — ADR-CANDIDATE-143 counterfactual (UI accepts namespace_name)
+  - F-010   # Housekeeping — orphaned-token + session-housekeeping cross-links
+related_concepts:
+  - "Ingestion (External Webhook)"
+  - "Ingestion Authentication Filter"
+  - "Shared-Secret Tokens (Stored Plaintext)"
+  - "Default-Off Ingestion Auth"
+  - "Ingestion Filter Path-Coverage Incomplete"
+  - "upsert-by-oddrn-partial-merge-collector-driven-only-name-description"
+  - "namespace-inherited-from-collector-not-payload-collector-scoped-tenancy"
+  - "Lineage Graph Traversal"
+related_drift_classes:    # drift classes from F-008's drift_class_summary that this reflection confirmed
+  - silent_destruction_replace_not_merge
+  - default_off_unauthenticated_ingestion_at_filter_layer
+  - single_transaction_per_batch_no_per_entity_isolation
+  - ingestion_filter_path_coverage_incomplete_alertmanager_uncovered
+  - asymmetric_auth_between_ingestion_filters
+  - upsert_partial_merge_name_and_description_only
+  - namespace_inherited_from_collector_payload_silently_dropped
+  - collector_token_plaintext_at_rest_sql_primary_source
+  - session_provider_in_memory_default_is_collector_id_cluster_fragility_root_cause_refactor_419_config_tier_vertex
+  - ui_vs_api_asymmetry_under_disabled_collector_permission_family
+  - operator_edits_collector_overwrites_name_description_silent_no_audit_no_warning
+new_drift_classes_proposed:
+  - reingest_subtraction_silently_destroys_no_merge_mode_no_diff_in_response   # the user-facing framing of the destruction-replace facet — "a partial re-ingest is data loss"
+  - collector_token_rotation_promises_security_the_default_deployment_does_not_enforce  # UI-promise-vs-default-deployment gap (Cornerstone-3 framing)
+---
+
+# Ingestion-replace destruction surface (Batch Ingestion / S2S API) — product-owner reflection
+
+## product_owner_narrative
+
+Batch Ingestion is the front door through which every piece of metadata enters Open Data Discovery. It is the platform's largest surface boundary by code: a collector (or a push adapter, or a custom script speaking the ODD Specification) sends a `DataEntityList` payload to `POST /ingestion/entities`, names the datasource it is writing into via a `data_source_oddrn` field in the body, and the platform writes the entities, their metadata, their lineage edges, their data-entity-group bindings, and their data-quality-test relations into that datasource's namespace (per the IngestionServiceImpl sidecar `understanding` + the feature-flow chain). A sibling endpoint, `POST /ingestion/datasources`, lets a collector register the datasources it owns before it starts ingesting into them. The product promise — what the live integration docs and the Catalog Overview imply, and what every collector author expects from a "re-publish my current view" API — is **merge**: a collector publishes whatever subset of fields it scraped this tick, and the platform integrates that with what it already knew (per F-008 `description`, the user-observable-promise paragraph).
+
+A platform operator interacts with this feature in two seats. As the *consumer* of ingestion, they watch their catalog fill up — datasources appear in the Management → Datasources tab, entities appear in Discovery search and the Directory. As the *administrator* of the credential, they use the Management → Collectors tab (the CollectorsList component) to register a collector, copy its 40-character bearer token once on creation, and later rotate or revoke it (per the CollectorsList sidecar `understanding`). The token they copy is the secret a collector presents on every ingestion call.
+
+The working parts the operator would expect to be able to reason about: an `auth.ingestion.filter.enabled` toggle that "locks down ingestion" (per the property name); a per-collector token that authenticates and authorises a collector to write only to its own datasources; merge semantics so a flaky collector tick never loses catalog state; and a re-registration path so a collector can update a datasource's connection details when a hostname changes. A senior product owner would also expect the audit trail to record who wrote what, and the security posture to be consistent across the platform's auth modes.
+
+This feature feeds Discovery (P-01), Data Quality (P-04), Lineage (P-05), and Alerting (P-07) — the entities it writes are the substrate every other pillar reads (per system-mission.md cross-pillar relationships). It feeds from Management (P-08, which issues the tokens) and is gated by Security (P-09, the ingestion filter). The system-mission file flags the load-bearing implicit decision: *"datasource scoping is payload-driven, NOT principal-driven"* — a security-relevant choice the operator cannot see from any screen.
+
+The edge cases a product owner would highlight in a demo are exactly the ones that turn out to be load-bearing and surprising: what happens on the SHIPPED default deployment (it is wide open — the filter is off, and every UI auth mode whitelists `/ingestion/**`); what happens when a collector re-publishes a partial view (it silently deletes the omitted metadata and lineage — REPLACE, not merge); what happens when a collector tries to update a datasource's `connection_url` (it cannot — only name and description propagate, and the operator's own UI edits to name/description are silently overwritten on the next collector startup); and what happens to the token an operator carefully rotates (on the default deployment it has zero security effect, because the write path is anonymous regardless). The live `enable-security` doc page (WebFetched 2026-06-01, status 200) has been substantially improved and now documents the auth-coverage asymmetry honestly — but it remains silent on the storage shape of the token and on the destruction-replace semantics.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When the platform is deployed with its shipped defaults (auth.type=DISABLED, auth.ingestion.filter.enabled=false) and reachable on a network, an unauthenticated caller who knows or guesses a datasource's ODDRN can POST /ingestion/entities and write metadata/entities into that datasource — and the calling identity is in no way required or checked."
+  derivation: "Endpoint shape (POST /ingestion/entities, no auth element in the contract) + pillar P-10 maintainer-note 'datasource scoping is payload-driven, NOT principal-driven' + the filter being @ConditionalOnProperty default-false."
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The hypothesis predicts a wide-open endpoint, and the implementation confirms exactly that — which makes the SECURITY EXPECTATION (a write endpoint should require a credential) contradicted by the shipped default. IngestionDataEntitiesFilter is registered ONLY when auth.ingestion.filter.enabled=true (no matchIfMissing); application.yml:48 ships the literal `false`, so the bean is not registered. Every UI auth mode independently permits the path: LoginFormSecurityConfiguration.java:50 lists /ingestion/entities; SecurityConstants.WHITELIST_PATHS line 96 contains /ingestion/** for OAUTH2/LDAP; DisabledAuthSecurityConfiguration.java:13-18 calls .anyExchange().permitAll(). IngestionServiceImpl.ingest does no principal check (sidecar invariants — "No principal check at this layer", line 95-151 reads only the payload-resolved datasource id). So on the bundled deployment there is zero credential check anywhere in the chain.
+    evidence:
+      - sidecar: odd-platform__java__auth__filter__IngestionDataEntitiesFilter.md
+        section: bugs_limitations_corner_cases[0]
+        cite: "IngestionDataEntitiesFilter.java:20 + application.yml:46-48 + SecurityConstants.java:95-96 + DisabledAuthSecurityConfiguration.java:11-19"
+        note: "Default-OFF + all four UI modes whitelist the path = no auth on the bundled deployment."
+      - sidecar: odd-platform__java__service__service__IngestionServiceImpl.md
+        section: "concepts.invariants (No principal check at this layer)"
+        cite: "IngestionServiceImpl.java:68 + 95-151"
+        note: "Service resolves the datasource from the payload ODDRN only; no SecurityContext, no caller-to-datasource binding."
+    operator_visible_failure: |
+      (1) Catalog poisoning: any party with network reach injects spec-valid metadata into existing datasources; consumers see it as authoritative. (2) Combined with H-013 (REPLACE semantics), the same anonymous caller can ERASE a datasource's metadata and lineage by re-ingesting an empty/partial payload. (3) An operator who enabled OAuth2 for the UI reasonably believes the platform is locked down — but the write endpoint is still open (the two auth surfaces are independent). The de-facto control is the network perimeter, which is invisible from the platform's own configuration.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-002
+  hypothesis: "When an operator sets auth.ingestion.filter.enabled=true (per the property name implying 'lock down ingestion'), ALL ingestion endpoints under /ingestion/* become authenticated."
+  derivation: "Endpoint shape + the property name auth.ingestion.filter.enabled reads as a global ingestion lock; UI-label-equivalent (the config knob is the operator's 'label')."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The toggle gates EXACTLY ONE endpoint. IngestionDataEntitiesFilter's matcher is the hard-coded exact literal "/ingestion/entities" + POST (no wildcard, no property injection). When enabled, /ingestion/entities is protected — but /ingestion/alert/alertmanager has NO filter and no @PreAuthorize; /ingestion/metrics, /ingestion/entities/datasets/stats, and GET /ingestion/dataentitygroups/{deg_oddrn}/entities are covered by NO filter. Per the class-level IngestionController consolidation (feature-flow batch-ZF), under the MOST-hardened deployment (OAUTH2 + s2s + ingestion.filter on), 3 of 5 endpoints remain unauthenticated.
+    evidence:
+      - sidecar: odd-platform__java__auth__filter__IngestionDataEntitiesFilter.md
+        section: "security.known_security_gaps[1] + coupling[0]"
+        cite: "IngestionDataEntitiesFilter.java:28 + AlertManagerController.java:21 + IngestionDataSourceFilter.java:20"
+        note: "Exact-literal path matcher covers one endpoint; sibling /ingestion/* paths uncovered."
+      - sidecar: odd-platform__java__IngestionController__controller-class__IngestionController.md
+        section: "feature-flow batch-ZF finding (1) — 5-endpoint filter-coverage matrix"
+        cite: "IngestionController.java:31-103 + SecurityConstants.java:95-96"
+        note: "3 of 5 endpoints remain unauthenticated even under maximal hardening."
+    operator_visible_failure: |
+      An operator enabling the toggle believes ingestion is protected; the AlertManager webhook (forge-and-display compound, PLT-014), the metrics endpoint, and the stats endpoint (cross-dataset write + tag destruction, PLT-044/PLT-106) all remain anonymously reachable. The property name actively misleads. The live doc NOW documents this asymmetry (see doc_drift_findings — docs are ahead of code self-documentation), but operators auditing application.yml in isolation cannot reconstruct the per-endpoint coverage (PLT-043).
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-003
+  hypothesis: "When a collector re-registers an existing datasource via POST /ingestion/datasources with a changed connection_url (the source's hostname moved), the platform updates the datasource's connection_url."
+  derivation: "Endpoint shape (POST /ingestion/datasources accepts a DataSource with connection_url) + the normal CRUD expectation that re-POSTing a resource updates its fields."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The UPDATE path narrows to name + description ONLY. DataSourceIngestionServiceImpl.prepareForUpdate (lines 74-92) copy-constructs from the existing pojo then explicit-sets ONLY name and description: `new DataSourcePojo(a).setName(i.getName()).setDescription(i.getDescription())`. connection_url, active, type, namespace_id, collector_id, token_id are all PRESERVED from the existing row. A collector that needs to update connection_url has no mechanism on this endpoint; the create-path mapper (DataSourceIngestionMapperImpl.java:9-19) does not even set connection_url. The response is 200 OK with an empty body regardless — no signal that the update was a no-op for that field.
+    evidence:
+      - sidecar: odd-platform__java__service__service__DataSourceIngestionServiceImpl.md
+        section: "concepts.invariants (partial-merge narrowing) + coherence_check REFACTOR-422"
+        cite: "DataSourceIngestionServiceImpl.java:74-92,86-88"
+        note: "Copy-construct + 2 explicit setters; connection_url never written on the S2S path."
+      - sidecar: odd-platform__java__service__service__DataSourceIngestionServiceImpl.md
+        section: "downstream_side_effects (mapper-side details)"
+        cite: "DataSourceIngestionMapperImpl.java:9-19"
+        note: "Create-path mapper sets 5 fields; connection_url not among them."
+    operator_visible_failure: |
+      A collector author whose source hostname changed cannot fix the datasource's connection_url via the documented re-registration flow; the platform silently keeps the stale URL and returns 200. The only path to update connection_url is the disjoint UI admin endpoint (PUT /api/datasources, full-form replace via MapStruct) — which a collector author may not have access to or know about. This is a deliberate collector-tenant-vs-operator-admin design (ADR-CANDIDATE-142), but the asymmetry is operator-invisible and produces a silent no-op.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-004
+  hypothesis: "When an operator renames a datasource (or edits its description) in the Management → Datasources UI, that edit persists across subsequent collector ingestion ticks."
+  derivation: "Negative-space — an operator's UI edit to a catalog field is normally durable; a collector re-publish should not silently revert an operator's deliberate curation."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The collector wins. On the next POST /ingestion/datasources that names the same ODDRN, prepareForUpdate (DataSourceIngestionServiceImpl.java:86-88) OVERWRITES name and description from the collector payload — silently. There is no merge-conflict check, no lastModifiedBy discrimination, no log.warn, no Activity event, no diff in the response. The operator's UI rename is replaced by whatever the collector's config carries. (The COUNTERFACTUAL is confirmed at the disjoint UI path per feature-flow batch-W: the UI write path uses DataSourceMapper.applyToPojo writing ALL form fields — so the operator-side and collector-side both write name/description, with the LAST writer winning and no coordination.)
+    evidence:
+      - sidecar: odd-platform__java__service__service__DataSourceIngestionServiceImpl.md
+        section: "coherence_check REFACTOR-423 (silent overwrite of operator UI edits)"
+        cite: "DataSourceIngestionServiceImpl.java:86-88"
+        note: ".setName(i.getName()) overwrites the operator's UI rename on the next collector tick; no audit."
+      - sidecar: odd-platform__java__service__service__DataSourceIngestionServiceImpl.md
+        section: "downstream_side_effects (log-only side-effects)"
+        cite: "DataSourceIngestionServiceImpl.java:53,62"
+        note: "Only log.debug on the to-update/to-create lists; no INFO/WARN, no Activity event recording the overwrite."
+    operator_visible_failure: |
+      An operator curates a datasource name in the UI ("Snowflake — Prod Finance"); the next time the collector starts, the name reverts to whatever the collector config says ("snowflake-default"). The operator's curation vanishes with no warning and no audit trail to explain why. Diagnosing it requires reading the collector config AND knowing the S2S re-registration path overwrites name/description — neither visible from the UI. This is the datasource-side mirror of the platform-wide audit-silence pattern.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-005
+  hypothesis: "When a custom-collector author sets namespace_name in the POST /ingestion/datasources payload, the registered datasource appears under that namespace."
+  derivation: "Endpoint shape — the Ingestion API contract's DataSource model carries a namespace field, implying the caller controls the datasource's namespace."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The payload's namespace_name is NEVER read on this path. mapDataSources (DataSourceIngestionServiceImpl.java:99-111, line 106) stamps namespace_id from CollectorDto.namespace() — the Collector's PRE-CONFIGURED namespace — via MappingUtils.extractFieldFromNullableObject. The datasource always inherits the Collector's namespace; a Collector with no configured namespace produces datasources with namespace_id=null. This is the collector-scoped-tenancy invariant (ADR-CANDIDATE-143) and it is a SOUND security property — a stolen Collector A token cannot register datasources into Collector B's namespace. But it is operator-invisible.
+    evidence:
+      - sidecar: odd-platform__java__service__service__DataSourceIngestionServiceImpl.md
+        section: "concepts.invariants (Namespace inheritance) + coherence_check ADR-CANDIDATE-143"
+        cite: "DataSourceIngestionServiceImpl.java:106"
+        note: "namespace_id sourced unconditionally from the matched Collector; payload namespace_name silently dropped."
+    operator_visible_failure: |
+      A collector author setting namespace_name="my-team" sees the datasource appear under the Collector's namespace instead, with no log and no doc warning. They cannot predict the behaviour from the docs and may file a confused bug report. The protective intent is correct; the silent drop is the surprise. (Counterfactual: the UI admin path DOES honour namespace_name via getOrCreate — feature-flow batch-W — so the two surfaces behave oppositely, compounding the confusion.)
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-006
+  hypothesis: "When a collector ingests a 1000-entity batch via POST /ingestion/entities and exactly one entity has a constraint violation, the other 999 valid entities are persisted (per-entity error isolation), and the response identifies which entity failed."
+  derivation: "Negative-space + response shape — a batch API normally isolates per-item failures or returns a 207 Multi-Status; a collector should not lose a whole batch for one bad row."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The entire batch is all-or-nothing. IngestionServiceImpl.ingest is wrapped in a single @ReactiveTransactional (line 66) that binds the whole 14-processor chain plus the OTLP export. One constraint violation anywhere rolls back ALL entities. The HTTP response is binary — 200/201 (all committed) or 5xx (everything rolled back) — with no 207 Multi-Status, no per-entity error payload, no DLQ. A duplicate ODDRN within the payload crashes the whole batch with IllegalStateException (Collectors.toMap default throwing merger, line 86) surfacing as 5xx with no structured "duplicate oddrn" message.
+    evidence:
+      - sidecar: odd-platform__java__service__service__IngestionServiceImpl.md
+        section: "concepts.invariants (ingest is @ReactiveTransactional) + bugs_limitations_corner_cases (duplicate ODDRN crash)"
+        cite: "IngestionServiceImpl.java:66 + 83-86"
+        note: "Single outer transaction binds the whole batch; duplicate-ODDRN throws and 5xx's the batch."
+    operator_visible_failure: |
+      A collector with one glitched row (or an at-least-once retry that re-emits a duplicate ODDRN) loses the entire tick with an opaque 5xx and a stack trace the collector cannot parse. There is no signal of which entity failed and no partial success. On the platform side @Slf4j is unused (zero log.* calls) so the rollback is forensically silent. This is tracked as PLT-045 / DOC-195 (error-contract half of the F-008 pipeline).
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-007
+  hypothesis: "When a collector with a valid token for datasource A submits a POST /ingestion/entities payload naming datasource B's ODDRN (with the ingestion filter ENABLED), the platform rejects the cross-datasource write."
+  derivation: "Endpoint shape + the per-datasource token model implying the token authorises writes only to its own datasource."
+  seed_source: endpoint-shape
+  validation:
+    verdict: partial
+    actual_behavior: |
+      With the filter ENABLED, the cross-datasource write IS prevented at the filter layer: IngestionDataEntitiesFilter resolves the token for the datasource named in the BODY and compares it to the Bearer header — a token for A does not match B's token, so the request 401s (the token must match the datasource in the payload). BUT this only holds when the filter is on. On the SHIPPED default (filter off), there is no token check at all (H-001), and the service resolves whatever datasource the payload names with no caller binding (IngestionServiceImpl.java:68). So the protection exists in exactly one configuration and is absent in the default one. Additionally, the filter binds token-to-datasource, not caller-to-tenant — a stolen token for A still authorises full destruction of A.
+    evidence:
+      - sidecar: odd-platform__java__auth__filter__IngestionDataEntitiesFilter.md
+        section: "security.data_exposure[2]"
+        cite: "IngestionDataEntitiesFilter.java:43-58"
+        note: "Token comparison binds the caller to the specific datasource named in the payload — when the filter runs."
+      - sidecar: odd-platform__java__service__service__IngestionServiceImpl.md
+        section: "tests_coverage_semantic.uncovered_behaviours (cross-collector pollution probe)"
+        cite: "IngestionServiceImpl.java:68"
+        note: "Service resolves the payload-named datasource unconditionally; the only defence is the upstream (default-off) filter."
+    operator_visible_failure: |
+      In the configuration most operators actually run (default), there is no cross-datasource protection. Even with the filter on, the protection is token-scoped not tenant-scoped, so a leaked token for one datasource is a full write+destroy capability over that datasource. No integration test pins the cross-collector-pollution behaviour (IngestionCrossCollectorPollutionTest does not exist), so a regression weakening the filter's datasource binding would land green.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-008
+  hypothesis: "When a collector authenticates against POST /ingestion/entities, the bearer token it presents is compared against a securely-stored credential (hashed at rest, constant-time comparison) — as a user would expect of any API key."
+  derivation: "Negative-space + security expectation — API credentials are conventionally hashed at rest and compared in constant time."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The token is stored and compared in PLAINTEXT. TOKEN.value is varchar(40) with no hashing column (V0_0_28__add_token.sql:4); TokenGeneratorImpl writes RandomStringUtils.randomAlphanumeric(40) verbatim; ReactiveCollectorRepositoryImpl reads via TOKEN.VALUE.eq(token) (plaintext SQL equality); IngestionDataEntitiesFilter.java:56 compares via String.equals (non-constant-time, not MessageDigest.isEqual). The plaintext-everywhere claim closes end-to-end: schema → codegen → storage → SQL-equality → String.equals → DOM-render (CollectorsList shows the token as a plaintext DOM text node, not an input[type=password]).
+    evidence:
+      - sidecar: odd-platform__java__auth__filter__IngestionDataEntitiesFilter.md
+        section: "implicit_adrs[1] (plaintext-equality shared-secret stance) + security.known_security_gaps[2]"
+        cite: "IngestionDataEntitiesFilter.java:56 + TokenGeneratorImpl.java:39 + ReactiveTokenRepositoryImpl.java:30-39"
+        note: "String.equals on a plaintext-at-rest 40-char secret."
+      - sidecar: odd-platform__ts__react-component__component__CollectorsList.md
+        section: "understanding (40-char plaintext bearer token)"
+        cite: "CollectorItemToken.tsx:34"
+        note: "Token rendered as plaintext DOM text node, not a password input — completes the plaintext-everywhere chain at the render layer."
+    operator_visible_failure: |
+      Any DB-side reader (a replica, a backup, a pg_dump operator, an accidental jOOQ log leak, a read-only SQL-injection elsewhere) recovers every live ingestion credential in plaintext. The 40-char entropy makes brute-force infeasible, but the at-rest exposure and the non-constant-time compare are both real. The live enable-security doc is SILENT on the storage shape — operators cannot infer the threat model from the doc alone. Tracked as PLT-085 (plaintext-at-rest) + PLT-108 (rotation returns plaintext, no grace window).
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-009
+  hypothesis: "When an operator rotates a collector's token in the Management → Collectors UI (the 'regenerate token' confirmation says it secures the collector), the rotation has a meaningful security effect on the collector's ingestion."
+  derivation: "UI label — the Regenerate token affordance + the live doc's 'rotate a leaked token' guidance promise a security property."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      On the shipped default deployment the rotation has ZERO security effect on the /ingestion/entities write path, because that path is anonymously reachable regardless of token value (filter off per application.yml:48 — H-001). The token only gates /ingestion/entities when auth.ingestion.filter.enabled=true. The CollectorItemToken ConfirmationDialog reads only "Are you sure you want to regenerate token for this collector?" — it promises a security property the default deployment does not enforce. Separately, the rotation is in-place with NO grace window (the old token 401s immediately, ingestion fails until the collector picks up the new value — PLT-108) and regenerateDataSourceToken is non-@ReactiveTransactional so a DB-write failure can leave the response carrying a token the DB never stored (PLT-087).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__CollectorsList.md
+        section: "requires-config (auth.ingestion.filter.enabled default false) + doc_drift_findings[0]"
+        cite: "CollectorItemToken.tsx:38-49 + application.yml:48"
+        note: "Rotation dialog promises security; default deployment does not enforce the token on the entities path."
+    operator_visible_failure: |
+      An operator rotating a leaked token on a default deployment believes they have contained the leak; the entity-ingestion write path remains anonymously open, so the rotation contained nothing. Conversely, an operator rotating during active ingestion (with the filter on) causes an immediate ingestion-failure incident because there is no grace window. The UI gives no signal of either fact. Cornerstone-3 (configuration-as-separate-audience-surface) failure.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-010
+  hypothesis: "When an operator runs the platform under auth.type=DISABLED and sees no Add/Edit/Delete/Regenerate buttons on the Collectors tab, they can conclude the collector-management surface is locked down."
+  derivation: "UI label / negative-space — a UI that hides mutating affordances normally signals those mutations are unavailable; an operator reads the absence of buttons as a security boundary."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The UI is QUIETER than the API. Under auth.type=DISABLED, /api/identity returns an empty permissions array, so the WithPermissions wrappers hide every COLLECTOR_* affordance (Add/Edit/Delete/Regenerate). But DisabledAuthSecurityConfiguration sets .anyExchange().permitAll() and the SecurityConstants COLLECTOR_* rules are bypassed — a direct `curl POST /api/collectors` succeeds anonymously, returns a Collector with a fresh plaintext token, and that token is a legitimate credential the always-on IngestionDataSourceFilter accepts on POST /ingestion/datasources. So an attacker bypassing the UI mints collectors and bootstraps a hostile collector identity, while the operator sees a read-only-looking surface.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__CollectorsList.md
+        section: "coupling (UI-vs-API asymmetry) + requires-config (auth.type DISABLED)"
+        cite: "DisabledAuthSecurityConfiguration.java:11-19 + SecurityConstants.java:127-137 + CollectorsList.tsx:91-101"
+        note: "UI hides buttons under DISABLED; backend accepts anonymous mutations regardless."
+    operator_visible_failure: |
+      An operator running a DISABLED-mode demo or staging instance reachable on a network sees no mutation buttons and infers safety; anyone on the network can POST /api/collectors, copy the response token, and register hostile datasources. The UI's silence is a false safety signal. This is the REFACTOR-185 19th-surface finding (UI-vs-API asymmetry under DISABLED). The compound bypass extends through the entire collector boot-of-self chain.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-011
+  hypothesis: "When a collector deployment is clustered behind a non-sticky load balancer, POST /ingestion/datasources works correctly regardless of which platform instance each request lands on."
+  derivation: "Cross-pillar / negative-space — a horizontally-scaled platform is an expected production deployment; an S2S endpoint should not depend on session affinity."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      POST /ingestion/datasources is structurally unsupported on a non-sticky cluster. IngestionDataSourceFilter writes the matched collector id into the WebSession (COLLECTOR_ID_SESSION_KEY, stringly-typed, non-final); IngestionController reads it back from the session on the SAME request. But the session store defaults to IN_MEMORY (application.yml:30 + SessionConfiguration's ReactiveMapSessionRepository(new ConcurrentHashMap)) — a per-process map with no cluster replication. A request landing on a different node finds no session entry and IngestionController.java:54 throws IllegalStateException("Collector id is null"), which surfaces as HTTP 500 (the parent filter catches only AccessDeniedException → 401). Compounded by spring.session.timeout=-1 (sessions never expire).
+    evidence:
+      - sidecar: odd-platform__java__service__service__DataSourceIngestionServiceImpl.md
+        section: "coherence_check REFACTOR-419 (cluster-fragility session-bridge)"
+        cite: "IngestionDataSourceFilter.java:36-38 + IngestionController.java:50-58 + application.yml:28-30"
+        note: "Session-attribute identity bridge over an IN_MEMORY per-process store; cross-instance hop = 5xx."
+    operator_visible_failure: |
+      A clustered operator (the canonical production shape) sees intermittent 5xx on datasource registration with the message "Collector id is null" — which reads as a platform crash, not "switch session.provider to REDIS/INTERNAL_POSTGRESQL or enable sticky sessions." The live doc DOES document the three session providers + cluster caveat, but the SHIPPED default is cluster-fragile. Tracked as PLT-074 (IN_MEMORY default breaks multi-replica collector bridge + session.timeout=-1).
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-012
+  hypothesis: "When an entity is ingested via POST /ingestion/entities (created, updated, restored-from-soft-delete, or has its metadata/lineage destroyed), the platform records an audit-trail entry an operator can later consult to answer 'what happened during this ingestion?'."
+  derivation: "Negative-space + pillar — an audit surface is expected for a write API; a security investigation should be able to reconstruct ingestion-driven mutations."
+  seed_source: negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The audit trail records ONLY entity CREATION, and nothing else. ActivityIngestionRequestProcessor emits DATA_ENTITY_CREATED for new entities, but: updates emit nothing; soft-delete RESTORE is silent (IngestionServiceImpl.java:135-136 un-archives with no activity event); the metadata-delete-on-absence and lineage-replace destructions emit nothing; datasource registration/overwrite emits nothing. @Slf4j is present on IngestionServiceImpl and IngestionController but UNUSED (zero log.* calls) — so even the application log is empty. So the hypothesis holds for the create case and fails for every other mutation, including the destructive ones.
+    evidence:
+      - sidecar: odd-platform__java__service__service__IngestionServiceImpl.md
+        section: "requires-runtime (@Slf4j unused) + dependencies_semantic (restore is silent)"
+        cite: "IngestionServiceImpl.java:53,135-136"
+        note: "@Slf4j dead code; soft-delete restore + destructive paths emit no activity event and no log."
+      - sidecar: odd-platform__java__IngestionController__controller-class__IngestionController.md
+        section: "feature-flow batch-ZF finding (7) — @Slf4j dead code across 5 handlers"
+        cite: "IngestionController.java:30"
+        note: "Controller layer is also forensically silent; entire S2S surface has zero application-log auditability."
+    operator_visible_failure: |
+      An operator investigating "why did 3 entities I deleted reappear last night?" or "who erased the lineage on this dataset?" has NO answer at the service or controller log level and no Activity Feed entry — only the resulting DB state. The audit trail's apparent completeness (a DATA_ENTITY_CREATED event exists) is misleading: the destructive and restore operations are exactly the ones an investigator needs and exactly the ones that are silent. Joins the platform-wide audit-silence pattern (cross-link F-006, PLT-062).
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-013
+  hypothesis: "When a collector re-ingests an entity via POST /ingestion/entities with a metadata set or lineage edge list that OMITS a field/edge present last tick, the platform PRESERVES the previously-ingested metadata and lineage (merge semantics) — a transient partial scrape does not lose catalog state."
+  derivation: "Pillar mission + the user-observable promise in F-008's description ('merge semantics: a collector re-publishes a SUBSET of fields per tick and the platform integrates them with what it already knew')."
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The chain is REPLACE, not merge. MetadataIngestionRequestProcessor.java:72-80 computes bindingsToDelete = existing.difference(current) and DELETES the omitted metadata bindings inside the same transaction. LineageIngestionRequestProcessor.java:17 calls replaceLineagePaths; LineageServiceImpl.java:124-133 extracts the establishers in the payload, batchDeleteByEstablisherOddrn(establishers), then batchInsertLineages(pojos). The establisher_oddrn is hard-coded to each entity's own ODDRN (IngestionServiceImpl.java:243/253/260/269), so re-ingesting an entity replaces ALL edges it established last tick. A collector that drops a field (network flake, OOM, partial scrape, code bug) silently deletes it. No log.warn, no activity event, no payload-level diff (response is Mono<Void>).
+    evidence:
+      - sidecar: odd-platform__java__service__service__IngestionServiceImpl.md
+        section: "concepts.invariants[8] (establisher-keyed rewrite — assembly-layer enactment)"
+        cite: "IngestionServiceImpl.java:243,253,260,269 + MetadataIngestionRequestProcessor.java:72-80 + LineageServiceImpl.java:124-133"
+        note: "Establisher-keyed payload drives the destruction; difference-then-delete for metadata."
+      - sidecar: odd-platform__java__service__service__LineageServiceImpl.md
+        section: "implicit_adrs (establisher-keyed atomic-rewrite contract)"
+        cite: "LineageServiceImpl.java:124-133"
+        note: "delete-by-establisher then insert — the REPLACE verb."
+    operator_visible_failure: |
+      (1) A collector tick that returns a partial view (any transient failure) silently erases the omitted metadata and lineage; the catalog loses curated state with no warning. (2) Combined with H-001 (anonymous default), an attacker erases a datasource's metadata + lineage by re-ingesting an empty payload. (3) The destruction is forensically silent (H-012). (4) The integration suite never exercises the subtraction surface, so a regression that "fixes" delete-on-absence to merge would land green in CI — there is no regression guard. Probe P-224 emitted to pin the contract with a reproduced artefact (the static verdict is unambiguous; the blast radius has never been measured — F-008 test_matrix 0/4 probed).
+    severity: HIGH
+    confidence: HIGH
+    probe_id: P-224
+    routes_to_finding: caveat-candidate
+
+- id: H-014
+  hypothesis: "When a collector restarts and two of its instances briefly run concurrently, each POST-ing the same datasource ODDRN to /ingestion/datasources, both registrations succeed (or one cleanly wins) without a 5xx."
+  derivation: "Negative-space — concurrent collector restarts are routine in orchestrated deployments; an idempotent registration should tolerate the race."
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      The static read shows a race window but cannot determine the runtime outcome. DataSourceIngestionServiceImpl resolves existing rows via getDtosByOddrns (line 47) which does NOT use forUpdate (unlike the entity path's getIdByOddrnForUpdate). Two concurrent transactions can both partition the same ODDRN into their toCreate bucket; one wins the bulkCreate, the other races a bulkCreate that violates the partial unique index data_source_oddrn_unique (WHERE deleted_at IS NULL, V0_0_31:29) and the WHOLE batch rolls back with a 5xx to the losing collector. Whether READ COMMITTED isolation + the transaction timing actually produces this, or whether the window is too narrow to hit in practice, requires a measured concurrent run.
+    evidence:
+      - sidecar: odd-platform__java__service__service__DataSourceIngestionServiceImpl.md
+        section: "coherence_check conflicts_surfaced[1] (concurrent re-registration race)"
+        cite: "DataSourceIngestionServiceImpl.java:47,57,66 + V0_0_31:29"
+        note: "getDtosByOddrns has no forUpdate; concurrent same-ODDRN registration can violate the partial unique index mid-transaction."
+    operator_visible_failure: |
+      If the race materialises: a collector restart in a rolling-deploy or HPA-scale event intermittently 5xx's on datasource registration, and because the whole batch rolls back, NONE of that collector's datasources register on the losing instance — the collector then fails to ingest until the next restart. The operator sees a flaky startup with a generic 5xx. Severity depends on the race width, which is why a probe is required rather than a static verdict.
+    severity: MEDIUM
+    confidence: LOW
+    probe_id: P-240
+    routes_to_finding: caveat-candidate
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: "auth.ingestion.filter.enabled covers exactly one endpoint while its name promises a global ingestion lock; 3 of 5 /ingestion/* endpoints stay unauthenticated under maximal hardening."
+  dedup_status: already_tracked
+  tracked_as: PLT-003
+  proposed_fix_anchor: "Widen the matcher to /ingestion/** (excluding /ingestion/datasources which has its own filter) OR add per-endpoint sub-filters; PLT-003 carries Options A/B/C. Live doc (DOC-004, done) already documents the asymmetry."
+- hypothesis_id: H-004
+  severity: MEDIUM
+  one_line: "A collector re-registration silently overwrites the operator's UI-edited datasource name/description with no audit and no warning (collector wins)."
+  dedup_status: net_new
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: "DataSourceIngestionServiceImpl.prepareForUpdate (lines 86-88) — emit an Activity event / log.warn on name/description overwrite, OR add lastModifiedBy discrimination so operator UI edits are not silently reverted. Tracked today only as REFACTOR-423 (no doc/issue home). Pairs with H-005 (REFACTOR-424) and the ADR-CANDIDATE-142/143 promotion."
+
+### caveat_candidates
+- hypothesis_id: H-001
+  one_line: "Shipped default (auth.type=DISABLED + filter=false) leaves POST /ingestion/entities anonymously writable AND destroyable for any network-reachable caller naming a datasource ODDRN."
+  dedup_status: already_tracked
+  tracked_as: DOC-004
+- hypothesis_id: H-003
+  one_line: "POST /ingestion/datasources cannot update connection_url (only name+description propagate); a moved-hostname collector silently no-ops with a 200 response."
+  dedup_status: net_new
+  recommended_log_as: doc-gap-NNN (custom-collectors page — enumerate the S2S-updatable field set: name + description only; connection_url/type/active are UI-admin-only)
+- hypothesis_id: H-005
+  one_line: "POST /ingestion/datasources silently drops payload namespace_name and inherits the Collector's namespace (sound tenancy invariant, operator-invisible; UI path behaves oppositely)."
+  dedup_status: net_new
+  recommended_log_as: doc-gap-NNN (custom-collectors page — document collector-scoped tenancy: datasource namespace is inherited from the Collector, payload namespace_name is ignored)
+- hypothesis_id: H-006
+  one_line: "POST /ingestion/entities is all-or-nothing: one bad/duplicate-ODDRN row 5xx's the whole batch with no per-entity error and no DLQ."
+  dedup_status: already_tracked
+  tracked_as: PLT-045
+- hypothesis_id: H-007
+  one_line: "Cross-datasource write protection exists only with the filter ON (token-to-datasource binding); the shipped default has none, and a leaked token is full destroy-capability over its own datasource."
+  dedup_status: already_tracked
+  tracked_as: DOC-004
+- hypothesis_id: H-008
+  one_line: "Collector tokens are plaintext at rest (varchar(40), no hash) and compared non-constant-time; the live enable-security doc is silent on storage shape."
+  dedup_status: already_tracked
+  tracked_as: PLT-085
+- hypothesis_id: H-009
+  one_line: "Token rotation promises a security property the default deployment (filter off) does not enforce; rotation also has no grace window (immediate ingestion failure)."
+  dedup_status: already_tracked
+  tracked_as: PLT-108
+- hypothesis_id: H-010
+  one_line: "Under auth.type=DISABLED the Collectors UI hides mutation buttons (looks locked-down) while the backend accepts anonymous POST /api/collectors — the UI is quieter than the API."
+  dedup_status: already_tracked
+  tracked_as: PLT-103
+  distinct_from: PLT-103
+- hypothesis_id: H-011
+  one_line: "POST /ingestion/datasources is cluster-fragile by default (IN_MEMORY session bridge); a non-sticky cross-instance hop 5xx's with 'Collector id is null'."
+  dedup_status: already_tracked
+  tracked_as: PLT-074
+- hypothesis_id: H-012
+  one_line: "The ingestion audit trail records only DATA_ENTITY_CREATED; updates, soft-delete restores, and the destructive metadata/lineage deletes are forensically silent (@Slf4j unused)."
+  dedup_status: already_tracked
+  tracked_as: PLT-062
+  distinct_from: PLT-062
+- hypothesis_id: H-013
+  one_line: "POST /ingestion/entities is REPLACE not merge: a partial re-ingest silently deletes the omitted metadata fields and lineage edges with no warning, no audit, no response diff."
+  dedup_status: already_tracked
+  tracked_as: DOC-195
+  distinct_from: DOC-194
+- hypothesis_id: H-014
+  one_line: "Concurrent same-ODDRN datasource registration (collector restart race) can violate the partial unique index mid-transaction and 5xx the losing collector's whole batch."
+  dedup_status: net_new
+  recommended_log_as: caveat in custom-collectors page (after probe P-240 confirms) — collector restarts should not run two concurrent registration ticks; OR upstream-issue to add forUpdate on getDtosByOddrns
+
+### probes_emitted
+- probe_id: P-224
+  hypothesis_id: H-013
+  probe_path: "lineage/odd-platform/probes/P-224.yaml"
+- probe_id: P-240
+  hypothesis_id: H-014
+  probe_path: "lineage/odd-platform/probes/P-240.yaml"
+
+### validation_gaps
+- sidecar: odd-platform__java__IngestionController__controller-method__postDataEntityList.md
+  field_insufficient: "the postDataEntityList controller-method sidecar is referenced as UNRESOLVED in the F-008 chain (hop-1) — its understanding/upstream_callers blocks are not enriched, so H-001/H-006/H-007/H-013 were validated through the service-tier (IngestionServiceImpl) and class-level (IngestionController) sidecars rather than the per-method hop-1 vertex."
+  proposed_refresh: "Enrich the postDataEntityList controller-method sidecar so the hop-1 vertex (the .flatMap(ingestionService::ingest) delegate + the absence of principal extraction) is primary-source anchored at the method level, not inferred from siblings."
+- sidecar: odd-platform__java__MetadataIngestionRequestProcessor (referenced, not enriched)
+  field_insufficient: "the metadata delete-on-absence processor (hop-3a) is UNRESOLVED in the chain — the difference-then-delete logic at MetadataIngestionRequestProcessor.java:72-80 that drives H-013 is cited via the IngestionService interface sidecar's downstream_side_effects, not from an enriched processor sidecar."
+  proposed_refresh: "Enrich MetadataIngestionRequestProcessor + LineageIngestionRequestProcessor sidecars so H-013's destructive verbs have per-file primary-source anchors (currently the destruction is traced through the assembly-layer IngestionServiceImpl establisher-keyed payload + the LineageServiceImpl service vertex)."
+
+### doc_drift_findings
+- hypothesis_id: H-002
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security"
+  doc_says: "The live page (WebFetched 2026-06-01, status 200) NOW documents the asymmetry honestly: 'The flag protects one of the two WebFilter-covered endpoints; it does not extend to siblings' + names /ingestion/alert/alertmanager, /ingestion/metrics, /ingestion/entities/datasets/stats as uncovered + 'two independent authentication surfaces ... enabling one does not protect the other.'"
+  code_does: "Confirmed accurate against code — IngestionDataEntitiesFilter.java:28 (exact-literal matcher) + IngestionDataSourceFilter.java:15 (unconditional). The doc is AHEAD of code's own self-documentation here; NOT a doc-drift, recorded as a positive (doc-matches-code) cross-check."
+  recommended_log_as: none (doc is correct — this entry records the positive verification, not a gap)
+- hypothesis_id: H-008
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security"
+  doc_says: "The page does NOT discuss whether collector tokens are stored plaintext or hashed (confirmed absent via WebFetch 2026-06-01)."
+  code_does: "Tokens are plaintext at rest (TOKEN.value varchar(40), no hash column) and compared via String.equals — a threat-model-relevant fact the doc omits."
+  recommended_log_as: doc-gap-NNN (enable-security page — add the at-rest plaintext-token caveat + the network-perimeter recommendation; pairs with PLT-085)
+- hypothesis_id: H-013
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security"
+  doc_says: "The enable-security page (and the integrations/ingestion-filters page per the IngestionServiceImpl sidecar WebFetch 2026-05-20) is silent on the destruction-replace semantics — no page warns that a partial re-ingest deletes omitted metadata/lineage."
+  code_does: "REPLACE not merge — silent delete-on-absence for metadata + lineage (H-013)."
+  recommended_log_as: DOC-195 (already tracked — the F-008 destructive-replace substrate doc-gap; this reflection re-derives it from the product-owner promise-vs-delivery angle)
+
+## maintainer_notes
+
+<!-- preserved across refreshes — only block the maintainer hand-edits -->

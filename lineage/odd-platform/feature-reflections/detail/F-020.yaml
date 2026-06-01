@@ -1,0 +1,668 @@
+---
+feature_id: F-020
+pillar_anchored_id: P-08:F-004
+pillar: "P-08 — Management & Administration"
+feature_name: "Collector Lifecycle Management"
+reflected_at: 2026-06-01T00:00:00Z
+reflected_at_commit: 43d13eb
+prompt_version: feature-reflector/0.2.0
+contributing_sidecars_read:
+  - odd-platform__ts__react-component__component__CollectorsList.md
+  - odd-platform__java__CollectorController__controller-class__CollectorController.md
+  - odd-platform__java__CollectorController__controller-method__regenerateCollectorToken.md
+  - odd-platform__java__repository__reactive__repository__ReactiveCollectorRepositoryImpl.md
+  # The following contributing_nodes have NO standalone enriched sidecar at this batch
+  # (their claims are reached transitively via the four read above + the feature-flow
+  # chain evidence blocks): CollectorServiceImpl, ReactiveTokenRepositoryImpl,
+  # SecurityConstants, DisabledAuthSecurityConfiguration, SessionConfiguration,
+  # DataSourceIngestionServiceImpl, AlertServiceImpl. See validation_gaps.
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/management"
+    last_verified_at: "2026-05-27T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      The Collectors section gained a "## Known caveats" sub-section via DOC-252
+      (done; commit 393f72a; live-verified 2026-05-28) carrying the three operator
+      caveats (UI-vs-API DISABLED, token plaintext-at-rest, no-grace rotation +
+      filter-off default). Reflection cross-references the live page through the
+      DOC-252 review block rather than re-fetching this session.
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions"
+    last_verified_at: "2026-05-20T00:00:00Z"
+    last_verified_status: 200
+    note: "Enumerates the four COLLECTOR_* permissions verbatim (sidecar-fetched 2026-05-20)."
+hypothesis_summary:
+  total: 13
+  confirmed: 3
+  contradicted: 7
+  partial: 2
+  probe_needed: 1
+  note: |-
+    The three `confirmed` verdicts are the feature's genuinely-working promises
+    (permission-gated mutations under a real auth mode; one-shot plaintext-on-mint;
+    cascade-block on delete). The seven `contradicted` verdicts are user/operator
+    EXPECTATIONS the assembled chain violates — every one already corroborated by a
+    tracked PLT/DOC/SPC item (this reflection re-derives them top-down as
+    convergent validation, NOT as net-new filings, except H-009 update-full-replace
+    which is net-new for the Collector surface).
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: "On the shipped default deployment (auth.type=DISABLED), the Collectors UI hides every mutation button while the backend accepts anonymous POST/PUT/DELETE/token-rotate — an operator reads the read-only screen as 'locked down' and ships a platform whose credential-minting surface is open to the network."
+related_feature_flows:
+  - F-008   # Batch Ingestion — the credential-CONSUMER pair (the two ingestion filters that gate on this token)
+  - F-019   # Owner Lifecycle Management — sibling P-08 Management UI; same WithPermissions + audit-silence + DISABLED-bypass pattern
+  - F-031   # Data Source Lifecycle — the token-twin surface (same plaintext-at-rest + no-grace rotation pattern; PLT-087/PLT-108)
+  - F-006   # RBAC — the COLLECTOR_* permission family is governed by SecurityConstants gating
+  - F-163   # One-Shot Token Reveal Affordance Pattern — the cross-surface UX class graduated from this feature
+  - F-161   # Management Section Top-Level Chrome — sidebar visibility / route-mount leak
+related_concepts:
+  - "Collector (Management — credential-bearing entity)"
+  - "Token (40-char shared secret, stored plaintext)"
+  - "COLLECTOR_* permission family (CREATE / UPDATE / DELETE / TOKEN_REGENERATE)"
+  - "read-collaborative posture (REFACTOR-024 family)"
+  - "UI-vs-API asymmetry under DISABLED (REFACTOR-185)"
+  - "Audit-log Presence Asymmetry (schema-rooted; PLT-062)"
+related_drift_classes:    # F-020 drift_class_summary facets this reflection confirmed top-down
+  - ui_vs_api_asymmetry_under_disabled_collector_permission_family_refactor_185_19th_surface
+  - token_one_shot_visibility_no_recovery_without_rotate
+  - token_rotation_no_grace_period_old_token_401s_immediately
+  - token_rotation_no_security_effect_on_default_deployment_auth_ingestion_filter_disabled
+  - end_to_end_plaintext_token_chain_closed_across_5_tiers_controller_to_dom
+  - anonymous_list_enumeration_under_disabled_leaks_last_six_chars_of_every_token
+  - collectors_tab_audit_silence_no_analytics_no_persistent_audit_panel
+  - update_full_form_replace_silently_nulls_unsubmitted_fields
+  - status_code_drift_controller_200_vs_spec_201_register_and_update
+  - token_visibility_detection_via_fragile_substring_prefix_sniff
+new_drift_classes_proposed:
+  - collector_update_partial_form_silently_nulls_description_namespace_no_ui_warning   # user-facing framing of the full-replace facet — "editing the name erases the description"
+---
+
+# Collector Lifecycle Management — product-owner reflection
+
+## product_owner_narrative
+
+Collector Lifecycle Management is the operator-facing surface under **Management → Collectors** (`/management/collectors`) where an operator registers the metadata collectors that feed the catalog, issues and rotates their authentication tokens, and retires collectors that are no longer in use. It is, in product terms, the credential desk for the whole ingestion pillar: a collector cannot push metadata to ODD until an operator has minted it here and handed it the secret it presents on every ingestion call (per `CollectorsList.md:understanding` + the feature-flow `description`). The `system-mission.md` P-08 daily-ops sequence lists Collectors as the second-most-frequently-used operator surface after Datasources — this is a screen operators live in.
+
+A user interacts with five capabilities, all composed on one page by `CollectorsList.tsx` plus its siblings `CollectorForm.tsx` (the create/edit modal), `CollectorItem.tsx` (the per-row card), and `CollectorItemToken.tsx` (the token-display strip): **Register** a collector (`POST /api/collectors`, gated by `COLLECTOR_CREATE`) — which mints a row and auto-issues a 40-character plaintext token shown once; **Edit** name/description/namespace (`PUT /api/collectors/{id}`, `COLLECTOR_UPDATE`) — the form deliberately has no token field; **Delete** (`DELETE /api/collectors/{id}`, `COLLECTOR_DELETE`); **Regenerate** the token (`PUT /api/collectors/{id}/token`, `COLLECTOR_TOKEN_REGENERATE`); and **List/search** (`GET /api/collectors/list`), which has no permission rule at all (per `CollectorController.md:concepts.invariants[1]` + `regenerateCollectorToken.md`). The form collects three fields (name required, namespace via an autocomplete, description optional); the token is server-owned end-to-end (per `CollectorsList.md:implicit_adrs[2]`).
+
+The working parts an operator would expect to reason about: a permission model that mirrors what the backend enforces, so hiding a button means the action is forbidden; a token that is a real, rotatable, revocable secret; a "regenerate" action that swaps the secret cleanly; and an edit form that changes the field you touched. A senior product owner would also expect the credential desk to keep an audit trail (who minted/rotated/deleted which collector and when) and to behave the same way whether the deployment runs with authentication on or off. The token-display surface itself was reviewed at primary source (`ui_review_2026_05_26`, status `ui-complete`) — the reveal/mask/copy/regenerate UX is real and graduated its cross-surface pattern to F-163, so this reflection is NOT API-only; it judges what the operator sees on screen.
+
+This feature lives inside Management (P-08) but **feeds** Integrations & Ingestion (P-10): the token minted here is the credential the always-on `IngestionDataSourceFilter` (on `POST /ingestion/datasources`) and the opt-in `IngestionDataEntitiesFilter` (on `POST /ingestion/entities`, default-off per `application.yml:48`) both consume (per F-008 cross-pillar block + `ReactiveCollectorRepositoryImpl.md:coupling`). It also **feeds** Security (P-09): the four COLLECTOR_* permissions are wired in `SecurityConstants.SECURITY_RULES`, and the UI's `WithPermissions` HOC is the UX mirror of that registry. The repository sidecar names the load-bearing seam: a single persistence bean (`ReactiveCollectorRepositoryImpl`) serves BOTH the catalog-mutation path and the always-on ingestion auth path, with no in-file marker of the divergence.
+
+The edge cases a product owner would put in the demo are exactly the ones that turn out to be surprising and load-bearing: what an operator sees on the SHIPPED default deployment (the UI looks locked-down while the API is wide open — the headline contradiction); what happens to the token after the page reloads (it is gone — masked to `******{last6}`, recoverable only by rotation, which invalidates it everywhere); what happens to in-flight ingestion the moment a token is rotated (immediate 401, no grace window); what happens to the description when an operator edits just the name (it is silently nulled — full-replace, not patch); and what survives a collector deletion (the plaintext token row, orphaned forever in the `token` table, in every backup). None of these is visible from the screen, and most are now documented as caveats (DOC-252, done) rather than fixed.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When an operator with COLLECTOR_CREATE / UPDATE / DELETE / TOKEN_REGENERATE permission uses the Collectors tab under a real auth mode (LOGIN_FORM / OAUTH2 / LDAP), the mutating action they click is honoured, and a user WITHOUT the matching permission both does not see the button and is rejected (403) if they call the endpoint directly."
+  derivation: "UI labels (the four WithPermissions-wrapped buttons) + the SecurityConstants SECURITY_RULES entries that name the same four COLLECTOR_* permissions."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      Under LOGIN_FORM / OAUTH2 / LDAP the UI gates and the backend gates are
+      genuinely parallel. The UI hides each affordance behind
+      `<WithPermissions permissionTo={Permission.COLLECTOR_*}>`
+      (CollectorsList.tsx:91-101 for Create; CollectorItem.tsx:39, :52 for
+      Edit/Delete; CollectorItemToken.tsx:36 for Regenerate), and the backend
+      enforces a distinct SecurityRule per verb at SecurityConstants.java:127-137.
+      The CollectorsList sidecar verified the four UI gates are MIRRORS of the
+      backend rules by direct read of both layers. A caller lacking the permission
+      is rejected by the SecurityWebFilterChain before the controller runs (these
+      three modes route through SECURITY_RULES). This is the feature working as the
+      screen promises — for non-DISABLED deployments only (see H-002 for the
+      DISABLED breakdown).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__CollectorsList.md
+        section: "security.authorization_assertions"
+        cite: "CollectorsList.tsx:91-101 + CollectorItem.tsx:39, :52 + CollectorItemToken.tsx:36 + SecurityConstants.java:127-137"
+        note: "All four UI gates are MIRRORS of the backend SECURITY_RULES — verified by direct read of both layers."
+      - sidecar: odd-platform__java__CollectorController__controller-class__CollectorController.md
+        section: "security.authorization_assertions[0..3]"
+        cite: "SecurityConstants.java:127-137"
+        note: "One SecurityRule per mutating verb, each demanding its distinct COLLECTOR_* permission."
+    severity: null
+    confidence: HIGH
+    routes_to_finding: none
+
+- id: H-002
+  hypothesis: "When an operator looks at the Collectors tab and sees no Add / Edit / Delete / Regenerate buttons, that means the deployment does not permit those mutations — i.e. what the UI shows reflects what the platform allows."
+  derivation: "UI labels (the WithPermissions HOC returns null → buttons absent) + the operator's reasonable mental model that an admin UI's affordances reflect the platform's actual authorization state."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Under the SHIPPED default auth.type=DISABLED, the UI and the API diverge in
+      the most security-critical direction: the UI is QUIETER than the API. With
+      DISABLED, /api/identity returns empty `permissions`, so every WithPermissions
+      wrapper returns null and all four mutation buttons are absent — the operator
+      sees a read-only screen. But DisabledAuthSecurityConfiguration.java:11-19 sets
+      `.anyExchange().permitAll()`, bypassing SecurityConstants.SECURITY_RULES
+      entirely. A direct `curl -X POST /api/collectors` (or PUT / DELETE /
+      token-rotate) succeeds with no auth and returns the 40-char plaintext token in
+      the body. This is the 19th sidecar surface of the platform-wide REFACTOR-185
+      UI-vs-API asymmetry pattern. The repository sidecar shows the reach extends
+      through the whole boot-of-self chain: the minted token is accepted verbatim by
+      the always-on IngestionDataSourceFilter on POST /ingestion/datasources.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__CollectorsList.md
+        section: "security.known_security_gaps[0] + coupling.UI-vs-API-asymmetry"
+        cite: "CollectorsList.tsx:91-101 + WithPermissions.tsx:11-32 + DisabledAuthSecurityConfiguration.java:11-19 + SecurityConstants.java:127-137"
+        note: "UI hides every button under DISABLED; backend permits every anonymous mutation."
+      - sidecar: odd-platform__java__CollectorController__controller-class__CollectorController.md
+        section: "security.known_security_gaps[5]"
+        cite: "SecurityConstants.java:127-137 + DisabledAuthSecurityConfiguration.java"
+        note: "All four COLLECTOR_* gates are bypassed under DISABLED."
+    operator_visible_failure: |
+      (1) The headline trap: an operator running the bundled default sees a
+      read-only Collectors tab, concludes "this deployment is locked down," and
+      ships it on a reachable network — while anyone on that network can mint
+      collectors, copy their plaintext tokens, and rotate existing tokens
+      (breaking ingestion). (2) The minted token bootstraps a hostile collector
+      identity via the always-on POST /ingestion/datasources (per F-008), so the
+      compromise is not read-only — it is a write/identity foothold. (3) An
+      operator who enabled OAuth2 for the UI but left auth.type effectively
+      permissive on a sibling path gets no signal that the two surfaces are
+      independent. The de-facto control is the network perimeter, invisible from
+      any ODD screen or config value.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-003
+  hypothesis: "When an operator registers a new collector, the platform shows them the full bearer token once, immediately, so they can copy it into the collector's config before deploying."
+  derivation: "Endpoint shape (register response carries a Collector whose token.value is the full 40-char string) + the live doc phrase 'Issue a token before deploying a Collector' + the CollectorItemToken reveal UX."
+  seed_source: response-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The register path (and the regenerate path) return the full 40-char plaintext
+      token in the response body: ReactiveTokenRepositoryImpl.create/updateToken
+      construct TokenDto with showToken=true, and TokenMapper.java:15-18 returns the
+      raw value when showToken is true (masking to "******{last6}" only on the
+      read/list paths). The UI flips CollectorItemToken into the visible branch
+      (isHidden=false) when the value does not start with six stars
+      (CollectorItemToken.tsx:25-27, :34), renders the value as a copyable text node,
+      and surfaces the warning admonition "Save token in a secure location. You will
+      not be able to retrieve it again." (CollectorItem.tsx:87-98). The one-shot
+      reveal is intentional (the operator has no other channel to learn the secret)
+      and works as the screen promises. (The plaintext-in-DOM hardening and the
+      one-shot-no-recovery UX are separate findings — see H-005, H-010.)
+    evidence:
+      - sidecar: odd-platform__java__CollectorController__controller-class__CollectorController.md
+        section: "implicit_adrs[1] (plaintext-on-issue, masked-on-read)"
+        cite: "ReactiveTokenRepositoryImpl.java:21-39 + TokenMapper.java:15-18"
+        note: "create/updateToken set showToken=true; mapper returns raw value on that branch."
+      - sidecar: odd-platform__ts__react-component__component__CollectorsList.md
+        section: "concepts.invariants[1]"
+        cite: "CollectorItemToken.tsx:25-27, :34 + CollectorItem.tsx:87-98"
+        note: "UI reveals the plaintext once on mint with a save-it-now warning."
+    severity: null
+    confidence: HIGH
+    routes_to_finding: none
+
+- id: H-004
+  hypothesis: "When an operator clicks Regenerate on a collector's token, the new token takes over and the collector keeps working — i.e. rotation is a clean swap with a short overlap so a running collector is not knocked offline."
+  derivation: "UI label ('Regenerate token') + the operator's standard mental model of credential rotation (issue-new-then-retire-old) + the live doc phrase 'rotate a leaked token'."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Rotation is an in-place single-statement UPDATE of the one TOKEN row, with NO
+      grace window and NO old/new overlap. TokenGeneratorImpl mutates the existing
+      TokenPojo to a fresh RandomStringUtils.randomAlphanumeric(40) value;
+      ReactiveTokenRepositoryImpl.java:30-39 issues `UPDATE token SET value=?,
+      updated_at=? WHERE id=?`. The moment that commits, the
+      IngestionDataEntitiesFilter's `tokenPojo.getValue().equals(token)`
+      (IngestionDataEntitiesFilter.java:55-58) fails for the old token — in-flight
+      ingestion using the prior secret 401s on its very next request with "Token is
+      not correct." There is no previous_value column, no valid_until window. The UI
+      ConfirmationDialog (CollectorItemToken.tsx:37-50) reads only "Are you sure you
+      want to regenerate token for this collector?" — it warns of none of this.
+    evidence:
+      - sidecar: odd-platform__java__CollectorController__controller-method__regenerateCollectorToken.md
+        section: "bugs_limitations_corner_cases[0] (no rotation grace period)"
+        cite: "TokenGeneratorImpl.java:44-52 + ReactiveTokenRepositoryImpl.java:30-39 + IngestionDataEntitiesFilter.java:55-58"
+        note: "In-place UPDATE; old token 401s the instant the rotation commits."
+      - sidecar: odd-platform__ts__react-component__component__CollectorsList.md
+        section: "bugs_limitations_corner_cases[3] (no UI warning on no-grace rotation)"
+        cite: "CollectorItemToken.tsx:38-49"
+        note: "ConfirmationDialog text surfaces none of the operational consequence."
+    operator_visible_failure: |
+      (1) An operator rotating a token during active ingestion knocks their own
+      collector offline — ingestion fails until the collector is reconfigured with
+      the new value and restarted (typically a config-file change + redeploy).
+      (2) Datasets that arrive during the rotation window are silently dropped (no
+      default retry queue for auth failures at the collector level). (3) Because the
+      UI's only prompt is "Are you sure?", an operator treating rotation as a
+      reversible click discovers the no-grace semantic only from the ingestion
+      incident. The clean-swap mental model the word "Regenerate" invites is wrong.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-005
+  hypothesis: "When an operator rotates a token because it was leaked, doing so meaningfully reduces the attack surface on a default deployment — i.e. the rotated credential is what actually gates metadata ingestion."
+  derivation: "Pillar mission ('rotate a leaked token' as a primary operator action) + the operator's reasonable belief that a credential the UI lets them rotate is load-bearing for the path it authenticates."
+  seed_source: pillar
+  validation:
+    verdict: partial
+    actual_behavior: |
+      Rotation matters for ONE ingestion path and is a no-op for the other on the
+      shipped default. The token gates two endpoints via two filters:
+      IngestionDataSourceFilter (POST /ingestion/datasources) is ALWAYS-ON (no
+      @ConditionalOnProperty), so a rotated token does take effect there. But
+      IngestionDataEntitiesFilter (POST /ingestion/entities — the bulk metadata-write
+      path) is @ConditionalOnProperty on auth.ingestion.filter.enabled, which ships
+      `false` (application.yml:48). With the default config the filter bean is not
+      registered, so /ingestion/entities is anonymously reachable REGARDLESS of the
+      token value — rotating a "leaked" token has ZERO security effect on the
+      bulk-ingestion path. So the hypothesis holds for /ingestion/datasources and is
+      false for /ingestion/entities under defaults: the operator fixes half the
+      attack surface believing they fixed all of it.
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveCollectorRepositoryImpl.md
+        section: "coupling[3] (asymmetric ingestion auth)"
+        cite: "IngestionDataSourceFilter.java:15-22 (no @ConditionalOnProperty) + IngestionDataEntitiesFilter.java:19-20 (@ConditionalOnProperty) + application.yml:48"
+        note: "Always-on datasource filter vs opt-in entities filter; the entities filter is off by default."
+      - sidecar: odd-platform__ts__react-component__component__CollectorsList.md
+        section: "bugs_limitations_corner_cases[4] + requires-config"
+        cite: "application.yml:48 + IngestionDataEntitiesFilter.md bugs_limitations_corner_cases[0]"
+        note: "UI promises a security property (rotation) the default deployment does not enforce on /ingestion/entities."
+    operator_visible_failure: |
+      (1) An operator responding to a token leak on a default deployment rotates the
+      credential, sees the UI succeed, and believes the incident is contained — while
+      the bulk metadata-write endpoint remains anonymously writable. (2) The
+      asymmetry between the two ingestion filters is invisible from the UI and from
+      the property name (`auth.ingestion.filter.enabled` reads as a global ingestion
+      lock; it gates one endpoint). The fix is to set the flag true AND rotate; the
+      UI signals neither half.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-006
+  hypothesis: "When an operator (or an auditor after the fact) asks 'who registered / rotated / deleted this collector and when', the platform can answer it — the credential desk keeps a record of its own mutations."
+  derivation: "Pillar mission (Management is the operator-mutation surface; a credential desk implies accountability) + negative-space (an audit log that loses who-touched-the-secret is operationally useless)."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      There is no recoverable audit trail for any collector lifecycle event at any
+      tier. Grep across CollectorController, CollectorServiceImpl, TokenGeneratorImpl,
+      and ReactiveTokenRepositoryImpl returns zero log statements on the F-020 paths;
+      no @ActivityLog annotation on any service method; no client-side analytics in
+      the UI (grep for mixpanel/amplitude/segment/gtag/posthog returns zero). The
+      only forensic crumb is TOKEN.updated_by + TOKEN.updated_at — and updated_by is
+      single-state (overwritten on the next rotation, so prior rotations are
+      unrecoverable) and can be NULL when the rotation happened under auth.type=
+      DISABLED. The Activity Feed (P-07) has no COLLECTOR_TOKEN_REGENERATED event
+      class; the gap is schema-rooted (activity.data_entity_id is NOT NULL, so
+      non-data-entity events like collector mutations cannot be recorded there — the
+      same asymmetry F-006/PLT-062 establishes).
+    evidence:
+      - sidecar: odd-platform__java__CollectorController__controller-class__CollectorController.md
+        section: "security.known_security_gaps[4] (zero audit logging across the F-020 surface)"
+        cite: "CollectorController.java:1-52 + CollectorServiceImpl.java:1-110 + TokenGeneratorImpl.java:1-53"
+        note: "No @Slf4j, no log statements at any severity, no @ActivityLog."
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveCollectorRepositoryImpl.md
+        section: "known_security_gaps (no audit trail for rotation or soft-delete)"
+        cite: "CollectorServiceImpl.java:71-90 + TokenGeneratorImpl.java:27-32"
+        note: "updated_by is single-state and NULL-able under DISABLED; no ActivityEvent."
+    operator_visible_failure: |
+      (1) A security incident review of "who rotated collector X's token and when"
+      is unanswerable from production data beyond the most-recent rotation actor
+      (and even that is blank on DISABLED deployments). (2) Compliance auditors
+      expecting a who-did-what trail for credential operations find none. (3) An
+      operator cannot use the UI to see the lifecycle history of a collector — the
+      success toast vanishes in ~5 seconds and there is no persistent audit panel.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-007
+  hypothesis: "When an operator deletes a collector, its credential is destroyed too — deleting the collector retires the secret so a leaked backup can't resurrect it."
+  derivation: "UI label ('Delete') + negative-space (a credential desk that leaves live secrets behind after a delete violates the operator's data-retention expectation)."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Delete is a soft-delete that orphans the token row permanently. The inherited
+      ReactiveAbstractSoftDeleteCRUDRepository.delete issues `UPDATE collector SET
+      deleted_at = NOW()`; CollectorServiceImpl.delete (lines 71-80) issues only
+      `collectorRepository.delete(id)` with NO tokenRepository.delete. The TOKEN
+      table has no soft-delete column at all (V0_0_28 declares only id, value,
+      created_at, created_by, updated_at, updated_by), so the row referenced by
+      collector.token_id is left in the table — value still plaintext, still
+      discoverable via `SELECT * FROM token` — with no housekeeping job to purge it.
+      The partial unique index collector_token_unique (WHERE deleted_at IS NULL)
+      ALLOWS the orphan because it only constrains live collectors. The credential
+      of a "deleted" collector persists forever in the table and in every backup,
+      replica, and pg_dump.
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveCollectorRepositoryImpl.md
+        section: "bugs_limitations_corner_cases[1] (soft-deleted collector orphaned token row)"
+        cite: "ReactiveAbstractSoftDeleteCRUDRepository.java:50-58 + V0_0_28__add_token.sql:1-9 + V0_0_33__add_token_constraints.sql:1"
+        note: "Soft-delete UPDATEs only the parent; TOKEN has no soft-delete; no janitor."
+      - sidecar: odd-platform__java__CollectorController__controller-class__CollectorController.md
+        section: "bugs_limitations_corner_cases[0] (DELETE leaves orphan TOKEN row)"
+        cite: "CollectorServiceImpl.java:71-80"
+        note: "delete path issues no tokenRepository.delete; cross-confirmed at controller tier."
+    operator_visible_failure: |
+      (1) An operator who deletes a retired collector to "get rid of its access"
+      leaves a live plaintext credential in the database indefinitely; combined with
+      the plaintext-at-rest storage (H-008), every backup carries credentials for
+      collectors the operator believes are gone. (2) Incident-response queries
+      against the TOKEN table by id range surface credentials that should have been
+      retired. (3) Data-deletion / GDPR-style retention contracts are silently
+      violated — the operator's delete did not delete the secret.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-008
+  hypothesis: "When a collector's token is at rest in the platform's database, it is protected the way a credential is expected to be — hashed or encrypted — so a database read or backup does not hand an attacker every live collector secret."
+  derivation: "Negative-space (the universal expectation that stored authentication secrets are not kept in clear text) + response-shape (the API masks the token on reads, implying the platform treats it as sensitive)."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The token is plaintext at rest end-to-end. V0_0_28__add_token.sql:4 declares
+      `value varchar(40) NOT NULL` with no hashing column, no salt, no UNIQUE
+      constraint. TokenGeneratorImpl.java:34-42 writes
+      RandomStringUtils.randomAlphanumeric(40) verbatim. ReactiveCollectorRepository
+      Impl.java:94 resolves an inbound bearer token via `TOKEN.VALUE.eq(token)` —
+      plaintext SQL equality; IngestionDataEntitiesFilter.java:55-58 mirrors it with
+      a non-constant-time `tokenPojo.getValue().equals(token)`. Every layer of the
+      bearer-token flow assumes plaintext (the repository sidecar names this the
+      load-bearing implicit ADR). The API masking on reads is cosmetic — it hides
+      the value in list views but the storage is clear text. (Separately, the
+      generator uses ThreadLocalRandom, not SecureRandom — a distinct entropy
+      defect; see H-013.)
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveCollectorRepositoryImpl.md
+        section: "bugs_limitations_corner_cases[0] + implicit_adrs[0]"
+        cite: "V0_0_28__add_token.sql:1-9 + TokenGeneratorImpl.java:34-42 + ReactiveCollectorRepositoryImpl.java:94 + IngestionDataEntitiesFilter.java:55-58"
+        note: "No hashing anywhere; SQL + application equality are both plaintext."
+      - sidecar: odd-platform__java__CollectorController__controller-method__regenerateCollectorToken.md
+        section: "implicit_adrs[3] + security.known_security_gaps[3]"
+        cite: "IngestionDataEntitiesFilter.java:55-58 + ReactiveTokenRepositoryImpl.java:21-39"
+        note: "Direct String.equals, not BCrypt.matches; shared-secret-stored-as-is model."
+    operator_visible_failure: |
+      (1) Any DB-side reader — pg_dump artefact, read replica snapshot, WAL archive,
+      jOOQ statement-log leak, Datadog/pgaudit DB observability — recovers every
+      live collector credential in clear text. (2) A single leaked backup is a
+      platform-wide credential compromise requiring rotation of every token (which,
+      per H-004, knocks every collector offline). (3) The implicit ADR ("tokens are
+      deployment-internal shared secrets; at-rest threats are addressed at the
+      disk/backup layer") is undefended in any comment, doc, or ADR — so an operator
+      cannot even discover that the plaintext storage is a deliberate choice.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-009
+  hypothesis: "When an operator edits a collector and changes only its name, the other fields they did not touch (description, namespace) are preserved."
+  derivation: "Endpoint shape (the edit form + PUT /api/collectors/{id}) + the universal operator expectation that an edit form changes the field you edited and leaves the rest alone."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Update is full-replace, not patch. CollectorServiceImpl.update (lines 50-69)
+      calls `collectorMapper.applyToDto(collectorDto.collectorPojo(), form)` and
+      CollectorMapper.java:41-47 uses MapStruct @MappingTarget — a whole-pojo
+      overwrite. Any field absent (null) in the incoming CollectorFormData nulls the
+      corresponding column. So a PUT that carries only the name will null the
+      description and namespace. The UI form (CollectorForm.tsx) populates all three
+      fields from the existing collector when editing, which masks the hazard in the
+      happy UI path — but any partial-update flow (a future UI refactor, a scripted
+      caller, an API consumer building a PATCH-shaped request against this PUT)
+      silently destroys the unsent fields. The OpenAPI verb is PUT (full-replace is
+      technically correct HTTP), but the field semantics are documented nowhere a UI
+      or API author would find them before writing a partial update.
+    evidence:
+      - sidecar: odd-platform__java__CollectorController__controller-class__CollectorController.md
+        section: "bugs_limitations_corner_cases[2] (update semantics are full-replace, not PATCH)"
+        cite: "CollectorController.java:33-40 + CollectorServiceImpl.java:50-69 + CollectorMapper.java:41-47"
+        note: "MapStruct @MappingTarget whole-pojo overwrite; null form fields null the columns."
+    operator_visible_failure: |
+      (1) A scripted or API consumer sending a name-only update wipes the
+      collector's description and namespace with no error and no warning. (2) A
+      future UI partial-update flow (e.g. inline-rename) would silently destroy
+      sibling fields — a latent footgun that the current full-form modal happens to
+      avoid only because it always resubmits every field. (3) The PUT-is-replace
+      contract is undocumented, so the trap is discovered by data loss, not by
+      reading the spec.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-010
+  hypothesis: "When an operator misses copying a freshly-issued token, they can view it again later from the Collectors tab."
+  derivation: "Endpoint shape (the list response carries token.value) + the operator's reasonable expectation that a value shown once in a UI is retrievable from that same UI."
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The hypothesis is what an operator would WANT, and the implementation
+      definitively does NOT provide it — but the design is intentional and the
+      one-shot-no-recovery behaviour is correct-by-construction, so this verdict
+      confirms the (negative) reality rather than flagging a contradiction against
+      intent. After the page reloads, GET /api/collectors/list returns the token
+      masked as "******{last6}" (TokenMapper.java:15-18, showToken=false on read
+      paths); CollectorItemToken detects the six-star prefix
+      (CollectorItemToken.tsx:25-27) and flips to isHidden=true, showing the
+      Regenerate button instead of Copy. There is no "show token again" affordance.
+      The only recovery is regeneration — which (per H-004) invalidates the prior
+      secret platform-wide with no grace. The live doc (DOC-252, done) now documents
+      this one-shot behaviour. This is the GitHub-PAT / Stripe one-shot-secret
+      pattern, applied deliberately.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__CollectorsList.md
+        section: "concepts.invariants[1] (token visibility one-shot)"
+        cite: "CollectorItemToken.tsx:25-27 + TokenMapper.java:15-18"
+        note: "Masked on read; UI flips to hidden; no re-reveal affordance."
+    severity: null
+    confidence: HIGH
+    routes_to_finding: none
+
+- id: H-011
+  hypothesis: "When a user without any Management permission (a read-only auditor) is logged in, they cannot enumerate the platform's collector inventory."
+  derivation: "Pillar P-08 (the section is operator-facing / permission-gated) + the four COLLECTOR_* permissions implying the resource type is access-controlled."
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      GET /api/collectors/list has NO SecurityRule entry (verified by grep — only
+      the four mutation verbs are registered at SecurityConstants.java:127-137) and
+      no @PreAuthorize on the controller. The read is collaborative across the
+      platform (the REFACTOR-024 read-collaborative posture): any authenticated user
+      — including one with zero Management permissions — can enumerate every
+      collector with its (id, name, namespace, ******{last6}, createdAt, updatedAt).
+      The mask includes the last six characters of the token (TokenMapper.java:15-18).
+      Under auth.type=DISABLED the same list is reachable to anonymous network
+      callers (no auth at all). The route mount itself (/management/collectors) is
+      also not permission-gated — only the buttons inside it are (per the route-tier
+      finding F-161).
+    evidence:
+      - sidecar: odd-platform__java__CollectorController__controller-class__CollectorController.md
+        section: "security.known_security_gaps[0] (GET /api/collectors unrestricted)"
+        cite: "SecurityConstants.java:127-137 (no GET rule) + CollectorController.java:19-25"
+        note: "Any authenticated user lists every collector with masked-token last-6 exposed."
+      - sidecar: odd-platform__ts__react-component__component__CollectorsList.md
+        section: "security.known_security_gaps[5] (anonymous list-enumeration under DISABLED)"
+        cite: "SecurityConstants.java + TokenMapper.java:15-18"
+        note: "Under DISABLED, anonymous callers enumerate every collector + last-6 token chars."
+    operator_visible_failure: |
+      (1) A read-only auditor or any low-privilege authenticated user can map the
+      entire collector inventory (names, namespaces, token suffixes) — unnecessary
+      attack-surface and information disclosure for a credential table. (2) The
+      last-6-chars exposure on the mask is gratuitous: it weakens the token by ~36
+      bits (still computationally infeasible to brute, but a credential mask should
+      not leak any of the secret). (3) Under DISABLED the same enumeration is fully
+      anonymous. The read-collaborative posture is undocumented as it applies to the
+      collector credential table specifically.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-012
+  hypothesis: "When a collector authenticates with its bearer token (the always-on POST /ingestion/datasources path), the platform resolves it to exactly one collector identity deterministically."
+  derivation: "Endpoint shape (getByToken bridges a bearer token to a Collector id stored in COLLECTOR_ID_SESSION_KEY) + the operator's expectation that token resolution is unambiguous."
+  seed_source: cross-pillar
+  validation:
+    verdict: partial
+    actual_behavior: |
+      Resolution is deterministic in practice but has two structurally-unguarded
+      ambiguity windows. (a) TOKEN.value has NO UNIQUE constraint (V0_0_28) — two
+      TOKEN rows MAY share a value, and getByToken's query (ReactiveCollectorRepository
+      Impl.java:89-94) has NO ORDER BY, so on a collision the first-matching row is
+      returned non-deterministically, and COLLECTOR_ID_SESSION_KEY becomes ambiguous
+      (cross-collector datasource registration silently possible). A collision is
+      astronomically improbable from random-40-char output, so in practice
+      resolution is unique — but the schema provides no defence, so a future
+      deterministic-token-generation bug would open it. (b) The bridge writes the
+      resolved id into a WebSession attribute; under the default IN_MEMORY session
+      provider (application.yml:30) in a multi-replica deployment without sticky
+      sessions, the second-hop request can land on a node that does not have the
+      session, breaking resolution across nodes (the cluster-fragility facet
+      REFACTOR-419). This needs a running multi-replica stack to observe precisely.
+    evidence:
+      - sidecar: odd-platform__java__repository__reactive__repository__ReactiveCollectorRepositoryImpl.md
+        section: "invariants[3] (no UNIQUE on TOKEN.value; getByToken no ORDER BY) + scaling_characteristics"
+        cite: "V0_0_28__add_token.sql:1-9 + ReactiveCollectorRepositoryImpl.java:89-94 + IngestionDataSourceFilter.java:33-43 + application.yml:30"
+        note: "No uniqueness + no ORDER BY = non-deterministic first-match on collision; session bridge needs sticky sessions in a cluster."
+    operator_visible_failure: |
+      (1) On a multi-replica deployment with the default IN_MEMORY session provider
+      and no sticky sessions, collector datasource-registration produces sporadic
+      401s on the second-leg request — invisible from any config value, surfacing
+      only as intermittent ingestion failures. (2) The token-collision branch is
+      theoretical at current entropy but ships with zero schema-level defence and no
+      in-file marker, so a maintainer cannot see the risk. The cluster constraint is
+      the operationally real half.
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+
+- id: H-013
+  hypothesis: "When the platform generates a collector token, the value is produced by a cryptographically-secure random source, so it cannot be predicted from other tokens or from timing."
+  derivation: "Negative-space (a bearer credential's unpredictability is its entire security property; the operator assumes the generator is crypto-grade)."
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      The two token-generation sites (TokenGeneratorImpl.java:39 generate, :49
+      regenerate) call RandomStringUtils.randomAlphanumeric(40). In commons-lang
+      3.16+ this delegates to ThreadLocalRandom — NOT SecureRandom. The sidecars
+      assert this from the code and the commons-lang Javadoc, and the secure variant
+      RandomStringUtils.secure().nextAlphanumeric(40) exists since 3.16. The
+      remaining question that requires running the system is the BINDING one for the
+      severity call: which commons-lang version is actually on this build's
+      classpath at runtime (the delegation target differs across 3.x minors), and
+      whether the produced output is in fact ThreadLocalRandom-backed here. That is
+      resolvable locally by booting the platform and inspecting the resolved
+      commons-lang version + the generator output; emitted as a probe rather than
+      asserted HIGH/contradicted on a version inference.
+    evidence:
+      - sidecar: odd-platform__java__CollectorController__controller-method__regenerateCollectorToken.md
+        section: "bugs_limitations_corner_cases[4] + security.known_security_gaps[1]"
+        cite: "TokenGeneratorImpl.java:39, 49"
+        note: "RandomStringUtils.randomAlphanumeric(40) — non-SecureRandom in commons-lang 3.16+ per Javadoc."
+      - sidecar: odd-platform__java__CollectorController__controller-class__CollectorController.md
+        section: "bugs_limitations_corner_cases[9]"
+        cite: "TokenGeneratorImpl.java:39, 49"
+        note: "Same finding reconfirmed at controller-class tier."
+    probe_id: P-350
+    confidence: MEDIUM
+    routes_to_finding: bug-candidate
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-004
+  severity: HIGH
+  one_line: "Token regeneration is an in-place UPDATE with no grace window — in-flight ingestion 401s immediately; no UI warning."
+  dedup_status: already_tracked
+  tracked_as: PLT-108
+  proposed_fix_anchor: "Add previous_value + previous_valid_until columns on TOKEN; IngestionDataEntitiesFilter accepts either until the window expires (CollectorServiceImpl.regenerateToken + ReactiveTokenRepositoryImpl + V0_0_29 schema). PLT-108 already scopes this for both Collector + DataSource."
+- hypothesis_id: H-006
+  severity: HIGH
+  one_line: "Zero recoverable audit trail for any collector lifecycle event (register/update/delete/rotate) — schema-rooted (activity.data_entity_id NOT NULL)."
+  dedup_status: already_tracked
+  tracked_as: PLT-062
+  proposed_fix_anchor: "PLT-062 Option A: make activity.data_entity_id NULLable + add subject_kind/subject_id; the COLLECTOR_TOKEN_REGENERATED + collector-lifecycle event classes land in the enum extension."
+- hypothesis_id: H-007
+  severity: MEDIUM
+  one_line: "Collector soft-delete orphans the plaintext TOKEN row forever (TOKEN has no soft-delete column; no housekeeping job)."
+  dedup_status: already_tracked
+  tracked_as: PLT-085
+  proposed_fix_anchor: "Fold into PLT-085's token-hardening migration (cascade token cleanup on collector soft-delete OR a housekeeping purge of TOKEN rows where id NOT IN (SELECT token_id FROM collector WHERE deleted_at IS NULL)). DataSource sibling is PLT-087."
+- hypothesis_id: H-008
+  severity: HIGH
+  one_line: "Collector token plaintext-at-rest end-to-end (schema varchar(40) no-hash, plaintext SQL equality, non-constant-time application equality) — every backup/replica recovers live credentials."
+  dedup_status: already_tracked
+  tracked_as: PLT-085
+  proposed_fix_anchor: "PLT-085: add value_hash column (bcrypt/argon2); write only the hash post-mint; one-shot reveal; constant-time compare at the filter. DOC-252 (done) ships the doc-side caveat until PLT-085 lands."
+- hypothesis_id: H-013
+  severity: HIGH
+  one_line: "Token entropy source is RandomStringUtils.randomAlphanumeric (ThreadLocalRandom in commons-lang 3.16+), not SecureRandom."
+  dedup_status: net_new
+  distinct_from: PLT-085
+  recommended_log_as: BUG-NNN
+  proposed_fix_anchor: "Mechanical one-line fix at TokenGeneratorImpl.java:39 + :49 — replace with RandomStringUtils.secure().nextAlphanumeric(40). PLT-085 is plaintext-AT-REST (storage shape); this is a distinct entropy-SOURCE defect on the generation path. SHB-091 flagged it; not yet a standalone tracked item. Verify the resolved commons-lang version via probe P-350 first."
+
+### caveat_candidates
+- hypothesis_id: H-002
+  one_line: "UI-vs-API asymmetry under DISABLED — UI hides all four mutation buttons while the backend accepts anonymous POST/PUT/DELETE/token-rotate (REFACTOR-185 19th surface)."
+  dedup_status: already_tracked
+  tracked_as: DOC-252
+  note: "DOC-252 (done) ships Caveat 1; DOC-239 expands disabled-authentication.md; ADR-0074 publishes the DISABLED-default decision; platform-side DISABLED hardening is PLT-072."
+- hypothesis_id: H-005
+  one_line: "Token rotation has no security effect on POST /ingestion/entities under the default auth.ingestion.filter.enabled=false (only the always-on datasource filter is gated)."
+  dedup_status: already_tracked
+  tracked_as: DOC-252
+  note: "DOC-252 Caveat 3 (done) + doc-gap DOC-GAP-034 / DOC-GAP-038. The two-filter asymmetry framing also overlaps DOC-168."
+- hypothesis_id: H-009
+  one_line: "Collector update is full-replace (MapStruct @MappingTarget) — a partial-form PUT silently nulls description + namespace; undocumented PUT-is-replace contract."
+  dedup_status: net_new
+  recommended_log_as: "caveat in https://docs.opendatadiscovery.org/features/management (Collectors known-caveats sub-section) + doc-gap-NNN"
+  note: "Tracked full-replace items exist for OWNER_UPDATE (DOC-GAP-181) and DataSource namespace-inheritance (DOC-GAP-180), but NOT for the Collector update surface specifically. The happy UI path masks it (the modal resubmits all three fields); the hazard is for scripted/API consumers and any future partial-update UI flow."
+- hypothesis_id: H-011
+  one_line: "GET /api/collectors/list is ungated (read-collaborative) — any authenticated user (anonymous under DISABLED) enumerates the collector inventory + last-6 token chars."
+  dedup_status: already_tracked
+  tracked_as: DOC-GAP-189
+  note: "DOC-GAP-189 covers the anonymous-list last-6-chars leak; DOC-187 is the REFACTOR-185 META. The read-collaborative posture is the platform-wide REFACTOR-024 family."
+- hypothesis_id: H-012
+  one_line: "Collector-by-token resolution has two unguarded ambiguity windows: no UNIQUE on TOKEN.value + no ORDER BY in getByToken (collision non-determinism), and the WebSession identity bridge needs sticky sessions on a multi-replica IN_MEMORY-session deployment."
+  dedup_status: already_tracked
+  tracked_as: PLT-085
+  note: "The no-UNIQUE-on-TOKEN.value facet is within PLT-085's scope (Defect 4). The cluster-fragility half is REFACTOR-419 (session-provider IN_MEMORY default); cross-link F-008/F-020 SessionConfiguration batch-X anchor. No net-new filing — both halves are tracked."
+
+### probes_emitted
+- probe_id: P-350
+  hypothesis_id: H-013
+  probe_path: "lineage/odd-platform/probes/P-350.yaml"
+
+### validation_gaps
+- sidecar: "odd-platform java service service:CollectorServiceImpl (no standalone sidecar)"
+  field_insufficient: "understanding / bugs_limitations_corner_cases — the service tier owns the transactional shape (create=token-INSERT+collector-INSERT atomic; regenerateToken NOT @ReactiveTransactional; delete cascade-block) but has no dedicated sidecar; verdicts H-004/H-006/H-007 leaned on the controller + repository sidecars' cross-references to CollectorServiceImpl.java line ranges rather than a primary CollectorServiceImpl sidecar."
+  proposed_refresh: "Enrich CollectorServiceImpl as a standalone service-tier node so the transactional boundaries (lines 37-90) and the cascade-block at lines 71-80 are primary-source rather than transitively cited."
+- sidecar: "odd-platform java repository reactive repository:ReactiveTokenRepositoryImpl (no standalone sidecar)"
+  field_insufficient: "understanding — the TOKEN write path (create + updateToken, the showToken=true construction) is the load-bearing source for H-003/H-004/H-008 but is only reached via cross-references in the CollectorController + ReactiveCollectorRepositoryImpl sidecars."
+  proposed_refresh: "Enrich ReactiveTokenRepositoryImpl as a standalone repository node so the plaintext-write + showToken-true claims are primary-source."
+
+### doc_drift_findings
+- hypothesis_id: H-002
+  doc_url: "https://docs.opendatadiscovery.org/features/management"
+  doc_says: "Pre-DOC-252, the Collectors section listed the workflow ('issue / rotate / remove') with no warning about the DISABLED UI-vs-API asymmetry."
+  code_does: "Under DISABLED the UI hides mutations while the backend accepts them anonymously."
+  recommended_log_as: "RESOLVED via DOC-252 (done) — Caveat 1 now renders live; recorded here for the audit trail, not as an open gap."
+- hypothesis_id: H-008
+  doc_url: "https://docs.opendatadiscovery.org/features/management"
+  doc_says: "Pre-DOC-252, silent on token storage shape."
+  code_does: "Token is plaintext at rest with no hashing."
+  recommended_log_as: "RESOLVED via DOC-252 Caveat 2 (done) for the operator-facing warning; the hashing FIX remains PLT-085 (open)."
+
+## maintainer_notes
+
+<!-- preserved across refreshes — only block the maintainer hand-edits -->

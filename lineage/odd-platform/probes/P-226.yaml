@@ -1,0 +1,126 @@
+---
+probe_id: P-226
+emitted_by: feature-reflector
+emitted_in_reflection: lineage/odd-platform/feature-reflections/detail/F-005.yaml
+emitted_for_hypothesis: H-009
+emitted_at: 2026-06-01T00:00:00Z
+status: pending-reflection-verification
+feature_id: F-005
+test_class: performance
+verified_against_commit: 43d13eb
+maintainer_curated: false
+stack_profile: odd-minimal
+local_execution_blocked: false
+expected_outcome: |
+  H-009 (verbatim): "When the lineage graph contains a cycle (e.g. A->B->A, a
+  transformer consuming its own downstream artefact), opening the canvas
+  terminates quickly and renders a bounded graph — it does not hang or spike
+  the database."
+
+  Static reading (CONFIRMED from primary source, ReactiveLineageRepositoryImpl
+  .java:150-176): the recursive CTE has NO visited-set guard and NO Postgres
+  `WITH ... CYCLE` clause; the body is UNION ALL; termination is solely
+  `tDepth.lessThan(lineageDepth.getDepth())` (line 174). A cycle therefore
+  terminates ONLY via the depth bound, materialising duplicated intermediate
+  rows along the cycle on each hop. The depth bound is itself unbounded
+  (see H-003 / PLT-042).
+
+  The UNMEASURED, load-bearing question for the user-facing claim: what is the
+  actual wall-clock + Postgres-CPU profile when the canvas (or a direct API
+  caller) walks a cyclic subgraph at a representative depth? Two sub-questions:
+    (a) At a MODERATE depth (e.g. 10) over a small cycle (A->B->C->A), does the
+        request complete in < 5s on the minimal stack with no sustained
+        Postgres CPU spike? (the "terminates quickly" half of H-009)
+    (b) At a LARGE depth (e.g. 200) over the same cycle, does intermediate-row
+        growth before termination drive a measurable Postgres CPU spike /
+        work_mem pressure / multi-second latency? (the amplification half)
+
+  PASS for H-009 = (a) completes < 5s with bounded CPU. If (a) FAILS (already
+  spikes at moderate depth), H-009 is contradicted at runtime and the
+  cycle-guard fix (PLT-042 family) is load-bearing for default deployments,
+  not just adversarial ones.
+
+  Note: this probe pins the RUNTIME COST profile only. The cross-owner /
+  no-cap findings are already tracked statically (PLT-100 / PLT-042); this
+  probe does NOT re-verify those — it answers only the cycle-termination-cost
+  question that cannot be derived from the sidecars.
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: sql
+    description: Three data entities forming a cycle A->B->C->A
+    query: |
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, created_at) VALUES
+        (8801, '//probe-source/p-226/a', 'p226_a', 1, 3, NOW()),
+        (8802, '//probe-source/p-226/b', 'p226_b', 1, 3, NOW()),
+        (8803, '//probe-source/p-226/c', 'p226_c', 1, 3, NOW());
+  - kind: sql
+    description: Lineage edges forming the cycle A->B, B->C, C->A (parent_oddrn -> child_oddrn; establisher arbitrary)
+    query: |
+      INSERT INTO lineage (parent_oddrn, child_oddrn, establisher_oddrn, is_deleted) VALUES
+        ('//probe-source/p-226/a', '//probe-source/p-226/b', '//probe-source/p-226/est', false),
+        ('//probe-source/p-226/b', '//probe-source/p-226/c', '//probe-source/p-226/est', false),
+        ('//probe-source/p-226/c', '//probe-source/p-226/a', '//probe-source/p-226/est', false)
+act:
+  - kind: rest
+    description: Arm (a) — moderate depth (10) downstream from A over the cycle; capture latency
+    method: GET
+    path: /api/dataentities/8801/lineage/downstream?lineage_depth=10
+    capture_status_as: arm_a_status
+    capture_latency_ms_as: arm_a_latency_ms
+  - kind: rest
+    description: Arm (b) — large depth (200) downstream from A over the cycle; capture latency
+    method: GET
+    path: /api/dataentities/8801/lineage/downstream?lineage_depth=200
+    capture_status_as: arm_b_status
+    capture_latency_ms_as: arm_b_latency_ms
+observe:
+  - kind: container-stat
+    description: Sample peak Postgres CPU during the two arms (probe-runner samples docker stats over the act window)
+    target: postgres
+    metric: cpu_pct_peak
+    capture_as: pg_cpu_peak_pct
+assert:
+  - "arm_a_status == 200  # the request completes (terminates via depth bound, not a hang)"
+  - "arm_a_latency_ms < 5000  # H-009 'terminates quickly' — moderate depth over a cycle stays under 5s on minimal stack"
+  - "arm_b_status == 200  # large depth still terminates (depth bound), pinning the amplification-but-not-infinite behaviour"
+  - "pg_cpu_peak_pct < 90  # SOFT signal: if peak Postgres CPU pegs ~100% the cycle amplification is the load-bearing cost surface — record verdict accordingly"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM lineage WHERE establisher_oddrn = '//probe-source/p-226/est';
+      DELETE FROM data_entity WHERE id IN (8801, 8802, 8803)
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__repository_reactive__repository__ReactiveLineageRepositoryImpl
+    - odd-platform__java__service__service__LineageServiceImpl
+  related_features:
+    - F-005
+  related_issues:
+    - PLT-042
+    - PLT-100
+  retrospectives:
+    - LSN-019
+realism_caveats: |
+  The probe pins the RUNTIME cost of a cyclic walk, not correctness. If arm (a)
+  completes well under 5s with low Postgres CPU, H-009's "terminates quickly"
+  half is CONFIRMED at runtime and the cycle guard is a hardening item, not a
+  default-deployment correctness bug. If arm (a) ALREADY spikes, escalate: the
+  cycle guard + depth cap (PLT-042) become load-bearing for ordinary use.
+
+  The latency thresholds (5s) and CPU threshold (90%) are calibration starting
+  points for the odd-minimal single-container Postgres; a probe-runner on a
+  faster host should keep the relative interpretation (arm_a fast + low CPU =
+  PASS) rather than the absolute numbers.
+
+  Branching factor here is 1 (a pure cycle), which is the CONSERVATIVE case —
+  it isolates cycle-traversal cost from diamond-fanout cost. A follow-up probe
+  could combine a cycle with branching (B>1) to measure the compounded
+  amplification, but that conflates two effects; this probe deliberately
+  measures the cycle in isolation.
+
+  Per Rule 6 / Rule 12: docker-compose + Postgres + curl, entirely local; no
+  remote infrastructure. The fixtures use the 8800-range to avoid collision
+  with seed data; cleanup is id/establisher-scoped.

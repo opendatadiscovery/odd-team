@@ -1,0 +1,96 @@
+---
+probe_id: P-310
+emitted_by: feature-reflector
+emitted_for_feature: F-010
+emitted_for_hypothesis: H-009
+status: pending-reflection-verification
+created_at: 2026-06-01T00:00:00Z
+prompt_version: feature-reflector/0.2.0
+title: >-
+  DataEntityHousekeepingJob .block()s fileUploadService.deleteFiles INSIDE the
+  jOOQ transaction with NO timeout — under persistent S3/MinIO unreachability the
+  whole housekeeping cycle wedges until ShedLock expiry and the ~25-table cascade
+  rolls back every cycle, so soft-deleted entities never purge (silent backlog).
+severity_if_confirmed: MEDIUM
+local_execution_blocked: false
+
+hypothesis_restated: |
+  H-009 (verbatim): "When MinIO/S3 attachment storage is unreachable, the
+  housekeeping cycle still completes its alert + search-facet purges and only the
+  data-entity cascade is affected." This probe tests the CONTRADICTION the chain
+  predicts: a single reactive fileUploadService.deleteFiles(filePojos).block()
+  call at DataEntityHousekeepingJob.java:142 — invoked WITHOUT a .block(Duration)
+  timeout, INSIDE the surrounding DSL.using(connection).transaction(ctx -> {...})
+  wrap at DataEntityHousekeepingJob.java:71 — hangs until the transport-level read
+  timeout or the 14-minute ShedLock upper bound. Because all five jobs run
+  SEQUENTIALLY on ONE shared PGConnectionFactory connection
+  (HousekeepingJobManager.java:32-35), a DataEntityHousekeepingJob that hangs
+  blocks AlertHousekeepingJob + SearchFacetsHousekeepingJob + the two
+  empty-partition reapers IF it runs first in the discovered bean order (which is
+  undefined — no @Order, HousekeepingJobManager.java:23). If S3 eventually throws,
+  the transaction rolls back ALL ~25 deletes; the next 15-minute cycle retries the
+  entire batch; under persistent misconfiguration the data-entity backlog never
+  drains and the only signal is log.error at the outer manager catch
+  (HousekeepingJobManager.java:45).
+
+expected_outcome: |
+  CONTRADICTED-expected. With MinIO unreachable (egress blocked) and ≥1
+  soft-deleted DATA_ENTITY past data_entity_delete_days with ≥1 attachment row:
+  (1) the data-entity cascade transaction does NOT commit (n_tup_del on the
+  cascaded child tables stays flat across cycles); (2) the cycle wall-time per
+  housekeeping run approaches the transport read-timeout or the 14m ShedLock
+  upper bound (measurable in pg_stat_activity as a long-lived backend on the
+  housekeeping connection); (3) IF DataEntityHousekeepingJob is ordered before
+  AlertHousekeepingJob in the discovered bean list, the resolved-alert purge does
+  NOT run that cycle (assert by seeding an expired RESOLVED_AUTOMATICALLY alert
+  and confirming it survives while S3 is down, then is purged once S3 recovers).
+  CONFIRMED (hypothesis holds, contradiction is wrong) only if the cycle completes
+  promptly and the alert/search-facet purges run independently of the S3 hang.
+
+procedure_sketch: |
+  Local-only (APPROACH.md §9 rule 12; CLAUDE.md Gate / feature-reflector Rule 6):
+  - docker-compose: odd-platform + Postgres + MinIO (S3-compatible).
+  - Seed: one DATA_ENTITY in DELETED status with STATUS_UPDATED_AT older than
+    data_entity_delete_days, with ≥1 row in the attachment/file table pointing at
+    a MinIO object; one ALERT in RESOLVED_AUTOMATICALLY older than
+    resolved_alerts_days.
+  - Block MinIO egress mid-run (docker network disconnect, or iptables DROP on the
+    MinIO container port) so deleteFiles(...).block() cannot complete.
+  - Trigger the housekeeping cycle (see realism_caveats — there is no public
+    trigger endpoint; use a test harness that invokes
+    HousekeepingJobManager.runHousekeepingJobs() under a held ShedLock, mirroring
+    the P-012 / P-022 harness pattern).
+  - Measure: (a) cascaded-table n_tup_del before vs after (expect flat — rollback);
+    (b) cycle wall-time (expect ~read-timeout or ~14m); (c) the seeded alert's
+    survival while S3 is down vs after S3 recovery + one more cycle.
+  - Tooling: docker-compose + Testcontainers/local Postgres + MinIO + a WireMock or
+    iptables-based S3-unreachability injector. NO remote VM, NO managed DB, NO
+    cloud-CI runner in the loop.
+
+realism_caveats: |
+  - There is no production HTTP endpoint that force-triggers a housekeeping cycle
+    (it is @Scheduled only). The harness must call runHousekeepingJobs() directly
+    or wait out a real 15-minute fixedRate tick; the former is faster and matches
+    the P-012/P-022 convention but is test-only.
+  - Bean discovery order (DataEntityHousekeepingJob before/after AlertHousekeepingJob)
+    is JVM/classpath dependent; the "blocks the alert purge" arm is conditional on
+    that order and must assert the observed order first (List<HousekeepingJob>
+    injection, HousekeepingJobManager.java:23).
+  - The transport read-timeout depends on the S3 SDK client config; under the
+    default OkHttpClient (~10s, per PLT-086) the hang is bounded at ~10s per file,
+    NOT indefinite — but a slow-loris / connection-accepted-then-silent MinIO
+    reproduces the unbounded case. Test BOTH the refused-connection and the
+    accepted-but-silent variants.
+
+cross_references:
+  - "Sidecar: odd-platform__java__service__service__HousekeepingJobManager.md
+     bugs_limitations_corner_cases[2] + coupling[3] (.block() inside transaction
+     anti-pattern, REFACTOR-145)"
+  - "Sidecar: HousekeepingTTLProperties.md bugs_limitations_corner_cases[6]"
+  - "F-010 observed_vs_expected facet: block_inside_transaction_anti_pattern"
+  - "Related code item: PLT-086 (MinioConfig unset httpClient/timeouts) — the SDK
+     builder angle; distinct from this transaction-blocking-cycle-wedge angle"
+  - "Related code item: PLT-083 (housekeeping hardening) — the cascade+S3 delete is
+     named there only as blast-radius context, not as the cycle-wedge defect"
+  - "REFACTOR-145"
+---

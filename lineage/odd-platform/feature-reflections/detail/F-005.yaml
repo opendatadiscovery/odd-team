@@ -1,0 +1,632 @@
+---
+feature_id: F-005
+pillar_anchored_id: P-05:F-001
+pillar: Data Lineage
+feature_name: "Downstream lineage traversal — default depth handling (pillar-anchored: Lineage Graph Traversal)"
+reflected_at: 2026-06-01T00:00:00Z
+reflected_at_commit: 43d13eb
+prompt_version: feature-reflector/0.2.0
+contributing_sidecars_read:
+  - odd-platform__java__DataEntityController__controller-method__getDataEntityDownstreamLineage.md
+  - odd-platform__java__DataEntityController__controller-method__getDataEntityGroupsLineage.md
+  - odd-platform__java__service__service__LineageServiceImpl.md
+  - odd-platform__java__repository_reactive__repository__ReactiveLineageRepositoryImpl.md
+  - odd-platform__ts__react-component__component__Lineage.md
+  - odd-platform__ts__react-component__component__LineageGraph.md
+  - odd-platform__java__DataSetController__controller-class__DataSetController.md
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/developer-guides/api-reference/lineage"
+    last_verified_at: "2026-05-20"
+    last_verified_status: 200
+    note: "Verified within contributing sidecars (batch-J LineageGraph + batch-M getDataEntityGroupsLineage WebFetch 2026-05-19/05-20 status 200). Not re-fetched this reflection session; treated as a cross-reference per Rule 1, not as the source of intent."
+  - url: "https://docs.opendatadiscovery.org/features/data-lineage"
+    last_verified_at: "2026-05-20"
+    last_verified_status: 200
+  - url: "https://docs.opendatadiscovery.org/features/data-lineage/data-objects"
+    last_verified_at: "2026-05-19"
+    last_verified_status: 200
+hypothesis_summary:
+  total: 12
+  confirmed: 4
+  contradicted: 5
+  partial: 1
+  probe_needed: 2
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: "Opening the Lineage tab on ANY entity returns the full reachable lineage subgraph across owner boundaries — any authenticated user (anonymous under DISABLED) enumerates other teams' pipeline structure; there is no owner filter at any layer."
+related_feature_flows: [F-016, F-004, F-022]
+related_concepts:
+  - Lineage Graph Traversal
+  - Data Entity
+  - Data Entity Group
+  - Read-Collaborative Posture
+related_drift_classes:
+  - spec_says_X_impl_does_Y
+  - cross_owner_enumeration
+  - diamond_DAG_amplification
+  - structural_amplification_surface
+  - ui_default_masks_backend_caveat
+  - co_membership_leakage
+  - anchor_set_defence_in_depth_partial_application
+new_drift_classes_proposed:
+  - deg_lineage_boundary_edge_silent_drop   # DEG-lineage shows only BOTH-endpoints-in-DEG edges; edges to/from external producers/consumers are dropped, rendering a DEG as an island disconnected from its real lineage neighbours
+  - response_field_expanded_entity_ids_doc_narrowed_to_DEG_but_accepts_any_entity
+---
+
+# Downstream lineage traversal — product-owner reflection
+
+## product_owner_narrative
+
+The **Data Lineage** feature lets a user open the *Lineage tab* on any catalogued entity — a dataset, a transformer, a quality test, a microservice, or a Data Entity Group — and see, as an interactive pannable/zoomable graph, what flows INTO that entity (upstream) and what flows OUT of it (downstream). It is the platform's answer to the "data observability" pain point named in the mission: when irrelevant or broken data shows up in production, the lineage canvas is the diagnostic surface an engineer opens first to trace the chain of producers and consumers (per system-mission.md P-05; per LineageGraph.md:audiences). The audiences are data engineers / analysts, data-quality engineers, and data scientists tracing producer↔consumer relationships (per LineageGraph.md:audiences).
+
+A user interacts with it through one tab and a small control bar. The same URL — `/dataentities/{id}/lineage` — dispatches to one of two rendering subsystems based purely on the entity's class: Data Entity Groups route to a DEG-specific canvas (F-016); everything else routes to the per-entity *HierarchyLineage* canvas (per Lineage.md:understanding, lines 19-25 of `Lineage.tsx`). The control bar (LineageControls) offers a depth dropdown of 1..20, a Full/Compact view toggle, a Show-full-names toggle, an Expand-all-nested-items toggle, and a centre-on-root button (per F-005.yaml:contributing_nodes; per LineageGraph.md:concepts `lineageDepth` constants.ts:97-99). Behind the canvas, the per-entity endpoint is `GET /api/dataentities/{id}/lineage/downstream` (and the symmetric `/upstream`), which accepts a `lineage_depth` hop-count and an `expanded_entity_ids` list (per getDataEntityDownstreamLineage.md:understanding).
+
+The working parts the user lives through: choose a depth and the canvas fetches that many hops; click a node's "Load N more" button and the canvas fetches one additional hop around that node (per LineageGraph.md:invariants — LoadMore is depth-1 expansion, LoadMoreButton.tsx:55-65); click a node's title and you navigate INTO that node's own lineage view (per LineageGraph.md:operations — Node.tsx:71); pan and zoom, and your zoom state plus your whole exploration set is captured in the URL so a share-link reproduces the view (per LineageGraph.md:implicit_adrs — URL is the source of truth, interfaces.ts:75-85). The graph is laid out as a TREE by d3-hierarchy, with non-tree edges (cycles, diamond-closures) drawn as separate cross-edges (per LineageGraph.md:invariants — generateGraph.ts:57-148).
+
+The integration story: lineage edges are written by ingestion (every collector / push adapter that emits `parentDatasetOddrn`, transformer source/target lists, consumer input lists) and by microservice traces from `odd-tracing-gateway` (per system-mission.md P-05 cross-pillar `feeds_from`). Lineage in turn feeds the Recommended panel in Discovery and the Dependents tab in Alerts (per system-mission.md P-05 `feeds`). The same recursive-walk machinery is reused by the *my-objects* endpoints (`/api/dataentities/my/upstream` + `/downstream`) — and THAT path, unlike the canvas path, scopes results to the calling user's owned entities (per LineageServiceImpl.md:understanding — the negative-case/positive-case contrast with DataEntityRelationsServiceImpl).
+
+Edge cases a product owner would flag in a demo: an empty graph (an entity nobody has declared lineage for) renders as a lone root; a deeply-branchy or cyclic graph is the cost-amplification surface (the recursive SQL walk has no cycle guard and no depth cap — per ReactiveLineageRepositoryImpl.md:understanding); and a DEG's lineage view shows only the edges *between members of that group*, which can make a busy group look like an island disconnected from its real producers and consumers (per ReactiveLineageRepositoryImpl.md:invariants — getLineageRelations(List) requires BOTH endpoints in the member set).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When a user opens the Lineage tab on an entity and does NOT touch the depth control, the canvas shows the platform's default lineage depth (the depth the API documents as the 'unset' behaviour)."
+  derivation: "The live api-reference doc states `lineage_depth` 'Unset returns the platform's default depth'; the OpenAPI param is `required: false`, promising callers a sensible default when omitted."
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      There is no platform default depth at any layer, and the documented unset
+      behaviour is unimplementable as written. For a DIRECT API caller who omits
+      `lineage_depth`, the controller passes a null `Integer` into the service's
+      primitive `int` parameter; autoboxing throws NullPointerException BEFORE the
+      service body runs, surfacing as HTTP 500 (getDataEntityDownstreamLineage.md
+      bugs[0]; LineageServiceImpl.md bugs[1]). For the UI user the failure mode is
+      DIFFERENT and silent: the UI hardcodes `defaultLineageQuery.d = 1`
+      (constants.ts:74-84) across seven components, so the canvas ALWAYS sends
+      `lineage_depth=1`. The user therefore never reaches the "default depth" branch
+      and never sees the 500 — but they DO get a depth-1 graph (immediate neighbours
+      only), which is an artificially shallow first impression with no documented
+      basis (LineageGraph.md invariants + implicit_adrs[0]).
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getDataEntityDownstreamLineage
+        section: bugs_limitations_corner_cases[0]
+        cite: "DataEntityController.java:256-262 + LineageService.java:11-14 + LineageServiceImpl.java:87-97"
+        note: "Null Integer→int autoboxing NPE; no default in code; documented unset behaviour unimplementable."
+      - sidecar: odd-platform__ts__react-component__component__LineageGraph
+        section: implicit_adrs[0]
+        cite: "constants.ts:74-84 (defaultLineageQuery.d=1) + HierarchyLineage.tsx:47"
+        note: "UI silently supplies d=1, masking the NPE from the UI path and giving a depth-1 first view."
+    operator_visible_failure: |
+      Two distinct failure modes from the same doc claim. (1) A third-party / SDK
+      caller following the API reference and omitting `lineage_depth` gets HTTP 500
+      with a server exception trace in the logs, not a default-depth graph — the
+      documented-as-optional parameter crashes the request. (2) A UI user sees a
+      depth-1 graph on first open (only direct neighbours), which under-represents
+      the lineage for an entity that is part of a longer pipeline; the user may
+      conclude "this dataset has almost no lineage" when in fact they are looking at
+      one hop. Neither the 500 nor the silent d=1 matches the promise of a
+      "platform default depth".
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-002
+  hypothesis: "When a user opens the Lineage tab on an entity, the returned graph is scoped to entities the user is entitled to see (e.g. entities they or their team own, or entities within their access scope) — it does not reveal the existence and structure of other teams' pipelines."
+  derivation: "A platform with an RBAC model (Policies × Permissions × Roles × Owners) and owner-association implies that what a user sees is bounded by their access; an audit/observability surface that leaks every team's pipeline topology to every account would be a security expectation violation."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The lineage canvas applies NO owner-scoping at any layer. The controller passes
+      no Principal/owner argument; LineageServiceImpl.getLineage has no
+      AuthIdentityProvider field and makes no fetchAssociatedOwner() call
+      (LineageServiceImpl.java:54-57, 87-122); the `lineage` table has no owner column
+      and the recursive CTE filters only on `is_deleted` (ReactiveLineageRepositoryImpl
+      lines 167, 174). The endpoint has no @PreAuthorize and no SecurityConstants
+      SECURITY_RULES entry — it falls through to `pathMatchers("/**").authenticated()`.
+      Any authenticated user (LOGIN_FORM / OAUTH2 / LDAP), and any anonymous caller
+      under `auth.type=DISABLED`, can root at any entity id and read the full reachable
+      subgraph, including edges into entities owned by other teams. The UI is the
+      realisation point: it ALWAYS fetches via the anchor-set-UNDEFENDED endpoints
+      (`/lineage/downstream` + `/upstream`), never the anchor-set-DEFENDED `/my/*`
+      endpoints (LineageGraph.md bugs[9], thunks.ts:19,36). The contrast confirms intent
+      drift: the same repository method IS owner-scoped when called via
+      DataEntityRelationsServiceImpl.getDependentOddrns (which calls
+      fetchAssociatedOwner() first) — the defence exists, but is not applied to the
+      canvas path.
+    evidence:
+      - sidecar: odd-platform__java__service__service__LineageServiceImpl
+        section: security.owner_scoping + bugs_limitations_corner_cases[0]
+        cite: "LineageServiceImpl.java:54-57, 87-122 vs DataEntityRelationsServiceImpl.java:20,26"
+        note: "Negative-case anchor-set: no owner resolution on the canvas path; the positive-case sibling DOES resolve owner."
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveLineageRepositoryImpl
+        section: invariants[2] + downstream_side_effects (getLineageRelations Set,depth,kind)
+        cite: "ReactiveLineageRepositoryImpl.java:122-176; V0_0_2/V0_0_17/V0_0_79 (no owner column)"
+        note: "lineage table has no owner column; CTE filters only is_deleted; no JOIN-side owner predicate."
+      - sidecar: odd-platform__ts__react-component__component__LineageGraph
+        section: bugs_limitations_corner_cases[9] + security.known_security_gaps[1]
+        cite: "thunks.ts:19, 36"
+        note: "UI always fetches the undefended endpoints; no 'my owners only' toggle exists — UI is the user-observable realisation point."
+    operator_visible_failure: |
+      (1) Confidentiality leak across owner boundaries: any authenticated user can pivot
+      from one accessible entity to the full reachable lineage subgraph, learning the
+      names/oddrns/datasources of other teams' datasets, transformers, consumers, and
+      microservices — and the causal connections between them, which reveal another
+      team's internal pipeline structure even when those entities are not separately
+      enumerable. (2) Under the default `auth.type=DISABLED` deployment the entire
+      cross-owner topology is reachable by any unauthenticated network probe. (3) The DEG
+      and microservice variants are strictly wider — microservice lineage exposes
+      operational service-call topology (per F-016 / DOC-226). There is no UI affordance
+      (no restricted view, no "only my entities" filter) to mitigate at the surface.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-003
+  hypothesis: "When a user (or a curious operator hand-editing the URL) requests a large lineage depth, e.g. `?d=10000`, the platform bounds the cost — it caps the depth at a sane maximum, or rejects the request, rather than driving an unbounded recursive query."
+  derivation: "The UI depth dropdown only exposes 1..20, implying 20 is the product-policy maximum; an operator who sees a 20-entry dropdown reasonably expects 20 to be a hard cap enforced by the platform."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      No layer enforces an upper bound. The depth dropdown shows [1..20]
+      (constants.ts:97-99) but the URL parser uses `parseNumbers: true` and accepts any
+      positive integer (useQueryParams.ts:36); the value is passed straight to the API
+      (HierarchyLineage.tsx:47). The OpenAPI/controller carries only `@Min(1)`, no `@Max`
+      (DataEntityApi.java:918). The service applies no `Math.min(depth, MAX)` clamp
+      (LineageServiceImpl.java:96). The repository consumes the raw int in the recursive
+      CTE termination `tDepth.lessThan(lineageDepth.getDepth())` (ReactiveLineageReposito
+      ryImpl.java:174). So `?d=10000` (or `Integer.MAX_VALUE` via direct API) drives the
+      recursive walk to graph-density / Postgres limits. Click-through compounds this:
+      Node.tsx:46-52 opens the clicked node's view with `d = node.depth`, so drilling 5
+      hops in then clicking opens a depth-5 fetch around the new root, and repeating
+      escalates depth without ever touching the slider.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LineageGraph
+        section: bugs_limitations_corner_cases[1] + security.known_security_gaps[2]
+        cite: "useQueryParams.ts:33-36 + constants.ts:97-99 + HierarchyLineage.tsx:47"
+        note: "Dropdown is [1..20] but URL accepts any int; no UI clamp; passed straight through."
+      - sidecar: odd-platform__java__service__service__LineageServiceImpl
+        section: bugs_limitations_corner_cases[2]
+        cite: "LineageServiceImpl.java:96"
+        note: "No defensive clamp at service tier; raw int handed to repo."
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveLineageRepositoryImpl
+        section: downstream_side_effects (getLineageRelations Set,depth,kind)
+        cite: "ReactiveLineageRepositoryImpl.java:122-176, 174"
+        note: "No LIMIT, no cycle clause, no depth cap inside the CTE; depth is the only terminator."
+    operator_visible_failure: |
+      A single user (or anonymous probe under DISABLED) can saturate Postgres CPU and JVM
+      heap by requesting a very large depth against a dense or cyclic subgraph — a
+      DoS-amplification vector with no rate limit and no defence at any tier. Combined
+      with the absence of a cycle guard (H-009), the cost is bounded only by the
+      depth value, which is itself unbounded. Operators cannot defend a small Postgres
+      instance without an external WAF/reverse-proxy rule; the 20-entry dropdown gives a
+      false sense that the platform enforces the cap.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-004
+  hypothesis: "When a user passes `expanded_entity_ids` to expand specific nodes inline, the parameter expands the named entities (one-hop fan-out around each), regardless of whether they are Data Entity Groups or ordinary entities — i.e. the parameter does what its name and the canvas's per-node Load-More affordance imply."
+  derivation: "The endpoint shape exposes `expanded_entity_ids` and the UI's per-node Load-More appends a node id to the expansion set; the parameter is a general per-entity progressive-expansion mechanism."
+  seed_source: endpoint-shape
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The IMPLEMENTATION does exactly the general thing the hypothesis predicts: the list
+      flows into getLineageRelationsForDepthOne which joins on `DATA_ENTITY.ID.in(rootIds)`
+      with NO group-class filter, producing a depth-1 fan-out around ANY entity id
+      (ReactiveLineageRepositoryImpl.java:134-148; LineageServiceImpl.md implicit_adrs[2]).
+      The DOCUMENTATION, however, narrows it incorrectly: the live api-reference says
+      `expanded_entity_ids` are "IDs of `Data Entity Group` entities that should be
+      expanded inline" (getDataEntityDownstreamLineage.md doc_drift[1]). So the hypothesis
+      is TRUE against the code and FALSE against the doc — a doc-vs-code drift where the
+      doc is the inaccurate artefact (the code is more permissive than documented). A
+      caller who trusts the doc and passes only DEG ids under-uses the feature; a caller
+      who passes ordinary entity ids sees "unexpected" extra nodes the doc did not lead
+      them to expect (though the call does not fail).
+    evidence:
+      - sidecar: odd-platform__java__service__service__LineageServiceImpl
+        section: implicit_adrs (two-query lineage assembly) + docs_link_semantic.doc_drift_findings[1]
+        cite: "LineageServiceImpl.java:98-99 + ReactiveLineageRepositoryImpl.java:134-148"
+        note: "Depth-1 fan-out joins DATA_ENTITY.ID.in(rootIds) with no entity-class filter — any id, not only DEGs."
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getDataEntityDownstreamLineage
+        section: docs_link_semantic.doc_drift_findings[1]
+        cite: "DataEntityController.java:258 + WebFetch api-reference excerpt"
+        note: "Doc narrows the parameter to 'Data Entity Group entities'; code accepts any id."
+    operator_visible_failure: |
+      The drift is in the documentation, not the runtime, so the operator harm is
+      moderate: a third-party API consumer reading the api-reference is told the parameter
+      only accepts DEG ids and may build tooling that never expands ordinary entities,
+      missing a usable capability; or passes a non-DEG id and is surprised to receive a
+      well-formed response with extra nodes. The behaviour is more permissive than the
+      contract, so nothing crashes — but the contract is wrong.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: doc-gap-candidate
+
+- id: H-005
+  hypothesis: "When an entity is part of a Data Entity Group and the user opens the Group lineage view, the graph shows the group's members AND how they connect to their real upstream producers and downstream consumers — so the user sees the group's place in the overall data flow."
+  derivation: "A DEG groups related entities (e.g. a 'Finance' group of datasets and jobs); a lineage view of that group is expected to show how the group connects to the rest of the catalogue, which is the point of grouping for observability."
+  seed_source: view-mode
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The DEG-lineage view shows ONLY edges where BOTH endpoints are members of the group.
+      getDataEntityGroupLineage resolves the member oddrn set, then reads edges via
+      getLineageRelations(List<String>) whose filter is
+      `PARENT_ODDRN.in(oddrns).AND(CHILD_ODDRN.in(oddrns))`
+      (ReactiveLineageRepositoryImpl.java:112-119; ReactiveLineageRepositoryImpl.md
+      invariants — "only edges where BOTH endpoints are DEG members appear; edges exiting
+      the DEG (member→non-member) and entering it (non-member→member) are dropped"). The
+      service additionally strips any edge touching a nested DEG and removes DEG-typed
+      entries from the dictionary (LineageServiceImpl.java:71-75, the
+      `// Remove this when we will support inner DEGs` deferred-feature marker). The result
+      is an INTERNAL-ONLY graph: a group's members and the edges among them, with the
+      group rendered as an island disconnected from its actual producers and consumers.
+    evidence:
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveLineageRepositoryImpl
+        section: downstream_side_effects (getLineageRelations List) + invariants
+        cite: "ReactiveLineageRepositoryImpl.java:112-119"
+        note: "BOTH-endpoints-in-member-set filter; cross-boundary edges are dropped."
+      - sidecar: odd-platform__java__DataEntityController__controller-method__getDataEntityGroupsLineage
+        section: invariants (DEG-internal edge filter is BIDIRECTIONAL)
+        cite: "LineageServiceImpl.java:59-85 + ReactiveLineageRepositoryImpl.java:112-119"
+        note: "Confirms the inter-member-only contract; the endpoint has no lineage_depth/expanded_entity_ids."
+      - sidecar: odd-platform__java__service__service__LineageServiceImpl
+        section: implicit_adrs (DEG-lineage is INNER-DEG-FREE)
+        cite: "LineageServiceImpl.java:71-75"
+        note: "Inner-DEG suppression also strips nested-DEG edges — flat member graph only."
+    operator_visible_failure: |
+      A user opening Group lineage for, say, a 'Finance' DEG that ingests from a
+      'Raw events' dataset (owned by Data Engineering) and feeds a BI dashboard sees
+      NEITHER the raw-events producer NOR the BI consumer — only the edges between the
+      Finance group's own members. For observability ("where does this group's data come
+      from / go to?") this is the opposite of useful: the group looks self-contained when
+      it is not. The behaviour is undocumented at the user-facing level — the data-objects
+      page describes group lineage as "lineage for the group's children" without warning
+      that boundary edges are excluded. This is distinct from the DEG empty/404 and
+      cross-owner caveats already tracked (PLT-036 / DOC-225); it concerns which edges are
+      shown, not error polarity or auth.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-006
+  hypothesis: "When a user clicks a node's title in the lineage canvas, the platform opens that node's own lineage view at the same depth the user had selected — a consistent, predictable navigation."
+  derivation: "Click-to-navigate is a standard canvas affordance; a senior product owner expects navigation to preserve the user's chosen view settings (depth) rather than silently change them — consistency across the platform's drill-downs."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Click-through does NOT preserve the user's selected depth; it overrides `d` with the
+      CLICKED NODE'S depth. Node.tsx:46-52 builds the new URL from
+      `useQueryParams({...defaultLineageQuery, d: node.depth || 1})`, so clicking a node
+      rendered 5 hops out from the root opens the new view with `d=5` (LineageGraph.md
+      implicit_adrs[4]). Drilling deeper compounds: drill 5 → click → depth-5 fetch around
+      the new root → drill 5 more → click → depth-5 again. The depth the user explicitly
+      chose in the dropdown is discarded on every click-through.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LineageGraph
+        section: implicit_adrs[4] + upstream_callers (Node click handler)
+        cite: "Node.tsx:46-52, 49-52"
+        note: "d = node.depth || 1 deliberately overwrites the parent view's d on click-through."
+    operator_visible_failure: |
+      Two consequences. (1) UX inconsistency: a user who set depth=2 to keep the graph
+      readable finds the depth silently jumps when they click into a deep node, producing a
+      much larger graph than they intended. (2) Cost compounding: because there is no upper
+      bound (H-003), repeated click-through drilling can escalate the effective depth and
+      trigger increasingly expensive recursive-CTE walks without the user ever touching the
+      slider — a casual click-path becomes a backend-cost-amplification path. The behaviour
+      is undocumented.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-007
+  hypothesis: "When a microservice entity's Lineage tab is opened, the user gets a microservices-specific view (service/operation names, call topology) distinct from ordinary data-object lineage, as the feature documentation's separate 'microservices lineage' framing implies."
+  derivation: "system-mission.md P-05 names microservices lineage as a distinct surface ('microservices traced through OpenTelemetry'); the live doc names a separate 'microservices view'."
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      There is no microservices-specific rendering. The dispatcher only special-cases DEGs
+      (isDEG); microservices are not DEGs, so they route to the SAME HierarchyLineage
+      canvas as datasets and transformers, hitting the SAME `/lineage/downstream` +
+      `/upstream` endpoints (Lineage.md bugs[2] — no microservice branch, selectors check
+      only ENTITY_GROUP; LineageGraph.md bugs[7] — no mode prop, no `?ms=` param). Every
+      HierarchyLineage caveat (diamond amplification, no depth cap, cross-owner
+      enumeration, click-compounds-depth) applies identically. Microservice-specific
+      payload fields (operation names, trace timing, call cardinalities), if present, are
+      silently dropped at the response DTO — the canvas has no place to render them.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Lineage
+        section: bugs_limitations_corner_cases[2] + docs_link_semantic.doc_drift_findings[1]
+        cite: "Lineage.tsx:14 + dataentity.selectors.ts:43-45"
+        note: "Only ENTITY_GROUP triggers a distinct branch; microservices route to HierarchyLineage identically."
+      - sidecar: odd-platform__ts__react-component__component__LineageGraph
+        section: bugs_limitations_corner_cases[7]
+        cite: "Lineage.tsx:12-26 (only DEG branch special) + absence of any microservice literal"
+        note: "No mode toggle; microservices treated identically; microservice-specific fields not rendered."
+    operator_visible_failure: |
+      An SRE opening a microservice's Lineage tab expecting a service-call view sees a
+      generic data-object graph; any operational telemetry the trace carried that is not
+      part of the generic DataEntityRef is not shown. The doc's separate naming of a
+      "microservices view" sets an expectation the UI does not meet. (Note: the broader
+      doc-side gap here — cross-owner exposure amplified on microservice topology — is
+      already tracked at DOC-226; this hypothesis records the missing class-aware
+      rendering, which is the UX half.)
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-008
+  hypothesis: "When an entity D is reachable from the root via two different paths (a diamond: root→B→D and root→C→D), the canvas shows D once — a single node with two incoming edges — so the user sees the true shape of the graph."
+  derivation: "A lineage graph is a DAG; a user reasoning about 'what feeds D' expects D to appear once with its multiple inputs converging, not duplicated."
+  seed_source: response-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      D is rendered TWICE. The canvas builds a d3-hierarchy TREE (not a DAG):
+      hierarchy(root, childAccessor) recursively visits children from each node with no
+      visited-set check, so a node reachable via two paths yields two distinct
+      HierarchyPointNode instances at different positions; React keys use `node.x${node.y}`
+      so React mounts both SVG nodes (LineageGraph.md bugs[0] + implicit_adrs[2];
+      generateGraph.ts:68-76, 108-116; LineageGraph.tsx:84-110). This amplifies the backend
+      diamond behaviour (the recursive CTE materialises duplicate intermediate rows before
+      the outer selectDistinct dedupes — ReactiveLineageRepositoryImpl.md downstream_side_
+      effects) into the visual layer: a depth-D diamond with branching B renders all the
+      duplicated instances. The choice is deliberate (tree layout for determinism, with
+      cross-edges as an overlay) but the user-visible effect contradicts the single-node
+      expectation.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LineageGraph
+        section: bugs_limitations_corner_cases[0] + implicit_adrs[2]
+        cite: "generateGraph.ts:68-76, 108-116 + LineageGraph.tsx:84-110, 91"
+        note: "d3-hierarchy tree with no visited-set; diamond node duplicated; distinct React keys mount both."
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveLineageRepositoryImpl
+        section: downstream_side_effects (getLineageRelations Set,depth,kind)
+        cite: "ReactiveLineageRepositoryImpl.java:122-131, 163-175"
+        note: "Backend CTE materialises duplicate intermediate rows; outer selectDistinct dedupes pairs but cost is paid."
+    operator_visible_failure: |
+      (1) Misleading topology: a user tracing convergence ("which sources feed D?") sees D
+      appear in multiple places and may mis-count or mis-read the graph; the convergence
+      structure is obscured rather than shown. (2) Render-cost amplification: diamond-heavy
+      graphs mount duplicate SVG subtrees, doubling render work and worsening the
+      no-virtualisation cost on large graphs. The behaviour is undocumented at the
+      user-facing level (the data-lineage page does not mention diamond duplication).
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-009
+  hypothesis: "When the lineage graph contains a cycle (e.g. A→B→A, a transformer consuming its own downstream artefact), opening the canvas terminates quickly and renders a bounded graph — it does not hang or spike the database."
+  derivation: "Real lineage graphs can contain cycles; an observability tool must handle them gracefully (visited-set, Postgres WITH...CYCLE, or a depth bound) rather than degrade."
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      Statically, the recursive CTE has NO cycle guard: the body is UNION ALL with no
+      visited-set and no Postgres `WITH ... CYCLE` clause; termination is solely
+      `tDepth.lessThan(lineageDepth.getDepth())` (ReactiveLineageRepositoryImpl.md
+      bugs/invariants; lines 168, 174). So a cycle terminates only via the depth bound —
+      which is itself unbounded (H-003). The static reading says: with a bounded depth the
+      walk terminates but materialises duplicated intermediate rows along the cycle; with a
+      large depth on a cyclic graph the intermediate row growth before termination is the
+      amplification surface. What is NOT known without running it: the actual wall-clock /
+      DB-CPU profile for a representative cycle at a representative depth (does it complete
+      in <5s on the minimal stack, or does it spike Postgres CPU?). That dynamic question
+      is the load-bearing one for the user-facing claim and requires a probe.
+    evidence:
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveLineageRepositoryImpl
+        section: downstream_side_effects (lineageCte) + invariants
+        cite: "ReactiveLineageRepositoryImpl.java:150-176 (UNION ALL, no CYCLE clause, no visited-set)"
+        note: "Static confirmation of no cycle guard; runtime cost profile unmeasured."
+      - sidecar: odd-platform__java__service__service__LineageServiceImpl
+        section: tests_coverage_semantic.uncovered_behaviours
+        cite: "LineageServiceImpl.java:87-122 (no cyclic-graph test exists)"
+        note: "No integration test seeds a cycle; behaviour is structurally unpinned."
+    operator_visible_failure: |
+      If the probe confirms a spike: a cyclic subgraph + a moderately-large depth can hang
+      the canvas open and saturate Postgres CPU, degrading the platform for all users
+      (amplified under DISABLED by anonymous reachability). Even at bounded depth the user
+      sees duplicated nodes along the cycle (the diamond mechanism of H-008 applies to
+      cycles too). The probe pins the wall-clock/CPU behaviour from the operator's seat.
+    severity: HIGH
+    confidence: MEDIUM
+    probe_id: P-226
+    routes_to_finding: bug-candidate
+
+- id: H-010
+  hypothesis: "When a user progressively expands many nodes via 'Load N more' during a long lineage-exploration session, the canvas lets them collapse expansions back, or otherwise bounds memory — the view does not grow without limit until the page is left."
+  derivation: "Progressive disclosure UIs normally let the user undo an expansion; a senior product owner expects a 'collapse' affordance and bounded client memory for a long session."
+  seed_source: ui-label
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      Statically: the slice MERGES new nodes monotonically — `if
+      (!localDownstreamState.nodeIds.has(node.id)) allNodes.push(node)` — with no
+      remove-expansion action, no LRU eviction, no max-size cap; the LoadMore button hides
+      itself after click but the underlying data stays; the accumulators are module-level
+      mutable globals reset only on root-entity navigation (LineageGraph.md bugs[3] +
+      implicit_adrs[5]; dataEntityLineage.slice.ts:30-48, 206-220, 281-282). There is no
+      collapse affordance. So the hypothesis is statically FALSE on the "collapse" half.
+      What needs a probe is the "bounds memory" half: how much heap / DOM does a realistic
+      long session (e.g. 100 LoadMore clicks on leaves of a 10K-node graph) actually
+      accumulate, and at what point does the no-virtualisation SVG render degrade the
+      browser frame budget? That is a runtime/perf measurement, not derivable from the
+      sidecars.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LineageGraph
+        section: bugs_limitations_corner_cases[3] + implicit_adrs[5]
+        cite: "dataEntityLineage.slice.ts:30-48, 206-220, 285-299 + LoadMoreButton.tsx:55-65"
+        note: "Monotonic accumulation, no collapse/eviction/cap; module-level globals opaque to DevTools."
+    operator_visible_failure: |
+      No collapse affordance is a definite UX gap (a user who over-expands cannot tidy the
+      view without reloading). The probe quantifies the memory/render degradation of a long
+      session — if it confirms unbounded growth to a browser-stalling size, that is a
+      reliability issue for power users tracing large graphs over a long sitting.
+    severity: MEDIUM
+    confidence: MEDIUM
+    probe_id: P-225
+    routes_to_finding: caveat-candidate
+
+- id: H-011
+  hypothesis: "When a user shares the URL of a lineage view they have explored (specific depth, expansions, zoom), the recipient opening that URL sees the same view — the lineage canvas is shareable/deep-linkable."
+  derivation: "URL-as-state is a recognised collaboration affordance; the control set (depth, expansion arrays, transform matrix) is all in the query string."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The canvas state IS in the URL and IS shareable. Depth `d`, full-names `fn`,
+      view-mode `full`, expand-all-groups `eag`, the four expansion-id arrays
+      (`exd`/`exu`/`exdg`/`exug`), and the zoom transform matrix `t` all live in the query
+      string and are written via setQueryParams; opening the URL replays the view
+      (LineageGraph.md implicit_adrs[1] — URL is the source of truth, interfaces.ts:75-85;
+      ZoomableLineage persists the matrix to `?t=` on mouseleave). Two CAVEATS bound the
+      confirmation: (a) URL length — Chrome's ~2K effective limit is hit after ~200
+      expansions, so very-heavily-explored views do not fully round-trip (LineageGraph.md
+      scaling_characteristics); (b) a malformed `?t=` is JSON.parsed with no try/catch and
+      crashes the tree (LineageGraph.md security.known_security_gaps[4]).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__LineageGraph
+        section: implicit_adrs[1] + performance.scaling_characteristics
+        cite: "interfaces.ts:75-85 + setQueryParams across 4 components + ZoomableLineage.tsx:28-31"
+        note: "All view state in URL; deep-linking works; bounded by URL length + unguarded ?t= parse."
+    operator_visible_failure: |
+      N/A for the core claim (confirmed). The two caveats — silent truncation of very
+      large exploration states and a crash on a hand-corrupted `?t=` — are minor edge
+      conditions a power user could hit; both are undocumented.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-012
+  hypothesis: "When a user requests dataset structure by version through the same data-entity/dataset detail surface, the version they receive belongs to the dataset named in the URL — `GET /api/datasets/{id}/structure/{versionId}` returns {id}'s structure, not some other dataset's."
+  derivation: "The path `/api/datasets/{data_entity_id}/structure/{version_id}` names the dataset; a user reasoning about 'this dataset's schema history' expects the response to be scoped to that dataset. (Cross-surface extension of F-005's per-entity-scoping class to the dataset-structure read surface, per F-005 batch-W.)"
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The `data_entity_id` path component is consumed but never enforced. The by-version-id
+      lookup filters `WHERE DATASET_VERSION.ID = datasetVersionId` only
+      (ReactiveDatasetVersionRepositoryImpl.java:129); the `datasetId` argument is used only
+      in the NotFoundException message text. A request to
+      `GET /api/datasets/{anyId}/structure/{validVersionIdForAnotherDataset}` returns the
+      OTHER dataset's structure. The diff endpoint has the same defect (filters
+      `DATASET_VERSION.ID IN (first, second)` only — cross-dataset diff is possible). No
+      SecurityRule covers these paths; they fall through to authentication-only
+      (DataSetController.md understanding + invariants; F-005.yaml batch-W facets). This is
+      the same per-entity-scoping bypass class as the lineage cross-owner finding, on the
+      dataset-structure surface.
+    evidence:
+      - sidecar: odd-platform__java__DataSetController__controller-class__DataSetController
+        section: understanding + invariants (Category F drift)
+        cite: "ReactiveDatasetVersionRepositoryImpl.java:129, 154 + DatasetVersionServiceImpl.java:39-45"
+        note: "data_entity_id consumed but never re-checked against the version id; by-version and diff both affected."
+    operator_visible_failure: |
+      (1) Cross-dataset read: any authenticated user (anonymous under DISABLED) can read any
+      dataset's full schema (field names, types, descriptions, tags, terms) by guessing a
+      version id, regardless of the dataset id in the URL. (2) The Compare/diff surface — a
+      TRUSTED audit surface for "what changed between V1 and V2" — can be fed two version
+      ids from different datasets and returns a well-formed but nonsensical cross-dataset
+      diff, misleading an operator reasoning about schema change. This is the dataset-side
+      realisation of the same per-entity-scoping bypass that H-002 finds on lineage.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-001
+  severity: HIGH
+  one_line: "Unset lineage_depth: direct API caller gets NPE→HTTP 500 (documented 'default depth' unimplementable); UI silently sends d=1."
+  dedup_status: already_tracked
+  tracked_as: PLT-100
+  proposed_fix_anchor: "Backend @RequestParam(defaultValue=) or service-tier default on LineageServiceImpl.getLineage; remove UI hardcoded d=1 override. Doc caveat already shipped at DOC-293."
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: "Lineage canvas returns full cross-owner subgraph for any authenticated user (anonymous under DISABLED); no owner scoping or SecurityRule on any lineage read."
+  dedup_status: already_tracked
+  tracked_as: PLT-100
+  proposed_fix_anchor: "Apply anchor-set scoping (fetchAssociatedOwner) or JOIN-side owner filter to the canvas path; SecurityConstants entry. Doc caveat shipped at DOC-293 / DOC-226."
+- hypothesis_id: H-003
+  severity: HIGH
+  one_line: "No depth upper-bound at any of 5 layers; ?d=10000 (or click-through-compounded depth) drives an unbounded recursive CTE — DoS amplification."
+  dedup_status: already_tracked
+  tracked_as: PLT-042
+  distinct_from: PLT-100
+  proposed_fix_anchor: "PLT-042 already scopes the defence-in-depth fix (controller @Max(20) + UI click-through Math.min clamp). Distinct from PLT-100 which covers the NPE+auth; PLT-042 covers the upper-bound/click-through amplification specifically."
+- hypothesis_id: H-009
+  severity: HIGH
+  one_line: "Recursive CTE has no cycle guard; cyclic graph + large depth is a runtime CPU-spike question requiring a probe."
+  dedup_status: already_tracked
+  tracked_as: PLT-042
+  distinct_from: PLT-100
+  proposed_fix_anchor: "Cycle guard (Postgres WITH...CYCLE or visited-set) at ReactiveLineageRepositoryImpl.lineageCte; pairs with the depth-cap fix in PLT-042. Probe P-226 pins the runtime profile."
+- hypothesis_id: H-012
+  severity: HIGH
+  one_line: "GET /api/datasets/{id}/structure/{versionId} ignores the dataset id — returns any dataset's structure by version id; diff allows cross-dataset diff; no SecurityRule."
+  dedup_status: already_tracked
+  tracked_as: PLT-028
+  proposed_fix_anchor: "Validate version belongs to dataset at ReactiveDatasetVersionRepositoryImpl.java:129/154 (add data_entity_id predicate). PLT-028 Defect 1 + Defect 2 already scope this."
+
+### caveat_candidates
+- hypothesis_id: H-005
+  one_line: "DEG (Group) lineage shows ONLY edges between members; producers/consumers outside the group are silently dropped, so a group looks like an island."
+  dedup_status: net_new
+  distinct_from: DOC-225
+  recommended_log_as: "doc-gap (data-lineage/data-objects.md + api-reference/lineage.md DEG entry) — distinct from DOC-225 (which covers empty-DEG 404, parameter-absence, cross-owner posture) by naming the boundary-edge-drop behaviour; AND a backlog bug-or-doc decision on whether boundary edges SHOULD be shown"
+- hypothesis_id: H-006
+  one_line: "Click-through on a node title silently overrides the user's chosen depth with the clicked node's depth (d = node.depth), compounding depth as the user drills in."
+  dedup_status: net_new
+  recommended_log_as: "doc-gap (data-lineage/data-objects.md click-through behaviour) OR a UX backlog item to preserve user-selected depth on click-through"
+- hypothesis_id: H-007
+  one_line: "Microservices route to the same generic HierarchyLineage canvas as datasets; no class-aware view; microservice-specific trace fields silently dropped."
+  dedup_status: already_tracked
+  tracked_as: DOC-226
+  recommended_log_as: "DOC-226 covers the microservices page (cross-owner amplification + payload-fields-dropped). The missing class-aware RENDERING is the UX half; corroborates DOC-226's payload-fields-dropped facet."
+- hypothesis_id: H-008
+  one_line: "Diamond-reachable node D renders twice (d3-hierarchy tree, no visited-set); convergence topology obscured + render-cost amplified."
+  dedup_status: net_new
+  recommended_log_as: "doc-gap (data-lineage page — diamond/cycle visualisation behaviour undocumented) OR a UI backlog item for DAG-aware dedupe in generateTree"
+- hypothesis_id: H-010
+  one_line: "LoadMore accumulates nodes monotonically with no collapse affordance/eviction/cap; long sessions grow client memory until navigation."
+  dedup_status: net_new
+  recommended_log_as: "UX/perf backlog item (collapse-this-branch affordance OR LRU eviction in dataEntityLineage.slice) — pending P-225 memory measurement"
+- hypothesis_id: H-011
+  one_line: "Share-link round-trips correctly but truncates silently past ~2K URL chars (~200 expansions) and crashes on a malformed ?t= (JSON.parse no try/catch)."
+  dedup_status: net_new
+  recommended_log_as: "small backlog item — try/catch on ?t= parse + graceful degradation past URL-length threshold; doc the share-link state-capture intent"
+
+### probes_emitted
+- probe_id: P-226
+  hypothesis_id: H-009
+  probe_path: "lineage/odd-platform/probes/P-226.yaml"
+- probe_id: P-225
+  hypothesis_id: H-010
+  probe_path: "lineage/odd-platform/probes/P-225.yaml"
+
+### validation_gaps
+- sidecar: odd-platform__java__DataSetController__controller-class__DataSetController
+  field_insufficient: "understanding/invariants stop at the by-version-id and diff per-entity-scoping bypass; the sidecar does not state whether the RelationshipsService relationships endpoint (the 4th GET) re-checks data_entity_id"
+  proposed_refresh: "Next file-analyser refresh of DataSetController should confirm whether getDataEntityRelationships enforces the data_entity_id path component or shares the same Category F drift, so H-012's blast radius across all four GETs is fully pinned."
+
+### doc_drift_findings
+- hypothesis_id: H-001
+  doc_url: "https://docs.opendatadiscovery.org/developer-guides/api-reference/lineage"
+  doc_says: "lineage_depth — 'Unset returns the platform's default depth.'"
+  code_does: "No default exists; null Integer→int autoboxing throws NPE→HTTP 500 for direct callers; UI silently sends d=1."
+  recommended_log_as: "already shipped at DOC-293 (status done) — cross-link only, no new doc-gap"
+- hypothesis_id: H-004
+  doc_url: "https://docs.opendatadiscovery.org/developer-guides/api-reference/lineage"
+  doc_says: "expanded_entity_ids — 'IDs of Data Entity Group entities that should be expanded inline.'"
+  code_does: "Accepts ANY data-entity id (depth-1 fan-out joins DATA_ENTITY.ID.in(rootIds) with no group-class filter); the narrowing to DEG ids is inaccurate."
+  recommended_log_as: "doc-gap (api-reference/lineage.md) — net_new accuracy fix; DOC-087 noted the content should MOVE to the canonical home but did not flag the description as inaccurate; DOC-225 facet 2 concerns the DEG endpoint's parameter-ABSENCE, not the per-entity parameter's accepted-id-set"
+
+## maintainer_notes
+
+(empty — first reflection of this feature; reserved for maintainer prose that should survive refresh)

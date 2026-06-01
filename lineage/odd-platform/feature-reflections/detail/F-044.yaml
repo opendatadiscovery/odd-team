@@ -1,0 +1,781 @@
+---
+feature_id: F-044
+pillar_anchored_id: P-01:F-008
+pillar: P-01 Data Discovery (Data Entity Statuses sub-feature) — depends on P-08 Management/Housekeeping TTL
+feature_name: |-
+  Data Entity Status Lifecycle — scheduled DRAFT/DEPRECATED → DELETED
+  auto-flip on operator-set switch time, paired with the documented
+  30-day soft-delete retention window that depends on
+  `status_updated_at` being set on every transition
+reflected_at: 2026-06-01T00:00:00Z
+reflected_at_commit: 43d13eb
+prompt_version: feature-reflector/0.2.0
+contributing_sidecars_read:
+  - odd-platform__java__DataEntityController__controller-method__updateStatus.md
+  - odd-platform__java__service__service__HousekeepingJobManager.md
+  - odd-platform__java__org_opendatadiscovery_oddplatform_housekeeping_config__config-properties-class__HousekeepingTTLProperties.md
+  - odd-platform__java__repository_reactive__repository__ReactiveDataEntityRepositoryImpl.md (partial — status-switch + soft-delete sections)
+sidecars_missing_from_chain:
+  # These contributing_nodes have NO sidecar on disk; the feature-flow chain marks
+  # every hop `sidecar: unresolved`. Validation for hops 1/3/4/5 was done via the
+  # Rule-8 single-line source-read exception, recorded per-verdict.
+  - "scheduling:DataEntityStatusSwitchJob — NO sidecar (the scheduler entry-point; hop 1)"
+  - "service:internal:DataEntityInternalStateServiceImpl — NO sidecar (the shared service path; hop 3)"
+  - "mapper:DataEntityMapperImpl — NO sidecar (the SHB-004 bug locus; hop 4)"
+  - "scheduling:DataEntityHousekeepingJob — NO standalone sidecar; covered indirectly by HousekeepingJobManager + HousekeepingTTLProperties (hop 5)"
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-discovery/statuses"
+    last_verified_at: "2026-06-01T00:00:00Z"
+    last_verified_status: 200
+    note: |-
+      Live page NOW renders TWO "Known limitation" admonitions verbatim (a DANGER
+      admonition for the SHB-004 status_updated_at defect breaking the 30-day TTL,
+      and a WARNING for the no-LIMIT auto-flip batch cap / cadence drift). The doc
+      has caught up to the code reality via DOC-191 (status: done, commit a5f7e5a,
+      live-verified 2026-05-28). The code is STILL wrong-as-shipped; the doc now
+      honestly documents the bug. This shifts the headline contradictions from
+      "doc lies" to "feature is broken and the doc says so" — the contradictions
+      are against the OPERATOR'S MENTAL MODEL / the feature's intrinsic promise,
+      not against the (now-corrected) doc.
+hypothesis_summary:
+  total: 12
+  confirmed: 4
+  contradicted: 5
+  partial: 2
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: |-
+      An entity auto-flipped (or manually PUT) to DELETED is NEVER hard-deleted
+      after 30 days — `status_updated_at` is left NULL by the applyStatus mapper
+      bug, so the housekeeping TTL predicate never matches; the soft-delete is
+      permanent, the table grows unbounded, and the documented retention is false.
+related_feature_flows:
+  - F-001   # Detail-page view tracking — view_count is the OTHER scheduled column; isStale bridges
+  - F-010   # Housekeeping TTL Enforcement (P-08:F-002) — the DOWNSTREAM job depending on status_updated_at
+  - F-027   # Attachment Lifecycle — retention/expiry interactions via the soft-delete cascade (.block() on S3)
+related_concepts:
+  - data-entity-status
+  - housekeeping-ttl-retention
+  - soft-delete-is-the-platforms-deletion-model
+  - "TTL retention broken by statusUpdatedAt nullification (cross-batch finding D + F)"
+related_drift_classes:
+  - status_updated_at_never_set_breaks_30_day_ttl
+  - scheduled_auto_flip_no_per_tick_batch_cap
+  - scheduled_auto_flip_silently_breaks_housekeeping_via_shb_004
+  - shared_service_path_manual_put_and_auto_flip_share_mapper_bug
+  - no_operator_peek_endpoint_for_scheduled_transitions
+  - cadence_lock_window_undocumented
+new_drift_classes_proposed:
+  - restore_from_deleted_also_leaves_status_updated_at_null   # the restore path inherits the same applyStatus bug (negative-space H-008)
+  - auto_flip_actor_is_system_principal_no_attribution        # who-deleted-this is unanswerable for scheduled flips (negative-space H-011)
+---
+
+# Data Entity Status Lifecycle — product-owner reflection
+
+## product_owner_narrative
+
+The Data Entity Status Lifecycle is the catalog-hygiene surface of Data Discovery
+(pillar P-01): it lets an operator mark any catalogued entity with one of five
+lifecycle states — `UNASSIGNED`, `DRAFT`, `STABLE`, `DEPRECATED`, `DELETED` — and,
+for the two "transitional" states (`DRAFT`, `DEPRECATED`), schedule an automatic
+flip to `DELETED` at an operator-chosen `status_switch_time` (per
+updateStatus.md:concepts + WebFetch statuses 2026-06-01). The promise to the
+operator is a **two-stage retirement pipeline**: stage one, the entity flips to
+`DELETED` (a soft delete that hides it from default views and cascades through
+lineage, group relations, statistics, and attachments); stage two, after a 30-day
+grace window, the housekeeping job permanently hard-deletes the row and everything
+attached to it (per HousekeepingTTLProperties.md:concepts.invariants + WebFetch
+verbatim "permanently deletes a `DELETED` entity ... only after ... 30 days").
+The mental model the product sells is "deprecate, give downstream consumers a
+month, then it's gone and your storage is reclaimed."
+
+A user reaches this feature two ways. Interactively, an operator opens an entity's
+detail page, picks a status from a dropdown, and (for DRAFT/DEPRECATED) sets a
+switch time — this is `PUT /api/dataentities/{id}/statuses` carrying a
+`DataEntityStatusFormData` body (per updateStatus.md:understanding). Hands-off, the
+platform itself acts: `DataEntityStatusSwitchJob` fires every 10 minutes under a
+9-minute ShedLock, reads every entity whose `status_switch_time` has elapsed, and
+bulk-flips them to `DELETED` (DataEntityStatusSwitchJob.java:21-31,
+source_read_for_validation). Both paths are the SAME write path — they both route
+through `DataEntityInternalStateServiceImpl.changeStatusForDataEntities` →
+`DataEntityMapperImpl.applyStatus` (per updateStatus.md:dependencies_semantic +
+the F-044 chain hops 3-4). Whatever is true of one path is true of the other.
+
+The working parts the operator would see in a demo: a status dropdown with five
+options; a switch-time picker that appears for DRAFT and DEPRECATED; a soft-delete
+that cascades (so deleting a Data Entity Group with `propagate=true` deletes its
+members too — per updateStatus.md:implicit_adrs); a "deleted items" filter to find
+soft-deleted entities; and — invisibly — a background reaper that is supposed to
+sweep DELETED entities away 30 days later. The operator tunes the window with
+`housekeeping.ttl.data_entity_delete_days` (default 30, application.yml:170, per
+HousekeepingTTLProperties.md).
+
+This feature integrates tightly with three neighbours. It FEEDS the Housekeeping
+TTL Enforcement job (F-010 / P-08:F-002) — the downstream consumer that performs
+stage two and is the entire reason `status_updated_at` exists. It SHARES the
+soft-delete cascade with Attachment Lifecycle (F-027) — a hard-deleted entity's
+attachment files are removed via a reactive `.block()` inside the housekeeping
+transaction. And it is the lifecycle sibling of view-count tracking (F-001):
+`status_switch_time` and `view_count` are the two operator-or-system-mutated
+columns on `data_entity`, and the `isStale` indicator reads alongside status.
+
+Edge cases a senior product owner flags in the demo: what happens to a DELETED
+entity's audit trail when the deleting actor was the scheduler (not a human)?
+what happens on RESTORE (DELETED → STABLE) — does the clock reset cleanly? what
+does an operator see if 5,000 entities all mature in the same 10-minute window?
+and — the one that turns out to matter most — does the storage actually get
+reclaimed after 30 days, or does "soft delete" silently mean "delete forever"?
+The bottom-up substrate already answered the last one: it does not (per
+concepts.yaml "TTL retention broken by statusUpdatedAt nullification" cross-batch
+invariant). The hypotheses below trace each promise through the assembled chain.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |-
+    When an operator sets a `status_switch_time` on a DEPRECATED entity, the
+    scheduled job picks it up within at most ~10 minutes and flips the entity's
+    status to DELETED.
+  derivation: |-
+    Endpoint shape (`status_switch_time` body field on DRAFT/DEPRECATED) + pillar
+    primary action ("flag entity statuses ... auto-transition") + the
+    DataEntityStatusSwitchJob @Scheduled(fixedRate=10min) cadence.
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      DataEntityStatusSwitchJob.run() is annotated @Scheduled(fixedRate = 10,
+      timeUnit = MINUTES) with @SchedulerLock("statusSwitchJob"). It calls
+      getPojosForStatusSwitch() (rows whose STATUS_SWITCH_TIME has elapsed),
+      collectList, and on a non-empty set invokes changeStatusForDataEntities(
+      pojos, new DataEntityStatus(DELETED)). The flip to DELETED on elapsed
+      switch-time is exactly what the hypothesis predicts; worst-case latency is
+      one tick (≤10 min) plus job runtime.
+    evidence:
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveDataEntityRepositoryImpl.md
+        section: concepts (scheduled-batch-read) + upstream_callers
+        cite: "ReactiveDataEntityRepositoryImpl.java:256 (getPojosForStatusSwitch); upstream_callers: DataEntityStatusSwitchJob"
+        note: "the query selects rows whose STATUS_SWITCH_TIME has elapsed, consumed by the job"
+      - sidecar: source_read_for_validation
+        section: DataEntityStatusSwitchJob.run()
+        cite: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/job/DataEntityStatusSwitchJob.java:21-31"
+        note: "fixedRate=10min + flatMap to changeStatusForDataEntities(pojos, DELETED); confirms the auto-flip"
+    confidence: HIGH
+    routes_to_finding: none
+
+- id: H-002
+  hypothesis: |-
+    When an entity is flipped to DELETED (by the scheduler OR by a manual PUT), it
+    is permanently hard-deleted after the 30-day retention window
+    (housekeeping.ttl.data_entity_delete_days), reclaiming storage and removing
+    every cascading row — i.e. the documented two-stage retirement actually
+    completes stage two.
+  derivation: |-
+    Pillar mission ("soft-delete TTL") + the live doc's verbatim 30-day-then-
+    hard-delete promise + the existence of housekeeping.ttl.data_entity_delete_days
+    as a tunable retention knob.
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The hard-delete NEVER fires for any entity transitioned through this
+      feature. DataEntityMapperImpl.applyStatus (lines 247-251,
+      source_read_for_validation) executes `pojo.setStatus(statusDto.getId())` on
+      line 247 BEFORE the change-detection guard `if (statusDto.getId() !=
+      pojo.getStatus())` on line 249. At the guard, pojo.getStatus() already
+      equals the just-written value, so the condition is ALWAYS false and line 250
+      `pojo.setStatusUpdatedAt(DateTimeUtil.generateNow())` is unreachable. Every
+      status transition leaves status_updated_at NULL. The housekeeping reaper
+      (DataEntityHousekeepingJob.doHousekeeping, lines 73-78,
+      source_read_for_validation) selects `WHERE STATUS = DELETED AND
+      STATUS_UPDATED_AT.lessOrEqual(now - dataEntityDeleteDays)`. In SQL
+      three-valued logic, NULL <= cutoff evaluates to NULL (not TRUE), so every
+      NULL-timestamp row is silently excluded from the delete set. The soft-delete
+      is permanent; stage two never runs.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__updateStatus.md
+        section: bugs_limitations_corner_cases.[0]
+        cite: "DataEntityMapperImpl.java:242-253 + DataEntityHousekeepingJob.java:73-82"
+        note: "the sidecar pins the ordering bug + the NULL-exclusion mechanism as HIGH severity"
+      - sidecar: odd-platform__java__org_opendatadiscovery_oddplatform_housekeeping_config__config-properties-class__HousekeepingTTLProperties.md
+        section: dependencies_semantic.requires-feature + concepts.invariants
+        cite: "DataEntityHousekeepingJob.java:71-80 (TTL query keyed on STATUS_UPDATED_AT)"
+        note: "the TTL surface depends on STATUS_UPDATED_AT being maintained; this feature never maintains it"
+      - sidecar: source_read_for_validation
+        section: applyStatus + doHousekeeping
+        cite: "DataEntityMapperImpl.java:247-251 + DataEntityHousekeepingJob.java:73-78"
+        note: "verbatim confirmation of the always-false guard and the STATUS_UPDATED_AT.lessOrEqual predicate"
+    operator_visible_failure: |-
+      (1) Storage never reclaimed: `SELECT count(*) FROM data_entity WHERE status
+      = 'DELETED'` grows monotonically and never drops; the table and its ~25
+      cascading child tables grow unbounded. (2) Compliance violation: an operator
+      under a "delete records 30 days after retire" policy who trusts the doc
+      silently violates it — legal exposure. (3) Skewed analytics: DELETED entities
+      remain FK-referenced and counted in statistics rollups / Catalog Overview
+      tile counts (zombie rows). (4) Re-ingestion hazard: re-creating an entity at
+      a previously-DELETED oddrn hits FK paths that should have been cleared. The
+      failure is invisible until the operator runs the count query by hand — there
+      is no UI signal, no metric, no log at production level.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-003
+  hypothesis: |-
+    The same retention promise holds for an entity an operator manually PUTs to
+    DELETED via the entity detail page (not just for scheduler-flipped entities) —
+    a human-initiated delete is reclaimed after 30 days.
+  derivation: |-
+    Endpoint shape (`PUT /api/dataentities/{id}/statuses` body target = DELETED) +
+    the shared-service-path observation (manual + scheduler route through the same
+    mapper).
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      Identical to H-002 — the manual PUT path and the scheduler path both call
+      DataEntityInternalStateServiceImpl.changeStatusForDataEntities →
+      DataEntityMapperImpl.applyStatus (per updateStatus.md:dependencies_semantic
+      requires-feature + the F-044 chain hops 3-4). The applyStatus ordering bug
+      affects BOTH paths uniformly; a human clicking "Delete" leaves
+      status_updated_at NULL just as the scheduler does. Verification on either
+      side confirms the other (drift_class shared_service_path_*).
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__updateStatus.md
+        section: dependencies_semantic.requires-feature + understanding
+        cite: "DataEntityController.java:193-200 → DataEntityServiceImpl.updateStatus → DataEntityInternalStateServiceImpl.changeStatusForDataEntities → DataEntityMapper.applyStatus"
+        note: "manual PUT routes through the identical mapper as the scheduled job"
+      - sidecar: source_read_for_validation
+        section: applyStatus
+        cite: "DataEntityMapperImpl.java:247-251"
+        note: "single bug locus shared by both entry points"
+    operator_visible_failure: |-
+      An operator who manually deletes an entity expecting it gone in 30 days has
+      the same outcome as H-002: it persists forever. This DOUBLES the blast radius
+      — the bug is not confined to the (rarer) scheduled-flip path; it is on the
+      everyday "operator clicks Delete" path too. The cascade fires (the entity
+      disappears from default views immediately), which makes the operator believe
+      the delete worked; the storage-reclamation half silently never happens.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-004
+  hypothesis: |-
+    When a large backlog of entities matures in the same window (e.g. 5,000
+    entities with status_switch_time all elapsing within one hour), each tick
+    processes a bounded batch so the job completes inside its 9-minute ShedLock
+    window and the next tick is not skipped.
+  derivation: |-
+    Negative-space (a reasonable operator expectation that a scheduled reaper is
+    burst-safe) + the getPojosForStatusSwitch query shape + the 9-minute lock
+    window vs 10-minute cadence.
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |-
+      getPojosForStatusSwitch returns ALL eligible pojos with NO LIMIT and the job
+      collectList()s the entire set into one transaction
+      (ReactiveDataEntityRepositoryImpl.md:concepts scheduled-batch-read +
+      DataEntityStatusSwitchJob.java:26-30, source_read_for_validation — no .take(N),
+      no chunking). Statically, a 5K-entity backlog × the 3-7-write soft-delete
+      cascade per entity runs as a single bulk flip. Whether that EXCEEDS the
+      9-minute lockAtMostFor window (releasing the lock and letting the next tick
+      acquire / skip, producing phantom-double-tick latency) depends on real DB
+      latency, cascade fan-out, and machine — it cannot be settled by reading. The
+      no-cap STRUCTURE is confirmed; the timing OUTCOME requires running it.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__updateStatus.md
+        section: performance.known_performance_gaps.[2]
+        cite: "ReactiveDataEntityRepositoryImpl.java:256-262 (no LIMIT) + DataEntityStatusSwitchJob.java:21-30 (no chunking)"
+        note: "the sidecar flags 'potentially exceeding the 9-minute lock window' as MEDIUM but does not measure it"
+      - sidecar: source_read_for_validation
+        section: DataEntityStatusSwitchJob.run()
+        cite: "odd-platform-api/src/main/java/org/opendatadiscovery/oddplatform/service/job/DataEntityStatusSwitchJob.java:26-30"
+        note: "collectList() on the full unbounded result — confirms no per-tick cap"
+    operator_visible_failure: |-
+      If a tick exceeds 9 minutes: the ShedLock releases before commit, the next
+      10-minute tick may acquire mid-commit (undefined cross-instance state in a
+      multi-replica deployment) or skip; auto-flip latency for the tail of a large
+      backlog degrades unpredictably; and combined with H-002, the burst produces
+      a wave of DELETED-forever rows. Severity is MEDIUM (latency + multi-instance
+      race), not HIGH, because it requires a large synchronized backlog.
+    severity: MEDIUM
+    confidence: MEDIUM
+    probe_id: P-390
+    routes_to_finding: caveat-candidate
+
+- id: H-005
+  hypothesis: |-
+    When an operator deletes a Data Entity Group with `propagate=true`, every
+    member entity is also flipped to DELETED (the group delete cascades to its
+    children).
+  derivation: |-
+    Endpoint shape (the `propagate` body flag) + updateStatus.md implicit ADR on
+    DEG propagation.
+  seed_source: endpoint-shape
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      propagate=true IS honoured when the target is a DATA_ENTITY_GROUP:
+      DataEntityServiceImpl.updateStatus fetches getDEGEntitiesOddrns(id) and
+      applies the status to each member plus the parent (updateStatus.md:
+      implicit_adrs + concepts.invariants). BUT (a) propagation is SINGLE-HOP —
+      getDEGEntitiesOddrns is non-recursive, so a DEG-of-DEGs propagates only to
+      immediate children, not transitively (updateStatus.md:
+      bugs_limitations_corner_cases.[6]); and (b) propagate=true on a NON-group
+      entity is SILENTLY IGNORED (no error, no signal). The "cascade" works at one
+      level for groups only.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__updateStatus.md
+        section: implicit_adrs.[5] + bugs_limitations_corner_cases.[6]
+        cite: "DataEntityServiceImpl.java:468-476 (propagation branch) + :470 (getDEGEntitiesOddrns non-recursive) + :680-684 (needToPropagateStatus requires DATA_ENTITY_GROUP)"
+        note: "honoured for groups, single-hop only, silently ignored for non-groups"
+    operator_visible_failure: |-
+      An operator deleting a nested group structure (DEG containing sub-DEGs)
+      expecting the whole tree to retire gets only the top-level members — the
+      grandchildren keep their prior status. An operator setting propagate=true on
+      a plain dataset sees no effect and no warning that the flag did nothing.
+      Both are silent semantic gaps (no UI / API signal). Severity MEDIUM.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-006
+  hypothesis: |-
+    The auto-transition behaviour is restricted to DRAFT and DEPRECATED — those
+    are the only statuses for which a `status_switch_time` is meaningful and
+    accepted.
+  derivation: |-
+    Response/endpoint shape (the isSwitchable flag on the status enum) + the
+    validation guard requiring switch-time for switchable statuses.
+  seed_source: view-mode
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      DataEntityStatusDto encodes DRAFT(2, true) and DEPRECATED(4, true) as
+      isSwitchable; STABLE/UNASSIGNED/DELETED are isSwitchable=false
+      (updateStatus.md:implicit_adrs.[2]). DataEntityServiceImpl rejects a
+      switchable status submitted WITHOUT a status_switch_time
+      (BadUserRequestException → 400). The auto-flip semantics are baked into the
+      enum structure exactly as the hypothesis predicts.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__updateStatus.md
+        section: implicit_adrs.[2] + concepts.invariants
+        cite: "DataEntityStatusDto.java:13-16 (isSwitchable) + DataEntityServiceImpl.java:462-465 (the guard)"
+        note: "only DRAFT/DEPRECATED are switchable; the guard enforces switch-time presence"
+    confidence: HIGH
+    routes_to_finding: none
+
+- id: H-007
+  hypothesis: |-
+    Disabling housekeeping (or running with the shipped default) gives the
+    operator the retention behaviour the docs describe — i.e. with housekeeping ON
+    (the shipped default), DELETED entities ARE eventually purged.
+  derivation: |-
+    Cross-pillar promise (this feature FEEDS the Housekeeping TTL job F-010) +
+    HousekeepingTTLProperties doc claim that the subsystem is on-by-default.
+  seed_source: cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      Even with housekeeping fully enabled and correctly configured (the shipped
+      application.yml default housekeeping.enabled=true,
+      data_entity_delete_days=30), the DataEntityHousekeepingJob runs every 15
+      minutes, queries STATUS_UPDATED_AT <= cutoff, and matches ZERO of this
+      feature's entities because their status_updated_at is NULL (H-002 root
+      cause). The housekeeping subsystem is healthy and firing; the data-entity
+      purge step is a no-op against this feature's output. The cross-pillar
+      contract (F-044 produces DELETED rows that F-010 reaps) is structurally
+      broken at the data layer — F-010 receives nothing to reap because the join
+      key was never written.
+    evidence:
+      - sidecar: odd-platform__java__service__service__HousekeepingJobManager.md
+        section: coupling + concepts
+        cite: "HousekeepingJobManager.java:23-35 (DataEntityHousekeepingJob discovered + run every 15min) + coupling to DataEntityStatusSwitchJob"
+        note: "the reaper runs fine; it just never matches NULL-timestamp rows"
+      - sidecar: odd-platform__java__org_opendatadiscovery_oddplatform_housekeeping_config__config-properties-class__HousekeepingTTLProperties.md
+        section: dependencies_semantic.requires-feature.[2]
+        cite: "DataEntityHousekeepingJob.java:71-80"
+        note: "consumes data_entity_delete_days; predicate depends on STATUS_UPDATED_AT being maintained"
+    operator_visible_failure: |-
+      An operator who reads "housekeeping is on by default, retention is 30 days,"
+      verifies housekeeping.enabled=true, and trusts that storage is bounded, is
+      wrong: the data-entity table grows without bound regardless of the
+      housekeeping setting. Tuning data_entity_delete_days has no observable effect
+      — an operator lowering it to reclaim storage faster sees nothing change. The
+      knob is inert. Severity HIGH (same data-bloat consequence as H-002, surfaced
+      from the cross-pillar contract angle).
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-008
+  hypothesis: |-
+    When an operator RESTORES a soft-deleted entity (DELETED → STABLE), the
+    status_updated_at clock resets cleanly so that, if later re-deleted, the 30-day
+    window starts fresh from the new deletion.
+  derivation: |-
+    Negative-space (restore is an explicitly supported transition per the live doc
+    and updateStatus.md; an operator expects the lifecycle clock to behave
+    consistently across restore).
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      The restore path (DELETED → STABLE/DRAFT/DEPRECATED/UNASSIGNED) routes
+      through the SAME applyStatus mapper (per updateStatus.md:understanding —
+      restore-on-undelete is handled in changeStatusForDataEntities, which calls
+      applyStatus). The applyStatus ordering bug means status_updated_at is NEVER
+      written on restore either. So: an entity restored from DELETED keeps whatever
+      status_updated_at it had (NULL, from the original broken delete). There is no
+      clean clock at all — the column is uniformly NULL across the entire lifecycle.
+      This is a NEW facet not separately enumerated in the F-044 drift_class_summary
+      (restore_from_deleted_also_leaves_status_updated_at_null).
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__updateStatus.md
+        section: understanding + tests_coverage_semantic.uncovered_behaviours
+        cite: "DataEntityInternalStateServiceImpl.java:73-98 (restore branch routes through applyStatus); restore path is explicitly UNCOVERED by tests"
+        note: "restore is a status transition → inherits the same mapper bug"
+      - sidecar: source_read_for_validation
+        section: applyStatus
+        cite: "DataEntityMapperImpl.java:247-251"
+        note: "the guard is unconditionally false for ANY transition, restore included"
+    operator_visible_failure: |-
+      Because status_updated_at is uniformly NULL, the column carries NO usable
+      lifecycle timestamp for any entity touched by this feature — not just for
+      deletes. Any future feature that reasons about "when did this entity's status
+      last change?" (audit, staleness, SLA) reads NULL. The restore case makes
+      clear the bug is not "deletes don't get reaped" but "the status-change
+      timestamp is dead platform-wide." Severity MEDIUM (no immediate data-loss on
+      restore itself, but a load-bearing column is silently always-NULL).
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-009
+  hypothesis: |-
+    An operator can see, ahead of time, which entities are scheduled to auto-flip
+    to DELETED in the near future (e.g. a "scheduled transitions" view or a
+    preview), so a mistaken switch-time can be caught before the reaper acts.
+  derivation: |-
+    Negative-space + senior-product-owner UX question ("can the user understand /
+    control this from what is on screen?") — a destructive scheduled action with
+    no preview is a UX gap.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |-
+      There is no GET endpoint exposing the set of entities with a pending
+      status_switch_time (the F-044 chain + the DataEntityController surface have no
+      scheduled-transitions / upcoming-flip read; getPojosForStatusSwitch is an
+      internal repository method called only by the job, not surfaced via any
+      controller — ReactiveDataEntityRepositoryImpl.md:upstream_callers lists only
+      DataEntityStatusSwitchJob). Operators must inspect entities one-by-one on
+      their detail pages to learn what will auto-delete. There is no batch preview,
+      no dry-run, no "what flips in the next 24h" surface.
+    evidence:
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveDataEntityRepositoryImpl.md
+        section: upstream_callers (getPojosForStatusSwitch)
+        cite: "ReactiveDataEntityRepositoryImpl.java:256 — upstream caller is DataEntityStatusSwitchJob ONLY"
+        note: "the only reader of the elapsed-switch-time set is the internal job; nothing exposes it to operators"
+    operator_visible_failure: |-
+      An operator who fat-fingers a status_switch_time (e.g. picks the wrong date)
+      has no surface to catch it before the 10-minute reaper acts and soft-deletes
+      the entity (with its cascade). Recovery requires manually restoring each
+      entity. For a large catalog there is no way to audit "what is scheduled to
+      disappear." This is a UX / observability gap, not a data-correctness bug —
+      severity LOW. NOTE: this finding is dampened by H-002 — because the
+      hard-delete never fires, a mistaken flip is currently recoverable (the row
+      persists forever as DELETED); once H-002 is fixed, the absence of a preview
+      becomes materially more dangerous.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-010
+  hypothesis: |-
+    Changing a data entity's status is gated by the DATA_ENTITY_STATUS_UPDATE
+    permission — only an authorized operator can flip a status.
+  derivation: |-
+    Pillar mission (RBAC gates mutations) + the live doc claim ("Operators need the
+    DATA_ENTITY_STATUS_UPDATE permission") + the SecurityRule on the endpoint.
+  seed_source: doc-claim
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      Under auth.type ∈ {LOGIN_FORM, OAUTH2, LDAP} the claim HOLDS:
+      SecurityConstants.SECURITY_RULES gates PUT /api/dataentities/{id}/statuses on
+      DATA_ENTITY_STATUS_UPDATE, resource-scoped per entity
+      (updateStatus.md:security.authorization_assertions). BUT under
+      auth.type=DISABLED, DisabledAuthSecurityConfiguration uses
+      anyExchange().permitAll() and SECURITY_RULES is NOT consulted — ANY caller
+      who can reach the port can PUT any entity to DELETED, triggering the
+      soft-delete cascade. The doc's "operators need the permission" is true ONLY
+      for the three non-DISABLED modes. (This DISABLED-mode bypass is a known
+      platform-wide posture — 11-sidecar triangulated per concepts.yaml — not
+      specific to this feature.)
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__updateStatus.md
+        section: security.known_security_gaps.[0] + security.auth_mode_relevance
+        cite: "SecurityConstants.java:277-281 (the rule) + DisabledAuthSecurityConfiguration.java:14-17 (anyExchange().permitAll() bypass)"
+        note: "gated under LOGIN_FORM/OAUTH2/LDAP; wide-open under DISABLED"
+    operator_visible_failure: |-
+      A production deployment that mis-sets auth.type=DISABLED (documented dev-only)
+      exposes wholesale anonymous soft-deletion of any entity, cascading to
+      lineage / group-relations / statistics. The doc-stated permission gate does
+      not fail-closed. Severity MEDIUM here (the DISABLED-mode danger is tracked
+      cross-cuttingly; for THIS feature it is the partial-truth of the permission
+      claim). Routes to the existing DISABLED-mode finding family, not a new item.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-011
+  hypothesis: |-
+    For every DELETED entity, an auditor can determine WHO deleted it and when —
+    including entities the scheduler auto-flipped (the audit trail names the actor).
+  derivation: |-
+    Negative-space + pillar cross-reference to the Activity Feed audit surface
+    (DATA_ENTITY_STATUS_UPDATED events) — an audit trail that cannot attribute a
+    deletion is operationally weak.
+  seed_source: negative-space
+  validation:
+    verdict: partial
+    actual_behavior: |-
+      Manual PUT transitions DO emit a DATA_ENTITY_STATUS_UPDATED activity event
+      with oldState/newState captured programmatically
+      (updateStatus.md:implicit_adrs.[4] + security.data_exposure.[1]) — a positive
+      finding (this REFINES the batch-E no-audit-log theme: DataEntity mutations ARE
+      audited, unlike RBAC mutations). HOWEVER the scheduled auto-flip path runs
+      under the system principal with no logged-in user, and the F-044 test_matrix
+      security cell explicitly notes "Auto-flip path operates with system principal
+      — no audit trail of which entities transitioned automatically (Activity feed
+      coverage TBD)." So: human-initiated deletes are attributable; scheduler-
+      initiated deletes attribute to "system" / have no human actor. The audit
+      trail is complete for one path and identity-less for the other.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityController__controller-method__updateStatus.md
+        section: implicit_adrs.[4] + security.data_exposure.[1]
+        cite: "DataEntityInternalStateServiceImpl.java:155-182 (programmatic event emission with oldState/newState)"
+        note: "manual path emits DATA_ENTITY_STATUS_UPDATED; positive finding"
+      - sidecar: F-044 feature-flow (test_matrix.security.uncovered)
+        section: test_matrix.security
+        cite: "F-044.yaml test_matrix.security — 'no audit trail of which entities transitioned automatically'"
+        note: "the scheduled path's attribution is explicitly unresolved"
+    operator_visible_failure: |-
+      An auditor reconstructing "who deleted entity X" finds a clean answer when a
+      human did it, but for scheduler-flipped entities the activity record (if any)
+      names the system, not the operator who originally set the status_switch_time.
+      The accountable human — whoever scheduled the deletion days earlier — is not
+      linked to the eventual flip. This is an audit-completeness gap (new facet:
+      auto_flip_actor_is_system_principal_no_attribution). Severity MEDIUM.
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+
+- id: H-012
+  hypothesis: |-
+    The live documentation accurately describes the retention behaviour an operator
+    will experience (doc-vs-code agreement on the 30-day hard-delete promise).
+  derivation: |-
+    Doc-claim seed — the live statuses page makes a verbatim 30-day-then-hard-delete
+    claim; test whether the code delivers what the doc says.
+  seed_source: doc-claim
+  validation:
+    verdict: confirmed
+    actual_behavior: |-
+      As of 2026-06-01 the live page (WebFetch, status 200) renders TWO "Known
+      limitation" admonitions that ACCURATELY describe the broken reality: a DANGER
+      admonition stating "A mapper-side defect prevents the status_updated_at
+      timestamp from being written on any status transition ... a NULL value never
+      matches that comparison in SQL three-valued logic ... every DELETED row and
+      all of its cascading metadata stays in the database forever," and a WARNING
+      stating the auto-flip job "has no LIMIT — every overdue entity is processed in
+      a single transaction" with cadence drift. The doc was corrected by DOC-191
+      (status: done, commit a5f7e5a, live-verified 2026-05-28). The doc now matches
+      the code's actual (broken) behaviour — so the DOC-vs-CODE hypothesis is
+      CONFIRMED (they agree). NOTE: the underlying CODE is still wrong (H-002/H-003/
+      H-007); the doc honestly documents the bug rather than promising behaviour the
+      code lacks. There is no net-new doc-drift finding — the drift was already
+      caught and caveated.
+    evidence:
+      - sidecar: WebFetch
+        section: live statuses page Known-limitations section
+        cite: "https://docs.opendatadiscovery.org/features/data-discovery/statuses (2026-06-01, status 200)"
+        note: "two Known-limitation admonitions render verbatim; doc matches code reality"
+      - sidecar: source_read_for_validation
+        section: DOC-191 backlog item
+        cite: "backlog/docs/DOC-191.md (status: done; AC: both admonitions live-verified 2026-05-28)"
+        note: "the doc correction is shipped and verified; doc-vs-code now agree"
+    confidence: HIGH
+    routes_to_finding: none
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: |-
+    DataEntityMapperImpl.applyStatus mutates the pojo before the change-detection
+    guard, so status_updated_at is never set; the housekeeping TTL never matches
+    NULL and DELETED entities are never hard-deleted (documented 30-day retention
+    is false).
+  dedup_status: already_tracked
+  tracked_as: PLT-027
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: |-
+    DataEntityMapperImpl.applyStatus (lines 247-251) — capture oldStatus before
+    setStatus, compare, conditionally write both fields (PLT-027 Thread A) + Flyway
+    backfill of status_updated_at for existing NULL DELETED rows (PLT-027 Thread B).
+- hypothesis_id: H-003
+  severity: HIGH
+  one_line: |-
+    The manual-PUT delete path shares the same applyStatus mapper bug as the
+    scheduler — operator-initiated deletes also leave status_updated_at NULL and
+    are never reaped (doubles the blast radius onto the everyday delete path).
+  dedup_status: already_tracked
+  tracked_as: PLT-027
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: |-
+    Same single locus as H-002 (applyStatus). PLT-027's fix covers both paths since
+    both route through the mapper; no separate item needed. Convergent validation:
+    reflection independently re-derived PLT-027 from the shared-service-path angle.
+- hypothesis_id: H-007
+  severity: HIGH
+  one_line: |-
+    The cross-pillar contract (F-044 produces DELETED rows for F-010 to reap) is
+    broken at the data layer — housekeeping runs but matches zero of this feature's
+    rows; the data_entity_delete_days knob is inert.
+  dedup_status: already_tracked
+  tracked_as: PLT-027
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: |-
+    Resolved by the same applyStatus fix (PLT-027 Thread A) — once status_updated_at
+    is written, the existing DataEntityHousekeepingJob predicate begins matching.
+    Same finding viewed from the F-010 cross-pillar consumer side.
+- hypothesis_id: H-008
+  severity: MEDIUM
+  one_line: |-
+    The RESTORE path (DELETED → STABLE) ALSO routes through the buggy applyStatus,
+    so status_updated_at is uniformly NULL across the whole lifecycle, not just on
+    delete — the status-change timestamp column is dead platform-wide.
+  dedup_status: already_tracked
+  tracked_as: PLT-027
+  distinct_from: PLT-027
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: |-
+    Same root locus (applyStatus); PLT-027's reorder fixes restore too since the
+    guard becomes correct for ALL transitions. Flagged distinct_from as a SCOPE
+    NOTE: PLT-027's framing emphasises DELETE + TTL; this reflection surfaces that
+    the SAME fix also repairs the restore/any-transition timestamp — recommend
+    PLT-027's test coverage assert status_updated_at is set on a NON-delete
+    transition (e.g. UNASSIGNED → STABLE) and on restore, not only on delete, so
+    the fix is verified across the lifecycle rather than only on the headline path.
+
+### caveat_candidates
+- hypothesis_id: H-004
+  one_line: |-
+    Scheduled auto-flip has no per-tick batch cap; a large synchronized backlog may
+    exceed the 9-minute ShedLock window (cadence drift / multi-instance race).
+  dedup_status: already_tracked
+  tracked_as: DOC-191
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/features/data-discovery/statuses
+  note: |-
+    DOC-191 (done) ships the "no per-tick batch cap" WARNING documenting the
+    10-min cadence + 9-min lock window + burst behaviour; PLT-027 Thread C drafts
+    the LIMIT fix. Probe P-390 emitted to MEASURE whether the burst actually
+    breaches the window (converts the caveat from theoretical to measured).
+- hypothesis_id: H-005
+  one_line: |-
+    propagate=true is single-hop (DEG-of-DEGs propagates to immediate children
+    only) and is silently ignored on non-group entities — no error, no signal.
+  dedup_status: net_new
+  recommended_log_as: doc-gap-NNN (statuses.md — document the propagate flag's group-only, single-hop semantics; the page currently does not describe the propagate body flag at all per updateStatus.md doc_drift_findings)
+- hypothesis_id: H-009
+  one_line: |-
+    No operator-facing surface to preview which entities are scheduled to auto-flip
+    to DELETED; a mistaken switch-time cannot be caught before the reaper acts.
+  dedup_status: net_new
+  recommended_log_as: doc-gap-NNN + feature-request note (becomes materially more dangerous once PLT-027 makes hard-delete actually fire — currently dampened because mistaken flips persist recoverably as DELETED)
+- hypothesis_id: H-010
+  one_line: |-
+    The doc-stated DATA_ENTITY_STATUS_UPDATE permission gate does not fail-closed
+    under auth.type=DISABLED — anonymous wholesale soft-deletion is reachable.
+  dedup_status: already_tracked
+  tracked_as: PLT-046
+  distinct_from: PLT-046
+  note: |-
+    The DISABLED-mode bypass is a platform-wide posture (11-sidecar triangulated
+    per concepts.yaml; many PLT items reference it). Not a feature-specific net-new
+    finding — recorded here as the partial-truth of the permission claim for THIS
+    endpoint. distinct_from PLT-046 (that is the swagger-toggle item; the keyword
+    overlap is incidental — the DISABLED-mode family is the real tracked locus).
+- hypothesis_id: H-011
+  one_line: |-
+    Scheduled auto-flips run under the system principal with no human-actor
+    attribution; an auditor cannot link a scheduler-initiated delete to the
+    operator who set the switch-time (manual deletes ARE attributed).
+  dedup_status: net_new
+  recommended_log_as: doc-gap-NNN (activity-feed.md / statuses.md — document that auto-flip transitions are system-attributed) + consider an upstream enhancement to record the scheduling operator on the flip event
+
+### probes_emitted
+- probe_id: P-390
+  hypothesis_id: H-004
+  probe_path: "lineage/odd-platform/probes/P-390.yaml"
+
+### validation_gaps
+- sidecar: "scheduling:DataEntityStatusSwitchJob (NOT ON DISK)"
+  field_insufficient: "entire sidecar absent — the scheduler entry-point (hop 1 of the chain) has no enrichment; validation of H-001/H-004 required a Rule-8 source read of DataEntityStatusSwitchJob.java"
+  proposed_refresh: |-
+    Author a file-analyser sidecar for service/job/DataEntityStatusSwitchJob.java —
+    capture the fixedRate/ShedLock window, the unbounded getPojosForStatusSwitch
+    consumption (no .take/LIMIT), and the .block() bridge into the reactive service.
+    NOTE the feature-flow F-044 chain cites this file at scheduling/ but it actually
+    lives at service/job/ — the citation path is stale and should be corrected.
+- sidecar: "mapper:DataEntityMapperImpl (NOT ON DISK)"
+  field_insufficient: "entire sidecar absent — the SHB-004 bug locus (hop 4) has no standalone enrichment; the bug is captured only inside updateStatus.md:bugs_limitations_corner_cases. Validation of H-002/H-003/H-008 required a Rule-8 source read of DataEntityMapperImpl.java:247-251"
+  proposed_refresh: |-
+    Author a file-analyser sidecar for mapper/DataEntityMapperImpl.java with a
+    Category-B (method-name vs behaviour) + ordering-semantics stress finding on
+    applyStatus — this is a load-bearing bug node that should not depend on a
+    neighbouring controller sidecar to be discoverable.
+- sidecar: "service:internal:DataEntityInternalStateServiceImpl (NOT ON DISK)"
+  field_insufficient: "entire sidecar absent — the shared service path (hop 3) joining manual PUT + scheduler has no enrichment; the soft-delete/restore cascade + programmatic activity emission are described only second-hand in updateStatus.md"
+  proposed_refresh: |-
+    Author a file-analyser sidecar for service/internal/DataEntityInternalStateServiceImpl.java
+    — the changeStatusForDataEntities method is the convergence point of both
+    entry points and owns the cascade + the audit-emission invariant (H-011).
+- sidecar: "scheduling:DataEntityHousekeepingJob (NO STANDALONE SIDECAR)"
+  field_insufficient: "covered only indirectly via HousekeepingJobManager.md + HousekeepingTTLProperties.md; the TTL query (hop 5) was validated by Rule-8 source read of DataEntityHousekeepingJob.java:73-78"
+  proposed_refresh: |-
+    A standalone DataEntityHousekeepingJob sidecar would pin the STATUS_UPDATED_AT
+    predicate + the ~25-table cascade as its own node rather than as a coupling note
+    on the manager. NOTE the F-044 chain cites scheduling/DataEntityHousekeepingJob.java
+    but it actually lives at housekeeping/job/ — stale citation path.
+
+### doc_drift_findings
+[]  # No net-new doc drift: the headline doc-vs-code contradiction (30-day retention
+    # promise vs SHB-004 reality) was already caught and corrected by DOC-191 (done);
+    # the live page now renders both Known-limitation admonitions verbatim
+    # (WebFetch 2026-06-01 status 200). H-012 confirms doc-vs-code AGREEMENT.
+    # The propagate-flag (H-005), preview-absence (H-009), and auto-flip-attribution
+    # (H-011) doc gaps are routed as caveat_candidates above (net_new), not here, as
+    # they are documentation COMPLETENESS gaps rather than doc-vs-code disagreements.
+
+## maintainer_notes
+
+(none — net-new reflection. Headline for triage: every contradiction in this
+feature collapses to a SINGLE three-line code fix — the applyStatus reorder
+already drafted as PLT-027 Thread A. Convergent validation: this top-down
+reflection independently re-derived PLT-027 from FIVE angles — scheduler delete
+(H-002), manual-PUT delete (H-003), cross-pillar housekeeping contract (H-007),
+restore/any-transition (H-008), and the now-corrected doc (H-012). The one
+genuinely net-new code-adjacent observation is H-008's scope extension: PLT-027's
+test coverage should assert status_updated_at is written on a NON-delete and on a
+restore, not only on the delete headline, so the fix is verified across the whole
+lifecycle. The three net-new caveat candidates (H-005 propagate semantics, H-009
+preview absence, H-011 auto-flip attribution) are documentation/UX gaps worth a
+small doc-gap batch.)

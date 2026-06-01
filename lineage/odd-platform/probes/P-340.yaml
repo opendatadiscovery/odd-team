@@ -1,0 +1,175 @@
+---
+probe_id: P-340
+feature_id: F-019
+test_class: security
+emitted_by: feature-reflector
+status: pending-reflection-verification
+emitted_in_reflection: lineage/odd-platform/feature-reflections/detail/F-019.yaml
+emitted_for_hypothesis: H-013
+emitted_at: 2026-06-01T00:00:00Z
+verified_against_commit: 43d13eb
+prompt_version: probe-runner/0.1.0
+maintainer_curated: false
+stack_profile: odd-minimal
+local_execution_blocked: false
+expected_outcome: |
+  Quoting hypothesis H-013 verbatim:
+  "When one operator deletes an Owner at the same moment another operator (or an
+  ingestion call) attaches a new ownership to that same Owner, the platform
+  serialises the two so the result is consistent — either the delete is blocked
+  by the new ownership, or the new ownership is rejected because the Owner is
+  being deleted; it never produces an ownership row pointing at a deleted Owner."
+
+  The cascade-block in OwnerServiceImpl.delete (lines 90-96) runs three
+  existsBy* reads (termOwnership + ownership + userOwnerMapping) then the
+  soft-delete UPDATE (line 98) inside ONE @ReactiveTransactional boundary
+  (line 88) but with NO row-level lock (no SELECT FOR UPDATE on the owner row,
+  no Postgres advisory lock on owner_id) and under READ COMMITTED isolation
+  (the Spring/R2DBC default). Static analysis shows a TOCTOU window: a concurrent
+  POST /api/dataentities/{data_entity_id}/ownerships that inserts an OWNERSHIP
+  row for the same owner AFTER the existence read and BEFORE the delete commits
+  would slip past the cascade-check, leaving an OWNERSHIP row pointing at a
+  soft-deleted OWNER (a data entity that displays a deleted steward).
+
+  Whether the window is OBSERVABLE depends on runtime facts that cannot be read
+  from the source — R2DBC connection-per-transaction acquisition timing, the
+  statement ordering inside the reactive pipeline, and Postgres MVCC visibility
+  under READ COMMITTED. This probe RUNS the two operations concurrently against a
+  local instance, many times, and checks for the inconsistent end-state.
+
+  PASS (H-013 -> confirmed, i.e. the system DOES serialise correctly) if across
+  all N concurrent trials EITHER the delete is rejected with HTTP 400 USR004
+  (cascade-block saw the new ownership) OR the ownership insert is rejected /
+  rolled back when the Owner is concurrently soft-deleted, AND zero OWNERSHIP
+  rows reference a soft-deleted OWNER at the end of every trial.
+
+  FAIL (H-013 -> contradicted, REFACTOR-430 empirically confirmed) if ANY trial
+  ends with an OWNERSHIP row whose owner_id has deleted_at IS NOT NULL (an
+  ownership pointing at a soft-deleted Owner) AND the delete returned 204. The
+  fix anchor is then a row-level lock on the owner row during the cascade-check
+  (SELECT ... FOR UPDATE) or a Postgres advisory lock on owner_id, mirroring the
+  F-076 cross-Management cascade structural-class remediation.
+---
+
+# P-340 — Owner cascade-delete TOCTOU vs concurrent ownership insert (H-013; REFACTOR-430 empirical close)
+
+arrange:
+  - kind: docker-compose-up
+
+  # A data source + a data entity to hang the ownership off, and a target Owner
+  # with NO existing ownerships/terms/mappings so the cascade-block would PASS in
+  # the absence of a concurrent insert (the delete must be ABLE to proceed, so the
+  # race is the only thing that can introduce the inconsistency).
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name)
+      VALUES (3400, '//probe-source-P-340/db', 'probe-source-P-340')
+      ON CONFLICT (id) DO NOTHING
+  - kind: sql
+    query: |
+      INSERT INTO data_entity
+        (id, oddrn, external_name, data_source_id, type_id, view_count, hollow,
+         exclude_from_search, source_created_at, source_updated_at)
+      VALUES (3400001, '//probe-source-P-340/db/tables/p340_target', 'p340_target',
+              3400, 1, 0, false, false, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+
+  # The Owner under test is (re)created fresh per trial in the act loop, because a
+  # successful delete soft-deletes it and the partial unique index then frees the
+  # name. The harness should, per trial: (1) create the Owner via POST /api/owners
+  # (capture the new id), then (2) fire the two racing calls. Recorded here as the
+  # per-trial contract; the harness implements the loop.
+  - kind: noop
+    note: |
+      Per-trial setup (harness loop, ~200 trials): POST /api/owners
+      {"name":"p340_owner_<trial>"} → capture owner_id. Each trial uses a fresh
+      name so the partial unique index never blocks re-creation after a prior
+      trial's successful soft-delete.
+
+act:
+  # The two racing operations, dispatched as close to simultaneously as the harness
+  # can manage (fire both, then await both). Repeat ~200 times to surface a narrow
+  # window. A small randomised jitter (0-3ms) on one leg widens coverage of the
+  # interleaving space across trials.
+  #   Leg A: DELETE /api/owners/{owner_id}              (the cascade-block + soft-delete)
+  #   Leg B: POST  /api/dataentities/3400001/ownerships (insert OWNERSHIP for owner_id)
+  # Leg B's body shape is OwnershipFormData {ownerName: "p340_owner_<trial>",
+  # titleName: "p340_title"} — note this routes through OwnerService.getOrCreate,
+  # so the harness must pass the SAME name as the created Owner so getOrCreate
+  # resolves the existing row rather than minting a new one (else the race is moot).
+  - kind: http-concurrent-pair
+    base: "http://localhost:18080"
+    leg_a:
+      method: DELETE
+      path_template: /api/owners/{owner_id}
+      capture_status_as: delete_status
+    leg_b:
+      method: POST
+      path_template: /api/dataentities/3400001/ownerships
+      body_template: '{"ownerName": "p340_owner_{trial}", "titleName": "p340_title"}'
+      capture_status_as: ownership_status
+    trials: 200
+    per_leg_jitter_ms: [0, 3]
+    capture_per_trial_results_as: race_results
+
+observe:
+  # The load-bearing end-state check: after BOTH legs settle for a trial, is there
+  # an OWNERSHIP row whose owner has been soft-deleted? This is the inconsistency
+  # H-013 says must never occur.
+  - kind: sql
+    query: |
+      SELECT count(*) AS orphan_ownership_count
+      FROM ownership o
+      JOIN owner w ON w.id = o.owner_id
+      WHERE w.deleted_at IS NOT NULL
+        AND w.name LIKE 'p340_owner_%'
+    capture_as: orphan_ownership_count
+
+assert:
+  # Across all trials, the system must never end in the inconsistent state.
+  - "orphan_ownership_count == 0"
+  # Sanity: every trial must have a defined outcome on both legs (no hangs /
+  # connection-pool exhaustion). The harness records per-trial statuses; this
+  # guards against a false PASS where legs silently errored before reaching the DB.
+  - "all(r.delete_status in (204, 400) for r in race_results)"
+  - "all(r.ownership_status in (200, 400, 409, 500) for r in race_results)"
+
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  refactoring_scopes: [REFACTOR-430]
+  related_features: [F-019, F-076]
+  related_concepts:
+    - "cascade-check-non-atomic-race-window"
+    - "Cross-Management cascade pattern (F-076 structural-class home)"
+  reflection: "lineage/odd-platform/feature-reflections/detail/F-019.yaml#H-013"
+
+realism_caveats: |
+  - LOCAL-ONLY (APPROACH.md §9 rule 12): docker-compose + local Postgres + a small
+    async HTTP harness firing concurrent request pairs + a post-trial SQL check.
+    No cloud, no managed DB, no hosted observability. local_execution_blocked: false.
+  - This is a RACE probe, so a single run that shows zero orphans does NOT prove the
+    window is closed — it shows the window did not open in 200 trials on this
+    machine. The probe-runner should run multiple sweeps (e.g. 3 x 200) and, if any
+    sweep produces an orphan, the verdict is CONTRADICTED (one observed orphan is
+    proof the window is real). A consistently-clean result across sweeps is
+    suggestive-but-not-conclusive evidence of correct serialisation; record it as
+    confirmed-with-residual-uncertainty and note the trial count.
+  - Widening the window deliberately (to make a real defect easier to observe) is
+    legitimate for this probe: the harness MAY add an artificial delay between the
+    cascade-read and the soft-delete IF a debug build / test hook exposes one. Do
+    NOT modify production code paths; if no hook exists, rely on natural timing +
+    jitter + high trial counts. A window that only opens under an injected delay is
+    still a real REFACTOR-430 finding (the lock is genuinely absent) but should be
+    reported with that caveat.
+  - Leg B routes through OwnerService.getOrCreate (the side-door of H-004), so the
+    harness MUST pass the exact created Owner name so getOrCreate resolves the
+    existing row; otherwise it mints a second Owner and the two legs touch
+    different rows (no race). This coupling is itself worth noting in the writeup.
+  - The DELETED soft-delete predicate is `deleted_at IS NOT NULL` on the owner row;
+    the orphan query joins ownership -> owner and counts rows where the joined owner
+    is soft-deleted. If the schema's ownership table differs (column names), the
+    harness substitutes the real FK column (ownership.owner_id) from the running
+    schema rather than assuming.

@@ -1,0 +1,163 @@
+---
+probe_id: P-301
+feature_id: F-001
+test_class: integration
+emitted_by: feature-reflector
+status: pending-reflection-verification
+emitted_in_reflection: lineage/odd-platform/feature-reflections/detail/F-001.yaml
+emitted_for_hypothesis: H-012
+emitted_at: 2026-06-01T00:00:00Z
+verified_against_commit: 43d13eb
+prompt_version: probe-runner/0.1.0
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Quoting hypothesis H-012 verbatim:
+  "Two operators opening the same popular entity's detail page concurrently each
+  have their read counted correctly (no lost updates), and a client paging
+  through the full Popular list sees each entity exactly once."
+
+  Two sub-assertions, neither settle-able statically:
+
+  (a) NO LOST UPDATE on view_count under concurrency. The increment is
+      `UPDATE data_entity SET view_count = view_count + 1`, which Postgres makes
+      atomic per-statement — so N concurrent detail-reads of the SAME entity must
+      produce exactly +N (the sidecar asserts this "by SQL semantics, not by
+      test"; this probe MEASURES it). Because of the LSN-017 +2 doubling, a
+      headless page-open fires TWO increments — so for the API-driven variant we
+      drive GET /api/dataentities/{id} directly (one increment per call) to
+      isolate the lost-update question from the doubling.
+
+  (b) PAGINATION STABILITY. getPopular is non-transactional + offset-based. A
+      client iterating page=1..K WHILE concurrent reads mutate view_count may see
+      an entity twice or miss one. This probe pages through a seeded set with a
+      controlled concurrent-increment stream and asserts the union of ids across
+      pages contains no duplicate and no dropped seeded id beyond the documented
+      offset-shift tolerance.
+
+  PASS = (a) delta == number_of_concurrent_api_calls exactly (no lost update);
+  (b) reflection verdict for H-012 flips from probe-needed to confirmed if pages
+  are duplicate/skip-free under the concurrent stream, or to partial/contradicted
+  if duplicates/skips are observed (with the observed rate recorded).
+---
+
+# P-301 — view_count concurrent-increment correctness + Popular pagination stability (H-012)
+
+arrange:
+  - kind: docker-compose-up
+
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name)
+      VALUES (3010, '//probe-source-P-301/db', 'probe-source-P-301')
+      ON CONFLICT (id) DO NOTHING
+
+  # Seed one hot entity for the lost-update test (sub-assertion a).
+  - kind: sql
+    query: |
+      INSERT INTO data_entity
+        (id, oddrn, external_name, data_source_id, type_id, view_count,
+         source_created_at, source_updated_at)
+      VALUES (301000, '//probe-source-P-301/db/tables/p301_hot', 'p301_hot',
+              3010, 1, 0, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+
+  # Seed 50 entities with descending view_count for the pagination-stability test
+  # (sub-assertion b). generate_series gives a deterministic, gap-free ranking.
+  - kind: sql
+    query: |
+      INSERT INTO data_entity
+        (id, oddrn, external_name, data_source_id, type_id, view_count,
+         source_created_at, source_updated_at)
+      SELECT 301100 + g,
+             '//probe-source-P-301/db/tables/p301_page_' || g,
+             'p301_page_' || g,
+             3010, 1, (1000 - g),
+             NOW(), NOW()
+      FROM generate_series(0, 49) AS g
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      SELECT view_count FROM data_entity WHERE id = 301000
+    capture_as: initial_hot_view_count
+
+act:
+  # Sub-assertion (a): fire N concurrent direct API reads of the SAME hot entity.
+  # Direct API (not browser) so each call = exactly +1 (isolates lost-update from
+  # the LSN-017 +2 doubling). 200 concurrent calls is enough to surface any
+  # read-modify-write race if one existed.
+  - kind: http-load
+    method: GET
+    path: /api/dataentities/301000
+    base: "http://localhost:18080"
+    concurrency: 50
+    total_requests: 200
+    capture_status_counts_as: hot_read_status_counts
+
+  # Sub-assertion (b): page through Popular (size=10, pages 1..5 = the 50 seeded
+  # rows) WHILE a background concurrent-increment stream mutates view_count, to
+  # provoke any offset-shift duplicate/skip.
+  - kind: http-load
+    method: GET
+    path: /api/dataentities/301107   # mid-rank seeded entity; pumping it reorders the page boundary
+    base: "http://localhost:18080"
+    concurrency: 10
+    total_requests: 100
+    background: true
+    capture_status_counts_as: pagination_disruptor_status_counts
+
+  - kind: http-collect-pages
+    method: GET
+    path_template: "/api/dataentities/popular?page={page}&size=10"
+    base: "http://localhost:18080"
+    pages: [1, 2, 3, 4, 5]
+    collect_field: id
+    only_seeded_prefix: 3011          # restrict the union check to the 50 p301_page_* ids
+    capture_ids_as: paged_seeded_ids
+
+observe:
+  - kind: sql
+    query: |
+      SELECT view_count FROM data_entity WHERE id = 301000
+    capture_as: final_hot_view_count
+
+assert:
+  # (a) NO LOST UPDATE — exactly +200 from 200 successful concurrent API reads.
+  # If any read returned non-200 the harness subtracts it; the invariant is
+  # delta == count(200 responses) so the equality below is gated on all-200.
+  - "hot_read_status_counts['200'] == 200"
+  - "final_hot_view_count - initial_hot_view_count == 200"
+
+  # (b) PAGINATION STABILITY — no duplicate seeded id across the 5 pages.
+  - "len(paged_seeded_ids) == len(set(paged_seeded_ids))"
+  # No seeded id dropped beyond a 1-row offset-shift tolerance (a single
+  # boundary-crossing reorder can legitimately shift exactly one row between
+  # adjacent pages under offset pagination; >1 missing means a real skip).
+  - "len(set(range(301100, 301150)) - set(paged_seeded_ids)) <= 1"
+
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  refactoring_scopes: [REFACTOR-201, REFACTOR-220, REFACTOR-221]
+  test_gaps: [TEST-GAP-256, TEST-GAP-259]
+  related_concepts: ["Popular Entities Ranking", "Data Entity"]
+  retrospectives: [LSN-017]
+  reflection: "lineage/odd-platform/feature-reflections/detail/F-001.yaml#H-012"
+
+realism_caveats: |
+  - LOCAL-ONLY (APPROACH.md §9 rule 12): docker-compose stack + direct HTTP load
+    (k6 / wrk / a small asyncio script) + DB SELECT — no cloud, no managed DB.
+  - The lost-update test uses DIRECT API reads (one +1 per call), deliberately
+    NOT headless-browser page-opens, to isolate the concurrency question from the
+    LSN-017 +2 doubling pinned by P-004. A browser-driven variant would expect
+    +400 (200 page-opens × 2) but conflate two effects.
+  - Sub-assertion (b)'s 1-row offset-shift tolerance reflects the inherent
+    semantics of non-transactional offset pagination under concurrent writes; it
+    is NOT a pass for unbounded skipping. If the harness observes >1 missing or
+    any duplicate, record the exact rate — that converts H-012's pagination half
+    from probe-needed to partial/contradicted.
+  - Under auth.type=DISABLED (the probe stack default) all calls are anonymous,
+    which matches the documented DISABLED reachability — no auth header needed.

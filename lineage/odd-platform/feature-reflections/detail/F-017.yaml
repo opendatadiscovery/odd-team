@@ -1,0 +1,670 @@
+---
+feature_id: F-017
+pillar_anchored_id: P-01:F-005
+pillar: P-01 Data Discovery
+feature_name: "Search Filter Facets"
+reflected_at: 2026-06-01T00:00:00Z
+reflected_at_commit: 43d13eb
+prompt_version: feature-reflector/0.2.0
+contributing_sidecars_read:
+  - odd-platform__ts__routes__route__search.md
+  - odd-platform__ts__react-component__component__Search.md
+  - odd-platform__java__SearchController__controller-method__facets.md
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-discovery/search"
+    last_verified_at: "2026-05-26T00:00:00Z"
+    last_verified_status: 200
+    note: |
+      Verified via contributing sidecars' docs_link_semantic blocks (Search route
+      WebFetched 2026-05-26 status 200; SearchController.facets WebFetched
+      2026-05-19 status 200; Search.tsx WebFetched 2026-05-20 status 200). Not
+      re-fetched live this run — the three sidecar fetches agree: the page
+      documents the 7 facets + free-text + faceted search and is SILENT on
+      facet-count scoping, session-UUID semantics, the access model, and the
+      /search/{searchId} URL form. Doc is cross-reference only (Rule 1).
+hypothesis_summary:
+  total: 11
+  confirmed: 4
+  contradicted: 5
+  partial: 1
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: |
+      "Facet drill-down respects who I am" is false — any authenticated user (anonymous
+      under auth.type=DISABLED) enumerates the platform's entire Owner / Tag / Group /
+      Namespace / Type cardinality with per-bucket counts; no OWNERSHIP join exists.
+related_feature_flows:
+  - F-002   # Search and Filtering (Catalog page sibling — POST /api/search + results pagination; shares the same search_facets session model)
+  - F-010   # Housekeeping TTL — owns housekeeping.ttl.searchFacetsDays (30d) evicting search_facets via SearchFacetsHousekeepingJob; the TTL that bounds bookmark longevity (H-008)
+  - F-024   # Term Search & Browse — the TermSearch.tsx clone of Search.tsx; identical broken-debouncer + dep-array + session-UUID shape (H-010 cross-clone)
+  - F-001   # Popular Entities Ranking — discovery sibling; the row-click view_count inflation loop closes from the search-result side (adjacent, not in this chain)
+related_concepts:
+  - Search Filter Facets
+  - Faceted Search
+  - Cross-Owner Enumeration
+  - Read-Collaborative Posture
+  - tsQuery Injection
+  - Search Session State
+related_drift_classes:
+  - cross_owner_facet_enumeration
+  - search_session_no_user_binding
+  - bearer_token_shaped_session_uuids
+  - tsquery_operator_injection_dos_via_persisted_query
+  - disabled_mode_bypass
+  - side_effect_update_on_every_get
+  - catalog_wide_count_design_my_objects_not_a_boundary
+  - workaround_doc_silent_on_facet_count_scoping
+  - searchid_url_param_promises_saved_search_id_translates_silently_to_mutable_session_row_uuid_bookmark_share_tab_all_break
+  - debouncer_recreated_on_every_facet_change_leading_true_each_new_instance_fires_immediately_1500ms_debounce_defeated
+new_drift_classes_proposed:
+  - facet_filter_query_param_name_promises_fulltext_but_binds_to_facet_row_name_substring_match
+---
+
+# Search Filter Facets — product-owner reflection
+
+## product_owner_narrative
+
+The Search Filter Facets surface is the **left-sidebar drill-down** of the Data Discovery
+Catalog page — the part of search that answers "of everything that matched, how many are
+TABLEs vs JOBs, how many belong to each owner, each tag, each datasource, each namespace,
+each status?" and lets the user click any of those buckets to narrow the result list. It is
+realised by two sibling reactive endpoints that operate on the same server-side search
+session: `getSearchFacetList` (`GET /api/search/{search_id}`) returns the seven-facet
+aggregate counts plus the catalog total, and `getFiltersForFacet`
+(`GET /api/search/{search_id}/facet/{facet_type}`) returns the paginated, countable options
+for a single facet type (TAGS / OWNERS / TYPES / GROUPS / STATUSES) (per
+`odd-platform__java__SearchController__controller-method__facets.md`:understanding +
+`SearchController.java:30-47`). The live product page promises exactly this: "you can refine
+your search results based on specific attributes, ensuring that you find exactly what you are
+looking for" — and lists the seven facets verbatim (per WebFetch
+`https://docs.opendatadiscovery.org/features/data-discovery/search` 2026-05-26, via the
+sidecar docs_link_semantic block).
+
+A user reaches this surface by landing on the Catalog page at `/search/*` — every
+authenticated user can, and (under `auth.type=DISABLED`) so can an unauthenticated caller on
+the network, because the route mount at `App.tsx:61` is BARE — no `WithPermissionsProvider`,
+no role check — and the backend has no `/api/search` SecurityRule, falling through to the
+catch-all `pathMatchers('/**').authenticated()` (per
+`odd-platform__ts__routes__route__search.md`:invariants +
+`odd-platform__java__SearchController__controller-method__facets.md`:security.authorization_assertions).
+The on-screen experience: a text input at the top (`<MainSearch>`), the seven-facet sidebar
+on the left (`<Filters/>`), and the result list with class tabs on the right (`<Results/>`).
+Each facet click toggles a checkbox; the orchestrator pushes the new selection to the server
+and the counts and result list refresh (per `odd-platform__ts__react-component__component__Search.md`:understanding,
+operations).
+
+The working parts a product owner would demo: free-text query (forwarded into Postgres
+full-text search), seven facets to slice by, a "My Objects" tab that scopes the RESULT list
+to entities the caller owns, deep-linkable URLs (`/search/{searchId}`) that let one user send
+a colleague "here's my filtered Catalog view," and infinite-scroll pagination on the results.
+Underneath, the session — the query string plus the selected filters plus the My-Objects
+toggle — is persisted as a row in the `search_facets` table keyed by a server-minted UUID, and
+that UUID is what rides in the URL bar (per
+`odd-platform__ts__routes__route__search.md`:concepts +
+`odd-platform__java__SearchController__controller-method__facets.md`:concepts.entities;
+`V0_0_1__init.sql:204-211`).
+
+The integration story: this surface feeds the rest of Data Discovery — clicking a result row
+opens the entity detail page (P-01) and feeds Popular Entities Ranking (F-001) by view_count;
+the same session model is cloned verbatim by Term Search & Browse (F-024, the Dictionary tab);
+and the session rows are evicted by the Housekeeping TTL job (F-010) at a 30-day default
+(`housekeeping.ttl.searchFacetsDays`) (per `system-mission.md` P-01 cross-pillar relationships
++ the LSN-018 coherence correction in
+`odd-platform__java__SearchController__controller-method__facets.md`:"Coherence correction").
+
+The edge cases a senior product owner would flag in a demo — and where the reflection below
+concentrates — are the gaps between what the seven-facet sidebar APPEARS to promise and what
+it does: the facet COUNTS are catalog-wide regardless of the My-Objects toggle and regardless
+of who is asking, so the sidebar quietly enumerates the whole platform's owner/tag/namespace
+cardinality (per security.owner_scoping + bugs[0]); the deep-linkable URL behaves like a
+shared mutable pointer, not a saved search (per
+`odd-platform__ts__routes__route__search.md`:stress_findings.request_inputs); a single typed
+query containing a parenthesis or colon can permanently break the session (per bugs[5] /
+REFACTOR-229); and the "Search" box is a Postgres `to_tsquery` expression input wearing a
+plain-search label.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |
+    "When I open the Catalog page and look at the facet sidebar, the COUNT next to each
+    facet bucket (e.g. 'Owner: alice (42)') reflects MY view of the catalog — i.e. entities
+    I can see, scoped the same way the 'My Objects' tab scopes them."
+  derivation: |
+    The seven-facet sidebar sits next to a 'My Objects' tab; a user's natural mental model
+    is that the facet counts move with the active scope. system-mission.md P-01 lists
+    'My Objects' filtering as a primary action.
+  seed_source: response-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Facet counts are computed CATALOG-WIDE with no OWNERSHIP join. The six aggregators in
+      ReactiveSearchFacetRepositoryImpl (entity-class 163-249, type 251-337, owner 339-372,
+      tag 374-407, group 409-452, status 454-534) apply only getDataEntityDefaultConditions
+      (HOLLOW=false, STATUS != DELETED, EXCLUDE_FROM_SEARCH NULL-or-false) — no owner-side
+      predicate. The 'My Objects' toggle (FacetStateDto.myObjects) scopes only which entities
+      appear in the RESULT LIST (SearchServiceImpl.java:105-111), not the facet COUNTS. The
+      only owner-derived input on the path, authIdentityProvider.fetchAssociatedOwner(), feeds
+      ONLY the optional myObjectsTotal field, shown ALONGSIDE the catalog-wide total — never
+      as a scoping predicate (SearchServiceImpl.java:128-130).
+    evidence:
+      - sidecar: odd-platform__java__SearchController__controller-method__facets.md
+        section: security.owner_scoping
+        cite: "ReactiveSearchFacetRepositoryImpl.java:163-534 (no OWNERSHIP join)"
+        note: "Every facet aggregator is catalog-wide; only myObjectsCount is owner-scoped and it is additive."
+      - sidecar: odd-platform__java__SearchController__controller-method__facets.md
+        section: implicit_adrs[1]
+        cite: "SearchServiceImpl.java:122-155"
+        note: "Mono.zip returns BOTH total and myObjectsTotal; myObjects is EXTRA scope, not a boundary."
+    operator_visible_failure: |
+      An operator who toggles 'My Objects' expecting the facet sidebar to narrow to their
+      slice sees the counts STAY at catalog-wide values — confusing on its own ("I filtered
+      to my objects but Owner: bob still shows 200?"). Worse, the counts are an information
+      leak: a user with zero owner association still sees every owner's name and per-owner
+      entity count, every tag's name and count, every namespace, every group. The sidebar is
+      a sharper enumeration surface than the result list because counts reveal existence even
+      for entities the user cannot open directly.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-002
+  hypothesis: |
+    "Drilling the OWNERS facet (GET /api/search/{id}/facet/OWNERS) returns the owners
+    relevant to ME or to entities I have a relationship with — not the entire platform's
+    owner directory."
+  derivation: |
+    Endpoint shape: a per-facet drill-down named facet/OWNERS in a multi-tenant-feeling
+    catalog implies caller-relevant scoping. Pillar P-09 documents an RBAC model around owners.
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      getFiltersForFacet(OWNERS) runs OWNER JOIN OWNERSHIP JOIN SEARCH_ENTRYPOINT JOIN
+      DATA_ENTITY with countDistinct(SEARCH_ENTRYPOINT.DATA_ENTITY_ID) ORDER BY count DESC
+      with LIMIT/OFFSET — catalog-wide, no caller-principal filter
+      (ReactiveSearchFacetRepositoryImpl.java:339-372). The endpoint has no @PreAuthorize and
+      no SecurityConstants.SECURITY_RULES entry for any /api/search/* path (verified zero
+      matches by grep), so authentication is required but authorization is not enforced. An
+      authenticated caller drills OWNERS to enumerate every owner name + per-owner count,
+      then TAGS / GROUPS / TYPES / STATUSES (and NAMESPACES via the aggregate response) to
+      enumerate the full catalog cardinality.
+    evidence:
+      - sidecar: odd-platform__java__SearchController__controller-method__facets.md
+        section: bugs_limitations_corner_cases[0]
+        cite: "ReactiveSearchFacetRepositoryImpl.java:339-372 + SecurityConstants.java (no rule)"
+        note: "Cross-owner facet enumeration — REFACTOR-024 family extended to the facet-counts surface."
+      - sidecar: odd-platform__java__SearchController__controller-method__facets.md
+        section: security.data_exposure[1]
+        cite: "SearchController.java:30-40"
+        note: "CountableSearchFilter[] for OWNERS enumerates every owner name + entity count to any authenticated user."
+    operator_visible_failure: |
+      Primary failure: any authenticated user (and, under auth.type=DISABLED, any
+      unauthenticated client on the network) obtains the platform's complete Owner directory
+      with per-owner data-entity counts — a reconnaissance map of which teams own how much.
+      Subtle failure: even a deployment that later scopes the RESULT list per owner would still
+      leak cardinality here, because the facet counts are a SEPARATE code path with no owner
+      predicate — an attacker who cannot open team-A's `customers_pii` can still watch the
+      OWNERS/TAGS counts increment as team-A ingests, inferring existence and growth.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-003
+  hypothesis: |
+    "Reaching the Catalog facet sidebar requires me to be logged in; an unauthenticated
+    request to the facet endpoints is rejected."
+  derivation: |
+    Pillar P-09 ("Configure security") promises auth gates the catalog. Endpoint-shape: a
+    /api endpoint is presumed authenticated.
+  seed_source: pillar
+  validation:
+    verdict: partial
+    actual_behavior: |
+      Under LOGIN_FORM / OAUTH2 / LDAP the catch-all pathMatchers('/**').authenticated()
+      (AuthorizationCustomizer.java:29-30) DOES require an authenticated session — so the
+      hypothesis holds for the three real auth modes. But under auth.type=DISABLED no
+      SecurityContext is populated and the missing SecurityRule combined with the
+      permitAll-equivalent fall-through makes both facet endpoints anonymously reachable. The
+      route mount is also bare (App.tsx:61, no WithPermissionsProvider), so even the SPA shell
+      renders for anonymous traffic in DISABLED mode.
+    evidence:
+      - sidecar: odd-platform__java__SearchController__controller-method__facets.md
+        section: bugs_limitations_corner_cases[2]
+        cite: "SearchController.java:30-47 + AuthorizationCustomizer.java:29-30"
+        note: "DISABLED-mode anonymous facet enumeration; the three real modes do require auth."
+      - sidecar: odd-platform__ts__routes__route__search.md
+        section: security.auth_mode_relevance
+        cite: "App.tsx:61 + LoginFormSecurityConfiguration.java:55-58"
+        note: "Route mount has no guard; backend redirects unauthenticated under real auth modes, lets anonymous through under DISABLED."
+    operator_visible_failure: |
+      DISABLED is documented as dev-only, but any operator who runs DISABLED on a
+      network-reachable host hands the full catalog-cardinality discovery surface to anonymous
+      callers — combined with H-002 (no owner predicate) and H-005 (bearer-token sessions),
+      DISABLED is total catalog reconnaissance with no credential. The partial verdict is
+      because the gate IS correct for the three modes operators run in production.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-004
+  hypothesis: |
+    "The 'query' parameter on the facet drill-down (GET /api/search/{id}/facet/{type}?query=…)
+    full-text-searches the facet options — typing 'snow' finds the 'Snowflake' datasource by
+    the same matching I'd expect from the main Search box."
+  derivation: |
+    Category F: the parameter is named `query`, the same word as the main full-text search box;
+    a user assumes both `query` inputs mean the same thing.
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The per-facet `query` param (SearchController.java:35) is bound to facet-ROW-NAME
+      containsIgnoreCase substring filtering (ReactiveSearchFacetRepositoryImpl.java:124, 152,
+      360, 394, 439), NOT to FTS. It is a different mechanism from the PERSISTED session
+      `FacetStateDto.query`, which IS bound to to_tsquery via
+      jooqFTSHelper.ftsCondition(SEARCH_ENTRYPOINT.SEARCH_VECTOR, state.getQuery()). Two
+      inputs share the name `query` but one is a plain substring match over option labels and
+      the other is a Postgres tsquery expression over the search vector.
+    evidence:
+      - sidecar: odd-platform__java__SearchController__controller-method__facets.md
+        section: concepts.invariants[3]
+        cite: "ReactiveSearchFacetRepositoryImpl.java:152, 124, 360, 394, 439"
+        note: "Per-facet query param = containsIgnoreCase on facet-row name; not FTS."
+      - sidecar: odd-platform__java__SearchController__controller-method__facets.md
+        section: concepts.invariants[4]
+        cite: "ReactiveSearchFacetRepositoryImpl.java:182, 267, 469, 582"
+        note: "The PERSISTED session query is the FTS one; the same word names two different behaviours."
+    operator_visible_failure: |
+      Mostly benign in the common case (substring match over short option labels does roughly
+      what a user wants when typing into a facet filter box). The drift bites at the edges: a
+      user who types FTS-style syntax (a prefix like 'cust*' or quoted phrase) into a facet
+      filter expecting full-text matching gets literal-substring behaviour and "no options
+      found" — indistinguishable from "no such facet option." The same word `query` meaning
+      substring-match here and tsquery-expression on the main box is a documentation and
+      mental-model hazard, distinct from the more severe injection drift (H-007).
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-005
+  hypothesis: |
+    "The search-session UUID in my URL is private to me — another user cannot read or change
+    my session even if they obtain the UUID."
+  derivation: |
+    Negative-space: a URL that survives reload and carries 'my' filter state is normally
+    assumed user-scoped. The DTO/route field is named `searchId` (implying 'my search').
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The search_facets table has NO owner_id / created_by / user_id column
+      (V0_0_1__init.sql:204-211). SearchServiceImpl.search creates a row without capturing the
+      principal (75-82); updateFacets accepts any caller for any UUID (84-96); fetchFacetState
+      is a raw UUID lookup with no ownership check (157-160); the repository get(UUID) is a raw
+      UUID-keyed UPDATE-RETURNING. Any authenticated user in possession of any other user's
+      UUID can READ, UPDATE, and DRIVE that session. The 122-bit UUID space makes brute force
+      infeasible, but URL leakage (copy/paste into a bug report, screenshot, Slack, referer
+      header) hands the recipient full read+update access.
+    evidence:
+      - sidecar: odd-platform__java__SearchController__controller-method__facets.md
+        section: security.known_security_gaps[1]
+        cite: "V0_0_1__init.sql:204-211 + SearchServiceImpl.java:75-82, 84-96, 157-160"
+        note: "Session-state has no per-user binding; bearer-token-shaped UUID."
+      - sidecar: odd-platform__ts__routes__route__search.md
+        section: bugs_limitations_corner_cases[4]
+        cite: "searchRoutes.ts:9 + batch-M SearchController.search REFACTOR-344"
+        note: "URL exposes the UUID; any authenticated user with it fetches the session."
+    operator_visible_failure: |
+      (a) An operator who pastes a /search/{uuid} URL into a public bug report exposes their
+      entire saved-filter state, including their My-Objects posture and free-text query (which
+      may contain PII / customer ids typed into the box). (b) A colleague who clicks a shared
+      link does not get an isolated copy — they share the live row (see H-009). (c) The URL
+      labelled by the field name `searchId` reads as "my saved search" but is a transient,
+      unowned, mutable session row.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-006
+  hypothesis: |
+    "The 1500ms debounce on facet clicks means rapidly clicking five facets sends ONE batched
+    update to the server, not five."
+  derivation: |
+    UI label / code intent: Search.tsx wires a useDebouncedCallback(..., 1500) around the
+    facet-update dispatch; the operator-visible promise of a debounce is request coalescing.
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The debouncer is wrapped in a useCallback whose deps include searchFacetParams, which
+      changes on every facet click — so each click CONSTRUCTS A NEW useDebouncedCallback
+      instance (Search.tsx:50-65). With {leading: true}, each new debouncer fires on its FIRST
+      call immediately, and the prior debouncer's trailing timer is unreachable. Effective
+      behaviour: every facet click dispatches PUT /api/search/{id}/facets immediately; the
+      1500ms debounce coalesces nothing. Five clicks in two seconds = five PUTs. This is the
+      byte-identical bug to the TermSearch.tsx clone.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Search.md
+        section: bugs_limitations_corner_cases (debouncer recreated)
+        cite: "Search.tsx:50-65 (useCallback deps include searchFacetParams)"
+        note: "Debouncer recreated per click; {leading:true} fires each new instance immediately."
+      - sidecar: odd-platform__ts__react-component__component__Search.md
+        section: stress_findings.name_behavior_pairs (updateSearchFacets)
+        cite: "Search.tsx:50-65 + P-189"
+        note: "DRIFT_NAME_VS_BEHAVIOR — name promises batching, implementation fires per click."
+    operator_visible_failure: |
+      Server-side load amplifies N-fold for rapid filter sessions — and crucially each extra
+      PUT is an additional invocation of the persisted-query path, widening the
+      tsquery-injection surface (H-007): a poisoned query is re-submitted on every click. The
+      user perceives nothing wrong directly (counts still update), so the cost is invisible to
+      them and falls on the backend; under the LSN-017 dep-array re-fire smell #3
+      (searchFacetsSynced read but missing from deps, Search.tsx:67-71) the effect can re-fire
+      on every render during the in-flight PUT window, multiplying further. Probe P-189 pins
+      the dispatch cardinality per click.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-007
+  hypothesis: |
+    "Typing any text into the Catalog 'Search' box returns matching results (or no matches) —
+    typing punctuation like an entity name with a colon or parenthesis is handled gracefully,
+    not catastrophically."
+  derivation: |
+    UI label 'Search' + the live doc's plain-language framing ("refine your search results")
+    promise a forgiving free-text box. Negative-space: a search box should never be able to
+    permanently break itself.
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Typed text is dispatched verbatim (no client-side sanitisation — MainSearchInput.tsx:42-48)
+      into SearchFormData.query and persisted into search_facets.query_string. The backend
+      JooqFTSHelper.tsQuery (164-168) splits on space, appends ':*', joins with '&', and inlines
+      the result into a raw to_tsquery(?) (100-105) with NO escaping of tsquery operators
+      (! ( ) : <-> & | ' \). A query like 'foo ) | (bar' persists, then EVERY subsequent facet
+      aggregator that applies ftsCondition fails at to_tsquery parse time with Postgres 42601,
+      500-ing every facet read for that session until the row mutates or the 30-day TTL evicts
+      it. (Separately, the highlight path interpolates the same untrusted text into ts_headline
+      via String.formatted — a TRUE, confirmed-exploitable SQL injection, already filed as a
+      private security advisory: PLT-109 / GHSA-rjp9-9vgm-q94c.)
+    evidence:
+      - sidecar: odd-platform__java__SearchController__controller-method__facets.md
+        section: bugs_limitations_corner_cases[5]
+        cite: "JooqFTSHelper.java:100-105, 164-168 + ReactiveSearchFacetRepositoryImpl.java:182, 267, 469, 582"
+        note: "Persisted query reaches to_tsquery unescaped; facet reads 500 permanently (DoS-by-poisoned-session)."
+      - sidecar: odd-platform__ts__react-component__component__Search.md
+        section: bugs_limitations_corner_cases (FTS-injection)
+        cite: "MainSearchInput.tsx:42-48 + JooqFTSHelper.java:164-168"
+        note: "UI offers ZERO mitigation — no max-length, no metacharacter filter, no client validation."
+    operator_visible_failure: |
+      An ordinary user searching for an entity whose name contains a colon, parenthesis, or
+      other tsquery metacharacter (common in technical dataset names) gets a 500 and a
+      session that is permanently broken — every subsequent facet click also 500s — with no
+      on-screen explanation; refreshing repeats the failure because the poisoned query is in
+      the persisted row and the URL still carries the poisoned UUID. Because the session is
+      bearer-token-shaped (H-005), a poisoned UUID can be SHARED as a denial-of-service vector.
+      The highlight-path SQL injection is the higher-severity twin (exfiltration, not just
+      DoS) and is already under responsible disclosure.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-008
+  hypothesis: |
+    "I can bookmark my filtered Catalog URL (/search/{uuid}) and return to the same view days
+    or weeks later — the URL is a durable, saved search."
+  derivation: |
+    Category F: the route param `searchId` + the RESTful URL form /search/{searchId} promise
+    a persistent saved-search id (search route sidecar request_inputs Q1). Negative-space: a
+    bookmarkable URL is expected to be durable.
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The UUID is a transient server-side SESSION row, not a saved search. It has no
+      'saved-search' semantics: it is mutated in place on every facet change (PUT /facets) and
+      is evicted by SearchFacetsHousekeepingJob at a 30-day default
+      (housekeeping.ttl.searchFacetsDays — F-010; confirmed by the LSN-018 coherence
+      correction and SHB-183, superseding the earlier 'no reaper / unbounded growth' claim).
+      After eviction, GET /api/search/{uuid} returns 404; Search.tsx:44-48 has no .rejected
+      handler and no fall-back-to-create, so the page is permanently broken (empty Catalog /
+      stale UUID in the URL) with no recovery path. Probe P-168 pins the exact TTL window.
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__search.md
+        section: stress_findings.request_inputs (searchId, Q5)
+        cite: "searchRoutes.ts:4-5 + ToolbarTabs.tsx:38 + Search.tsx:37-42"
+        note: "DRIFT_INPUT_NAME_VS_IMPLEMENTATION — searchId is a mutable session pointer, not a saved-search id."
+      - sidecar: odd-platform__ts__react-component__component__Search.md
+        section: bugs_limitations_corner_cases (session-expiry)
+        cite: "Search.tsx:44-48 + F-010 SearchFacetsHousekeepingJob 30-day TTL"
+        note: "Stale UUID after TTL → 404 → no .rejected reducer → permanently broken page, no recovery."
+    operator_visible_failure: |
+      A user who bookmarks /search/{uuid} or shares it in a Slack message finds it works for a
+      while and then silently 404s after 30 days, landing on an empty Catalog with no
+      explanation of why their "saved search" vanished. Clicking the top-nav 'Catalog' tab
+      (searchPath() with no arg) ALSO drops the UUID and creates a fresh empty session — so
+      even within a single visit the "saved search" does not survive a tab click. The
+      mismatch between the durable-saved-search the URL form implies and the transient mutable
+      session it actually is the load-bearing Category F drift.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-009
+  hypothesis: |
+    "When I share my /search/{uuid} deep-link with a colleague, they see the facet/query state
+    I INTENDED to share — a stable snapshot of my filtered view."
+  derivation: |
+    The deep-link-sharing affordance (the route surfaces the UUID specifically so a filtered
+    Catalog view can be shared) implies a shareable snapshot. Negative-space: a shared link is
+    expected to be a read-only-ish view, not a live shared mutable document.
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      Static reading says CONTRADICTED: the recipient reads the SAME live search_facets row
+      (no user binding — H-005), which the originator mutates in place on every facet click
+      (PUT /facets) and which both parties' GETs side-effect-write (last_accessed_at). The URL
+      behaves as 'pointer-to-whatever-this-row-currently-holds', not a snapshot — and the
+      recipient's own facet clicks (PUTs on the shared UUID) overwrite the originator's state.
+      What static reading cannot pin is the OBSERVABLE two-actor timeline shape (does B see a
+      mid-edit partial state? does B's click bidirectionally stomp A? does the GET-side
+      last_accessed_at UPDATE contend on the row lock under two concurrent clients?) — that
+      requires running the system. Probe P-200 emitted to resolve.
+    evidence:
+      - sidecar: odd-platform__ts__routes__route__search.md
+        section: stress_findings.request_inputs (searchId, Q5 consequence 2)
+        cite: "batch-M SearchController.updateFacets (mutates same row) + searchRoutes.ts:14-16"
+        note: "Cross-user sharing exposes mutable latest state, not the intended snapshot."
+      - sidecar: odd-platform__java__SearchController__controller-method__facets.md
+        section: bugs_limitations_corner_cases[6] / side_effect_update_on_every_get
+        cite: "ReactiveSearchFacetRepositoryImpl.java:99-106"
+        note: "GET is a write (last_accessed_at UPDATE) → row-lock contention under concurrent access."
+    operator_visible_failure: |
+      A user shares a filtered view; the recipient opens it 30 seconds later and sees a
+      DIFFERENT state because the originator kept clicking (each click mutated the shared row);
+      or the recipient adjusts a facet to explore and silently overwrites the originator's
+      filter selections, so the originator's next interaction inherits the recipient's filters.
+      The shared-mutable-document behaviour is surprising for what looks like a shared link to
+      a saved view. Severity finalised on probe outcome.
+    probe_id: P-200
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+
+- id: H-010
+  hypothesis: |
+    "The Dictionary tab's faceted-search (Term Search) and this Catalog faceted-search behave
+    consistently — the same interaction model, the same reliability, so what I learn on one
+    works on the other."
+  derivation: |
+    system-mission.md P-06 cross-links Term Search to P-01; the senior-PO consistency question
+    (is the interaction consistent with how the same task is done elsewhere in the platform?).
+    Search.tsx is documented as the canonical instance, TermSearch.tsx the clone.
+  seed_source: cross-pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The two surfaces ARE consistent — including in their defects. TermSearch.tsx is a verbatim
+      clone of Search.tsx: identical session-create + URL-restore + facet-debouncer +
+      WithPermissionsProvider pattern, with the SAME broken-debouncer (H-006), the SAME
+      LSN-017 dep-array smells, the SAME session-UUID-no-user-binding shape, and the SAME
+      typed-text-bypasses-debouncer FTS path. The interaction model is consistent; the
+      reliability is consistently flawed. A fix to Search.tsx must be mirrored to
+      TermSearch.tsx by parity, and vice-versa.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Search.md
+        section: implicit_adrs (server-side session model — canonical/older instance)
+        cite: "Grep PageWithLeftSidebar.MainContainer returns both Search.tsx and TermSearch.tsx"
+        note: "Search.tsx canonical, TermSearch.tsx clone — identical pattern, identical bugs."
+      - sidecar: odd-platform__ts__react-component__component__Search.md
+        section: bugs_limitations_corner_cases (cross-clone parity)
+        cite: "Search.tsx:50-65 vs TermSearch.tsx:50-64 (PLT-017)"
+        note: "Broken debouncer already filed against the TermSearch clone (PLT-017); same bug, canonical site here."
+    operator_visible_failure: |
+      Consistency is confirmed as a POSITIVE for interaction-model learnability, but it means a
+      defect is platform-wide, not local: every session-based faceted search (Catalog Search,
+      Dictionary/Term Search, and per the SHB-016 cross-cutting note also Query Examples and
+      Reference Data) carries the same bearer-token-session + broken-debouncer + tsquery shape.
+      The maintainer should treat these as a single fix surface, not four independent bugs.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: none
+
+- id: H-011
+  hypothesis: |
+    "The facet drill-down list is bounded — asking for a facet's options returns a sane,
+    paginated number of rows; I can't accidentally (or maliciously) request a million."
+  derivation: |
+    Endpoint shape: getFiltersForFacet takes page + size params; a well-behaved list endpoint
+    is expected to clamp page size.
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Pagination is unbounded at every layer. Controller params Integer page, Integer size
+      (SearchController.java:33-34) carry no validation annotations; the OpenAPI PageParam /
+      SizeParam (components.yaml:4213-4229) have no minimum: or maximum:; the repository
+      computes OFFSET = (page - 1) * size at multiple sites with no clamping. size=1_000_000
+      triggers a single facet aggregator query bounded only by Postgres / network buffers and
+      table cardinality; page=0 produces a negative OFFSET (implementation-defined).
+    evidence:
+      - sidecar: odd-platform__java__SearchController__controller-method__facets.md
+        section: bugs_limitations_corner_cases[3]
+        cite: "SearchController.java:33-34 + components.yaml:4213-4229 + ReactiveSearchFacetRepositoryImpl.java:129, 157, 315, 369, 404, 449, 515"
+        note: "Unbounded pagination at controller + OpenAPI + repository; no @Min/@Max."
+    operator_visible_failure: |
+      A careless or malicious size=1_000_000 produces an arbitrarily large response and an
+      unbounded jOOQ query on the largest catalog tables (the OWNERS facet is a 4-way join) —
+      a resource-exhaustion / DoS lever requiring no special privilege beyond an authenticated
+      session (anonymous under DISABLED). page=0's negative OFFSET is an undefined-behaviour
+      surface. Same pattern as the alert and activity endpoint families — a platform-wide
+      missing-clamp class rather than a one-off.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: "Cross-owner facet enumeration — facet/OWNERS (and TAGS/GROUPS/TYPES/NAMESPACES) returns the whole platform's cardinality with no OWNERSHIP join, no @PreAuthorize."
+  dedup_status: already_tracked
+  tracked_as: PLT-090
+  proposed_fix_anchor: "Add OWNERSHIP join + per-principal predicate to the 6 aggregators in ReactiveSearchFacetRepositoryImpl.java:163-534, OR document the read-collaborative posture as deliberate (PLT-090 Defect 2)."
+- hypothesis_id: H-005
+  severity: HIGH
+  one_line: "search_facets has no owner_id/created_by — any authenticated user with the UUID reads+updates+drives another user's session (bearer-token-shaped session)."
+  dedup_status: already_tracked
+  tracked_as: PLT-090
+  proposed_fix_anchor: "Add owner_id to search_facets (V0_0_1__init.sql:204-211) populated from SecurityContext at create-time + enforce on read/update (PLT-090 Defect 1)."
+- hypothesis_id: H-007
+  severity: HIGH
+  one_line: "Typed search text reaches to_tsquery unescaped — a parenthesis/colon permanently poisons the session (500 on every facet read until 30-day TTL); UI offers zero mitigation."
+  dedup_status: already_tracked
+  tracked_as: PLT-090
+  distinct_from: PLT-109
+  proposed_fix_anchor: "Escape tsquery operators in JooqFTSHelper.tsQuery:164-168 OR validate query_string at create-time (PLT-090 Defect 3). PLT-109/GHSA-rjp9-9vgm-q94c is the DISTINCT, separately-filed highlight-path SQL-injection (ts_headline String.formatted exfiltration) — same untrusted input, different sink and severity class; both fixes land at the JooqFTSHelper / highlight boundary."
+- hypothesis_id: H-006
+  severity: MEDIUM
+  one_line: "Facet debouncer recreated on every click (useCallback deps include searchFacetParams + {leading:true}) — the 1500ms debounce coalesces nothing; N clicks = N PUTs; widens the tsquery surface."
+  dedup_status: already_tracked
+  tracked_as: PLT-017
+  proposed_fix_anchor: "Search.tsx:50-65 is the CANONICAL site of the bug PLT-017 already files against the TermSearch.tsx clone — use a ref to capture latest state without rebuilding the debouncer; fix both files by parity. (PLT-017 names TermSearch.tsx:50-64; the Catalog instance Search.tsx:50-65 is the older/canonical twin and is currently outside PLT-017's stated Where-block — extend PLT-017's scope to cover Search.tsx, do not file a duplicate.)"
+
+### caveat_candidates
+- hypothesis_id: H-001
+  one_line: "Facet COUNTS are catalog-wide regardless of the My-Objects toggle and regardless of caller — My Objects scopes the result list, not the counts."
+  dedup_status: already_tracked
+  tracked_as: DOC-260
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/features/data-discovery/search
+- hypothesis_id: H-003
+  one_line: "Facet endpoints are anonymously reachable under auth.type=DISABLED (correct gate under LOGIN_FORM/OAUTH2/LDAP) — DISABLED on a network host = anonymous catalog reconnaissance."
+  dedup_status: already_tracked
+  tracked_as: DOC-260
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/features/data-discovery/search
+- hypothesis_id: H-004
+  one_line: "The per-facet `query` param is substring-match on option names, NOT full-text — same word `query` means tsquery on the main box and containsIgnoreCase here."
+  dedup_status: net_new
+  distinct_from: DOC-260
+  recommended_log_as: doc-gap candidate — extend DOC-260 with a 7th caveat (per-facet query is substring-match, not FTS); routes to new drift_class facet_filter_query_param_name_promises_fulltext_but_binds_to_facet_row_name_substring_match
+- hypothesis_id: H-008
+  one_line: "/search/{searchId} is a transient mutable session row evicted at 30-day TTL, not a saved search — bookmarks 404 after 30 days; tab-click drops it; no recovery path in the UI."
+  dedup_status: already_tracked
+  tracked_as: DOC-260
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/features/data-discovery/search
+- hypothesis_id: H-009
+  one_line: "A shared /search/{uuid} deep-link is a live shared mutable pointer, not a snapshot — sender and recipient stomp each other's facet state."
+  dedup_status: already_tracked
+  tracked_as: DOC-260
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/features/data-discovery/search (pending P-200 confirmation of the two-actor shape)
+- hypothesis_id: H-011
+  one_line: "Facet drill-down pagination is unbounded at controller + OpenAPI + repository — size=1_000_000 is a resource-exhaustion lever; page=0 gives a negative OFFSET."
+  dedup_status: already_tracked
+  tracked_as: DOC-260
+  recommended_log_as: caveat in https://docs.opendatadiscovery.org/features/data-discovery/search
+
+### probes_emitted
+- probe_id: P-200
+  hypothesis_id: H-009
+  probe_path: "lineage/odd-platform/probes/P-200.yaml"
+
+### probes_cited_existing
+- probe_id: P-168
+  hypothesis_id: H-008
+  probe_path: "lineage/odd-platform/probes/P-168.yaml"
+  note: "Pins the search_facets TTL window (30-day default) that bounds bookmark longevity. Static hypothesis in P-168 ('no reaper') is stale per LSN-018/SHB-183 — the TTL DOES exist; the probe still usefully pins the value."
+- probe_id: P-188
+  hypothesis_id: H-007
+  probe_path: "lineage/odd-platform/probes/P-188.yaml"
+  note: "Pins the typed-text → poisoned-session end-to-end (facet-read 500 after a metacharacter query)."
+- probe_id: P-189
+  hypothesis_id: H-006
+  probe_path: "lineage/odd-platform/probes/P-189.yaml"
+  note: "Pins the dispatch cardinality per facet-click batch (broken-debouncer N-PUTs)."
+
+### validation_gaps
+- sidecar: odd-platform__java__SearchController__controller-method__facets.md
+  field_insufficient: "side_effect_update_on_every_get + bugs_limitations_corner_cases[7] still carry the pre-LSN-018 'last_accessed_at never read / rows accumulate forever / no TTL' sub-claim in places (bugs[7], performance.scaling_characteristics[1], known_performance_gaps[1,4]); the in-file Coherence-correction note (2026-05-19) corrects implicit_adrs[2] and bugs[6] but the unbounded-growth and never-read assertions still appear inline in the security/performance prose."
+  proposed_refresh: "Next file-analyser refresh of SearchController.facets should propagate the LSN-018 correction to ALL inline occurrences (the column IS read by SearchFacetsHousekeepingJob; rows ARE evicted at 30-day TTL) so a future reflection does not have to reconcile contradictory facets within one sidecar. The GET-is-a-write + row-lock observations remain valid and should be kept."
+
+### doc_drift_findings
+- hypothesis_id: H-004
+  doc_url: "https://docs.opendatadiscovery.org/features/data-discovery/search"
+  doc_says: "Describes faceted search generically ('refine your search results based on specific attributes'); does not distinguish the main full-text query from the per-facet option-filter."
+  code_does: "The per-facet `query` param is a containsIgnoreCase substring match on option labels (ReactiveSearchFacetRepositoryImpl.java:124,152,360,394,439), NOT full-text — a different mechanism from the FTS main query."
+  recommended_log_as: doc-gap — fold into DOC-260 as a 7th caveat (net-new vs the 6 currently enumerated there)
+- hypothesis_id: H-001
+  doc_url: "https://docs.opendatadiscovery.org/features/data-discovery/search"
+  doc_says: "Lists the 7 facets; silent on whether facet counts reflect per-user / per-owner scope (the sidecar fetch explicitly notes 'Facet count scoping: Not documented')."
+  code_does: "Facet counts are catalog-wide; My Objects scopes the result list only (SearchServiceImpl.java:105-111, 122-155)."
+  recommended_log_as: already covered by DOC-260 caveat 1 (session-UUID + cross-owner facet enumeration) — corroboration, not net-new
+
+## maintainer_notes
+
+(no prior reflection — empty; reserved for maintainer hand-edits preserved across refreshes)

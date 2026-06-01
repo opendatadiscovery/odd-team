@@ -1,0 +1,146 @@
+---
+probe_id: P-361
+feature_id: F-024
+test_class: integration
+emitted_by: feature-reflector
+status: pending-reflection-verification
+emitted_in_reflection: lineage/odd-platform/feature-reflections/detail/F-024.yaml
+emitted_for_hypothesis: H-008
+emitted_at: 2026-06-01T00:00:00Z
+verified_against_commit: 43d13eb
+prompt_version: probe-runner/0.1.0
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Quoting hypothesis H-008 verbatim:
+  "When a user opens a Dictionary-tab deep-link / bookmark whose session UUID has
+  been evicted by the 30-day SearchFacetsHousekeepingJob TTL, the UI recovers —
+  it starts a fresh session and shows the catalog — rather than showing a
+  permanently broken empty page that repeats on every refresh."
+
+  RATIONALE FOR PROBE-NEEDED: the static chain says contradicted (TermSearch.tsx
+  bugs_limitations_corner_cases[5] + downstream_side_effects: the slice has NO
+  `getTermsSearch.rejected` reducer, the URL keeps the stale UUID, no fallback
+  navigation fires). BUT confirming the END-TO-END operator experience — that the
+  GET /api/termsearch/{evicted-uuid} actually returns a non-2xx that the slice
+  silently swallows, AND that a reload genuinely repeats the broken state — needs
+  the running stack: the server-side eviction + the 404/empty contract are owned
+  by the un-enriched TermSearchService, and the slice's silent-failure behaviour
+  is best pinned by a real browser navigation, not by reading reducers.
+
+  PASS (H-008 -> confirmed) if, after eviction, opening /termsearch/{uuid} shows
+  the catalog (a fresh session was created OR a "session expired, start fresh"
+  affordance rendered) and a reload is not broken.
+  FAIL (H-008 -> contradicted; route to bug-candidate) if opening the evicted URL
+  shows an empty/frozen page, the URL keeps the dead UUID, and a reload repeats it
+  with no recovery affordance.
+---
+
+# P-361 — Dictionary-tab stale-session-UUID recovery path (H-008; TermSearch slice has no .rejected reducer)
+
+arrange:
+  - kind: docker-compose-up
+
+  # Seed at least one term so a healthy session would show a non-empty catalog —
+  # this lets the assertion distinguish "broken page" from "legitimately empty".
+  - kind: http
+    method: POST
+    path: /api/terms
+    base: "http://localhost:18080"
+    body: |
+      {"name": "ProbeTermRecovery", "definition": "p361 recovery", "namespace_name": "p361_ns"}
+
+  # Create a term-search session so we have a real UUID + a real search_facets row.
+  - kind: http
+    method: POST
+    path: /api/termsearch
+    base: "http://localhost:18080"
+    body: |
+      {"query": "", "pageSize": 30, "filters": {}}
+    capture_json_as: session_create
+
+  # Simulate the 30-day TTL eviction WITHOUT waiting: the SearchFacetsHousekeepingJob
+  # deletes rows older than housekeeping.ttl.search_facets_days (default 30). We
+  # either (a) directly DELETE the row, or (b) backdate it and let the job run.
+  # Direct DELETE is the deterministic choice; backdate+job is the higher-fidelity
+  # variant the harness may prefer.
+  - kind: sql
+    query: |
+      DELETE FROM search_facets WHERE id = '{{session_create.searchId}}'
+    note: |
+      Term-search sessions persist in the SAME `search_facets` table as the
+      data-entity Search sessions (F-024 description + concepts.yaml — the
+      TermSearchService session model shares the search_facets surface +
+      SearchFacetsHousekeepingJob TTL). If a future schema splits term sessions
+      into a separate table, the harness must target that table instead.
+
+act:
+  # Browser navigation to the evicted deep-link — this is the operator's bookmark /
+  # Slack-link path. The headless browser must execute the SPA so the slice's
+  # missing-.rejected-reducer behaviour is exercised (an API-only GET would only
+  # show the raw status; the operator-visible "frozen page" is a UI behaviour).
+  - kind: browser-open
+    base: "http://localhost:18080"
+    path: "/termsearch/{{session_create.searchId}}"
+    wait_for_idle_ms: 4000
+    capture_url_after_as: url_after_open
+    capture_dom_text_as: dom_after_open
+
+  # The raw GET to capture the server-side eviction contract (404 vs 200-empty).
+  - kind: http
+    method: GET
+    path: "/api/termsearch/{{session_create.searchId}}"
+    base: "http://localhost:18080"
+    capture_status_as: evicted_get_status
+
+  # Reload the same URL to test the "repeats on every refresh / no recovery" half.
+  - kind: browser-reload
+    wait_for_idle_ms: 4000
+    capture_url_after_as: url_after_reload
+    capture_dom_text_as: dom_after_reload
+
+observe:
+  - kind: noop
+    note: "DOM text + URL-after + GET status captured in act"
+
+assert:
+  # H-008 confirmed requires EITHER a fresh session (URL changed to a new UUID or
+  # back to bare /termsearch) OR an explicit recovery affordance in the DOM.
+  # Contradicted = the DOM shows no recovery affordance AND the URL still carries
+  # the dead UUID AND the reload is identically broken.
+  - "('start fresh' in dom_after_open.lower()) or ('session expired' in dom_after_open.lower()) or (url_after_open != ('http://localhost:18080/termsearch/' + session_create.searchId))"
+  # The reload must not be a verbatim repeat of a broken empty page.
+  - "url_after_reload == url_after_open or ('start fresh' in dom_after_reload.lower())"
+
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  related_features: [F-010, F-017]
+  related_retrospectives: [LSN-018]
+  related_concepts: ["Search Facets Housekeeping (TTL eviction)", "Term Search Session (Dictionary tab)"]
+  reflection: "lineage/odd-platform/feature-reflections/detail/F-024.yaml#H-008"
+  note: |
+    The data-entity Search sibling (F-017, Catalog.tsx) has the same server-side
+    session + same SearchFacetsHousekeepingJob TTL. If this probe contradicts H-008
+    for the Term surface, check whether F-017's Catalog.tsx has a .rejected reducer
+    that the Term slice lacks — if so, the bug is Term-specific and the fix anchor is
+    "add getTermsSearch.rejected to termSearch.slice.ts extraReducers + navigate to
+    bare /termsearch on reject". If F-017 is ALSO broken, it is a shared session-UX
+    gap across both faceted-search surfaces.
+
+realism_caveats: |
+  - LOCAL-ONLY (APPROACH.md §9 rule 12): docker-compose + local Postgres + a headless
+    browser (Playwright / Puppeteer) + a direct SQL DELETE to simulate eviction. No
+    cloud, no waiting 30 days, no managed DB.
+  - The DELETE-row approach assumes term sessions live in `search_facets`. This is
+    asserted from the F-024 feature-flow description + concepts.yaml but NOT verified
+    at primary source (TermSearchService is un-enriched). If the DELETE affects zero
+    rows, the harness must first SELECT the row to confirm the table/PK before
+    drawing a verdict — a zero-row DELETE would make the probe a no-op, not a PASS.
+  - browser-open under auth.type=DISABLED (odd-minimal default) reaches /termsearch
+    without login. Under LOGIN_FORM the harness logs in first.
+  - The string matches ('start fresh' / 'session expired') are the reflection's
+    working recovery-affordance markers; the maintainer should adjust to whatever
+    copy the UI actually ships if/when a recovery path is added.

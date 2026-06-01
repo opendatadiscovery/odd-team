@@ -1,0 +1,936 @@
+---
+feature_id: F-018
+pillar_anchored_id: P-01:F-006
+pillar: P-01 Data Discovery
+feature_name: "Manual Object Tagging — operator + ingestion-driven Tag directory with side-channel mint paths"
+reflected_at: 2026-06-01T00:00:00Z
+reflected_at_commit: 43d13eb
+prompt_version: feature-reflector/0.2.0
+contributing_sidecars_read:
+  - odd-platform__java__TagController__controller-method__getPopularTagList.md
+  - odd-platform__java__TagController__controller-method__createTag.md
+  - odd-platform__java__TagController__controller-method__updateTag.md
+  - odd-platform__java__TagController__controller-method__deleteTag.md
+  - odd-platform__java__service__TagServiceImpl.md
+  - odd-platform__java__repository__reactive__repository__ReactiveTagRepositoryImpl.md  # referenced via feature-flow hop-3 evidence + cross-citation in the controller/service sidecars
+  - odd-platform__java__TermController__controller-method__createTermTagsRelations.md
+  - odd-platform__java__DatasetFieldController__controller-method__updateDatasetFieldTags.md
+  - odd-platform__openapi__tags__openapi-tag__tag.md
+  - odd-platform__ts__react-component__component__PopularStrip.md  # read to CONFIRM it is the popular DATA-ENTITY strip, NOT the tag strip — the tag-strip UI surface (TopTagsList) has no standalone sidecar
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-discovery/tagging"
+    last_verified_at: "2026-05-21T00:00:00Z"
+    last_verified_status: 200
+    note: |
+      Verified via the contributing sidecars' docs_link_semantic blocks (TagController
+      controller-class WebFetch 2026-05-20 status 200; createTag / getPopularTagList /
+      `tag` openapi sidecars WebFetch 2026-05-21 status 200). Not re-fetched live this
+      run. The sidecar fetches agree: the live tagging.md page documents
+      TAG_CREATE / TAG_UPDATE / TAG_DELETE + the TAG_ASSIGNMENT_UPDATED activity event,
+      and (per DOC-190, status=done 2026-05-28) NOW also carries the three load-bearing
+      caveats (listMostPopular ranking, five side-channel mints, three-way audit
+      asymmetry) + the case-sensitivity note. Doc is cross-reference only (Rule 1):
+      where the live page is silent or the caveat post-dates the code, the truth is
+      whatever the code does.
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions"
+    last_verified_at: "2026-05-21T00:00:00Z"
+    last_verified_status: 200
+    note: |
+      Permissions catalog. Per the getPopularTagList sidecar's inherited verification:
+      lists the three Management-scope TAG_* permissions but historically did NOT
+      document that GET /api/tags has no RBAC gate beyond authenticated(). DOC-190's AC
+      links the four tag-permission rows to the new tagging.md caveats.
+hypothesis_summary:
+  total: 14
+  confirmed: 1
+  contradicted: 10
+  partial: 2
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-005
+    severity: HIGH
+    one_line: |
+      "Only TAG_CREATE mints catalog vocabulary" is false — a user holding ONLY a
+      per-surface tag-assign permission (DATA_ENTITY / TERM / DATASET_FIELD _TAGS_UPDATE),
+      or the unauthenticated ingestion path, mints arbitrary global Tag-directory rows
+      visible to every user; getOrCreateTagsByName never consults TAG_CREATE.
+related_feature_flows:
+  - F-017   # Search Filter Facets — the Tag facet is the catalog-wide enumeration surface that side-channel-minted tags pollute (F-018 batch-ZA + H-008 here)
+  - F-001   # Popular Entities Ranking — sibling discovery surface with the SAME paginate-before-aggregate structural class (PopularStrip), and the row-click view_count loop
+  - F-002   # Term-to-Entity Linkage / Business Glossary — the term-tag write path (createTermTagsRelations) is one of the side-channel mint arms; PLT-101 tracks the term RBAC side-doors
+  - F-029   # Platform Public API Contract — the spec-wide no-securitySchemes / no-4xx gap that the `tag` openapi rollup inherits (H-011)
+related_concepts:
+  - Manual Object Tagging
+  - Tag Directory (global, namespace-free vocabulary)
+  - Side-channel Mint Surface
+  - Read-Collaborative Posture
+  - Audit-log Presence Asymmetry
+  - Name-vs-Behaviour Drift
+  - Collector-Ownership Guard (external flag)
+related_drift_classes:
+  # drift classes from F-018's own drift_class_summary that THIS reflection re-derived top-down and confirmed
+  - data_entity_tags_update_side_channel_into_global_tag_directory
+  - name_behavior_drift_list_most_popular_paginate_inside_cte_yields_oldest_by_id_not_most_popular_by_count
+  - get_popular_tag_list_no_security_rule_open_read_to_any_authenticated_user
+  - delete_tag_cascade_asymmetric_tag_to_dataset_field_rows_orphaned_after_soft_delete
+  - delete_tag_data_entity_side_search_vector_not_refreshed_deleted_tag_token_lingers
+  - delete_tag_fts_refresh_runs_after_tag_to_term_hard_delete_so_term_vector_cleanup_no_ops
+  - external_guard_data_entity_side_only_dataset_field_external_origin_unprotected_on_update_and_delete
+  - update_dataset_field_tags_relation_insert_relies_on_unset_origin_pojo_plus_db_column_default
+  - ids_param_entity_ids_description_filters_by_tag_id_lsn020_class_input_name_drift
+  - tag_name_no_validation_no_length_cap_no_charset_filter
+  - case_sensitive_listbynames_silent_duplicate_rows
+  - update_tag_response_tag_omits_external_and_usedcount_maptotag_pojo_overload
+  - term_tags_update_third_relation_write_path_no_activity_log_no_external_carve_out
+  - external_tag_guard_protects_collector_pushed_tags_from_ui_overwrite_positive_invariant
+new_drift_classes_proposed:
+  - tag_assign_ui_no_signpost_that_a_novel_name_mints_a_global_directory_row_seen_by_every_user
+  - tag_directory_ui_surface_not_enriched_reflection_judges_tag_strip_and_autocomplete_from_inline_batch_notes_only
+---
+
+# Manual Object Tagging — product-owner reflection
+
+## product_owner_narrative
+
+Manual Object Tagging is the platform's **free-form labelling capability** inside the Data
+Discovery pillar (P-01:F-006, "Manual Object Tagging (3 TAG_* permissions)" in
+`system-mission.md`'s P-01 sub-feature seed). The product promise to a new customer is
+simple: "put your own vocabulary on the catalog — apply tags like `pii`, `gold-layer`, or
+`deprecated` to any data entity, dataset field, or glossary term, and use those tags to
+find things again." Three role-based permissions govern the tag *vocabulary* — TAG_CREATE
+("Create a new tag in the catalog vocabulary"), TAG_UPDATE ("Edit tag names or Important
+flag status"), TAG_DELETE ("Remove tags from vocabulary") — exactly as the live tagging.md
+page describes (per WebFetch 2026-05-21 status 200, via the createTag sidecar
+docs_link_semantic). The audience is the whole catalog readership: data engineers, analysts,
+stewards, and ML engineers who annotate entities and then search by tag (per the P-01
+audiences list).
+
+A user interacts with tagging through **two faces of the same global directory**. The READ
+face is `GET /api/tags` (the `getPopularTagList` operation): it feeds the Catalog Overview's
+"Top Tags" chip strip, the Search page's Tag filter facet, and the tag dropdown on every
+entity-detail page (per `getPopularTagList.md`:understanding + audiences). The WRITE face is
+not one endpoint but **five**: the dedicated `POST /api/tags` directory-create (TAG_CREATE),
+plus four side paths that mint directory rows as a side effect of *assigning* a tag —
+`PUT /api/dataentities/{id}/tags` (DATA_ENTITY_TAGS_UPDATE), `PUT /api/terms/{id}/tags`
+(TERM_TAGS_UPDATE), `PUT /api/datasetfields/{id}/tags` (DATASET_FIELD_TAGS_UPDATE), and the
+unauthenticated Collector ingestion path — all four of which route through
+`TagServiceImpl.getOrCreateTagsByName` / `getOrInjectTagByName` (per `TagServiceImpl.md`:
+understanding + upstream_callers; `TagServiceImpl.java:80-94, 144-159`). The directory itself
+is **flat, global, and namespace-free** — the `tag` table has no `owner_id` column, so every
+tag any user mints is immediately visible to every other user (per `TagServiceImpl.md`:
+invariants; `getPopularTagList.md`:security.owner_scoping `N/A`).
+
+The working parts a product owner would demo: you can **search the tag list** by substring
+(`query`, case-insensitive), **filter by tag id** (`ids`), and **paginate** (`page`/`size`);
+you can **rename** a tag or toggle its **Important** flag (which floats it in some views);
+you can **delete** a tag; and Collector-pushed (`external`) tags are **protected from UI
+overwrite** — a tag the ingestion pipeline owns cannot be renamed or deleted from the UI
+(per `updateTag.md` + `deleteTag.md`:invariants — the `!external` guard, a genuine positive
+invariant). Tag *assignment* is a **SET, not an APPEND**: `PUT .../tags` replaces the tag
+set on the target, and submitting `[]` clears it (per `createTermTagsRelations.md` +
+`updateDatasetFieldTags.md`:invariants — replace-all / delete-then-recreate).
+
+The integration story: tagging **feeds Search** (F-017) — every tag becomes a top-level
+Search facet, making the tag the catalog-wide enumeration surface; it **feeds the Catalog
+Overview** home page (the Top Tags strip launches a tag-filtered Search); and it is **fed by
+Integrations** (P-10) — Collectors push tags with their ingested entities. It shares the
+activity-audit surface with the Activity Feed (P-07), but only partially — see below.
+
+Edge cases the product owner would (or should) highlight in a demo, all of which turn out to
+be where the assembled chain diverges from the promise: the "Top Tags" surface does not
+actually show the most-popular tags once the directory grows past one page (it shows the
+OLDEST); the four side paths quietly grant directory-mint power to anyone who can assign a
+tag; deleting a tag leaves orphan dataset-field relations and a stale search index; and the
+UI surface that does the minting (the tag-assign autocomplete) gives no hint that typing a
+new name adds it to a global vocabulary everyone sees. Critically, **the tag-directory UI
+surfaces — the Top Tags strip (TopTagsList), the tag chip (TagItem), the per-entity tag
+editor (OverviewTags / TagsEditForm / TagsEditFormAutocomplete) — are NOT enriched as
+standalone sidecars** in this chain (the `PopularStrip.md` sidecar that exists is the popular
+*data-entity* strip, confirmed by reading it). The UI evidence used below comes from the
+feature-flow's `batch_extensions` inline primary-source walks (TopTagsList.tsx:13-46,
+TagItem.tsx:1-60, OverviewTags.tsx:43-68, TagsEditFormAutocomplete.tsx) — substantial, with
+file:line citations, but not the same as enriched, stress-protocol'd sidecars. This caps the
+confidence of the UI-facing verdicts and is surfaced as a validation_gap (Rule 9).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |
+    "When a user opens the 'Top Tags' strip on the Catalog Overview (or pages GET /api/tags
+    with default size), they see the tags currently applied to the MOST data entities — the
+    most-used tags in the catalog right now."
+  derivation: |
+    The endpoint is named getPopularTagList; the service method listMostPopular; the OpenAPI
+    description reads "Gets the list of existing tags sorted by popularity"; the UI labels it
+    "Top Tags". Endpoint-shape + pillar promise ("curate tags") + doc-claim seeds all converge.
+  seed_source: endpoint-shape + doc-claim + ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The chain returns the OLDEST `size` tags by `tag.id ASC` (creation order, serial PK),
+      re-ranked among themselves by usage count — NOT the globally most-used tags — whenever
+      the directory holds more than `size` tags. ReactiveTagRepositoryImpl.listMostPopular
+      paginates the candidate pool with paginate(query, [OrderByField(TAG.ID, ASC)],
+      (page-1)*size, size) at :148 BEFORE the UNION-ALL usage-count CTE is computed; the outer
+      orderBy(COUNT_FIELD.desc()) at :158 can only re-rank rows that already survived the
+      inner LIMIT. listMostPopular -> TagServiceImpl.listMostPopular -> getPopularTagList are
+      straight-through delegations with no upstream re-sort. Maintainer empirical test
+      (LSN-019:23-32, 2026-05-20): 35 equally-popular tags, size=30 -> the 30 oldest returned,
+      the 5 youngest absent. The TopTagsList UI then re-sorts the (already-wrong) 30 rows
+      client-side by usedCount DESC (TopTagsList.tsx:24-33) — a silent workaround that MASKS
+      the backend error so operators never see the ranking is wrong.
+    evidence:
+      - sidecar: odd-platform__java__TagController__controller-method__getPopularTagList
+        section: stress_findings.name_behavior_pairs[0] + invariants
+        cite: "ReactiveTagRepositoryImpl.java:148 (inner paginate by TAG.ID ASC) + :158 (outer count DESC re-rank)"
+        note: "inner LIMIT selects oldest size before counts; outer re-rank cannot reach excluded tags"
+      - sidecar: odd-platform__java__service__TagServiceImpl
+        section: understanding + operations
+        cite: "TagServiceImpl.java:72-77"
+        note: "listMostPopular is straight-through; the drift propagates 1:1 to the controller"
+      - sidecar: odd-platform__openapi__tags__openapi-tag__tag
+        section: invariants
+        cite: "openapi.yaml:345"
+        note: "the spec description 'sorted by popularity' is the false contract claim"
+      - source_read_for_validation: false
+        cite: "retrospectives/LSN-019:23-32"
+        note: "maintainer empirical reproduction against demo.oddp.io 2026-05-20"
+    operator_visible_failure: |
+      The "Top Tags" tile and the Tag-facet seed render OLD-and-possibly-unused tags as the
+      catalog's headline vocabulary on any deployment with >30 tags. A freshly-minted, heavily-
+      used tag is INVISIBLE on page 1 until it becomes one of the 30 lowest serial ids — i.e.
+      never, unless the directory shrinks. Because the UI re-sorts client-side, the operator
+      cannot even tell the ranking is broken — they see a plausibly-ordered list of the WRONG
+      tags. An operator using "Top Tags" to assess vocabulary health draws wrong conclusions.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-002
+  hypothesis: |
+    "When a user passes ids=[1,2,3] to GET /api/tags, the response is restricted to those
+    three tags — and an OpenAPI-spec consumer reading the parameter docs understands ids to
+    mean tag ids."
+  derivation: |
+    The query parameter is named `ids` on a tag-list endpoint; endpoint-shape seed (one
+    hypothesis per named parameter) + the response is a list of Tag.
+  seed_source: endpoint-shape
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The IMPLEMENTATION is correct: ids binds to TAG.ID.in(ids) (ReactiveTagRepositoryImpl.java
+      :141-142), an empty collection is treated as no-filter, and the page total honours the
+      filter. So a caller who knows ids means tag ids gets exactly what they expect. BUT the
+      CONTRACT misleads: getPopularTagList reuses the SHARED IdsParam component whose
+      description reads "Entity ids" (components.yaml:4239-4248), while the implementation
+      filters by tag.id. A spec consumer who reads "Entity ids" and supplies DATA-ENTITY ids
+      gets an empty response (or, when an id value happens to collide with a real tag id, a
+      nonsensical wrong tag). The same IdsParam IS accurate for its other (data-entity-scoped)
+      consumer — the defect is operation-local: a tag-scoped operation reusing an entity-scoped
+      parameter component with no description override (LSN-020 class).
+    evidence:
+      - sidecar: odd-platform__java__TagController__controller-method__getPopularTagList
+        section: stress_findings.request_inputs[ids]
+        cite: "ReactiveTagRepositoryImpl.java:141-142 (TAG.ID.in(ids))"
+        note: "implementation binds ids to the tag PK — correct against the name"
+      - sidecar: odd-platform__openapi__tags__openapi-tag__tag
+        section: concepts + bugs_limitations_corner_cases
+        cite: "components.yaml:4239-4248 (IdsParam description 'Entity ids') + openapi.yaml:351"
+        note: "the spec parameter description says Entity ids; getPopularTagList filters by tag id"
+    operator_visible_failure: |
+      An API-gateway / SDK-generator / third-party integration author reading the rendered
+      OpenAPI for getPopularTagList sees `ids: Entity ids` and supplies data-entity
+      identifiers; the parameter filters the tag directory by tag.id, so the response is empty
+      — a silent wrong-results bug. The misunderstanding is masked only when an id is BOTH a
+      valid data-entity id AND a valid tag id, which produces a nonsensical (but non-empty)
+      result that looks like success.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-003
+  hypothesis: |
+    "When a user searches the tag list for 'finance' (query=finance), they see the tag they
+    created as 'Finance' — searching and tagging treat tag names case-insensitively, the way
+    a user expects vocabulary to behave."
+  derivation: |
+    The `query` parameter is a tag-name search; pillar promise ("curate tags") implies one
+    coherent vocabulary. Negative-space + endpoint-shape: does the read path agree with the
+    write path on case?
+  seed_source: negative-space + endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The READ path is case-INSENSITIVE: query uses nameField.containsIgnoreCase (ReactiveAbstract
+      CRUDRepository.java:243), so query=finance matches both 'Finance' and 'finance'. The WRITE
+      path is case-SENSITIVE: divideTagsByExistence -> listByNames uses TAG.NAME.in(names)
+      (case-sensitive SQL IN), and the tag_name_unique partial index is a binary text
+      comparison, not lower(text). A user who has 'Finance' and then assigns 'finance' to an
+      entity mints a SECOND distinct directory row; both coexist; both appear in Top Tags / the
+      Tag facet as if they were different tags. There is no normalization layer anywhere.
+    evidence:
+      - sidecar: odd-platform__java__service__TagServiceImpl
+        section: bugs_limitations_corner_cases + operations[divideTagsByExistence]
+        cite: "TagServiceImpl.java:144-159 (case-sensitive listByNames) + ReactiveTagRepositoryImpl.java:120-125"
+        note: "write existence-check is case-sensitive; mints a second row for a case variant"
+      - sidecar: odd-platform__java__TagController__controller-method__getPopularTagList
+        section: invariants
+        cite: "ReactiveAbstractCRUDRepository.java:242-243 (containsIgnoreCase)"
+        note: "read query is case-insensitive — the asymmetry with the write path"
+    operator_visible_failure: |
+      The vocabulary silently fractures by case: `PII`/`pii`/`Pii` become three independent
+      tags, each tagging a different subset of entities, each its own Search facet bucket. A
+      user filtering by `PII` misses entities tagged `pii`. Tag-health and governance reporting
+      double-counts. The duplicate is invisible at mint time (the autocomplete shows the
+      existing 'Finance' but the user's 'finance' still creates a new row). DOC-190's AC adds a
+      doc-side case-sensitivity caveat (`finance` != `Finance`), so this is documented — but the
+      behaviour itself contradicts the user's reasonable expectation.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-004
+  hypothesis: |
+    "When a user submits PUT /api/datasetfields/{id}/tags with a tag list, the dataset field's
+    tags are updated and the call succeeds."
+  derivation: |
+    The endpoint exists, is named updateDatasetFieldTags, is gated and documented as "add or
+    remove tags from a dataset field". Endpoint-shape — the most basic happy-path promise.
+  seed_source: endpoint-shape + pillar
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      Whether this endpoint WORKS AT ALL for a non-empty payload is statically undetermined.
+      DatasetFieldServiceImpl.getUpdatedRelations (:264-271) builds each TagToDatasetFieldPojo
+      with only tagId + datasetFieldId and NEVER calls .setOrigin(...); createDatasetFieldRelations
+      maps each pojo via jooqReactiveOperations.newRecord(TAG_TO_DATASET_FIELD, p) and INSERTs.
+      The origin column is `varchar NOT NULL DEFAULT 'INTERNAL'` (V0_0_82:12). If jOOQ's
+      newRecord-from-pojo omits the unset column, the DB default applies and the endpoint works;
+      if jOOQ emits an explicit NULL, the INSERT violates NOT NULL and EVERY non-empty PUT
+      fails. The data-entity sibling sidesteps this by explicitly calling .setExternal(false)
+      (TagServiceImpl.java:109); the dataset-field path relies on the default. This is the
+      single CRITICAL untested path on the feature (F-018 HIGH-severity facet); pinned by P-030.
+    evidence:
+      - sidecar: odd-platform__java__DatasetFieldController__controller-method__updateDatasetFieldTags
+        section: understanding + invariants
+        cite: "DatasetFieldServiceImpl.java:264-271 (no .setOrigin) + ReactiveTagRepositoryImpl.java:355-368 (newRecord INSERT) + V0_0_82__add_tag_to_dataset_field.sql:12"
+        note: "relation INSERT relies on jOOQ omitting the unset origin column so the DB default applies"
+    operator_visible_failure: |
+      If jOOQ emits the explicit NULL: every attempt to tag a dataset field returns a 500 — the
+      feature is dead for any real payload (empty-payload clears still work). If origin persists
+      as something other than 'INTERNAL': the next call's deleteDatasetFieldInternalRelations
+      (WHERE origin='INTERNAL') misses those rows and the field accumulates orphan internal
+      relations. Either way the operator hits a hard failure or silent relation drift.
+    severity: HIGH
+    confidence: LOW
+    probe_id: P-030
+    routes_to_finding: bug-candidate
+
+- id: H-005
+  hypothesis: |
+    "When an operator restricts TAG_CREATE to a small set of 'vocabulary stewards', only those
+    stewards can add new tags to the catalog — a user who can only ASSIGN tags (holds
+    DATA_ENTITY_TAGS_UPDATE / TERM_TAGS_UPDATE / DATASET_FIELD_TAGS_UPDATE) cannot MINT new
+    vocabulary; and a user with no TAG_* permission cannot mint at all."
+  derivation: |
+    Pillar mission names three TAG_* permissions as governing tag management; the live docs +
+    permissions page present TAG_CREATE as "Create a new tag in the catalog vocabulary".
+    Pillar-mission anchor + doc-claim + negative-space (separation-of-duties expectation).
+  seed_source: pillar + doc-claim + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      TAG_CREATE is ONE OF FIVE write paths into the global directory, and four of them bypass
+      it. Every relation-write path reaches TagServiceImpl.getOrCreateTagsByName /
+      getOrInjectTagByName, which auto-creates any novel name via bulkCreate with ZERO TAG_CREATE
+      consultation — TagServiceImpl.java:1-167 has zero @PreAuthorize and zero programmatic
+      permission checks across all 9 public methods (the controller perimeter is the SOLE auth
+      defence, and the perimeter gates the relation-write endpoints on the PER-SURFACE
+      permission, never TAG_CREATE). So a user with DATASET_FIELD_TAGS_UPDATE on a single field's
+      parent entity, or TERM_TAGS_UPDATE on a single term, mints arbitrary global tags; the
+      unauthenticated ingestion path (ExternalTagIngestionRequestProcessor + the unauthenticated
+      postDataSetStatsList stats path) mints with no permission at all. createTag IS gated by
+      TAG_CREATE — but it is one of five doors. The minted rows are visible to every user via the
+      open-read GET /api/tags (H-006).
+    evidence:
+      - sidecar: odd-platform__java__service__TagServiceImpl
+        section: understanding + invariants + implicit_adrs
+        cite: "TagServiceImpl.java:80-86, 144-159 (getOrCreateTagsByName auto-create, no TAG_CREATE) + :1-167 (zero @PreAuthorize)"
+        note: "the shared auto-create primitive every side path reaches; never consults TAG_CREATE"
+      - sidecar: odd-platform__java__TermController__controller-method__createTermTagsRelations
+        section: invariants + couples-to
+        cite: "TermServiceImpl.java:257 + SecurityConstants.java:185-186 (TERM_TAGS_UPDATE gate, MANAGEMENT-scoped TAG_CREATE never checked)"
+        note: "term-tag path mints directory rows under TERM_TAGS_UPDATE"
+      - sidecar: odd-platform__java__DatasetFieldController__controller-method__updateDatasetFieldTags
+        section: understanding + couples-to
+        cite: "DatasetFieldServiceImpl.java:264-271 + SecurityConstants.java:288-290 (DATASET_FIELD_TAGS_UPDATE gate)"
+        note: "dataset-field path mints directory rows under DATASET_FIELD_TAGS_UPDATE"
+      - sidecar: odd-platform__java__TagController__controller-method__createTag
+        section: understanding + bugs_limitations_corner_cases
+        cite: "TagController.java:22-28 (createTag IS TAG_CREATE-gated) + bugs_limitations[5] (4-side-door enumeration)"
+        note: "createTag is the gated door; four others bypass it"
+    operator_visible_failure: |
+      A multi-team deployment CANNOT enforce vocabulary stewardship today. An operator who
+      grants a junior analyst DATASET_FIELD_TAGS_UPDATE on their own datasets has unknowingly
+      granted them write access to the GLOBAL tag vocabulary every other team sees. The Top Tags
+      surface and the Search Tag facet fill with un-stewarded, possibly garbage, tags (compounds
+      with H-001 ranking + H-007 no-validation). The ingestion path mints with no auth at all, so
+      any Collector push can pollute the directory. The operator's separation-of-duties mental
+      model is silently false.
+    severity: HIGH
+    confidence: HIGH
+    probe_id: P-330
+    routes_to_finding: bug-candidate
+
+- id: H-006
+  hypothesis: |
+    "When a user with no tag-management permission (or, under auth.type=DISABLED, an
+    unauthenticated caller on the network) calls GET /api/tags, they are denied — listing the
+    catalog vocabulary requires at least one TAG_* permission."
+  derivation: |
+    The sibling write operations on /api/tags are each permission-gated; a user would expect the
+    read to be gated too (or at least to be a deliberate, documented open-read). Endpoint-shape +
+    negative-space (auth-posture).
+  seed_source: endpoint-shape + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      GET /api/tags is the ONLY /api/tags operation with NO SecurityRule entry — SecurityConstants
+      .SECURITY_RULES registers POST/PUT/DELETE for /api/tags but no GET, so the request falls
+      through to the catch-all pathMatchers("/**").authenticated() (AuthorizationCustomizer.java
+      :29-30). Any authenticated principal — regardless of TAG_* grants — enumerates the entire
+      global tag directory (paginate page from 1 upward to retrieve every tag name). Under
+      auth.type=DISABLED, Spring Security is not engaged and the endpoint is open to any caller on
+      the network. listMostPopular has no per-owner / per-namespace / per-tenant scope (the tag
+      table has no owner_id), so there is no narrowing possible even in principle.
+    evidence:
+      - sidecar: odd-platform__java__TagController__controller-method__getPopularTagList
+        section: security.authorization_assertions + stress_findings.auth_gates
+        cite: "SecurityConstants.java:138-142 (no GET entry) + AuthorizationCustomizer.java:29-30 (catch-all authenticated)"
+        note: "no GET SecurityRule; request inherits the catch-all; DISABLED = fully open"
+      - sidecar: odd-platform__java__service__TagServiceImpl
+        section: invariants
+        cite: "TagServiceImpl.java:72-77 (no @PreAuthorize on listMostPopular)"
+        note: "no service-tier gate either; the open-read is total"
+    operator_visible_failure: |
+      The full tag vocabulary is readable by every authenticated user (and by anonymous network
+      callers on DISABLED deployments). For a multi-tenant or multi-team deployment where tag
+      names themselves leak information (project codenames, customer names, PII markers), the
+      directory is an enumeration surface. This is consistent with the platform's documented
+      read-collaborative posture — but it is NOT documented on the tag page as such (the
+      getPopularTagList sidecar records the permissions page is silent on the open-read), so an
+      operator reasoning from "the three TAG_* permissions gate tagging" is surprised.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-007
+  hypothesis: |
+    "When a user creates a tag, the platform validates the name — rejecting empty/whitespace-only
+    names, names with control characters or newlines, and absurdly long names — so the catalog
+    vocabulary stays clean."
+  derivation: |
+    A vocabulary surface a product owner demos implies basic input hygiene; negative-space (the
+    NORMAL expectation that user-facing string inputs are validated).
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      There is NO server-side validation of tag names at any layer. The OpenAPI TagFormData.name /
+      TagsFormData.tag_name_list items / DatasetFieldTagsUpdateFormData.tags items are all declared
+      `type: string` with no pattern / minLength / maxLength; there is no DB CHECK constraint on
+      tag.name; ingestData, bulkCreate, and inherited create all accept arbitrary TagPojo.name
+      content. A caller can mint tags with names of arbitrary length, embedded newlines / control
+      characters, or whitespace-only; [' tag ', 'tag'] mints two distinct rows. This gap is shared
+      verbatim across createTag, createTermTagsRelations, and updateDatasetFieldTags (all reach the
+      same getOrCreateTagsByName / bulkCreate with no trim / normalise). getPopularTagList returns
+      these to every user — the popular-tags surface is polluteable with garbage.
+    evidence:
+      - sidecar: odd-platform__java__TagController__controller-method__createTag
+        section: bugs_limitations_corner_cases
+        cite: "components.yaml:337-345 (TagFormData.name no pattern/length) + TagServiceImpl.java:144-159 (no trim/normalise)"
+        note: "no length cap, no charset filter, no whitespace handling anywhere"
+      - sidecar: odd-platform__openapi__tags__openapi-tag__tag
+        section: concepts
+        cite: "components.yaml:337-345 (TagFormData declared bare string)"
+        note: "the contract declares no constraints either"
+    operator_visible_failure: |
+      The directory is a DoS / pollution surface: a caller (or a buggy Collector) can flood the
+      vocabulary with whitespace-variant duplicates, control-character names that render
+      strangely in the UI chip strip, or megabyte-long names. Compounded with H-005 (anyone who
+      can assign can mint) and H-001 (Top Tags shows the oldest), garbage tags minted early stick
+      to page 1 permanently. ' tag ' vs 'tag' vs 'Tag' (H-003) multiply the fracture.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-008
+  hypothesis: |
+    "When a user adds a tag to a single data entity or dataset field via the UI's tag-assign
+    autocomplete, the effect is local to that entity — the user understands they are labelling
+    THIS object, and the UI tells them if their action has a wider consequence."
+  derivation: |
+    Senior-product-owner UX seed (Rule 9): does the user understand, from what is on screen, what
+    their action does? The autocomplete is the operator-facing surface of the H-005 side-channel.
+  seed_source: ui-label + negative-space (Rule 9 UX seed)
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      From the operator's point of view "add a tag to this entity" feels local, but typing a
+      NOVEL name in TagsEditFormAutocomplete and submitting triggers POST /api/dataentities/{id}/tags
+      -> upsertTags -> updateRelationsWithDataEntity -> getOrCreateTagsByName -> bulkCreate, which
+      MINTS a new GLOBAL directory row visible to every other user (and as a new Search facet). The
+      autocomplete offers NO warning that creating a new tag adds it to the global catalog (per the
+      feature-flow batch ui-review-2026-05-26-slice-I point (2), TagsEditFormAutocomplete.tsx walk).
+      The UI-tier confirmation is explicit: the side-channel is NOT signposted at the surface. (UI
+      evidence is from inline batch-extension walks, not an enriched sidecar — see validation_gap.)
+    evidence:
+      - source_read_for_validation: false
+        cite: "feature-flows/detail/F-018.yaml batch ui-review-2026-05-26-slice-I notes (2) — TagsEditFormAutocomplete.tsx ~147 LOC, no global-catalog warning"
+        note: "UI half of the side-channel; no signpost that a novel name mints a global row"
+      - sidecar: odd-platform__java__service__TagServiceImpl
+        section: upstream_callers + understanding
+        cite: "TagServiceImpl.java:96-121 (updateRelationsWithDataEntity -> getOrCreateTagsByName)"
+        note: "the backend the autocomplete feeds; the mint happens with no UI consent step"
+    operator_visible_failure: |
+      A user labelling their own entity unknowingly publishes vocabulary to the whole platform.
+      There is no "this tag will become globally searchable" confirmation, no "create new tag"
+      visual distinction from "pick existing tag" in the combo-box semantics (the user cannot
+      tell, at the moment of typing, that they are creating rather than selecting). This is the
+      UX root of the H-005 governance failure — even an operator who KNOWS about the side-channel
+      cannot avoid it from the screen.
+    severity: MEDIUM
+    confidence: MEDIUM
+    routes_to_finding: bug-candidate
+
+- id: H-009
+  hypothesis: |
+    "When an operator deletes a tag, it is removed cleanly — its assignments disappear from every
+    surface (entities, dataset fields, terms) and the tag name stops appearing in full-text
+    search results."
+  derivation: |
+    TAG_DELETE is documented as "Remove tags from vocabulary"; a user expects delete to be
+    complete and consistent. Pillar promise + negative-space (clean teardown).
+  seed_source: pillar + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The delete is DOUBLY asymmetric and leaves debris. TagServiceImpl.delete (:57-70,
+      @ReactiveTransactional) soft-deletes the tag row but HARD-deletes only tag_to_term and
+      tag_to_data_entity via Flux.zip (:64-65); tag_to_dataset_field is NEVER touched
+      (deleteDatasetFieldRelations(long) exists at ReactiveTagRepositoryImpl.java:299-306 but is
+      not called) — so a tag attached to dataset fields leaves ORPHAN tag_to_dataset_field rows
+      pointing at the soft-deleted tag id, invisible to UI reads (joined through addSoftDeleteFilter)
+      but persistent forever (no reaper). Separately, the delete refreshes only the term-side FTS
+      vector (:68-69), NOT the data-entity-side search_entrypoint.tag_vector (update refreshes all
+      three) — so the deleted tag's name token lingers across previously-tagged entities; AND the
+      one term-side refresh it does run executes AFTER the tag_to_term rows are already deleted, so
+      its discovery CTE (SELECT term_id FROM tag_to_term WHERE tag_id=?) finds nothing and re-indexes
+      zero terms — a no-op. The deleted tag name therefore stays searchable on both the entity and
+      term surfaces until an unrelated write happens to refresh each row.
+    evidence:
+      - sidecar: odd-platform__java__TagController__controller-method__deleteTag
+        section: invariants + bugs_limitations_corner_cases + operations
+        cite: "TagServiceImpl.java:64-65 (hard-delete term + data-entity only) + ReactiveTagRepositoryImpl.java:299-306 (unused deleteDatasetFieldRelations)"
+        note: "tag_to_dataset_field orphaned after soft-delete (P-032)"
+      - sidecar: odd-platform__java__service__TagServiceImpl
+        section: bugs_limitations_corner_cases
+        cite: "TagServiceImpl.java:68-69 (delete refreshes only term vector) + :161-167 (update refreshes all three)"
+        note: "asymmetric FTS refresh + too-late ordering (P-033 H1/H2)"
+    operator_visible_failure: |
+      After a delete: (1) orphan tag_to_dataset_field rows accumulate silently in the DB,
+      consuming space and risking confusion if the soft-deleted tag id is ever reused; (2) a
+      global full-text search for the deleted tag name still surfaces previously-tagged data
+      entities AND terms — the index is stale for an unbounded per-entity window. An operator who
+      deletes a tag to retract it (e.g. a mistakenly-applied `pii` label) finds the name still
+      searchable, undermining the whole point of the delete.
+    severity: MEDIUM
+    confidence: HIGH
+    probe_id: P-033
+    routes_to_finding: bug-candidate
+
+- id: H-010
+  hypothesis: |
+    "When a Collector pushes a tag (an external tag), that tag is protected from UI users — a
+    platform user cannot rename or delete a Collector-owned tag out from under the ingestion
+    pipeline."
+  derivation: |
+    The existence of an `external` flag + BadUserRequestException messages ("Can't update/delete
+    tag which has external relations") names a deliberate ownership contract. Response-shape +
+    implicit-ADR.
+  seed_source: response-shape + cross-pillar (Integrations boundary)
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The guard works for the DATA-ENTITY side and is a genuine positive invariant: update (:49)
+      and delete (:62) both .filter(!tagDto.external()), where external = boolOr(tag_to_data_entity
+      .external) — a tag with any Collector-set data-entity relation cannot be renamed or deleted
+      via the UI. BUT the guard reads ONLY the data-entity aggregate; getDto joins only
+      TAG_TO_DATA_ENTITY (ReactiveTagRepositoryImpl.java:54-66). The tag_to_dataset_field table
+      uses a separate TagOrigin enum (INTERNAL / EXTERNAL / EXTERNAL_STATISTICS), which getDto
+      never joins. So a tag whose ONLY Collector-set origin is an EXTERNAL tag_to_dataset_field
+      row (with no external data-entity relation) PASSES the !external guard and CAN be renamed
+      via PUT /api/tags/{id} or deleted via DELETE /api/tags/{id} by any UI user holding
+      TAG_UPDATE / TAG_DELETE — silently mutating or destroying the Collector-owned dataset-field
+      tag.
+    evidence:
+      - sidecar: odd-platform__java__TagController__controller-method__deleteTag
+        section: invariants + bugs_limitations_corner_cases
+        cite: "TagServiceImpl.java:49,62 (!external guard) + ReactiveTagRepositoryImpl.java:54-66 (getDto joins only TAG_TO_DATA_ENTITY)"
+        note: "guard consults only the data-entity-side aggregate"
+      - sidecar: odd-platform__java__service__TagServiceImpl
+        section: invariants
+        cite: "ReactiveTagRepositoryImpl.java:84-93 (listDatasetFieldDtos — tag_to_dataset_field uses ORIGIN, a separate concept)"
+        note: "the dataset-field external origin the guard never joins"
+    operator_visible_failure: |
+      A tag pushed by a Collector exclusively at the dataset-field level (EXTERNAL /
+      EXTERNAL_STATISTICS origin) is unprotected: a UI user can rename it (breaking the Collector's
+      next reconcile, which keys on the name) or delete it (so the next ingestion re-creates it,
+      churning). The protection the operator believes is uniform ("Collector tags are read-only in
+      the UI") holds only for the data-entity side. The positive invariant is real but incomplete.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-011
+  hypothesis: |
+    "When an API consumer or SDK generator reads the OpenAPI spec for the tag endpoints, they can
+    see which permission each write needs, anticipate the error responses (401/403/404/duplicate),
+    and get a documented tag description."
+  derivation: |
+    Doc-claim seed against the contract artefact itself (the `tag` openapi rollup is in the
+    chain); cross-pillar (P-11 developer surface) + response-shape.
+  seed_source: doc-claim + cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The `tag` OpenAPI tag is a bare `name: tag` entry (openapi.yaml:19) with no description and
+      no externalDocs — Swagger UI / ReDoc render a blank heading. The contract carries NO
+      top-level security: block and NO components.securitySchemes (verified exhaustive grep at
+      ede5d277), so every authorization requirement is invisible to the spec — a generator derives
+      ZERO access control for /api/tags (the three writes need TAG_CREATE / TAG_UPDATE / TAG_DELETE,
+      the read needs only authenticated(), none of it encoded). No operation declares any 4xx:
+      getPopularTagList declares only 200, createTag/updateTag only 201, deleteTag only 204 — yet
+      the controller raises NotFoundException (404), UniqueConstraintException (400), and the
+      SecurityRule chain produces 401/403. createTag/updateTag also declare 201 but the controller
+      returns 200 (status-code drift). The response shapes drift too (createTag declares TagList but
+      returns Flux<Tag>; updateTag's Tag omits external/usedCount — H-012).
+    evidence:
+      - sidecar: odd-platform__openapi__tags__openapi-tag__tag
+        section: invariants + bugs_limitations_corner_cases
+        cite: "openapi.yaml:19 (bare name) + openapi.yaml:352-421 (only success statuses, no 4xx) + components.yaml grep ede5d277 (no securitySchemes)"
+        note: "no description, no security, no 4xx — the whole contract is illegible for auth + errors"
+      - sidecar: odd-platform__java__TagController__controller-method__createTag
+        section: invariants
+        cite: "TagController.java:27 (returns 200) vs openapi.yaml:372 (declares 201)"
+        note: "status-code drift confirmed at the controller"
+    operator_visible_failure: |
+      A third-party SDK / API-gateway / contract-test generator consuming the spec gets a client
+      with no typed model for forbidden / not-found / duplicate-name cases, no auth wiring, and a
+      wrong success status — so a generated client treats a real 200 as a contract violation
+      (expected 201) and has no handler for the 403 a no-permission caller actually receives.
+      Cross-links F-029 (the spec-wide no-securitySchemes gap).
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-012
+  hypothesis: |
+    "When a user renames a tag or toggles its Important flag (PUT /api/tags/{id}), the response
+    reflects the tag's full current state — including its usage count and whether it's external —
+    so the UI can re-render the chip without a refetch."
+  derivation: |
+    The OpenAPI Tag schema declares external + usedCount; a user re-rendering from the PUT
+    response expects them. Response-shape seed.
+  seed_source: response-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The response does NOT carry the full state. updateTag ends with .map(tagMapper::mapToTag)
+      applied to a bare TagPojo (TagServiceImpl.java:54); the mapToTag(TagPojo) overload
+      (TagMapper.java:26) maps only id/name/important because TagPojo has no usedCount/external
+      field. The populating mapToTag(TagDto) overload (TagMapper.java:23-24), used by
+      listMostPopular, is available but unused by update. So PUT /api/tags/{id} returns
+      external=null and usedCount=null, while the sibling GET returns them populated — a
+      response-shape inconsistency between two operations that return the same Tag type.
+    evidence:
+      - sidecar: odd-platform__java__TagController__controller-method__updateTag
+        section: concepts + bugs_limitations_corner_cases
+        cite: "TagServiceImpl.java:54 (.map(mapToTag) on bare TagPojo) + TagMapper.java:26 (maps only id/name/important) + :23-24 (the unused TagDto overload)"
+        note: "updateTag response omits external + usedCount; the populating overload exists"
+    operator_visible_failure: |
+      A UI (or API consumer) re-rendering a tag chip from the updateTag response loses the usage
+      count and the external flag (both null). A spec-conformant consumer expects both (the Tag
+      schema declares them). The UI must refetch to get a correct chip, or it renders a chip that
+      drops the "N uses" suffix and the external indicator. Minor, but a real response-shape
+      inconsistency between two operations that return the same Tag type.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-013
+  hypothesis: |
+    "When a user changes the tags on any object — data entity, dataset field, or glossary term —
+    the change is recorded in the Activity Feed so an auditor can later answer 'who changed which
+    tags on X, and when?'."
+  derivation: |
+    Cross-pillar promise (P-07 Activity Feed shares data with P-01 tagging; TAG_ASSIGNMENT_UPDATED
+    is documented). The user expects uniform auditability across the three symmetric surfaces.
+  seed_source: cross-pillar + pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The three tag-relation-write surfaces have THREE different audit stories. The dataset-field
+      path emits @ActivityLog(DATASET_FIELD_TAGS_UPDATED) with FULL before/after tag state
+      (DatasetFieldServiceImpl.java:119 + DatasetFieldInformationUpdatedActivityHandler:53-67). The
+      data-entity path emits @ActivityLog(TAG_ASSIGNMENT_UPDATED) capturing ONLY the dataEntityId
+      parameter (DataEntityServiceImpl.java:358) — no diff payload. The term path emits NO
+      @ActivityLog at all (TermController.createTermTagsRelations / TermServiceImpl.upsertTags) —
+      even though sibling term mutations linkTermWithDataEntity / removeTermFromDataEntity DO emit
+      TERM_ASSIGNMENT_UPDATED, so the absence is asymmetric within TermServiceImpl itself. The
+      directory-CRUD operations (createTag / updateTag / deleteTag) also emit NO @ActivityLog — a
+      tag rename or delete is entirely untraceable.
+    evidence:
+      - sidecar: odd-platform__java__TermController__controller-method__createTermTagsRelations
+        section: invariants + understanding
+        cite: "TermController.java:129-136 + TermServiceImpl.java:252-264 (NO @ActivityLog) + TermServiceImpl.java:169,183 (sibling term mutations DO emit)"
+        note: "term-tag change is unaudited; asymmetric within the same service"
+      - sidecar: odd-platform__java__DatasetFieldController__controller-method__updateDatasetFieldTags
+        section: invariants
+        cite: "DatasetFieldServiceImpl.java:119 (@ActivityLog with full before/after)"
+        note: "the most complete audit — the model the other two should match"
+      - sidecar: odd-platform__java__TagController__controller-method__deleteTag
+        section: understanding
+        cite: "TagServiceImpl.java:57-70 (delete emits no @ActivityLog)"
+        note: "directory-CRUD (create/update/delete) untraceable"
+    operator_visible_failure: |
+      An auditor asking "who changed the tags on term X?" finds NOTHING in the Activity Feed. For a
+      data entity, they find an event but no diff (must reconstruct from history). Only for a
+      dataset field is the audit self-contained. A tag rename or delete (which retroactively
+      changes what every entity carrying that tag looks like) leaves no audit trail at all.
+      Building "who changed which tags when" reporting requires three different decoders and is
+      impossible for terms and for directory-CRUD. Extends the system-mission Audit-log Presence
+      Asymmetry canonicalisation candidate to a four-surface picture.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-014
+  hypothesis: |
+    "When a tag is minted through one of the side paths (assigning a novel tag name to an entity,
+    field, or term), it is created as an ORDINARY tag — the side-channel cannot create a
+    'promoted'/Important tag, and assigning UI tags to a dataset field cannot wipe the
+    Collector-ingested (EXTERNAL/EXTERNAL_STATISTICS) tag relations."
+  derivation: |
+    The control_summary lists these as POSITIVE invariants confirmed at primary source; a senior
+    product owner verifies the guardrails hold, not only that the failures exist. Negative-space
+    (does the system protect what it should?) + cross-pillar (Integrations boundary).
+  seed_source: negative-space + cross-pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      Both guardrails hold. (a) Auto-created tags get important=false HARDCODED:
+      divideTagsByExistence maps each novel name via new TagPojo().setName(n).setImportant(false)
+      (TagServiceImpl.java:155) — so no side path can mint a promoted tag; promotion requires the
+      TAG_UPDATE-gated updateTag. (b) updateDatasetFieldTags deletes only origin='INTERNAL'
+      relations (deleteDatasetFieldInternalRelations, ReactiveTagRepositoryImpl.java:289-295);
+      EXTERNAL and EXTERNAL_STATISTICS relations (Collector-ingested, incl. dataset-statistics
+      tags) are NOT touched and survive the UI replace-all (updateDatasetFieldTags.md:invariants).
+      Symmetrically the data-entity diff reads only !external relations and writes new relations
+      with external=false hardcoded (TagServiceImpl.java:102,109) — the UI cannot impersonate a
+      Collector.
+    evidence:
+      - sidecar: odd-platform__java__DatasetFieldController__controller-method__updateDatasetFieldTags
+        section: invariants
+        cite: "TagServiceImpl.java:155 (important=false hardcoded) + ReactiveTagRepositoryImpl.java:289-295 (delete gated by origin='INTERNAL')"
+        note: "side-channel mints non-promoted tags; EXTERNAL_STATISTICS dataset-field relations survive UI replace-all"
+      - sidecar: odd-platform__java__service__TagServiceImpl
+        section: invariants
+        cite: "TagServiceImpl.java:102 (diff reads only !external) + :109 (new relations external=false)"
+        note: "the UI cannot create EXTERNAL relations or remove Collector-set ones"
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: none
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-001
+  severity: HIGH
+  one_line: |
+    "Top Tags" / GET /api/tags returns the OLDEST tags by serial id, not the most-popular, once
+    the directory exceeds one page (paginate-before-aggregate, LSN-019); the UI client re-sort
+    masks the backend error.
+  dedup_status: already_tracked
+  tracked_as: PLT-026
+  proposed_fix_anchor: "ReactiveTagRepositoryImpl.listMostPopular :148/:158 — compute COUNT over the full directory then truncate (PLT-026 Thread A)"
+- hypothesis_id: H-002
+  severity: MEDIUM
+  one_line: |
+    getPopularTagList's `ids` parameter reuses the shared IdsParam component documented as
+    "Entity ids" but filters by tag.id — a spec consumer supplying entity ids gets empty results.
+  dedup_status: net_new
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: "declare a dedicated TagIdsParam (description 'Tag ids') OR an operation-level parameter description override on getPopularTagList (openapi.yaml:351); pinned by P-031"
+- hypothesis_id: H-004
+  severity: HIGH
+  one_line: |
+    updateDatasetFieldTags' relation INSERT never sets `origin` and relies on the DB column
+    default; if jOOQ emits an explicit NULL the endpoint is DEAD for any non-empty tags payload
+    (statically uncertain, untested).
+  dedup_status: net_new
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: "explicitly .setOrigin(TagOrigin.INTERNAL.toString()) on the TagToDatasetFieldPojo (DatasetFieldServiceImpl.java:264-271), mirroring the data-entity path's .setExternal(false); confirm via P-030 before/after"
+- hypothesis_id: H-005
+  severity: HIGH
+  one_line: |
+    Four side paths (DATA_ENTITY / TERM / DATASET_FIELD _TAGS_UPDATE + unauthenticated ingestion)
+    mint global Tag-directory rows without TAG_CREATE; getOrCreateTagsByName never consults it.
+  dedup_status: already_tracked
+  tracked_as: PLT-026
+  proposed_fix_anchor: "lift TAG_CREATE consultation into TagServiceImpl.getOrCreateTagsByName :80-86 (PLT-026 Thread B); P-330 regression-pins the cross-user journey"
+- hypothesis_id: H-007
+  severity: MEDIUM
+  one_line: |
+    No tag-name validation anywhere (no length cap, no charset filter, no trim) across all four
+    write paths — the directory is a pollution / DoS surface; whitespace/case variants mint duplicates.
+  dedup_status: net_new
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: "server-side validation (length cap ~64, trim, reject whitespace-only + control chars) at getOrCreateTagsByName / bulkCreate; add a DB CHECK constraint migration on tag.name"
+- hypothesis_id: H-008
+  severity: MEDIUM
+  one_line: |
+    The tag-assign autocomplete (TagsEditFormAutocomplete) gives no signal that typing a novel
+    name mints a global directory row seen by every user — the UX root of the H-005 governance gap.
+  dedup_status: already_tracked
+  tracked_as: PLT-060
+  distinct_from: "PLT-060 Defect 4 covers the TERM_TAGS_UPDATE->TAG_CREATE bypass at TagsEditForm (the same UI family); this is the same UX no-signpost finding on the data-entity OverviewTags autocomplete arm — recorded as corroboration, not a second filing"
+  proposed_fix_anchor: "TagsEditFormAutocomplete — restrictToExisting when the user lacks TAG_CREATE, OR a 'this tag will become globally searchable' confirmation (PLT-060 Defect 4 fix sketch)"
+- hypothesis_id: H-009
+  severity: MEDIUM
+  one_line: |
+    deleteTag leaves orphan tag_to_dataset_field rows (the third relation table is never deleted)
+    AND leaves the deleted tag name searchable (asymmetric + too-late FTS refresh).
+  dedup_status: net_new
+  distinct_from: "PLT-044 references deleteDatasetFieldRelations but on the INGESTION-stats replace path (DatasetStatistics destructive tag replace); this is the directory-CRUD deleteTag cascade omission + FTS staleness — a different failure mode and a different code path"
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: "call deleteDatasetFieldRelations(tagId) (ReactiveTagRepositoryImpl.java:299-306) in TagServiceImpl.delete's Flux.zip; compute affected term ids BEFORE the relation delete + refresh all three search vectors symmetric with update; P-032 + P-033 pin"
+- hypothesis_id: H-010
+  severity: MEDIUM
+  one_line: |
+    The Collector-ownership (!external) guard on updateTag/deleteTag reads only the data-entity
+    aggregate; a tag whose only external origin is a dataset-field EXTERNAL row is UI-mutable/deletable.
+  dedup_status: net_new
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: "extend getDto's external aggregate to also OR over tag_to_dataset_field.origin IN ('EXTERNAL','EXTERNAL_STATISTICS') (ReactiveTagRepositoryImpl.java:54-66)"
+
+### caveat_candidates
+- hypothesis_id: H-003
+  one_line: |
+    Tag names are case-SENSITIVE on write but case-INSENSITIVE on search — `Finance`/`finance`
+    coexist as distinct tags; the vocabulary silently fractures by case.
+  dedup_status: already_tracked
+  tracked_as: DOC-190
+  recommended_log_as: "caveat in tagging.md (DOC-190 AC line 46 — the case-sensitivity caveat `finance` != `Finance`, status=done 2026-05-28)"
+- hypothesis_id: H-006
+  one_line: |
+    GET /api/tags has no SecurityRule — any authenticated user (anonymous under DISABLED) enumerates
+    the entire global tag directory regardless of TAG_* grants; no per-owner/tenant scope exists.
+  dedup_status: net_new
+  recommended_log_as: "caveat in https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions (open-read posture on GET /api/tags) — sibling to the read-collaborative posture DOC-NNN"
+- hypothesis_id: H-011
+  one_line: |
+    The `tag` OpenAPI rollup is a bare name with no description/externalDocs, no security block,
+    no securitySchemes, and no 4xx on any operation; createTag/updateTag declare 201 but return 200.
+  dedup_status: net_new
+  distinct_from: "PLT-026 (the tagging-behaviour hardening) does not touch the OpenAPI contract legibility; this is a spec-artefact gap co-located with the F-029 spec-wide no-securitySchemes finding"
+  recommended_log_as: "doc-gap / upstream spec issue — add description + externalDocs + 4xx ErrorResponse refs + security block to the `tag` tag (openapi.yaml:19, 352-421); align with F-029"
+- hypothesis_id: H-012
+  one_line: |
+    PUT /api/tags/{id} returns a Tag with external/usedCount null (bare-pojo mapToTag overload);
+    the sibling GET returns them populated — response-shape inconsistency on the same type.
+  dedup_status: net_new
+  recommended_log_as: "caveat in developer-guides api-reference (updateTag response omits external/usedCount) OR a small upstream fix to re-read TagDto after update"
+- hypothesis_id: H-013
+  one_line: |
+    Three-way tag-assign audit asymmetry (data-entity = param-only, dataset-field = full before/after,
+    term = none) + directory-CRUD (create/update/delete) emit no @ActivityLog — tag changes are
+    non-uniformly auditable.
+  dedup_status: already_tracked
+  tracked_as: PLT-026
+  recommended_log_as: "doc + code — PLT-026 Thread C harmonises emission; DOC-190 Caveat 3 documents the asymmetry (status=done)"
+
+### probes_emitted
+- probe_id: P-330
+  hypothesis_id: H-005
+  probe_path: "lineage/odd-platform/probes/P-330.yaml"
+  note: |
+    NEW reflection-emitted probe — the REFACTOR-223 side-channel headline as a cross-user,
+    cross-surface USER JOURNEY (principal A with only DATASET_FIELD_TAGS_UPDATE mints a novel tag;
+    principal B with no TAG_* permission sees it in GET /api/tags). No existing probe captures the
+    cross-user directory-visibility consequence as a single assertion (P-026 = atomicity, P-030 =
+    unset-origin). LOCAL-ONLY; requires LOGIN_FORM + two seeded principals.
+
+### probes_referenced
+# Existing file-analyser probes that already pin reflection verdicts — referenced, NOT re-emitted
+- probe_id: P-030
+  hypothesis_id: H-004
+  probe_path: "lineage/odd-platform/probes/P-030.yaml"
+  note: "the dataset-field unset-origin INSERT — endpoint may be dead for any non-empty payload; H-004 verdict probe-needed pending P-030."
+- probe_id: P-033
+  hypothesis_id: H-009
+  probe_path: "lineage/odd-platform/probes/P-033.yaml"
+  note: "deleteTag asymmetric + too-late FTS refresh (H1 data-entity vector not refreshed; H2 term-side no-ops); confirms the H-009 search-staleness consequence."
+- probe_id: P-032
+  hypothesis_id: H-009
+  probe_path: "lineage/odd-platform/probes/P-032.yaml"
+  note: "deleteTag leaves orphan tag_to_dataset_field rows — the cascade-asymmetry arm of H-009."
+- probe_id: P-031
+  hypothesis_id: H-002
+  probe_path: "lineage/odd-platform/probes/P-031.yaml"
+  note: "the ids-param SQL-bind column + the entity-id/tag-id collision case for H-002."
+- probe_id: P-026
+  hypothesis_id: H-005
+  probe_path: "lineage/odd-platform/probes/P-026.yaml"
+  note: "createTag bulk-INSERT in-batch duplicate atomicity (partial-commit risk) — adjacent to the H-005 mint paths."
+- probe_id: P-010
+  hypothesis_id: H-001
+  probe_path: "lineage/odd-platform/probes/P-010.yaml"
+  note: "the LSN-019 listMostPopular ranking lie at the REST boundary — confirms H-001 with 35 tags + size=30."
+
+### validation_gaps
+- sidecar: "odd-platform ts react-component (tagging UI: TopTagsList / TagItem / OverviewTags / TagsEditForm / TagsEditFormAutocomplete)"
+  field_insufficient: "no enriched standalone sidecar exists for any tag-directory UI surface — the feature's UI is judged from feature-flow batch_extensions inline walks only (PopularStrip.md, the one tag-adjacent component sidecar, is the popular DATA-ENTITY strip, NOT the tag strip — confirmed by reading it)"
+  proposed_refresh: |
+    Enrich TopTagsList.tsx, TagItem.tsx (+ TagItemStyles), OverviewTags.tsx, TagsEditForm.tsx,
+    TagsEditFormAutocomplete.tsx as first-class sidecars under the Stress Protocol + Rule-9 UX
+    seeds. This is the F-018 instance of the Rule-9 / LSN-023 caution: a user-facing feature's UI
+    surface is not in the chain as enriched nodes, so H-008 (autocomplete no-signpost), the
+    TagItem important-style-only / nested-click / system-tag-icon-only facets, and the OverviewTags
+    slice-before-sort defect are reflected from inline notes at MEDIUM confidence rather than HIGH.
+    Until then, the UI-facing verdicts (H-008 especially) carry confidence: MEDIUM by Rule 9.
+- sidecar: "odd-platform java DataEntityController controller-method:setDataEntityTags"
+  field_insufficient: "the primary UI write entry point (POST /api/dataentities/{id}/tags, feature-flow hop 1) is marked unresolved/not-yet-enriched; its behaviour is inferred from TagServiceImpl.updateRelationsWithDataEntity + the DataEntityServiceImpl.upsertTags @ActivityLog citation in sibling sidecars"
+  proposed_refresh: "enrich setDataEntityTags / DataEntityServiceImpl.upsertTags so the data-entity audit (param-only TAG_ASSIGNMENT_UPDATED) and the empty-set-clears-all destruction are pinned at primary source rather than cross-cited."
+
+### doc_drift_findings
+- hypothesis_id: H-001
+  doc_url: "https://docs.opendatadiscovery.org/developer-guides/api-reference (OpenAPI spec) + features/data-discovery/tagging"
+  doc_says: "getPopularTagList 'Gets the list of existing tags sorted by popularity' (openapi.yaml:345)"
+  code_does: "returns the OLDEST `size` tags by tag.id ASC once the directory exceeds one page"
+  recommended_log_as: "tracked — DOC-190 (tagging.md caveat, done) + PLT-026 (the code fix); the openapi.yaml:345 description line itself remains in drift until PLT-026 Thread A lands"
+- hypothesis_id: H-002
+  doc_url: "https://docs.opendatadiscovery.org/developer-guides/api-reference (OpenAPI spec)"
+  doc_says: "the `ids` parameter on getPopularTagList is 'Entity ids' (components.yaml:4239-4248)"
+  code_does: "filters by tag.id (TAG.ID.in(ids))"
+  recommended_log_as: "net_new spec doc-gap — the IdsParam reuse on a tag-scoped operation; see H-002 bug_candidate"
+- hypothesis_id: H-006
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions"
+  doc_says: "lists TAG_CREATE / TAG_UPDATE / TAG_DELETE as the tag-management permissions (silent on GET)"
+  code_does: "GET /api/tags has no SecurityRule — open-read to any authenticated user; anonymous under DISABLED"
+  recommended_log_as: "net_new doc-gap — document the open-read posture on permissions.md / tagging.md (sibling to the read-collaborative posture DOC-NNN)"
+
+## maintainer_notes
+
+(none yet — auto-derived reflection. Maintainer-curated hypotheses, if added, are preserved
+verbatim across refreshes per Rule 5.)

@@ -5,10 +5,10 @@ _generated 2026-06-01 · `lineage-extractor alignment odd-platform` · determini
 ## Contract-test readiness: 🟡 PILOT-READY
 
 **Blockers:**
-- [E] reflection 6/112 → alignment unverified at scale
+- [E] reflection 23/112 → alignment unverified at scale
 - [A] substrate scan behind code HEAD
 
-**Ready-now subset** (contract-testable today — reflected + bridged): F-006, F-009, F-021, F-022, F-027, F-039
+**Ready-now subset** (contract-testable today — reflected + bridged): F-001, F-005, F-006, F-007, F-008, F-009, F-010, F-011, F-014, F-017, F-018, F-019, F-020, F-021, F-022, F-024, F-027, F-029, F-031, F-032, F-038, F-039, F-044
 
 ## Trust gate
 
@@ -17,8 +17,8 @@ _generated 2026-06-01 · `lineage-extractor alignment odd-platform` · determini
 - `RED` substrate scan == code HEAD — scan ede5d277 @ 2026-05-26 · HEAD b5ae7a00 @ 2026-06-01
 - `GREEN` graph embeddings present — built 2026-06-01 · vectors 7623
 - `AMBER` latest /panel verdict — changes-needed
-- `RED` reflection coverage (alignment discount) — 6/112 features reflected → alignment UNKNOWN over 95% of features
-- `AMBER` intent↔impl contradictions surfaced — 51 contradictions across 6 reflected features — the deepest alignment-drift findings; triage feature-reflections/detail/ (HIGH → bug-fix or operator caveat)
+- `AMBER` reflection coverage (alignment discount) — 23/112 features reflected → alignment UNKNOWN over 79% of features
+- `AMBER` intent↔impl contradictions surfaced — 176 contradictions across 23 reflected features — the deepest alignment-drift findings; triage feature-reflections/detail/ (HIGH → bug-fix or operator caveat)
 
 ## Dimensions
 
@@ -54,13 +54,13 @@ _generated 2026-06-01 · `lineage-extractor alignment odd-platform` · determini
 - `AMBER` **ADRs with an enforcing test/gap** — 1/27 · are we checking ADR ALIGNMENT? 1/27 ADRs gated (1 via real ENFORCES edge, rest via gated gaps)
 - `AMBER` **features with a validating test/gap** — 23/112 · are we checking FUNCTIONALITY? 23/112 features gated (0 via real VALIDATES edge)
 - `AMBER` **bugs/scopes with a regress/guard test** — 41/1355 · are we checking REGRESSION? 41/1355 findings/scopes gated · LSN-001/002 landmines captured as 24 gated TestGaps but NO regression test authored yet
-- `RED` **probes executed / defined** — 9/162 · 9/162 run · 1 probe-stack(s) · named-integration keyword hits 2/4 (great-expectations, ✗airflow-lineage, ✗postgres-ingestion, webhook-notifications) — KEYWORD scan, NOT verified e2e
+- `RED` **probes executed / defined** — 9/186 · 9/186 run · 1 probe-stack(s) · named-integration keyword hits 2/4 (great-expectations, ✗airflow-lineage, ✗postgres-ingestion, webhook-notifications) — KEYWORD scan, NOT verified e2e
 
 ## Top actionable items
 
 1. Annotate the 66/68 ORPHAN existing tests with @enforces/@validates/@regresses gates — the Test layer is built but no test is yet wired to a decision/feature/bug
 2. Author the landmine regression tests WITH @regresses gates (TEST-GAP-024, TEST-GAP-047, TEST-GAP-049, TEST-GAP-051, TEST-GAP-052…) — LSN-001/002 pins, project as REGRESSES edges [CRITICAL]
-3. Raise reflection coverage on ADR-bearing features (6/112) — the layer that proves alignment
+3. Raise reflection coverage on ADR-bearing features (23/112) — the layer that proves alignment
 4. GE / Airflow / Postgres-ingestion / webhooks have no dedicated probe stack (only odd-minimal: postgres+platform) → add multi-service stacks + regresses/validates-gated TestGaps
 5. Backfill typed gates on 582 orphan TestGaps (the test-coverage-mapper should emit a `gates:` block)
 

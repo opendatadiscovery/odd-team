@@ -1,0 +1,152 @@
+---
+probe_id: P-360
+feature_id: F-024
+test_class: security
+emitted_by: feature-reflector
+status: pending-reflection-verification
+emitted_in_reflection: lineage/odd-platform/feature-reflections/detail/F-024.yaml
+emitted_for_hypothesis: H-009
+emitted_at: 2026-06-01T00:00:00Z
+verified_against_commit: 43d13eb
+prompt_version: probe-runner/0.1.0
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Quoting hypothesis H-009 verbatim:
+  "When a user types a free-text query containing PostgreSQL tsquery operator
+  characters — e.g. `foo )(` or `a & | b` — into the Dictionary tab search box,
+  the platform returns a graceful empty/zero-result response, not a persistent
+  HTTP 500 that breaks the search session for everyone who later opens its URL."
+
+  RATIONALE FOR PROBE-NEEDED (not a static verdict): the term-search session
+  orchestration + the actual `query_string` → `to_tsquery(?)` write path live in
+  `TermSearchService` (TermSearchServiceImpl), which is NOT sidecar-enriched
+  (feature-flow F-024 hop 3 marks it transitive/un-enriched). The repository
+  sidecar DOES confirm the Term-side FTS reads route through the SAME shared
+  `JooqFTSHelper` (ReactiveTermRepositoryImpl.md couples-to: JooqFTSHelper used by
+  getQuerySuggestions lines 246,256 + findByState lines 283,289 + countByState
+  line 370) — and PLT-090 Defect 3 (F-017a/c) has empirically established that
+  `JooqFTSHelper.tsQuery` (JooqFTSHelper.java:164-168) does NOT escape tsquery
+  operator characters, persisting the malformed string to the SearchController
+  session row and DoSing it for the housekeeping TTL (default 30 days). Whether
+  the Term-search write path persists the raw query the same way (search_facets
+  row keyed by the Term session UUID) and whether the same persistent-500 holds
+  for `GET /api/termsearch/{searchId}/results` cannot be settled by static reading
+  alone because the persistence layer is unenriched — it must be run.
+
+  PASS (H-009 -> confirmed) if the malformed-query POST + subsequent GET both
+  return a 2xx with zero results (the helper escapes / plainto_tsquery is used).
+  FAIL (H-009 -> contradicted; route to bug-candidate; distinct_from PLT-090 as
+  a SECOND controller surface of the SAME tsquery-injection class) if the POST or
+  a subsequent GET returns 500 AND re-reading the SAME session UUID keeps
+  returning 500 (persistent poisoned-session DoS on the Dictionary tab).
+---
+
+# P-360 — Term-search tsquery operator-injection persistent session DoS (H-009; PLT-090-class, second surface)
+
+arrange:
+  - kind: docker-compose-up
+
+  # Seed a couple of terms so the FTS index has rows to (not) match — the bug is
+  # about the QUERY parse failing, not about matching, so even one term suffices.
+  - kind: http
+    method: POST
+    path: /api/terms
+    base: "http://localhost:18080"
+    body: |
+      {"name": "ProbeTermAlpha", "definition": "p360 alpha", "namespace_name": "p360_ns"}
+    capture_status_as: seed_term_status
+
+act:
+  # 1. Create a term-search session (no URL param == the Dictionary-tab first-mount path).
+  - kind: http
+    method: POST
+    path: /api/termsearch
+    base: "http://localhost:18080"
+    body: |
+      {"query": "", "pageSize": 30, "filters": {}}
+    capture_json_as: session_create
+    capture_status_as: session_create_status
+
+  # 2. Submit a malformed tsquery free-text query against the session (the UI's
+  #    TermSearchInput Enter path → PUT /api/termsearch/{searchId} with the raw
+  #    query string). `foo )(` is the canonical unbalanced-parens DoS payload from
+  #    PLT-090 Defect 3.
+  - kind: http
+    method: PUT
+    path: "/api/termsearch/{{session_create.searchId}}"
+    base: "http://localhost:18080"
+    body: |
+      {"query": "foo )(", "pageSize": 30, "filters": {}}
+    capture_status_as: malformed_put_status
+
+  # 3. Read the session results — the read calls to_tsquery(?) on the persisted
+  #    query_string. If the malformed string was persisted unescaped, THIS is the
+  #    persistent-500 surface.
+  - kind: http
+    method: GET
+    path: "/api/termsearch/{{session_create.searchId}}/results?page=1&size=30"
+    base: "http://localhost:18080"
+    capture_status_as: results_read_1_status
+
+  # 4. Re-read the SAME session UUID a second time to prove persistence (the
+  #    "breaks for everyone who opens the URL later" half of the hypothesis).
+  - kind: http
+    method: GET
+    path: "/api/termsearch/{{session_create.searchId}}/results?page=1&size=30"
+    base: "http://localhost:18080"
+    capture_status_as: results_read_2_status
+
+  # 5. Also probe the suggestions endpoint, which routes through the same FTS helper
+  #    (getQuerySuggestions) — a parallel surface for the same injection.
+  - kind: http
+    method: GET
+    path: "/api/termsearch/suggestions?query=foo%20)("
+    base: "http://localhost:18080"
+    capture_status_as: suggestions_status
+
+observe:
+  - kind: noop
+    note: "all status codes captured in act"
+
+assert:
+  # Session create must succeed (sanity).
+  - "session_create_status == 200"
+  # H-009 confirmed: the malformed query is handled gracefully on write AND on both
+  # reads (no persistent poisoned session). Any 500 on the PUT or either GET
+  # contradicts the hypothesis.
+  - "malformed_put_status >= 200 and malformed_put_status < 500"
+  - "results_read_1_status >= 200 and results_read_1_status < 500"
+  - "results_read_2_status >= 200 and results_read_2_status < 500"
+  - "suggestions_status >= 200 and suggestions_status < 500"
+
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  refactoring_scopes: [REFACTOR-229]
+  related_issues: [PLT-090]
+  related_concepts: ["tsquery-operator-injection-via-persisted-state", "Term Search Session (Dictionary tab)"]
+  reflection: "lineage/odd-platform/feature-reflections/detail/F-024.yaml#H-009"
+  note: |
+    distinct_from PLT-090 — PLT-090 files the tsquery-injection persistent DoS for
+    the DATA-ENTITY SearchController surface (/api/search/*, F-017). This probe tests
+    whether the SAME class reproduces on the TERM-search surface (/api/termsearch/*,
+    F-024) via the shared JooqFTSHelper. If it reproduces, it is a second controller
+    surface of the same root defect — file as a Term-search extension of PLT-090 (or
+    fold into the JooqFTSHelper consolidated fix), NOT a fresh root-cause issue.
+
+realism_caveats: |
+  - LOCAL-ONLY (APPROACH.md §9 rule 12): docker-compose + local Postgres + a small
+    HTTP client loop. No cloud, no managed DB.
+  - Runs under auth.type=DISABLED (the odd-minimal profile default) so no token
+    plumbing is needed — the tsquery-parse path is auth-independent. If the profile
+    enables LOGIN_FORM, the harness must authenticate first (all six search-state
+    endpoints are authenticated() per TermController.java:166-216).
+  - `foo )(` is the minimal reproducer; the harness may also try `a & | b`, `!`, and
+    a bare `*:` to characterise which operator classes leak.
+  - If the platform uses `plainto_tsquery` / `websearch_to_tsquery` on the Term path
+    (rather than the raw `to_tsquery` the data-entity path uses), the hypothesis is
+    CONFIRMED and the Term surface is — unlike F-017 — already hardened; record that
+    asymmetry, it is itself a finding (two FTS entry points, two escaping postures).

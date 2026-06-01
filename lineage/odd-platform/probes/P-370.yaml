@@ -1,0 +1,150 @@
+---
+probe_id: P-370
+emitted_by: feature-reflector
+emitted_in_reflection: lineage/odd-platform/feature-reflections/detail/F-032.yaml
+emitted_for_hypothesis: H-013
+emitted_at: 2026-06-01T00:00:00Z
+status: pending-reflection-verification
+feature_id: F-032          # P-04:F-002 "Quality Dashboard"
+test_class: integration
+verified_against_commit: 43d13eb
+maintainer_curated: false
+stack_profile: odd-minimal
+extends_probe: P-101        # P-101 (file-analyser) already targets the plain-vs-deeplink fetch count; P-370 EXTENDS it to pin the StrictMode dev-multiplier + the staleTime refocus refetch that compound the deeplink double-fetch
+expected_outcome: |
+  Reflection hypothesis H-013 (LSN-017 multiplicity class on the /data-quality
+  deeplink path). The static trace (DataQualityContent.md upstream_callers[1])
+  states: a PLAIN /data-quality open fires GET /api/dataqatests/runs ONCE
+  (react-query dedupes by queryKey); a DEEPLINK open (e.g.
+  /data-quality?deNamespaceIds=[1]) fires it TWICE because DataQualityFilters'
+  mount useEffect (DataQualityFilters.tsx:28-43) sets formFiltersAtom from
+  searchParams AFTER the first render, re-deriving filtersAtom and firing a
+  second fetch with the URL filters. Each fetch fans out server-side to THREE
+  CTE queries (DataQualityRunsServiceImpl.java:36-39). P-101 pins the
+  plain-vs-deeplink base count; THIS probe extends it to answer the two
+  questions P-101 does not: (a) does React StrictMode (dev) double-mount the
+  route and add a FURTHER multiplier on top of the deeplink double-fetch, so the
+  dev-observed count is 4 rather than 2? (b) does the react-query default
+  staleTime:0 + refetchOnWindowFocus cause an ADDITIONAL fetch each time the
+  operator tabs away from and back to an open /data-quality tab (no filter
+  change)? Hypothesis: deeplink-open production count = 2 fetches (6 CTE queries);
+  StrictMode dev count = 4; and every window-refocus on a stale tab adds 1 more
+  fetch (3 more CTE queries). If confirmed, a bookmarked/shared filtered
+  dashboard — the link most likely pasted into a runbook or Slack and re-opened
+  repeatedly — doubles backend load per open, and an operator who keeps the tab
+  open re-runs the three CTE queries on every refocus.
+---
+arrange:
+  - kind: docker-compose-up
+    note: |
+      odd-minimal stack (local docker-compose ODD platform + Postgres). Run the
+      UI build TWICE: once in a production build (StrictMode stripped) and once
+      in a dev build (React.StrictMode active) so the two counts can be compared.
+      Section 9 rule 12 local-only — no cloud, no managed DB.
+  - kind: sql
+    query: |
+      -- seed two datasets in distinct namespaces, each with a DQ test whose
+      -- latest run has a known status, so the deeplink ?deNamespaceIds=[9001]
+      -- filter returns a non-empty, deterministic dashboard.
+      INSERT INTO namespace (id, name, is_deleted)
+      VALUES (9001, 'p370-ns-a', false), (9002, 'p370-ns-b', false);
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, name, oddrn, namespace_id)
+      VALUES (9001, 'p370-src', '//p370/src', 9001);
+  - kind: sql
+    query: |
+      INSERT INTO data_entity (id, oddrn, external_name, internal_name,
+                               data_source_id, namespace_id, hollow, exclude_from_search)
+      VALUES (9101, '//p370/table-a', 'p370_table_a', NULL, 9001, 9001, false, false),
+             (9102, '//p370/test-a',  'p370_test_a',  NULL, 9001, 9001, false, false);
+  - kind: env
+    note: |
+      auth.type=LOGIN_FORM with the seeded admin user. A network-capture proxy
+      (or Playwright request interception) counts every outbound
+      GET /api/dataqatests/runs with its query string, so plain-open vs
+      deeplink-open vs refocus fetches are individually counted.
+act:
+  - kind: browser
+    description: PLAIN open — navigate to /data-quality with no query string (production build)
+    tool: playwright
+    steps:
+      - "page.goto('{base}/data-quality')  # no query params"
+      - "wait for the three DonutCharts to render (network idle)"
+    capture_as: fetches_plain_prod
+  - kind: browser
+    description: DEEPLINK open — navigate directly to a filtered URL (production build)
+    tool: playwright
+    steps:
+      - "page.goto('{base}/data-quality?deNamespaceIds=%5B%7B%22id%22%3A9001%2C%22name%22%3A%22p370-ns-a%22%7D%5D')"
+      - "wait for the three DonutCharts to render (network idle)"
+    capture_as: fetches_deeplink_prod
+  - kind: browser
+    description: DEEPLINK open under React.StrictMode (dev build) — same URL
+    tool: playwright
+    steps:
+      - "page.goto('{base-dev}/data-quality?deNamespaceIds=%5B%7B%22id%22%3A9001%2C%22name%22%3A%22p370-ns-a%22%7D%5D')"
+      - "wait for the three DonutCharts to render (network idle)"
+    capture_as: fetches_deeplink_dev
+  - kind: browser
+    description: window-refocus on an already-open plain dashboard (production build) — no filter change
+    tool: playwright
+    steps:
+      - "page.goto('{base}/data-quality'); wait for network idle"
+      - "open a second tab (blur the dashboard tab), then re-focus the dashboard tab"
+      - "wait 1s for any refetch"
+    capture_as: fetches_after_refocus_prod
+observe:
+  - kind: count-http-requests
+    of: fetches_plain_prod
+    matching: "GET /api/dataqatests/runs"
+    capture_as: n_plain_prod
+  - kind: count-http-requests
+    of: fetches_deeplink_prod
+    matching: "GET /api/dataqatests/runs"
+    capture_as: n_deeplink_prod
+  - kind: count-http-requests
+    of: fetches_deeplink_dev
+    matching: "GET /api/dataqatests/runs"
+    capture_as: n_deeplink_dev
+  - kind: count-http-requests
+    of: fetches_after_refocus_prod
+    matching: "GET /api/dataqatests/runs"
+    capture_as: n_refocus_prod
+assert:
+  - "n_plain_prod == 1  # baseline — plain open fires once (react-query dedupe); confirms P-101's plain count"
+  - "n_deeplink_prod == 2  # HYPOTHESIS: deeplink open fires twice (mount useEffect re-derives filtersAtom after first render)"
+  - "n_deeplink_dev >= n_deeplink_prod  # HYPOTHESIS: StrictMode double-mount adds a further dev multiplier (expect 4); >= guards against a flaky exact count"
+  - "n_refocus_prod >= 2  # HYPOTHESIS: staleTime:0 + refetchOnWindowFocus adds one fetch on refocus (1 initial + >=1 on refocus)"
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__DataQualityContent
+    - odd-platform__ts__react-component__component__DataQualityFilters
+    - odd-platform__ts__jotai-store__store__DataQualityStore
+  related_probes:
+    - P-101   # the file-analyser multiplicity probe this one extends (plain-vs-deeplink base count)
+  related_features:
+    - F-032
+  related_drift_classes:
+    - ui_deeplink_double_fetch
+    - no_debounce_dashboard_refetch_per_filter_change
+  retrospectives: [LSN-017]
+realism_caveats: |
+  This probe measures REDUNDANT BACKEND LOAD, not a correctness defect — the
+  dashboard renders the right data either way; it just fetches it more times
+  than the operator's one perceived page-open warrants. The deeplink double-fetch
+  is the SAME drift class (LSN-017) as the entity-detail double-fetch filed
+  upstream as PLT-104, but a DIFFERENT code locus: PLT-104 is the
+  status-dependency useEffect on DataEntityDetails; this is the searchParams-sync
+  mount useEffect on DataQualityFilters.tsx:28-43. If n_deeplink_prod comes back
+  == 1, the static trace is wrong (react-query deduped the second fetch because
+  the queryKey was identical before the searchParams resolved) and H-013 flips to
+  CONFIRMED-as-single-fetch; if == 2 (the hypothesis), the reflection's
+  contradicted-leaning verdict stands and the fix is to derive the initial
+  filtersAtom synchronously from searchParams before the first render. The
+  StrictMode arm is dev-only and does not reflect production load; it is captured
+  to explain why a developer testing locally may observe 4 fetches and
+  mis-attribute the count.

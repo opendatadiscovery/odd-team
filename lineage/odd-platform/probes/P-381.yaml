@@ -1,0 +1,136 @@
+---
+probe_id: P-381
+emitted_by: feature-reflector
+emitted_in_reflection: lineage/odd-platform/feature-reflections/detail/F-038.yaml
+emitted_for_hypothesis: H-013
+emitted_at: 2026-06-01T00:00:00Z
+status: pending-reflection-verification
+feature_id: F-038
+test_class: integration
+verified_against_commit: 43d13eb
+maintainer_curated: false
+stack_profile: odd-minimal
+local_execution_blocked: false
+expected_outcome: |
+  Hypothesis H-013 (verbatim): "When I send a Discussion message with empty or
+  whitespace-only text, the platform rejects it (I cannot post a blank message)."
+
+  Two layers disagree:
+  - UI form (F-197 chain hop 3): CreateMessageForm.tsx:23-122 enforces `text`
+    required with a custom `validate: value => !!value.trim()` trim-blank guard,
+    so the FORM blocks blank/whitespace submits.
+  - Backend (postMessageInSlack sidecar bugs[1]): MessageRequest.text is
+    `required` only (components.yaml:3410-3423) with NO max-length and NO
+    server-side non-blank validation. A direct API caller bypassing the form can
+    POST whitespace-only text; it is persisted in PENDING_SEND and only fails at
+    Slack's boundary AFTER the 202 (Slack rejects empty text).
+
+  So the user-facing verdict depends on the caller path. Running the system pins
+  the end-to-end behaviour for BOTH paths.
+
+  CONFIRMED (UI path) = the UI form blocks a blank submit (Send disabled / inline
+  error; no POST fired).
+  CONTRADICTED (API path) = a direct POST with whitespace text returns 202 and a
+  message row is persisted (proving the form guard is not a server contract).
+  The combined outcome documents that the guard is client-only.
+---
+arrange:
+  - kind: docker-compose-up
+    services: [postgres, odd-platform-api, odd-platform-ui]
+    env:
+      DATACOLLABORATION_ENABLED: "true"
+      DATACOLLABORATION_SLACK_OAUTH_TOKEN: "xoxb-stub-for-probe"
+      AUTH_TYPE: "LOGIN_FORM"
+      AUTH_LOGIN_FORM_CREDENTIALS: "probe:probe"
+  - kind: wiremock-up
+    matcher: "POST https://slack.com/api/conversations.info"
+    response_initial: |
+      { "ok": true, "channel": { "id": "C001", "name": "alerts-team", "is_member": true } }
+  - kind: wiremock-up
+    matcher: "POST https://slack.com/api/chat.postMessage"
+    # Slack rejects empty text — model that so the post-202 failure path is realistic.
+    response_initial: |
+      { "ok": false, "error": "no_text" }
+  - kind: rest
+    method: POST
+    path: /login
+    body: { username: probe, password: probe }
+    capture_as: session_cookie
+  - kind: sql
+    query: |
+      INSERT INTO data_entity (id, oddrn, external_name, internal_name)
+      VALUES (1, 'oddrn://probe/entity/1', 'probe_entity', 'probe_entity')
+      ON CONFLICT (id) DO NOTHING;
+act:
+  # (A) UI path — drive the form with whitespace-only text and assert it cannot submit.
+  - kind: playwright
+    description: "UI form blank-text guard"
+    steps:
+      - login: { username: probe, password: probe }
+      - goto: "/dataentities/1/discussions"
+      - click: "[data-testid='create-message-button']"
+      - fill: { selector: "[data-testid='channel-autocomplete']", value: "alerts" }
+      - click: "[data-testid='channel-option-alerts-team']"
+      - fill: { selector: "[data-testid='message-text']", value: "    " }
+      - capture_attribute:
+          selector: "[data-testid='message-submit']"
+          attribute: "disabled"
+          capture_as: submit_disabled_on_whitespace
+      - try_click: "[data-testid='message-submit']"
+      - wait_ms: 800
+  # (B) API path — bypass the form: POST whitespace text straight to the endpoint.
+  - kind: rest
+    method: POST
+    path: /api/datacollaboration/providers/slack/messages
+    cookie: "{session_cookie}"
+    headers: { Content-Type: application/json }
+    body: { data_entity_id: 1, channel_id: "C001", text: "   " }
+    capture_as: api_blank_text_response
+observe:
+  - kind: sql
+    query: |
+      SELECT uuid, state, text FROM message
+      WHERE data_entity_id = 1 AND (text = '   ' OR trim(text) = '');
+    capture_as: persisted_blank_rows
+assert:
+  # (A) UI path CONFIRMS the guard: Send is disabled (or no POST is fired) on whitespace.
+  - "submit_disabled_on_whitespace == true"
+  # (B) API path CONTRADICTS the user-facing promise: the raw POST is accepted (202)
+  #     and a blank-text row is persisted — proving the trim guard is client-only.
+  - "api_blank_text_response.status == 202"
+  - "persisted_blank_rows.length >= 1"
+  # The persisted blank row eventually fails at Slack (no_text) -> ERROR_SENDING,
+  # confirming the message never reaches Slack but DID clutter the table.
+  - "any(r.state in ['PENDING_SEND','ERROR_SENDING'] for r in persisted_blank_rows)"
+cleanup:
+  - kind: sql
+    query: "DELETE FROM message WHERE data_entity_id = 1; DELETE FROM data_entity WHERE id = 1;"
+  - kind: docker-compose-down
+    destroy_volumes: true
+  - kind: wiremock-down
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DataCollaborationController__controller-method__postMessageInSlack
+  related_feature_flows:
+    - lineage/odd-platform/feature-flows/detail/F-197.yaml
+    - lineage/odd-platform/feature-flows/detail/F-038.yaml
+  retrospectives: []
+realism_caveats: |
+  Two-path probe (Playwright for the UI form guard + raw REST for the API bypass),
+  both local-only per APPROACH.md section 9 rule 12 / feature-reflector Rule 6.
+
+  The data-testid selectors are illustrative; reconcile against CreateMessageForm.tsx.
+  If the Send button is not `disabled` but instead shows an inline validation error
+  on submit attempt, assertion (A) should switch to checking that no POST left the
+  browser (network-intercept) rather than the disabled attribute.
+
+  The API-path assertion is the load-bearing finding: it proves the trim-blank
+  validation is a client-only convenience, not a server contract. Under
+  auth.type=DISABLED the same POST is reachable anonymously, widening the blast
+  radius (any caller can persist blank/oversized rows). A companion check for
+  oversized text (> Slack's ~40KB limit) belongs in the same probe family but is
+  out of scope here.
+
+  If the backend later adds a server-side @NotBlank / size constraint on
+  MessageRequest.text, this probe MUST be re-run; the current hypothesis is
+  derived from the postMessageInSlack sidecar at commit 43d13eb.

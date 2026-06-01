@@ -1,0 +1,725 @@
+---
+feature_id: F-031
+pillar_anchored_id: P-08:F-007
+pillar: "P-08 Management & Administration"
+feature_name: "Data Source Lifecycle — list / register / update / delete / regenerate-token"
+reflected_at: 2026-06-01T00:00:00Z
+reflected_at_commit: 43d13eb
+prompt_version: feature-reflector/0.2.0
+contributing_sidecars_read:
+  - odd-platform__ts__react-component__component__DataSourcesList.md
+  - odd-platform__ts__react-component__component__DataSourceItem.md
+  - odd-platform__ts__react-component__component__DataSourceForm.md
+  - odd-platform__ts__react-component__component__DataSourceItemToken.md
+  - odd-platform__ts__react-component__component__NamespaceAutocomplete.md
+  - odd-platform__java__DataSourceController__controller-method__getDataSourceList.md
+  - odd-platform__java__DataSourceController__controller-method__registerDataSource.md
+  - odd-platform__java__DataSourceController__controller-method__updateDataSource.md
+  - odd-platform__java__DataSourceController__controller-method__deleteDataSource.md
+  - odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken.md
+  - odd-platform__java__DataSourceController__controller-class__DataSourceController.md
+  - odd-platform__java__repository__reactive-repository__ReactiveDataSourceRepositoryImpl.md
+  - odd-platform__java__repository__reactive-repository__ReactiveDataEntityRepositoryImpl.md
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/management"
+    last_verified_at: "2026-05-22T00:00:00Z"
+    last_verified_status: 200
+    note: |
+      Inherited from the 4 UI sidecars + 5 backend method sidecars (all WebFetched
+      2026-05-21/22 status 200 within the stale-probe window). NOT re-fetched this
+      reflection session — this agent environment has no live WebFetch run this turn;
+      the inherited fetched_excerpts are the cross-reference. The live Data Sources
+      doc section has since been extended by DOC-255 (status: done, 2026-05-28) which
+      added the three backend caveats (namespace side-door / orphan-token+FTS /
+      regenerate-Tx+plaintext+audit) — so several doc-claim hypotheses below verdict
+      against the PRE-DOC-255 page the sidecars fetched AND note the DOC-255 closure.
+hypothesis_summary:
+  total: 13
+  confirmed: 4
+  contradicted: 6
+  partial: 2
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-005
+    severity: HIGH
+    one_line: "Clicking Delete on an actively-ingested data source (the most likely delete attempt — collectors re-create data_entity children every tick) returns HTTP 400 and the ConfirmationDialog stays stuck-open with its confirm button spinning forever (.catch(()=>{}) swallows the rejection), the operator's only feedback a raw backend-jargon toast — no in-product guidance to stop the collector / soft-delete the children first."
+related_feature_flows:
+  - F-008   # P-10 Batch Ingestion (S2S) — DISJOINT registration path POST /ingestion/datasources; cross-path REPLACE-vs-MERGE asymmetry compounds H-003
+  - F-020   # P-08 Collector Lifecycle — structural twin; shared TokenGeneratorImpl + ReactiveTokenRepositoryImpl; H-006/H-007/H-013 apply identically
+  - F-028   # P-08 Namespace Lifecycle — the namespace_name select-or-create is one of F-028's catalogued getOrCreate call sites (H-002)
+  - F-019   # P-08 Owner Lifecycle — sibling thin-delegate + 200-vs-201 + audit-silence + WithPermissions hide-not-disable patterns
+  - F-006   # P-09 RBAC — the central SecurityConstants gate the 4 mutating verbs depend on; the read endpoint is ungated
+  - F-010   # P-08 Housekeeping — the orphan-token-on-delete row has no GC job (H-009 residue)
+  - F-021   # P-07 Activity Feed — the audit-trail surface that records NONE of the data-source lifecycle (H-011)
+  - F-163   # One-Shot Token Reveal Affordance Pattern — cross-surface UX class graduated from this feature's token control
+related_concepts:
+  - "Datasource (Management — registered data source)"
+  - "Token (collector / data-source shared-secret credential)"
+  - "Namespace (label-dimension scoping)"
+  - "read-collaborative posture (REFACTOR-024 family)"
+  - "Audit-log Presence Asymmetry (2-tier audit story)"
+  - "select-or-create combo-box (NamespaceAutocomplete UX pattern — ~11 reuse sites)"
+related_drift_classes:
+  - delete_cascade_block_on_live_children_undeletable_actively_ingested_source
+  - replace_not_merge_silent_field_wipe
+  - destructive_rotation_no_grace_period
+  - ungated_list_read_no_security_rule
+  - list_token_leaks_real_last_six_chars
+  - list_ordering_id_asc_undocumented
+  - list_query_page_vs_count_predicate_divergence
+  - plaintext_token_in_register_and_rotate_response_no_cache_control
+  - audit_silence_no_activity_log_no_logging_any_layer
+  - disabled_mode_bypass
+new_drift_classes_proposed:
+  - ui_confirmationdialog_swallows_rejection_modal_stuck_loading_no_recovery   # NEW from H-005 — the .catch(()=>{}) in ConfirmationDialog leaves the delete-confirm modal stuck on any backend 4xx; the UI-tier failure the backend cascade-guard surfaces; distinct from the backend cascade facet
+  - ui_form_rejection_closes_modal_discards_typed_input_no_inline_error        # NEW from H-008 — DataSourceForm's .then(clearState) runs on failure too (handleResponseAsyncThunk never re-throws), so a 400 register/edit closes the modal and discards everything typed
+  - ui_search_label_implies_substring_backend_does_prefix_no_zero_result_signal # NEW from H-010 — "Search datasource" + frozen header count = an existing source typed by mid-name fragment looks unregistered
+  - permission_side_door_superseded_by_select_or_create_ux_lsn023              # NEW (corrective) from H-002 — names the LSN-023 retirement explicitly so feature-flow-builder drops the wrong permission_side_door axis from this feature's primary_drift_class on next refresh
+---
+
+# Data Source Lifecycle — product-owner reflection
+
+## product_owner_narrative
+
+Data Source Lifecycle Management is the operator-facing CRUD-plus-token-rotation surface under **Management → Datasources** (the `/management/datasources` SPA route). It is the FOURTH P-08 UI-admin lifecycle sibling alongside Owner (F-019), Collector (F-020), and Namespace (F-028) lifecycles, and it is the most-frequently-used Management surface per the daily-ops sequence (per `system-mission.md:222-247` P-08 pillar block + F-031 frontmatter `cross_pillar_relationships`). From the operator's seat it is one screen — `DataSourcesList` (`DataSourcesList.tsx:28-126`) — headed "Datasources" with a live "N datasources overall" count, a "Search datasource" box, an "Add datasource" button, and a vertically-scrolling list of cards (one `DataSourceItem` per source: logo, name, ODDRN, description, namespace, and a masked collector token), reached only by a user holding at least one `DATA_SOURCE_*` permission (per `DataSourcesList.md` understanding + `ManagementRoutes.tsx:43-57`).
+
+A user interacts with the feature through five operations, each a UI control wired to one of five thin-proxy `DataSourceController` endpoints (per `DataSourceController.java:21-59` + the 5 method sidecars): **register** via the "+ Add datasource" modal (`DataSourceForm` in create mode → `POST /api/datasources`, gated `DATA_SOURCE_CREATE`); **edit** via the per-card "Edit" button (`DataSourceForm` in edit mode → `PUT /api/datasources/{id}`, gated `DATA_SOURCE_UPDATE`); **delete** via the per-card "Delete" button behind a `ConfirmationDialog` (→ `DELETE /api/datasources/{id}`, gated `DATA_SOURCE_DELETE`); **regenerate token** via the per-card "Regenerate" button behind a `ConfirmationDialog` (`DataSourceItemToken` → `PUT /api/datasources/{id}/token`, gated `DATA_SOURCE_TOKEN_REGENERATE`); and **list/search/browse** (the screen's own `fetchDataSourcesList` → `GET /api/datasources`, which carries NO `SecurityRule` and is reachable to any authenticated user — read-collaborative posture per `DataSourcesList.md` security + `getDataSourceList.md` coherence_notes). Every mutating control is permission-gated client-side by `WithPermissions`, which renders the control to `null` (hide-not-disable) for a user lacking the matching permission (per `DataSourceItem.md` implicit_adrs[0] + `WithPermissions.tsx:27-29`); the gates are advisory UX — the backend `SecurityConstants.SECURITY_RULES` (lines 116-126) are the real boundary, and the read endpoint has no boundary at all.
+
+The working parts a product owner would demo: the **Namespace field is a select-or-create combo-box** (`NamespaceAutocomplete`) that shows existing namespaces, filters as the user types behind a 500ms debounce, and offers an explicitly-labelled "No result. Create new custom namespace «X»" row ONLY when the typed text matches nothing — selecting it submits the typed string and the backend `namespaceService.getOrCreate` resolves-or-creates it (per `NamespaceAutocomplete.md` understanding + implicit_adrs[0] + `AutocompleteSuggestion.tsx:23-30`); this same control is reused across ~11 sibling autocompletes (Owner, Term, DEG, Collector, Lookup-Table forms). The **token control is a one-shot reveal**: the list returns a masked `"******"+real-last-6` form (`DataSourceItemToken` infers masked-vs-plaintext from the `******` string prefix), and only immediately after a register or a regenerate does the full 40-char plaintext appear with a Copy button and the warning "Save token in a secure location. You will not be able to retrieve it again." (per `DataSourceItemToken.md` understanding + `DataSourceItem.tsx:110-121`). Browsing is **infinite-scroll** (30 per page, `id ASC` creation order, no client re-sort), search is **debounced** with Enter-to-commit, and create-vs-edit is one prop-discriminated modal (per `DataSourcesList.md` implicit_adrs + `DataSourceForm.md` implicit_adrs[1]).
+
+The integration story has four cross-pillar legs (per F-031 frontmatter): the feature **feeds P-10 Integrations & Ingestion** — register mints the 40-char token a Push/Collector client later presents on `POST /ingestion/entities` (validated by `IngestionDataEntitiesFilter`, opt-in, default-off), and regenerate rotates that same credential; it is **DISJOINT from F-008 Batch Ingestion** — the S2S collector path `POST /ingestion/datasources` is a separate endpoint, service class, auth model, and merge semantic (the SHB-092 cross-path asymmetry: this UI Edit FULL-REPLACEs, the collector startup PARTIAL-MERGEs name+description); it **shares the central RBAC gate with P-09 Security** (the four mutating verbs) while the read is ungated; and it **feeds P-01 Data Discovery** — a registered source is the parent of every data_entity ingested under it and its FTS vector feeds catalog Search (which `updateDataSource` refreshes and `deleteDataSource` does NOT clear). It is the **structural twin of F-020 Collector** because both rotation paths share `TokenGeneratorImpl` + `ReactiveTokenRepositoryImpl` — a SecureRandom / hash-at-rest / grace-period fix lands on both.
+
+A product owner introducing this feature should flag, in a demo, the load-bearing edge cases this reflection's hypotheses turn on. First — and this is the case-law correction that prompted this whole reflection (LSN-023) — the Namespace combo-box's "Create new custom namespace" affordance is a **deliberate, labelled UX pattern, not a "permission side-door"**: the backend `getOrCreate` is the faithful server half of a control the operator explicitly clicked (per `DataSourceForm.md` + `NamespaceAutocomplete.md` coherence_notes, both `kind: supersedes` the backend sidecars' side-door framing). Second, the **single most likely Delete attempt fails badly**: collectors re-create `data_entity` children every ingest tick, so an actively-ingested source is effectively undeletable, and the UI surfaces that backend-400 as a stuck-loading modal plus a raw-jargon toast with no recovery (per `DataSourceItem.md` bugs[0] — the §0 user-facing defect). Third, **Edit is REPLACE-not-MERGE reachable straight from the modal** — editing only the Name and leaving Description blank nulls the stored description on Save (per `DataSourceForm.md` name_behavior_pairs + `updateDataSource` backend sidecar P-043). These are the gaps no per-file pass surfaces; they live in the assembled UI→backend product.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When an operator clicks '+ Add datasource', fills Name + ODDRN + (optionally) Namespace + Description and clicks Save, the system registers a new data source and mints a fresh collector ingestion token for it."
+  derivation: "Endpoint shape (POST /api/datasources, registerDataSource) + the 'Add datasource' modal label + DataSourceFormData field set."
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The create path is faithful. DataSourceForm.onSubmit (DataSourceForm.tsx:69-81)
+      dispatches registerDataSource with the four-field body when `dataSource` is
+      absent (create mode); the controller (DataSourceController.java:30-36)
+      flatMaps into DataSourceServiceImpl.create (DataSourceServiceImpl.java:51-66,
+      @ReactiveTransactional) which mints a 40-char token unconditionally
+      (tokenGenerator.generateToken, line 54), optionally get-or-creates the
+      namespace, validates ODDRN non-empty, INSERTs the data_source row, and
+      returns a DataSource whose token.value is plaintext. One Save = one POST
+      (multiplicity 1, confirmed UI-side in DataSourceForm.md upstream_callers).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourceForm
+        section: understanding + downstream_side_effects
+        cite: "DataSourceForm.tsx:69-81"
+        note: "create-mode submit dispatches registerDataSource (POST)"
+      - sidecar: odd-platform__java__DataSourceController__controller-method__registerDataSource
+        section: understanding + dependencies_semantic
+        cite: "DataSourceServiceImpl.java:51-66 + TokenGeneratorImpl.java:18-24"
+        note: "service mints token + INSERTs data_source inside one transaction"
+    confidence: HIGH
+    routes_to_finding: none
+
+- id: H-002
+  hypothesis: "When an operator types a namespace name that does not yet exist into the Namespace field and saves the data source, that namespace is created — and this is the intended, operator-visible affordance, not a covert privilege escalation."
+  derivation: "UI label ('Namespace' field + 'Create new custom namespace «X»' suggestion row) cross-referenced against the backend namespace_name → namespaceService.getOrCreate; LSN-023 case-law mandates tracing through the UI control."
+  seed_source: ui-label
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      This is the LSN-023 correction. The Namespace field is NamespaceAutocomplete
+      — a deliberate select-or-create combo-box. It shows existing namespaces, and
+      offers a synthetic '{name: inputValue}' option rendered as 'No result. Create
+      new custom namespace «X»' (AutocompleteSuggestion.tsx:23-30) ONLY when the
+      no-match guard `!options.some(o => o.name === inputValue)` is true
+      (NamespaceAutocomplete.tsx:78-84). Selecting it emits the plain string X
+      (line 127); the parent submits namespaceName=X; the backend
+      namespaceService.getOrCreate does getByName(X).switchIfEmpty(createByName(X)).
+      The create path is what the operator explicitly clicked on a labelled row —
+      it is a faithful server fulfilment, NOT a side-door. The control is the
+      canonical instance of an ~11-component reuse pattern (Owner / Term / DEG /
+      Collector / LookupTable forms). The backend sidecars' original
+      'permission_side_door / escalation by side effect' framing, with a prescribed
+      fix of 'add a namespace_id field so the caller SELECTS', is SUPERSEDED: that
+      fix would BREAK the create-new half of an intentional UX pattern. The wrong
+      finding (REFACTOR-584 / DOC-GAP-262 in the lineage doc-gaps registry) is the
+      one LSN-023 exists to retire. The legitimate residue is two non-bug
+      questions, both already tracked: (1) should creating-a-namespace-while-
+      creating-a-datasource additionally require NAMESPACE_CREATE (a product/RBAC
+      decision — PLT-087 'Out of scope' note explicitly judges closing it
+      UX-breaking, doc-side caveat is the right ship); (2) the inline-create
+      affordance is undocumented (DOC-255 Caveat 1, status: done).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__NamespaceAutocomplete
+        section: understanding + implicit_adrs + stress_findings.name_behavior_pairs
+        cite: "NamespaceAutocomplete.tsx:78-84,127,165-178 + AutocompleteSuggestion.tsx:23-30"
+        note: "labelled create-on-no-match affordance; drift: NONE end-to-end"
+      - sidecar: odd-platform__ts__react-component__component__DataSourceForm
+        section: coherence_notes (kind: supersedes)
+        cite: "DataSourceForm.tsx:124-129"
+        note: "UI sidecar explicitly supersedes the backend 'side-door' framing (LSN-023)"
+      - sidecar: odd-platform__java__DataSourceController__controller-method__registerDataSource
+        section: dependencies_semantic
+        cite: "NamespaceServiceImpl.java:37-40"
+        note: "the get-or-create the affordance is wired to"
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-003
+  hypothesis: "When an operator opens 'Edit datasource' to change one field (e.g. fix a typo in the Name) and clicks Save, only that field changes; the fields they did not touch keep their stored values."
+  derivation: "The 'Edit datasource' modal label + the conventional reading of an edit form (PATCH-like merge). Negative-space: REPLACE semantics would surprise the user."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Edit is a full-form REPLACE, not a merge — and the data-loss path is
+      reachable straight from the modal. DataSourceForm.onSubmit submits the WHOLE
+      four-field object (DataSourceForm.tsx:69-81); the PUT path's backend
+      DataSourceServiceImpl.update (lines 68-83) applies the form via MapStruct
+      @MappingTarget applyToPojo (DataSourceMapper.java:49-56) with NO
+      nullValuePropertyMappingStrategy set (MapperConfig.java:7-11 → MapStruct
+      default SET_TO_NULL). An omitted/blank JSON field is written as null onto the
+      existing row. Because the modal pre-fills from the dataSource prop, a field
+      the operator clears (or that simply was not pre-filled) is nulled on Save.
+      The modal gives NO warning that a blank field overwrites. The namespace
+      overload even sets namespace_id to null when the namespace is cleared.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourceForm
+        section: stress_findings.name_behavior_pairs (DRIFT_NAME_VS_BEHAVIOR) + bugs
+        cite: "DataSourceForm.tsx:69-81"
+        note: "submits all 4 fields; 'edit' means 'replace with what the modal holds'"
+      - sidecar: odd-platform__java__DataSourceController__controller-method__updateDataSource
+        section: observed_vs_expected facet (replace_not_merge_silent_field_wipe)
+        cite: "DataSourceMapper.java:49-56 + MapperConfig.java:7-11"
+        note: "MapStruct default SET_TO_NULL; no IGNORE strategy"
+    operator_visible_failure: |
+      (1) An operator who opens Edit to fix one field and leaves Description blank
+      in the modal nulls the stored description on Save — silent data loss, no
+      warning, no undo. (2) Clearing the Namespace field detaches the source from
+      its namespace (namespace_id → null), removing it from that namespace's scope.
+      (3) An API consumer sending a partial PUT body (the natural REST assumption
+      for a resource update) silently wipes every field they omitted. (4) Compounds
+      with the cross-path asymmetry (SHB-092): a field the operator sets here can
+      ALSO be reverted by the next collector startup's partial-merge, and neither
+      write is audit-logged — the operator cannot learn what overwrote what.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-004
+  hypothesis: "When an operator edits a data source, they can change its ODDRN if they mistyped it at registration."
+  derivation: "ODDRN is a field rendered in the Edit modal; an operator would assume an editable form field is editable."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      ODDRN is immutable after creation. The ODDRN input is rendered
+      `disabled={!!dataSource?.oddrn}` in edit mode (DataSourceForm.tsx:120) — the
+      single field carrying disabled semantics — and the OpenAPI
+      DataSourceUpdateFormData has no oddrn property (components.yaml:1317-1325), so
+      the PUT path cannot carry a changed ODDRN even if the UI allowed it. The UI
+      and the contract agree the identity string is set once. This is correct
+      design (ODDRN is identity-bearing; the same data_source table is keyed by
+      ODDRN across the disjoint UI-admin and S2S registration paths) — but it
+      contradicts the naive operator expectation and there is NO inline help text
+      explaining WHY the field is locked.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourceForm
+        section: implicit_adrs[2] + invariants
+        cite: "DataSourceForm.tsx:120 + components.yaml:1317-1325"
+        note: "ODDRN disabled on edit; absent from update DTO"
+      - sidecar: odd-platform__ts__react-component__component__DataSourceItem
+        section: stress_findings.name_behavior_pairs (Edit, drift MINOR)
+        cite: "ui_review_2026_05_26 note (7)"
+        note: "ODDRN locked-on-edit is the only disabled field; no inline help — MINOR doc-hint gap"
+    operator_visible_failure: |
+      An operator who registered a source with a mistyped ODDRN opens Edit to
+      correct it, finds the field greyed out with no explanation, and may conclude
+      the form is broken rather than that ODDRN is intentionally immutable. The
+      only remedy is delete-and-re-register (which is itself blocked while the
+      source has live children — see H-005). Severity LOW: the immutability is
+      correct; the missing in-product explanation is the defect.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-005
+  hypothesis: "When an operator clicks Delete on a data source and confirms, the data source is removed from the catalog and the operator gets clear feedback that it succeeded (or a comprehensible message if it could not)."
+  derivation: "Endpoint shape (DELETE /api/datasources/{id}) + the per-card 'Delete' control + the doc phrase 'remove a source no longer ingested'. Negative-space: the most likely delete target is an actively-ingested source."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Delete is a guarded soft-delete that FAILS for the most likely target, and
+      the UI handles the failure hostilely. The backend deleteDataSource
+      (DataSourceServiceImpl.java:85-96) returns HTTP 400 CascadeDeleteException
+      whenever a live data_entity child exists (existsNonDeletedByDataSourceId,
+      ReactiveDataEntityRepositoryImpl.java:158-163). Collectors re-create
+      data_entity rows on the next ingest tick, so an actively-ingested source is
+      effectively undeletable — deleting the children races the collector; the only
+      reliable path is to stop the collector first, which no doc mentions. The UI
+      makes it worse: DataSourceItem's ConfirmationDialog carries NO forewarning
+      that the delete may be blocked; on the 400, handleResponseAsyncThunk surfaces
+      the RAW backend string in a generic red toast (errorHandling.tsx:48-68); and
+      ConfirmationDialog.onClose does `action().then(...).catch(() => {})`
+      (ConfirmationDialog.tsx:28-34) — on rejection neither handleClose nor
+      setIsLoading(false) runs, so the modal STAYS OPEN with its confirm button
+      stuck spinning. The static trace is confirmed-certain (DataSourceItem.md
+      confidence: ConfirmationDialog.tsx:33 swallow is statically certain) and the
+      runtime behaviour is pinned by the already-authored probe P-078.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourceItem
+        section: bugs_limitations_corner_cases[0] (the §0 defect) + coherence_notes (strengthens)
+        cite: "DataSourceItem.tsx:58-74 + ConfirmationDialog.tsx:28-34 + handleResponseThunk.ts:34-42"
+        note: ".catch(()=>{}) swallows the 400; modal stuck-open + isLoading never reset"
+      - sidecar: odd-platform__java__DataSourceController__controller-method__deleteDataSource
+        section: observed_vs_expected facet (delete_cascade_block_on_live_children)
+        cite: "DataSourceServiceImpl.java:85-96 + ReactiveDataEntityRepositoryImpl.java:158-163"
+        note: "400 CascadeDeleteException while a live child exists"
+    operator_visible_failure: |
+      (1) Deleting an actively-ingested source — the single most common delete
+      attempt — produces a stuck-loading modal the operator must hard-refresh to
+      escape, plus a backend-jargon toast ('Data source cannot be deleted: there
+      are still data entities attached') with no in-product guidance on what to do.
+      (2) No forewarning: the operator commits to the delete (clicks through the
+      confirm) before discovering it is impossible — work-discovered-wasted. (3) No
+      pre-flight check and no disabled-with-tooltip state: the Delete control looks
+      identical for a deletable and an undeletable source. (4) The operator has
+      neither documentation nor product guidance telling them to stop the collector
+      / soft-delete the children first (the doc gap DOC-261-class compounds the UI
+      gap, per DataSourceItem.md coherence_notes refines).
+    severity: HIGH
+    confidence: HIGH
+    probe_id: P-078
+    routes_to_finding: bug-candidate
+
+- id: H-006
+  hypothesis: "When an operator clicks 'Regenerate' on a data source's token and confirms, they understand that the old token stops working immediately and that any running collector bound to this source will break until reconfigured."
+  derivation: "UI label ('Regenerate' button + its ConfirmationDialog) + the destructive-rotation backend behaviour. Senior-PO UX seed: does the user understand the consequence from what is on screen?"
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The rotation is destructive with no grace period, and the UI's confirmation
+      step under-states it. The backend (ReactiveTokenRepositoryImpl.updateToken,
+      lines 30-39) does an in-place UPDATE token SET value=<new> — no old/new
+      overlap, no previous_token column, no revoke step. A collector still
+      presenting the old token starts 401-ing on POST /ingestion/entities the
+      instant the UPDATE commits (IngestionDataEntitiesFilter literal .equals). The
+      UI ConfirmationDialog body says only 'Are you sure you want to regenerate
+      token for this datasource?' / 'Regenerate token for "{name}"?'
+      (DataSourceItemToken.tsx:42-46) — it names the datasource but states NOTHING
+      about the consequence: no mention that the old token dies immediately, that
+      ingestion breaks, or that there is no grace window. The dialog MITIGATES an
+      accidental click but does NOT inform an intentional one. The PUT is also
+      non-idempotent — a double-confirm-across-reopen rotates twice, invalidating
+      the token the first response returned before the operator copies it. Note
+      the rotation has NO security effect on the default deployment at all, because
+      auth.ingestion.filter.enabled defaults to false.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourceItemToken
+        section: stress_findings.name_behavior_pairs (DRIFT) + bugs[0] + security.known_security_gaps
+        cite: "DataSourceItemToken.tsx:37-49,42-46"
+        note: "confirm dialog has no consequence warning — HIGH"
+      - sidecar: odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken
+        section: observed_vs_expected facet (destructive_rotation_no_grace_period)
+        cite: "ReactiveTokenRepositoryImpl.java:30-39 + IngestionDataEntitiesFilter.java:43-58"
+        note: "in-place UPDATE, no grace; old token 401s immediately"
+    operator_visible_failure: |
+      (1) An operator who knowingly clicks Regenerate (even after confirming) is
+      given no indication they have just broken every running collector bound to
+      this source until each is reconfigured + redeployed — zero-downtime rotation
+      is impossible with this shape. (2) A double-submit (close+reopen the dialog,
+      or a network retry) rotates twice; the operator copies a token from response
+      1 that response 2 has already invalidated, and ingestion stays broken. (3) On
+      the default deployment the operator believes rotation hardens security when
+      the ingestion filter is off entirely, so it does nothing. The 'Regenerate'
+      label + bare confirm reads as additive/safe; the behaviour is destructive.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-007
+  hypothesis: "When a data source is registered or its token regenerated, the operator can copy the new plaintext token, and the plaintext is shown only that once — it is never re-served on subsequent visits."
+  derivation: "Response shape (token.value plaintext on register/regenerate, masked on list) + the UI one-shot-reveal warning 'You will not be able to retrieve it again'."
+  seed_source: response-shape
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The one-shot-reveal UX is real but leaky on three axes. TRUE: the list
+      endpoint returns the masked '******'+last-6 form (TokenMapper.mapValue) and
+      DataSourceItemToken renders token.value verbatim, inferring masked-vs-plaintext
+      from the '******' prefix (DataSourceItemToken.tsx:25-27); after a regenerate
+      the row swaps to plaintext + Copy + the 'save it, you cannot retrieve it
+      again' warning (DataSourceItem.tsx:110-121); on the next list refetch it
+      re-masks. LEAKY: (a) the masked form exposes the REAL last 6 plaintext chars
+      of every token to every authenticated viewer, not a placeholder
+      (TokenMapper.java:15-18); (b) the plaintext token persists in the redux store
+      after regeneration (datasources.slice.ts:41-42 upsertOne) until a refetch —
+      any devtools/error-reporter serialising redux state captures it; (c) the
+      register/regenerate HTTP responses carry the 40-char plaintext with no
+      Cache-Control: no-store (DataSourceController.java:33-35,53-58) — proxies /
+      browser history / inspection appliances may cache it; (d) if the operator
+      navigates away before copying, the plaintext is unrecoverable and they must
+      regenerate AGAIN (another destructive rotation, per H-006).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourceItemToken
+        section: understanding + security.data_exposure + bugs[2]
+        cite: "DataSourceItemToken.tsx:25-37,51-53 + datasources.slice.ts:41-42"
+        note: "one-shot reveal works; plaintext persists in redux store; re-mask on refetch loses it"
+      - sidecar: odd-platform__java__DataSourceController__controller-method__getDataSourceList
+        section: observed_vs_expected facet (list_token_leaks_real_last_six_chars)
+        cite: "TokenMapper.java:15-18"
+        note: "mask exposes real last-6 plaintext chars to every viewer"
+    operator_visible_failure: |
+      (1) A read-only user reads genuine token material (last 6 chars) for every
+      data source. (2) The plaintext credential lands in the redux store, browser
+      response cache, and any proxy/HAR/APM on the path — surfaces the operator did
+      not authorise, undermining the tight blast radius they expect from a one-shot
+      reveal. (3) Navigating away before copying forces a second destructive
+      rotation to obtain a usable token. The one-shot model is the right idea; the
+      leaks erode it.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-008
+  hypothesis: "When the backend rejects a register or edit submit (e.g. an ODDRN collision returns HTTP 400), the operator sees the error in context and the values they typed are preserved so they can correct and retry."
+  derivation: "Negative-space + senior-PO convenience seed: a form that discards typed input on a server error is a hostile UX a product owner would not ship."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The modal closes on failure exactly as on success, discarding everything
+      typed. DataSourceForm.onSubmit chains `.then(() => clearState())`
+      (DataSourceForm.tsx:78-80) onto the dispatch; handleResponseAsyncThunk
+      CATCHES the error and rejectWithValue's it — it NEVER re-throws
+      (handleResponseThunk.ts:34-42) — so the dispatch promise RESOLVES even on a
+      400/404, `.then()` runs, and clearState() resets the form and the modal
+      auto-closes. The operator's only failure signal is the transient global
+      server-error toast; the form has no errorText wiring (DialogWrapper supports
+      an errorText slot but DataSourceForm never passes one). Pinned by P-075.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourceForm
+        section: bugs_limitations_corner_cases[0] + tests_coverage_semantic.gaps
+        cite: "DataSourceForm.tsx:69-81 + handleResponseThunk.ts:34-42 + DataSourceForm.tsx:157-169"
+        note: ".then(clearState) runs on failure too; no inline error; modal closes discarding input"
+    operator_visible_failure: |
+      (1) An operator registering a source whose ODDRN collides (a common
+      copy-paste mistake) clicks Save, the modal vanishes, a red toast flashes, and
+      every field they typed is gone — they must re-open the modal and re-enter
+      everything to retry. (2) The same on a 403 (missing permission, per H-012) —
+      the modal closes with no in-context explanation. (3) No inline field error
+      ever appears; an operator who misses the transient toast cannot tell the
+      submit failed at all and may believe the source was created. The auto-close-
+      on-failure + input-discard is the hostile path.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-009
+  hypothesis: "When a data source is deleted, the resources it owned are cleaned up — its token row is removed and it stops appearing in catalog search."
+  derivation: "Negative-space + the conventional expectation that a delete tidies up. Available-but-unused: the token table has no deleted_at; the delete path calls no FTS refresh."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The soft-delete leaves two trailing artefacts. (1) ORPHAN TOKEN — the
+      soft-delete sets only data_source.deleted_at
+      (ReactiveAbstractSoftDeleteCRUDRepository.java:106-110); it never deletes the
+      token row, and the token table has NO deleted_at column
+      (V0_0_28__add_token.sql:1-9) so it cannot even be soft-deleted; no code path
+      GCs orphan tokens (no Housekeeping job — F-010 gap). Each register-then-delete
+      cycle leaks one token row carrying a stale 40-char plaintext secret. (2) FTS
+      UNCLEARED — deleteDataSource calls no searchEntrypoint method, unlike update
+      (which DOES refresh the FTS vector); whether the soft-deleted source keeps
+      surfacing in catalog search depends on the search query's deleted_at
+      predicate. This is the backend half; the UI cannot mitigate it. Tracked
+      end-to-end as PLT-087 Defect 1 + DOC-255 Caveat 2.
+    evidence:
+      - sidecar: odd-platform__java__DataSourceController__controller-method__deleteDataSource
+        section: observed_vs_expected facet (orphan_row_on_delete)
+        cite: "ReactiveAbstractSoftDeleteCRUDRepository.java:106-110 + V0_0_28__add_token.sql:1-13"
+        note: "token row orphaned; FTS not cleared on delete (asymmetry with update)"
+    operator_visible_failure: |
+      (1) Operators auditing the token table for orphans see unbounded growth with
+      no obvious source (the parent is soft-deleted) — each register/delete cycle
+      leaks a live-format secret with no GC path. (2) A 'deleted' data source can
+      keep surfacing in faceted catalog search until an unrelated event refreshes
+      the affected entries — the operator believes it is gone. Severity MEDIUM:
+      operator-trust + state-consistency, not an active exploit.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-010
+  hypothesis: "When an operator types text into the 'Search datasource' box, the list shows every data source whose name contains that text."
+  derivation: "UI label ('Search datasource' placeholder) — the natural reading of a search box is a substring/contains match. Endpoint shape: the query param feeds the backend list."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The search is a name-PREFIX match on the page, not a contains match — and the
+      mismatch is masked by a second bug so the operator gets no zero-result
+      signal. The typed text becomes local query (DataSourcesList.tsx:58-61),
+      debounced 500ms, sent as the backend `query` parameter; the backend
+      ReactiveDataSourceRepositoryImpl applies DATA_SOURCE.NAME.startsWithIgnoreCase
+      on the PAGE (line 156) but containsIgnoreCase on the empty-page COUNT
+      (REFACTOR-425 divergence). The UI applies no filtering of its own. Worse: the
+      header 'N datasources overall' count is a local mirror frozen at the
+      pre-search total while a search is active (DataSourcesList.tsx:50-52), so the
+      operator gets neither matching rows NOR a '0 of N' hint.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourcesList
+        section: stress_findings.name_behavior_pairs (DRIFT) + request_inputs.query (TRANSLATES_SILENTLY) + bugs
+        cite: "DataSourcesList.tsx:58-61,83,50-52"
+        note: "'Search datasource' label implies substring; backend page query is prefix; header count frozen mid-search"
+      - sidecar: odd-platform__java__DataSourceController__controller-method__getDataSourceList
+        section: observed_vs_expected facet (list_query_page_vs_count_predicate_divergence)
+        cite: "ReactiveDataSourceRepositoryImpl.java:151-160"
+        note: "startsWithIgnoreCase page vs containsIgnoreCase count"
+    operator_visible_failure: |
+      (1) An operator searching a mid-name fragment (e.g. 'flake' for
+      'my-snowflake-dev', or 'prod' for 'analytics-prod-warehouse') gets an EMPTY
+      list and the empty-state placeholder — the source exists but is invisible to
+      that search. (2) Because the header count is frozen at the pre-search total,
+      there is not even a '0 results' hint; the operator is likely to conclude the
+      data source is not registered and re-register it (creating a duplicate /
+      hitting the ODDRN-collision 400 with the input-discarding modal of H-008).
+      Severity MEDIUM: a routine search behaviour silently lies about what exists.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-011
+  hypothesis: "When an operator (or a security reviewer) wants to know who registered, edited, deleted, or rotated the token of a data source, and when, they can find it in the Activity Feed or an audit trail."
+  derivation: "Pillar mission — P-08 Management is the mutating surface; an audit-trail expectation is load-bearing for any operator console. Cross-pillar: F-021 Activity Feed is the audit surface."
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The entire data-source lifecycle is invisible to audit. DataSourceServiceImpl
+      emits NO Activity Event for any of the five verbs (the class imports no
+      ActivityEvent emitter), and there is no log.info/log.warn on any path across
+      controller / service / token-generator / token-repository
+      (DataSourceServiceImpl.java:38-106). ActivityEventTypeDto has no DATA_SOURCE_*
+      constant — the same enum-rooted audit-silence the platform-wide pattern
+      catalogues (F-006 / F-019 / F-020 / F-028 all carry it). The only signals are
+      the row's deleted_at / updated_at timestamps and token.updated_by, all
+      actor-thin or single-state (overwritten on the next mutation).
+    evidence:
+      - sidecar: odd-platform__java__DataSourceController__controller-class__DataSourceController
+        section: observed_vs_expected facet (audit_silence_no_activity_log_no_logging_any_layer)
+        cite: "DataSourceServiceImpl.java:38-106"
+        note: "no Activity emitter, no log call on any of the 5 verbs"
+    operator_visible_failure: |
+      (1) An operator asking 'who registered / edited / deleted this source, and
+      when' has no audit trail. (2) A security reviewer asking 'who rotated this
+      data source's token before the last rotation' cannot answer it from
+      production data — token.updated_by holds only the last rotator and is
+      overwritten each time. (3) Combined with H-003's REPLACE-not-MERGE + the
+      SHB-092 collector overwrite, an operator who finds a field reverted has no way
+      to learn whether a person or a collector startup did it. Severity MEDIUM:
+      the lifecycle works but is unauditable. Routed as a doc-gap (the audit-silence
+      is an architectural decision deferred to the platform_event ADR — DOC-255
+      Caveat 3 + PLT-087 'Out of scope' note).
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: doc-gap-candidate
+
+- id: H-012
+  hypothesis: "When a user without DATA_SOURCE_CREATE / UPDATE / DELETE / TOKEN_REGENERATE opens the Datasources tab, they cannot perform that mutation — and the platform enforces it consistently whether they use the UI or call the API directly."
+  derivation: "Pillar mission (RBAC-gated Management) + cross-pillar P-09 Security. The four mutating verbs carry MANAGEMENT-tier SecurityRules; the UI wraps controls in WithPermissions."
+  seed_source: cross-pillar
+  validation:
+    verdict: partial
+    actual_behavior: |
+      Enforcement holds under the three authenticated modes but is two-layered with
+      a UX gap, and collapses under DISABLED. UNDER LOGIN_FORM/OAUTH2/LDAP: the UI
+      hides each control via WithPermissions (renders null — DataSourceItem.tsx:44,57,
+      DataSourcesList.tsx:90, DataSourceItemToken.tsx:36) AND the backend
+      SecurityConstants rules (lines 116-126) are the real gate, enforced before the
+      controller — a crafted PUT from a non-holder is rejected 403. So far so good,
+      and the read list is open to any authenticated user by design
+      (read-collaborative). THE GAPS: (1) the Save button in DataSourceForm is
+      disabled only by form validity, NOT by permission — a user who can open the
+      form but lacks the permission types, clicks an ENABLED Save, and only THEN
+      gets a 403 (discovered late, work wasted; and the modal then closes
+      discarding input per H-008). (2) UNDER auth.type=DISABLED all four mutating
+      verbs are anonymously reachable — DisabledSecurityConfiguration permitAll()
+      and the SecurityRules are not enforced; a caller can register/edit/delete and
+      rotate any token, receiving the new plaintext, with null actor attribution.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourceItem
+        section: stress_findings.auth_gates + security
+        cite: "DataSourceItem.tsx:44,57 + WithPermissions.tsx:27-29"
+        note: "UI hides controls (advisory); backend SecurityConstants is the boundary"
+      - sidecar: odd-platform__ts__react-component__component__DataSourceForm
+        section: stress_findings.auth_gates (wrong-role) + security.known_security_gaps
+        cite: "DataSourceForm.tsx:146-155"
+        note: "Save enabled by validity only — permission failure surfaces post-submit as 403"
+      - sidecar: odd-platform__java__DataSourceController__controller-method__regenerateDataSourceToken
+        section: observed_vs_expected facet (disabled_mode_bypass)
+        cite: "SecurityConstants.java:116-126"
+        note: "under DISABLED all 4 mutating verbs anonymously reachable incl. token rotation"
+    operator_visible_failure: |
+      (1) A read-mostly user with no DATA_SOURCE_CREATE who can open the Add modal
+      (or any mutating modal) does the work, clicks Save, and only then learns they
+      lack permission — late failure, then the input-discarding close of H-008.
+      (2) On a network-exposed DISABLED deployment (doc-marked dev-only but run in
+      prod by some operators) there is NO data-source, namespace, or token
+      protection — an attacker can break ingestion platform-wide and harvest the new
+      plaintext tokens with no actor attribution. The authenticated-mode enforcement
+      is correct; the late-failure UX and the DISABLED bypass are the partial.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-013
+  hypothesis: "When two operators (or one operator double-clicking Save) submit changes to the same data source concurrently, the platform serialises them so no change is silently lost."
+  derivation: "Negative-space + resource-boundary: the Save button is not isLoading-guarded; no optimistic lock on the row."
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      Static evidence establishes the create path is protected by the ODDRN
+      partial-unique index (a concurrent duplicate register 400s — the second loses
+      cleanly) and that the Save button is disabled only by form validity, not by
+      isLoading (DataSourceForm.tsx:153), so a fast double-click CAN fire two POSTs
+      before the first resolves (P-077). But the UPDATE (PUT) path has NO optimistic
+      lock / version column — two concurrent edits to the same id are last-write-wins
+      with no detection, and combined with H-003's REPLACE semantics a later edit
+      can silently clobber an earlier operator's field changes. Whether the
+      double-click guard / last-write-wins is observable in practice (and whether
+      the ConfirmationDialog's in-flight isLoading reliably blocks a double-confirm
+      on delete/regenerate) requires running the system — pinned by the
+      already-authored P-077 (double-submit register), P-079 (double-confirm
+      delete), P-050 (concurrent token rotation). One genuinely-uncovered case — two
+      concurrent PUT edits to the same id producing a lost-update with no
+      optimistic-lock detection — has no dedicated probe; a new probe (P-241) is emitted.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__DataSourceForm
+        section: stress_findings.resource_boundaries (idempotency)
+        cite: "DataSourceForm.tsx:146-155"
+        note: "Save not isLoading-guarded; double-click can fire 2 POSTs (P-077)"
+      - sidecar: odd-platform__java__DataSourceController__controller-method__updateDataSource
+        section: observed_vs_expected facet (concurrent_update_lost_update_no_optimistic_lock)
+        cite: "DataSourceServiceImpl.java:68-83"
+        note: "no version column; two concurrent PUTs = last-write-wins, no detection"
+    probe_id: P-241
+    routes_to_finding: bug-candidate
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-005
+  severity: HIGH
+  one_line: "Delete on an actively-ingested source 400s and the ConfirmationDialog stays stuck-open (.catch(()=>{}) swallows the rejection, isLoading never reset) with only a raw-jargon toast and no recovery."
+  dedup_status: net_new
+  distinct_from: PLT-087
+  note: "PLT-087 Defect 1 covers the BACKEND delete cleanup (orphan token + FTS); it does NOT cover the UI-tier failure — the ConfirmationDialog swallow-and-stick on the cascade-400. DOC-255 Caveat 2 documents the backend semantics only. The stuck-modal + no-recovery + no-forewarning is the new UI bug (DataSourceItem.md bugs[0], the §0 defect). distinct_from PLT-038 which is dialog TEXT grammar/guidance, not the swallow/stuck behaviour."
+  recommended_log_as: BUG-NNN
+  proposed_fix_anchor: "ConfirmationDialog.tsx:28-34 — surface the error inline + reset isLoading + keep the modal open on rejection; OR DataSourceItem add a pre-flight cascade check / disabled-with-tooltip Delete + an additionalContent forewarning."
+- hypothesis_id: H-006
+  severity: HIGH
+  one_line: "The Regenerate ConfirmationDialog gives no consequence warning — an operator confirming gets no signal the old token dies instantly and breaks every running collector (no grace period)."
+  dedup_status: already_tracked
+  tracked_as: PLT-038
+  note: "PLT-038 'Sister UX surfaces' explicitly names DataSourceItemToken.tsx:37-49 token-rotation ConfirmationDialog — 'no no-grace-period warning' — and cross-links DOC-218 doc-side. The destructive-rotation backend mechanics are PLT-108 (no-grace in-place rotation, collector+datasource). Reflection independently re-derived the UI consequence-warning gap; corroboration recorded, not re-filed."
+- hypothesis_id: H-008
+  severity: MEDIUM
+  one_line: "A backend-rejected register/edit closes the modal and discards everything typed (handleResponseAsyncThunk never re-throws, so .then(clearState) runs on failure); the only feedback is a transient toast, no inline error."
+  dedup_status: net_new
+  recommended_log_as: BUG-NNN
+  proposed_fix_anchor: "DataSourceForm.tsx:78-80 — gate clearState/close on dispatch success (check rejected meta) and pass DialogWrapper an errorText so the modal stays open with an inline error on 4xx."
+- hypothesis_id: H-013
+  severity: MEDIUM
+  one_line: "Two concurrent PUT edits to the same data source are last-write-wins with no optimistic-lock detection; combined with REPLACE semantics a later edit silently clobbers an earlier operator's field changes."
+  dedup_status: net_new
+  distinct_from: PLT-087
+  note: "The double-submit-register and concurrent-token-rotation cases are covered by probes P-077/P-050; this is the concurrent-UPDATE lost-update case (F-031 facet concurrent_update_lost_update_no_optimistic_lock) which has no existing PLT and no existing probe. Verdict is probe-needed (P-241)."
+  recommended_log_as: BUG-NNN
+  proposed_fix_anchor: "DataSourceServiceImpl.update (DataSourceServiceImpl.java:68-83) — add an optimistic-lock version column / updated_at precondition to the UPDATE."
+
+### caveat_candidates
+- hypothesis_id: H-002
+  one_line: "The Namespace field's inline 'Create new custom namespace' is a deliberate select-or-create affordance (LSN-023 correction) — NOT a permission side-door; the residue is the doc gap + the NAMESPACE_CREATE-vs-DATA_SOURCE_CREATE RBAC question."
+  dedup_status: already_tracked
+  tracked_as: DOC-255
+  note: "DOC-255 Caveat 1 (status: done) documents the namespace_name side-door doc-side; PLT-087 'Out of scope' judges closing it a UX-breaking product decision (doc-caveat is the right ship). This reflection's contribution is the LSN-023 retirement of the wrong permission_side_door framing (REFACTOR-584 / lineage DOC-GAP-262) — the feature-flow-builder should drop permission_side_door from F-031's primary_drift_class on next refresh (see new_drift_classes_proposed)."
+- hypothesis_id: H-003
+  one_line: "Edit is full-form REPLACE — editing one field nulls the blank ones (e.g. clearing Description on Save), with no warning, reachable straight from the modal."
+  dedup_status: already_tracked
+  tracked_as: DOC-255
+  note: "DOC-255 Description names 'the REPLACE-not-MERGE update semantic' as a silent-on gap; pinned by P-043 (backend) + P-076 (from-UI). No PLT — closing it (global MapStruct IGNORE) is a behaviour-flip the maintainer must choose. distinct_from: the namespace side-door (DOC-255 Caveat 1) — this is the field-wipe class."
+- hypothesis_id: H-004
+  one_line: "ODDRN is immutable on edit (field disabled, absent from update DTO) with no inline help explaining why; an operator who mistyped it cannot correct it via Edit."
+  dedup_status: net_new
+  recommended_log_as: doc-gap-NNN
+  note: "Neither DOC-255 nor the ui_review_2026_05_26 graduated this as a tracked caveat (ui_review note 7 flags it as a MINOR doc-hint gap, not yet filed). Small: a doc line + optional inline help text."
+- hypothesis_id: H-007
+  one_line: "One-shot token reveal is real but leaky: masked form exposes real last-6 chars to all viewers; plaintext persists in the redux store + uncached HTTP response; navigating away forces a second destructive rotation."
+  dedup_status: already_tracked
+  tracked_as: PLT-087
+  note: "PLT-087 Defect 3 (plaintext-token response no Cache-Control) + PLT-085 (plaintext-at-rest, data-source sibling) + DOC-255 Caveat 3 cover the response/at-rest leaks. The redux-store-persistence (datasources.slice.ts:41-42) and the list-leaks-real-last-6 (TokenMapper) are the sharper UI/list angles; recorded as corroboration."
+- hypothesis_id: H-009
+  one_line: "Delete orphans the token row (token table has no deleted_at, no GC job) and leaves the FTS vector uncleared (asymmetry with update) — a 'deleted' source can keep surfacing in search."
+  dedup_status: already_tracked
+  tracked_as: PLT-087
+  note: "PLT-087 Defect 1 (delete clears TOKEN + FTS) + DOC-255 Caveat 2 cover this exactly. Convergent re-derivation; corroboration recorded."
+- hypothesis_id: H-010
+  one_line: "'Search datasource' label implies substring search; the backend page query is name-PREFIX (REFACTOR-425), and the frozen header count gives no zero-result signal — an existing source typed by mid-name fragment looks unregistered."
+  dedup_status: net_new
+  recommended_log_as: doc-gap-NNN
+  note: "PLT-090 is the Search-subsystem (/api/search facets) hardening — a DIFFERENT surface; it does NOT cover the datasources-list prefix/substring + frozen-count. DataSourcesList.md doc_drift_findings flags it as a documented-feature gap (search undocumented + must be documented with the prefix caveat) but no DOC item is filed yet. distinct_from: PLT-090."
+- hypothesis_id: H-011
+  one_line: "The entire data-source lifecycle (register/edit/delete/rotate) emits no Activity Event and no log on any layer — unauditable; a reviewer cannot answer 'who rotated this token before the last rotation'."
+  dedup_status: already_tracked
+  tracked_as: DOC-255
+  note: "DOC-255 Caveat 3 covers the audit silence doc-side; PLT-087 'Out of scope' defers the platform_event audit surface to the cross-cutting ADR (DOC-181 family). Convergent; corroboration recorded."
+- hypothesis_id: H-012
+  one_line: "Mutation RBAC holds under LOGIN_FORM/OAUTH2/LDAP (backend SecurityConstants is the boundary; UI hides controls) but Save is enabled by validity-only (403 discovered late) and under auth.type=DISABLED all four mutating verbs incl. token rotation are anonymously reachable."
+  dedup_status: already_tracked
+  tracked_as: DOC-GAP-082
+  note: "The DISABLED-mode anonymous-mutation bypass is the 29-sidecar meta-finding DOC-GAP-082 (lineage doc-gaps registry; F-031 frontmatter related_doc_gaps). The late-403-on-Save UX gap is a UI observation (DataSourceForm.md security.known_security_gaps, severity LOW) — recorded as corroboration; the LOW UX angle could be a doc-gap-NNN but is not load-bearing enough to file standalone."
+
+### probes_emitted
+- probe_id: P-241
+  hypothesis_id: H-013
+  probe_path: "lineage/odd-platform/probes/P-241.yaml"
+
+### validation_gaps
+- sidecar: odd-platform__java__service__service__DataSourceServiceImpl
+  field_insufficient: "no standalone DataSourceServiceImpl sidecar exists — the service-tier node is referenced primary-source by all 5 method sidecars (feature-flow chain hop 2 records sidecar: '(service-tier — not yet a standalone sidecar)')."
+  proposed_refresh: "Enrich DataSourceServiceImpl as a standalone sidecar so the @ReactiveTransactional asymmetry (regenerate unannotated vs the 3 annotated siblings), the audit-silence (no emitter import), and the cross-method REPLACE-vs-MERGE-vs-getOrCreate semantics have a single primary-source home rather than being distributed across 5 method sidecars."
+- sidecar: odd-platform__ts__react-component__component__DataSourcesList
+  field_insufficient: "the DataSourcesList → DataSourceItem mapping records the parent as resolved but several siblings (NamespaceAutocomplete's TermForm/DataEntityGroupForm/CollectorForm/LookupTableForm callers) remain unresolved: true — the ~11-site reuse of the select-or-create pattern is asserted but only the DataSource mount is enriched."
+  proposed_refresh: "When F-028 (Namespace) / F-020 (Collector) reflections run, confirm the NamespaceAutocomplete reuse sites so the select-or-create UX pattern (H-002) is verified across all mount points, not inferred from the type union."
+
+### doc_drift_findings
+- hypothesis_id: H-006
+  doc_url: "https://docs.opendatadiscovery.org/features/management"
+  doc_says: "Each card shows 'a partially-redacted Collector token with a Regenerate action' (pre-DOC-255 page); no confirmation dialog, no warning about immediate token invalidation, no grace period, no copy/one-shot-reveal model."
+  code_does: "Regenerate is a destructive in-place rotation behind a consequence-free ConfirmationDialog; the new plaintext is shown once with a Copy button + 'you cannot retrieve it again' warning; the old token 401s immediately."
+  recommended_log_as: doc-gap-NNN
+  note: "DOC-255 Caveat 3 (status: done) has since added the no-grace + plaintext + audit doc-side warnings on the management page; the one-shot-reveal + copy + confirmation-dialog UI behaviour is still undocumented (DataSourceItemToken.md doc_drift_findings). Partially closed by DOC-255; the UI-interaction-model residue remains."
+- hypothesis_id: H-010
+  doc_url: "https://docs.opendatadiscovery.org/features/management"
+  doc_says: "The page does not mention search or filtering capabilities for the data source list (WebFetched 2026-05-22)."
+  code_does: "The screen has a prominent 'Search datasource' box doing a name-PREFIX match (not substring), with infinite-scroll, id-ASC ordering, and a frozen-during-search header count — all undocumented."
+  recommended_log_as: doc-gap-NNN
+  note: "DataSourcesList.md doc_drift_findings: search/ordering/pagination all silent on the live page; and search must be documented WITH the prefix caveat (H-010). Not yet filed as a DOC item."
+
+## maintainer_notes
+
+(empty — first reflection of this feature. NOTE for the maintainer: this reflection
+is the LSN-023 closure-evidence application — H-002 traces the namespace_name path
+through the actual NamespaceAutocomplete UI control and verdicts it `confirmed`
+(deliberate select-or-create UX), explicitly retiring the wrong `permission_side_door`
+framing (REFACTOR-584 / lineage DOC-GAP-262) that LSN-023 stays `open` until removed
+from F-031's committed artefacts. The `new_drift_classes_proposed` entry
+`permission_side_door_superseded_by_select_or_create_ux_lsn023` signals the
+feature-flow-builder to drop `permission_side_door` from F-031.yaml's
+`primary_drift_class` / `drift_class_summary` on its next refresh — that removal is
+the remaining LSN-023 closure step.)

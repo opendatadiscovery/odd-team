@@ -1,0 +1,121 @@
+---
+probe_id: P-228
+emitted_by: feature-reflector
+emitted_in_reflection: lineage/odd-platform/feature-reflections/detail/F-011.yaml
+emitted_for_hypothesis: H-002
+emitted_at: 2026-06-01T00:00:00Z
+status: pending-reflection-verification
+feature_id: F-011
+test_class: security
+verified_against_commit: 43d13eb
+maintainer_curated: false
+stack_profile: odd-minimal-plus-s2s
+expected_outcome: |
+  Reflection hypothesis F-011 H-002 (verbatim): "When a server-to-server (S2S) API-key
+  client performs an owner-scoped operation, it resolves to a dedicated system identity
+  (or to no Owner at all) — it does NOT silently act as some human operator's account."
+
+  Predicted (CONTRADICTED) outcome from the code trace: S2sAuthenticationFilter.java:31-34
+  hard-codes User.withUsername("ADMIN") into the UsernamePasswordAuthenticationToken, which
+  collapses to provider=null at AuthIdentityProviderImpl.java:32. Any S2S call into a
+  service using fetchAssociatedOwner looks up `WHERE OIDC_USERNAME='ADMIN' AND PROVIDER IS
+  NULL`. If an operator has created an Owner/mapping for a LOGIN_FORM/LDAP user literally
+  named 'ADMIN' (uppercase, case-sensitive), the S2S caller resolves to THAT human's Owner
+  and inherits their owner-scoped reads/mutations.
+
+  The probe boots with auth.type=LOGIN_FORM + auth.s2s.enabled=true, seeds a human user
+  'ADMIN' (uppercase) bound to Owner X which owns a private data entity, then issues an S2S
+  call (X-API-Key header) to an owner-scoped read and asserts it returns Owner X's data —
+  confirming the S2S key holder silently inherits the human ADMIN's owner scope.
+
+  PASS of the assertions = the collision is REAL (hypothesis CONTRADICTED; resolve S2S to a
+  system-Owner / no-owner sentinel — PLT-072 Defect 3). FAIL = S2S resolves to no Owner or
+  a distinct system identity (would invalidate the static trace).
+local_execution_blocked: false
+arrange:
+  - kind: docker-compose-up
+    notes: |
+      odd-platform + Postgres, booted with auth.type=LOGIN_FORM and auth.s2s.enabled=true
+      (so the S2sAuthenticationFilter is registered per LoginFormSecurityConfiguration's
+      conditional s2s wiring). An S2S API key/token must be provisioned for the
+      X-API-Key header.
+  - kind: sql
+    query: |
+      -- A human Owner whose associated user is literally named 'ADMIN' (uppercase).
+      INSERT INTO owner (id, name, deleted_at)
+      VALUES (8801, 'probe_owner_human_admin', NULL);
+  - kind: sql
+    query: |
+      -- The collision row: oidc_username='ADMIN' (matching the S2S filter literal),
+      -- provider=null (LOGIN_FORM), bound to the human Owner 8801.
+      INSERT INTO user_owner_mapping (id, oidc_username, owner_id, provider, deleted_at)
+      VALUES (8901, 'ADMIN', 8801, NULL, NULL);
+  - kind: sql
+    query: |
+      -- A private data entity owned by the human-ADMIN's Owner 8801 — the S2S key
+      -- should NOT be able to read this via owner-scoping if isolation holds.
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id)
+      VALUES (8910, '//probe-src/p228/private', 'p228_human_admin_private', 1, 1);
+      INSERT INTO ownership (id, data_entity_id, owner_id)
+      VALUES (8920, 8910, 8801);
+act:
+  - kind: rest
+    description: |
+      Issue an owner-scoped read as the S2S caller (X-API-Key header, no human session).
+      The S2S filter seeds username='ADMIN' provider=null into the SecurityContext.
+    method: GET
+    path: /api/datasources?my_objects=true   # or the /my owner-scoped read available in this build
+    headers:
+      X-API-Key: ${S2S_API_KEY}
+    capture_as: s2s_my_objects
+  - kind: rest
+    description: |
+      Read whoami as the S2S caller to capture which Owner the S2S principal resolves to.
+    method: GET
+    path: /api/identity/whoami
+    headers:
+      X-API-Key: ${S2S_API_KEY}
+    capture_as: s2s_whoami
+observe:
+  - kind: sql
+    description: |
+      Truth: the only mapping for 'ADMIN' is the human Owner 8801 binding.
+    query: |
+      SELECT oidc_username, provider, owner_id
+      FROM user_owner_mapping
+      WHERE oidc_username = 'ADMIN' AND deleted_at IS NULL;
+    capture_as: admin_mapping
+assert:
+  - "admin_mapping.owner_id == 8801  # the human 'ADMIN' is bound to Owner 8801"
+  - "s2s_whoami.owner.id == 8801  # S2S BOUNDARY FAILURE: the S2S key inherits the human ADMIN's Owner"
+  - "len(s2s_my_objects.body) >= 1  # the S2S key reads Owner 8801's private entity (8910) via owner-scoping — data it should never see"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM ownership WHERE id = 8920;
+      DELETE FROM data_entity WHERE id = 8910;
+      DELETE FROM user_owner_mapping WHERE id = 8901;
+      DELETE FROM owner WHERE id = 8801;
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__service__service__AuthIdentityProviderImpl
+    - odd-platform__java__S2sAuthenticationFilter
+    - odd-platform__java__repository__reactive__repository__ReactiveUserOwnerMappingRepositoryImpl
+  feature_flows:
+    - F-011
+  retrospectives:
+    - LSN-018
+  issues:
+    - PLT-072   # admin/ADMIN literal collision (Defect 3) — this probe is the security-boundary verification
+realism_caveats: |
+  The second HIGHEST-leverage F-011 probe the control_summary names. The collision is
+  case-sensitive (the SQL uses eq, not equalsIgnoreCase) so the seeded username MUST be
+  exactly 'ADMIN' uppercase to reproduce. If s2s_whoami.owner.id is null (S2S resolves to
+  no Owner), the static trace would be wrong — re-read S2sAuthenticationFilter.java:31-34 +
+  AuthIdentityProviderImpl.java:29-33. The probe also implicitly confirms that the platform
+  ships NO dedicated system-Owner for S2S: there is no reserved owner row the filter binds
+  to; isolation depends entirely on operators never naming a human user 'ADMIN'. Note the
+  sibling DISABLED-mode dummyOwner uses LOWERCASE 'admin' (IdentityController.java:32) — a
+  separate collision surface (PLT-072 Defect 3 covers both literals).

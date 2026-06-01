@@ -1,0 +1,130 @@
+---
+probe_id: P-391
+id: P-391
+status: pending-reflection-verification
+emitted_by: feature-reflector
+emitted_at: 2026-06-01T00:00:00Z
+emitted_in_batch: REFLECT-F-007
+emitted_from_sidecar: lineage/odd-platform/feature-reflections/detail/F-007.yaml
+feature_id: F-007
+hypothesis_id: H-002
+test_class: security
+verified_against_commit: substrate-manifest-inherited
+maintainer_curated: false
+note_on_id: |
+  Feature-scoped id (P-391) used deliberately instead of the next sequential
+  P-NNN — this reflection ran in PARALLEL-BATCH mode and the sequential ids
+  P-220..P-224 were being claimed concurrently by sibling reflectors (P-224 is
+  F-008 H-013). A feature-scoped id is collision-free under concurrent emission.
+expected_outcome: |
+  Hypothesis H-002 (verbatim from the reflection):
+
+  "When a caller POSTs an AlertManager payload with labels.entity_oddrn set to a
+  data entity owned by a DIFFERENT team, the platform creates an OPEN alert
+  attributed to that entity, and that forged alert is then visible to every
+  authenticated user on the platform-wide /alerts/all tab — even though the
+  caller has no ownership of, or permission on, the targeted entity."
+
+  Static trace (HIGH confidence, per AlertServiceImpl.java:178 verbatim mapping +
+  AlertManagerController.java:21-26 no-auth handler + ReactiveAlertRepositoryImpl.java:143-145
+  cross-owner listAllWithStatusOpen) predicts the secure expectation is CONTRADICTED:
+  entity_oddrn is mapped with no existence/ownership/permission check, the path is
+  exempt from the auth chain via SecurityConstants WHITELIST_PATHS /ingestion/**,
+  and the global All tab has no owner predicate. This probe is the end-to-end
+  REGRESSION-PIN the feature-flow control_summary names as the highest-leverage
+  unprobed cell ("0 of 4 cells PROBED ... anonymous AlertManager POST creating
+  cross-tenant alerts visible on the platform-wide All tab is the highest-leverage
+  candidate"). It pins the COMPOUND (forge + cross-tenant attribution + global
+  display + duplicate-on-retry) that no single per-file sidecar can assert.
+
+stress_category: F (request-input naming alignment — entity_oddrn promises "my entity"; binds to ANY entity, unauthenticated)
+
+triggers:
+  - AlertManagerController.java:21-26 (no @PreAuthorize / @Secured / @Valid on the webhook handler)
+  - AlertServiceImpl.java:178 (setDataEntityOddrn(labels.get("entity_oddrn")) — verbatim, no validation)
+  - ReactiveAlertRepositoryImpl.java:143-145 (listAllWithStatusOpen — no owner predicate; REFACTOR-024)
+  - ReactiveAlertRepositoryImpl.java:332-342 (createAlerts — INSERT ... RETURNING, no ON CONFLICT)
+  - SecurityConstants.java:96 (WHITELIST_PATHS[/ingestion/**] exempts the path from the UI auth chain)
+  - IngestionDataEntitiesFilter.java:28 (ingestion filter binds to /ingestion/entities POST only — sibling path uncovered)
+  - F-007 drift_class cross_tenant_alert_creation + forge-and-display compound (REFACTOR-024)
+
+arrange:
+  - Build odd-platform from main against a docker-compose Postgres stack.
+  - Run TWO scenarios for auth posture:
+      (S1) auth.type=DISABLED — the anonymous-reach headline.
+      (S2) auth.type=LOGIN_FORM with two seeded users in two DIFFERENT owners
+           (userA->ownerA, userB->ownerB) — the authenticated-but-unauthorised case.
+  - Seed a dataset Data Entity owned by ownerB with a known oddrn
+    (e.g. ENTITY_B_ODDRN = "//postgres/host/db/teamB.sales") and data_entity_id 7002.
+  - Confirm zero alert rows reference ENTITY_B_ODDRN before the probe.
+
+act:
+  - S1 CALL A (anonymous forge): with NO auth header, POST /ingestion/alert/alertmanager
+      body {"alerts":[{"labels":{"entity_oddrn":"<ENTITY_B_ODDRN>"},
+                       "generatorURL":"http://prometheus.example/graph","startsAt":"2026-06-01T10:00:00Z"}]}
+  - S1 CALL B (anonymous read): with NO auth header, GET /api/alerts (the All-tab feed).
+  - S2 CALL C (cross-owner forge): authenticated as userA (ownerA), POST the same
+      AlertManager payload targeting ENTITY_B_ODDRN (owned by ownerB).
+  - S2 CALL D (third-party read): authenticated as userB (or any third user), GET /api/alerts.
+  - S2 CALL E (idempotency cross-check): repeat CALL C identically (Prometheus-retry simulation).
+
+observe:
+  - kind: rest_response
+    target: S1 CALL A
+    capture: [status_code]            # static trace predicts 204 No Content (accepted, unauthenticated)
+  - kind: rest_response
+    target: S1 CALL B
+    capture: [status_code, body]      # does the forged alert on ENTITY_B_ODDRN appear to an anonymous reader?
+  - kind: rest_response
+    target: S2 CALL C
+    capture: [status_code]            # predicts 204 — any authenticated user may POST; no ALERT_CREATE permission exists
+  - kind: rest_response
+    target: S2 CALL D
+    capture: [status_code, body]      # does a third user (not ownerB) see the forged alert on the All tab?
+  - kind: db_state
+    target: alert table after CALL C + CALL E
+    capture: [row_count_for_ENTITY_B_ODDRN]   # 1 if idempotent (it is NOT); 2 confirms the no-ON-CONFLICT duplication
+
+oracle:
+  pass_if:                            # the SECURE behaviour the secure expectation would WANT
+    - S2 CALL C.status_code in (401, 403)      # cross-owner forge rejected
+    - AND S1 CALL A.status_code in (401, 403)  # anonymous forge rejected
+  fail_if_forge_and_display:          # the static-trace prediction (secure expectation contradicted)
+    - S1 CALL A.status_code == 204
+      AND S1 CALL B.body contains an alert whose data_entity_oddrn == ENTITY_B_ODDRN
+  fail_if_authenticated_cross_owner:
+    - S2 CALL C.status_code == 204
+      AND S2 CALL D.body contains an alert whose data_entity_oddrn == ENTITY_B_ODDRN
+  fail_if_no_idempotency:
+    - row_count_for_ENTITY_B_ODDRN == 2 after CALL C + CALL E
+
+routes_to_finding_on_fail:
+  - fail_if_forge_and_display: bug-candidate — ALREADY TRACKED as PLT-014 Defect 1
+    (this probe is the regression-pin / convergent confirmation, not a new filing).
+  - fail_if_authenticated_cross_owner: bug-candidate — ALREADY TRACKED as PLT-014 Defect 1
+    (the authenticated-any-user half of the same gap).
+  - fail_if_no_idempotency: bug-candidate — ALREADY TRACKED as PLT-014 Defect 3.
+
+local_execution_only:
+  enforced: true
+  mechanism: docker-compose Postgres + local odd-platform build; REST calls via curl /
+             WebTestClient; optional local Playwright to confirm the /alerts/all UI render
+             of the forged row. No remote infrastructure, no managed DB, no cloud CI.
+  approach_md_anchor: APPROACH.md section 9 rule 12 (local-only verification)
+  local_execution_blocked: false
+
+cleanup:
+  - DELETE the seeded alert rows for ENTITY_B_ODDRN and the data_entity row 7002.
+  - Stop the docker-compose stack.
+
+confidence_required: HIGH (flips H-002 from a static-inferred contradiction to a
+  measured, regression-pinned compound: anonymous + authenticated cross-tenant forge
+  + global display + duplicate-on-retry, all in one run).
+
+cross_references:
+  - sidecar: odd-platform__java__AlertManagerController__controller-method__postAlerts.md (bugs_limitations_corner_cases[1] cross_tenant_alert_creation)
+  - sidecar: odd-platform__java__service__service__AlertServiceImpl.md (invariants — handleExternalAlerts no entity_oddrn validation)
+  - sidecar: odd-platform__java__repository_reactive__repository__ReactiveAlertRepositoryImpl.md (bugs_limitations_corner_cases — listAllWithStatusOpen no owner predicate)
+  - reflection: lineage/odd-platform/feature-reflections/detail/F-007.yaml H-002
+  - issue: issues/odd-platform/PLT-014.md (Defect 1 + Defect 3 — the tracked fix this probe pins)
+  - feature_flow: F-007 control_summary (names this as the highest-leverage unprobed cell)

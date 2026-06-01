@@ -1,0 +1,164 @@
+---
+probe_id: P-330
+feature_id: F-018
+test_class: security
+emitted_by: feature-reflector
+status: pending-reflection-verification
+emitted_in_reflection: lineage/odd-platform/feature-reflections/detail/F-018.yaml
+emitted_for_hypothesis: H-005
+emitted_at: 2026-06-01T00:00:00Z
+verified_against_commit: 43d13eb
+prompt_version: probe-runner/0.1.0
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Quoting hypothesis H-005 verbatim:
+  "When an operator who holds ONLY a per-surface tag-assign permission
+  (DATASET_FIELD_TAGS_UPDATE on one dataset field's parent entity — NOT
+  TAG_CREATE) submits a NOVEL tag name, that tag becomes a row in the global
+  Tag directory immediately visible to a DIFFERENT user who holds NO TAG_*
+  permission at all, via GET /api/tags."
+
+  This is the REFACTOR-223 / PLT-026 side-channel headline framed as a
+  cross-user, cross-surface USER JOURNEY — a single end-to-end assertion that
+  no existing probe captures (P-026 pins createTag bulk-INSERT atomicity;
+  P-030 pins the dataset-field unset-origin INSERT; neither asserts the
+  cross-user directory-visibility consequence). The static trace through
+  TagServiceImpl.getOrCreateTagsByName (TagServiceImpl.java:80-86, 144-159 —
+  zero TAG_CREATE consultation) + the getPopularTagList open-read posture
+  (SecurityConstants.java:138-142 — no GET SecurityRule) makes the verdict
+  CONTRADICTED statically; this probe MEASURES the journey end-to-end so the
+  fix (Thread B of PLT-026 — lift TAG_CREATE into getOrCreateTagsByName) is
+  gated by an explicit cross-user regression test.
+
+  PASS (current behaviour, contradicting the operator's "TAG_CREATE gates the
+  vocabulary" mental model) = the novel tag minted by the dataset-field-only
+  caller IS returned by GET /api/tags to the no-permission reader. If the
+  reader does NOT see it (i.e. minting was actually gated), the verdict flips
+  from contradicted to confirmed.
+---
+
+# P-330 — side-channel tag-mint cross-user directory visibility (H-005)
+
+arrange:
+  - kind: docker-compose-up
+    compose_profile: odd-minimal
+    # auth.type must be a real authenticating mode (LOGIN_FORM) so the two
+    # distinct principals carry distinct permission sets; DISABLED would make
+    # every caller ADMIN and erase the side-channel distinction the probe
+    # exists to measure.
+    env:
+      AUTH_TYPE: LOGIN_FORM
+
+  # Seed a parent data entity + a dataset field under it.
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name)
+      VALUES (3300, '//probe-source-P-330/db', 'probe-source-P-330')
+      ON CONFLICT (id) DO NOTHING
+  - kind: sql
+    query: |
+      INSERT INTO data_entity
+        (id, oddrn, external_name, data_source_id, type_id, hollow,
+         source_created_at, source_updated_at)
+      VALUES (330000, '//probe-source-P-330/db/tables/p330_de', 'p330_de',
+              3300, 1, false, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+  - kind: sql
+    query: |
+      INSERT INTO dataset_field (id, oddrn, name, type, data_entity_id)
+      SELECT 330001, '//probe-source-P-330/db/tables/p330_de/columns/c1',
+             'p330_field', '{"logical_type":"STRING"}', 330000
+      WHERE NOT EXISTS (SELECT 1 FROM dataset_field WHERE id = 330001)
+
+  # Principal A: holds ONLY DATASET_FIELD_TAGS_UPDATE (DATA_ENTITY-scoped,
+  # resolved against the parent entity 330000) — and crucially NOT TAG_CREATE.
+  # Principal B: holds NO TAG_* permission at all (a plain authenticated user).
+  # The harness must mint these two owners + policies + login sessions; the
+  # exact policy JSON is deployment-shaped, so it is described declaratively
+  # here and the odd-minimal harness fills it in.
+  - kind: seed-principal
+    as: principal_A
+    owner_name: "p330-fieldtagger"
+    policy: |
+      grant DATASET_FIELD_TAGS_UPDATE scoped to data entity 330000
+      (and NOTHING else — explicitly NOT TAG_CREATE)
+    capture_session_as: session_A
+  - kind: seed-principal
+    as: principal_B
+    owner_name: "p330-plainreader"
+    policy: |
+      grant NO permissions (a bare authenticated principal)
+    capture_session_as: session_B
+
+  # Baseline: confirm the novel tag name does NOT already exist in the directory.
+  - kind: rest
+    method: GET
+    path: "/api/tags?page=1&size=100&query=p330novel"
+    session: session_B
+    capture_as: directory_before
+
+act:
+  # Principal A (dataset-field-tag-update only) mints a NOVEL tag by assigning it
+  # to the dataset field. The novel name has never existed in the directory.
+  - kind: rest
+    method: PUT
+    path: /api/datasetfields/330001/tags
+    session: session_A
+    body: { tags: ["p330novel"] }
+    capture_as: assign_response
+
+observe:
+  # Principal B (NO tag permission) reads the global directory.
+  - kind: rest
+    method: GET
+    path: "/api/tags?page=1&size=100&query=p330novel"
+    session: session_B
+    capture_as: directory_after_for_reader
+
+assert:
+  # The dataset-field-tag-update call succeeded (the side-channel is open).
+  - "assign_response.status == 200"
+  # The novel tag did not pre-exist.
+  - "len([t for t in directory_before.items if t.name == 'p330novel']) == 0"
+  # CURRENT (contradicting) behaviour: a different no-permission user now sees
+  # the side-channel-minted tag in the global directory.
+  - "len([t for t in directory_after_for_reader.items if t.name == 'p330novel']) == 1"
+  # The minted tag is non-promoted (important=false hardcoded) — corroborates the
+  # positive invariant that the side-channel cannot mint promoted tags.
+  - "[t for t in directory_after_for_reader.items if t.name == 'p330novel'][0].important == false"
+
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  related_sidecars:
+    - odd-platform__java__service__TagServiceImpl
+    - odd-platform__java__DatasetFieldController__controller-method__updateDatasetFieldTags
+    - odd-platform__java__TagController__controller-method__getPopularTagList
+  refactoring_scopes: [REFACTOR-223]
+  doc_gaps: [DOC-GAP-168]
+  issues: [PLT-026]
+  retrospectives: [LSN-019]
+  reflection: "lineage/odd-platform/feature-reflections/detail/F-018.yaml#H-005"
+
+realism_caveats: |
+  - LOCAL-ONLY (APPROACH.md §9 rule 12): docker-compose odd-minimal stack +
+    Postgres + two seeded login principals + curl/WebTestClient — no cloud, no
+    managed DB, no remote IdP. LOGIN_FORM with two local form users satisfies
+    the two-distinct-principal requirement without an external OAuth provider.
+  - The probe MUST run under a real authenticating auth mode (LOGIN_FORM), NOT
+    DISABLED. Under DISABLED every caller is effectively ADMIN, so the "A has
+    only DATASET_FIELD_TAGS_UPDATE, B has nothing" distinction collapses and the
+    side-channel can no longer be distinguished from a normal authorised mint —
+    the probe would pass for the wrong reason.
+  - The `seed-principal` step is declarative: the odd-minimal harness owns the
+    owner+policy+role+session bootstrap (the same machinery the security probes
+    for PLT-026's "REFACTOR-223 side-channel regression-pin" require). If the
+    harness cannot yet seed scoped policies, this probe is BLOCKED on that
+    harness capability — record local_execution_blocked and the missing step,
+    do NOT downgrade to a cloud runner.
+  - dataset_field's `type` column shape is jsonb-ish in the schema; the seed uses
+    a minimal logical-type JSON. If the odd-minimal seed helper exposes a
+    dataset-field factory, prefer it over the raw INSERT to stay schema-current.

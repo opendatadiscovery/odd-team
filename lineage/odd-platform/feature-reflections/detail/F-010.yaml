@@ -1,0 +1,933 @@
+---
+feature_id: F-010
+pillar_anchored_id: P-08:F-002
+pillar: P-08 Management & Administration (operational-infrastructure surface — "Platform-Internal Operational Infrastructure" canonicalisation candidate, system-mission.md §"Canonicalisation candidates")
+feature_name: "Scheduled housekeeping cycle — TTL purge + empty-partition drop (5 jobs, every 15 minutes, ShedLock-coordinated)"
+reflected_at: 2026-06-01T00:00:00Z
+reflected_at_commit: 43d13eb
+prompt_version: feature-reflector/0.2.0
+contributing_sidecars_read:
+  - odd-platform__java__service__service__HousekeepingJobManager.md
+  - odd-platform__java__org_opendatadiscovery_oddplatform_housekeeping_config__config-properties-class__HousekeepingTTLProperties.md
+  - odd-platform__java__housekeeping__job__ActivityEmptyPartitionsHousekeepingJob.md
+  # AlertHousekeepingJob / SearchFacetsHousekeepingJob / DataEntityHousekeepingJob /
+  # MessageEmptyPartitionsHousekeepingJob / SchedulingConfiguration / SessionConfiguration:
+  # consumed via the F-010 feature-flow chain evidence blocks + HousekeepingJobManager
+  # sidecar (Rule 8 — not separately re-read; cited through the chain).
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform"
+    last_verified_at: "2026-06-01T00:00:00Z"
+    last_verified_status: 200
+    note: >-
+      Live page has been UPDATED since the contributing sidecars were written
+      (2026-05-12 / 2026-05-19 / 2026-05-20). It now enumerates "five cleanup
+      tasks" (was "three"), describes the jOOQ operator-precedence bug with the
+      emitted SQL verbatim, documents the session-housekeeping no-leader-election
+      gap, and documents `spring.session.timeout: -1` (never-expire). This is the
+      doc-side landing of DOC-250 (status: done) + DOC-251..253 sibling work.
+      Several historical doc-drift findings carried by the sidecars are therefore
+      now REMEDIATED (see ## doc_drift_findings).
+hypothesis_summary:
+  total: 13
+  confirmed: 4
+  contradicted: 5
+  partial: 2
+  probe_needed: 2
+  highest_severity_contradiction:
+    hypothesis_id: H-005
+    severity: HIGH
+    one_line: >-
+      The "30-day soft-delete grace" the feature promises never fires at all —
+      DataEntityMapperImpl.applyStatus sets STATUS before the change-detection
+      guard, so STATUS_UPDATED_AT is never bumped on the DELETE transition and
+      DataEntityHousekeepingJob's cutoff predicate matches nothing; soft-deleted
+      entities persist forever (the inverse of the documented behaviour).
+related_feature_flows:
+  - F-021  # Activity Feed — shares the ActivityEmptyPartitionsHousekeepingJob enumeration + check-then-drop race (P-022)
+  - F-008  # Collector lifecycle / ingestion-cluster correctness — shares SessionConfiguration (cluster-correctness triangulation)
+  - F-020  # Collector lifecycle — shares SessionConfiguration + token-orphan housekeeping gap
+  - F-019  # Owner lifecycle — DataEntityHousekeepingJob.deleteOwnerships cascade + LSN-001-shape inheritance
+  - F-006  # Audit-silence pattern — housekeeping deletions are not in any audit log
+related_concepts:
+  - "Housekeeping (TTL Retention)"
+  - "Activity Table Partitioning"
+  - "Alert (resolved)"
+  - "Search Facet"
+  - "Data Entity (soft-deleted)"
+  - "Attachment (S3)"
+related_drift_classes:
+  - jooq_operator_precedence_bug_with_doc_acknowledgement_no_test
+  - housekeeping_ttl_java_default_is_zero_safety_floor_only_in_application_yml_lsn_001_shape
+  - postgresql_session_housekeeping_job_no_scheduler_lock_multi_instance_race_load_n_times_inconsistent_with_5_jobs_pattern
+  - postgresql_session_housekeeping_job_no_op_under_default_spring_session_timeout_minus_one_monotonic_growth_silent
+  - cross_pillar_activity_retention_to_p_07
+  - block_inside_transaction_anti_pattern
+  - shedlock_window_dangerously_close_to_schedule
+  - strict_opt_in_vs_default_true_framing
+  - no_observability_metrics_or_audit_log
+new_drift_classes_proposed:
+  - status_updated_at_never_bumped_breaks_data_entity_ttl_cutoff_soft_delete_never_purges  # the highest-severity catch — the TTL the feature exists to enforce never fires
+---
+
+# Scheduled housekeeping cycle — product-owner reflection
+
+## product_owner_narrative
+
+ODD Platform's housekeeping is the platform's self-maintenance subsystem: every 15 minutes, a single ShedLock-elected instance fires a cycle that permanently deletes data the operator has chosen to age out, so that a long-lived PostgreSQL catalog does not grow without bound (per `odd-platform__java__service__service__HousekeepingJobManager.md`:understanding + live `/configuration-and-deployment/odd-platform`). The audience is operators sizing their database, DBAs, and compliance reviewers who need to know what is purged and when. The user-facing promise is a retention policy: "resolved alerts, search-facet history, and soft-deleted data entities are kept for N days (default 30), then permanently removed" — expressed through three `housekeeping.ttl.*` knobs an operator tunes (per `HousekeepingTTLProperties.md`:understanding + live doc verbatim "Defaults to 30").
+
+An operator interacts with this feature almost entirely through configuration, not a screen — this feature has NO UI surface (see the validation_gap below). The inputs are `housekeeping.enabled` (master gate, default `true`) and the three `housekeeping.ttl.*` day-counts; the observable outputs are bounded table growth and, on failure, an ERROR log line. There is no dashboard, no "what will be deleted" preview, no per-cycle report, and no metric (per `HousekeepingJobManager.md`:bugs_limitations_corner_cases[4] — all per-job logging is `log.debug`, default-off in production). The operator's mental model of "I set 30 days, so data lives 30 days" is the load-bearing user expectation this reflection tests.
+
+The working parts: the orchestrator injects a `List<HousekeepingJob>` and discovers FIVE beans (per `HousekeepingJobManager.md`:understanding) — three TTL-driven row reapers (`AlertHousekeepingJob`, `SearchFacetsHousekeepingJob`, `DataEntityHousekeepingJob`) that hard-DELETE rows past `now() - ttl days`, plus two `EmptyPartitionsHousekeepingJob` subclasses (`ActivityEmptyPartitionsHousekeepingJob`, `MessageEmptyPartitionsHousekeepingJob`) that drop EMPTY past partitions only and consume NO TTL key (per `ActivityEmptyPartitionsHousekeepingJob.md`:concepts.invariants). The five run SEQUENTIALLY on one shared raw JDBC connection inside a 14-minute ShedLock against the 15-minute schedule (per `HousekeepingJobManager.md`:concepts.operations). `DataEntityHousekeepingJob` is the heavy one: a ~25-table cascade inside a single jOOQ transaction that also blocks on `fileUploadService.deleteFiles(...).block()` to remove S3 attachments (per F-010 chain hop 3c evidence + `HousekeepingJobManager.md`:coupling[3]).
+
+This feature is the operational counterpart to two other pillars (per system-mission.md cross-pillar map + F-010 `cross_pillar_relationships`): it owns the retention of the Data Quality pillar's (P-04) resolved-alert table via `resolved_alerts_days`, and it is the SOLE reaper of the Active-Platform-Features pillar's (P-07) Activity table via the empty-partition drop — coordinating across orchestrators with `ActivityTablePartitionManager` (which creates partitions nightly). A SIXTH housekeeping-shaped job exists outside the orchestrator entirely: `PostgreSQLSessionHousekeepingJobHandler` purges expired `SPRING_SESSION` rows hourly, gated by `session.provider=INTERNAL_POSTGRESQL`, with no leader-election guard (per F-010 batch-X notes + live doc verbatim 2026-06-01).
+
+The edge cases a product owner would flag in a demo are the dangerous ones: a partial config override silently rebinds all three TTLs to `0` and the next cycle deletes everything (LSN-001 shape, per `HousekeepingTTLProperties.md`:bugs_limitations_corner_cases[2]); the Activity and Message tables have NO time-based retention knob at all and grow monotonically on any busy platform (per `ActivityEmptyPartitionsHousekeepingJob.md`:bugs_limitations_corner_cases[0]); and — the deepest one — the soft-delete-grace TTL the whole feature advertises never fires for data entities because of a status-mutation ordering bug two layers upstream (per `concepts.yaml` cross-batch invariant D+F, line 185-192; tracked as PLT-027 / SHB-004).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: >-
+    When an operator sets `housekeeping.ttl.resolved_alerts_days=30`, an alert
+    the operator MANUALLY marked RESOLVED is retained for 30 days after its
+    status-update before housekeeping deletes it (symmetric with auto-resolved
+    alerts).
+  derivation: >-
+    The config key is named `resolved_alerts_days` and the doc states it is
+    "intended to apply to both RESOLVED (manual) and RESOLVED_AUTOMATICALLY
+    (system) states" — the user expects the retention window to cover all
+    resolved alerts.
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The jOOQ predicate at AlertHousekeepingJob.java:28-34 chains
+      `.where(STATUS.eq(RESOLVED)).or(STATUS.eq(RESOLVED_AUTOMATICALLY)).and(STATUS_UPDATED_AT.lessOrEqual(cutoff))`.
+      jOOQ fluent-builder precedence binds `.and(...)` to the most recent
+      `.or(...)`, emitting `WHERE (STATUS='RESOLVED') OR (STATUS='RESOLVED_AUTOMATICALLY'
+      AND STATUS_UPDATED_AT <= cutoff)`. The TTL cutoff therefore applies ONLY to
+      RESOLVED_AUTOMATICALLY rows; a manually-RESOLVED alert matches the bare
+      first clause and is hard-deleted on the VERY NEXT 15-minute cycle,
+      regardless of `resolved_alerts_days`.
+    evidence:
+      - sidecar: odd-platform__java__service__service__HousekeepingJobManager.md
+        section: bugs_limitations_corner_cases[1]
+        cite: "AlertHousekeepingJob.java:28-34"
+        note: "the operator-precedence predicate chain; PRIMARY-SOURCE confirmation of REFACTOR-142"
+      - sidecar: odd-platform__java__org_opendatadiscovery_oddplatform_housekeeping_config__config-properties-class__HousekeepingTTLProperties.md
+        section: bugs_limitations_corner_cases[3]
+        cite: "AlertHousekeepingJob.java:28-34 + WebFetch /configuration-and-deployment/odd-platform"
+        note: "second-angle confirmation; live doc acknowledges the bug verbatim"
+    operator_visible_failure: |
+      (1) An operator clicking "RESOLVED" on a production alert loses the alert —
+      and its audit trail — within ~15 minutes, not 30 days. (2) Raising
+      `resolved_alerts_days` to 90 for a compliance requirement buys longer
+      retention for auto-resolved alerts ONLY; manual resolutions silently ignore
+      the setting entirely. (3) The data has been silently lost since 2023 (commit
+      c8dc0544) on every deployment — older deployments have years of vanished
+      manual-resolution audit history. SOC2/SOX/HIPAA alert-retention claims built
+      on `resolved_alerts_days` are unsound for manual-resolved rows.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-002
+  hypothesis: >-
+    When an operator deploys ODD with the documented default config and does NOT
+    touch `housekeeping.ttl.*`, the platform retains resolved alerts / search
+    facets / soft-deleted entities for 30 days (the documented default).
+  derivation: >-
+    Live doc states "Defaults to 30" for all three TTL keys; the operator expects
+    the 30-day default to be a property of the platform, not of one specific YAML
+    file.
+  seed_source: doc-claim
+  validation:
+    verdict: partial
+    actual_behavior: |
+      TRUE only when the bundled `application.yml:165-170` is the resolved
+      configuration. The Java fields are declared `private int resolvedAlertsDays;`
+      / `searchFacetsDays;` / `dataEntityDeleteDays;` with NO `= 30` initialiser
+      (HousekeepingTTLProperties.java:8-12); the `30` safety floor lives ONLY in
+      the shipped YAML. A deployment that overrides application.yml via a Helm
+      values overlay, `--spring.config.location=` to a profile that omits the
+      block, Spring Cloud Config slice, or a Kubernetes ConfigMap mount that does
+      not re-supply `housekeeping.ttl.*` binds Spring's primitive-int default `0`
+      for all three. The next cycle computes `cutoff = now() - 0 days = now()` and
+      the predicate `STATUS_UPDATED_AT <= cutoff` matches every row — immediate
+      hard-delete-everything.
+    evidence:
+      - sidecar: odd-platform__java__org_opendatadiscovery_oddplatform_housekeeping_config__config-properties-class__HousekeepingTTLProperties.md
+        section: bugs_limitations_corner_cases[2]
+        cite: "HousekeepingTTLProperties.java:8-12 + application.yml:168-170"
+        note: "Java-side fields have no initialiser; safety floor only in YAML — LSN-001 shape"
+      - sidecar: odd-platform__java__org_opendatadiscovery_oddplatform_housekeeping_config__config-properties-class__HousekeepingTTLProperties.md
+        section: concepts.invariants[1]
+        cite: "HousekeepingTTLProperties.java:9-11"
+        note: "'Defaults shipped at the YAML level, NOT the Java level'"
+    operator_visible_failure: |
+      (1) An operator standardising per-env Helm overlays (the common pattern of
+      a base values.yaml + env overlays) who drops the housekeeping block from one
+      overlay gets a SILENT TOTAL WIPE within 15 minutes of that environment's
+      next restart: all RESOLVED alert history, all search-facet history, all
+      soft-deleted entities cascading through ~25 tables AND the corresponding S3
+      attachments (DataEntityHousekeepingJob.java:142). (2) No boot warning, no log
+      above DEBUG, no metric — recovery requires Postgres PITR + S3 versioning
+      replay. This is the exact LSN-001 (attachment-storage default) failure shape
+      on a different config family.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-003
+  hypothesis: >-
+    When housekeeping is left at its default, it runs — i.e. "on by default" means
+    a deployment gets housekeeping unless the operator explicitly turns it off.
+  derivation: >-
+    Live doc says `housekeeping.enabled` "Defaults to true"; the operator reads
+    this as a platform property.
+  seed_source: doc-claim
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The gate is `@ConditionalOnProperty(value="housekeeping.enabled",
+      havingValue="true")` with NO `matchIfMissing` (HousekeepingJobManager.java:18).
+      "Default true" is delivered EXCLUSIVELY by the shipped application.yml:166.
+      If the key is ABSENT from the resolved config (operator-customised
+      application.yml that omits it), the `@ConditionalOnProperty` evaluates the
+      property as missing → the bean is NOT registered → housekeeping silently does
+      not run, with no boot log. So "omitting the key" and "setting it false" are
+      indistinguishable, and the safe-default depends on the bundled YAML being
+      present.
+    evidence:
+      - sidecar: odd-platform__java__service__service__HousekeepingJobManager.md
+        section: bugs_limitations_corner_cases[7]
+        cite: "HousekeepingJobManager.java:18 (no matchIfMissing)"
+        note: "strict opt-in if key absent; silent no-op"
+      - sidecar: odd-platform__java__service__service__HousekeepingJobManager.md
+        section: implicit_adrs[3]
+        cite: "HousekeepingJobManager.java:18 + application.yml:166"
+        note: "fail-CLOSED-on-missing-config is the deliberate ADR"
+    operator_visible_failure: |
+      The opposite failure mode from H-002: an operator who omits the
+      `housekeeping.enabled` key in a custom config gets ZERO housekeeping (silent
+      unbounded growth) rather than the "on by default" the docs promise. Blast
+      radius is bounded (operator-error gated; the shipped default works), so this
+      is a documentation/strict-opt-in caveat rather than a data-loss bug.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-004
+  hypothesis: >-
+    The housekeeping subsystem is described to the operator as exactly the set of
+    cleanup tasks it performs — the operator reading the config docs learns every
+    table housekeeping touches.
+  derivation: >-
+    The doc enumerates the cleanup tasks; a complete operator mental model of
+    "what housekeeping deletes" requires the enumeration to match the code.
+  seed_source: doc-claim
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      AT THE TIME OF THIS REFLECTION (live WebFetch 2026-06-01) the doc now
+      enumerates FIVE cleanup tasks: "resolved alerts, search-facet history,
+      soft-deleted data entities, empty `activity` table partitions, and empty
+      `message` table partitions" — matching the five @Component beans Spring
+      discovers via `List<HousekeepingJob>` at HousekeepingJobManager.java:23. The
+      contributing sidecars (written 2026-05-12/19/20) recorded the doc saying
+      "three cleanup tasks" and flagged a 3-vs-5 drift; that drift has since been
+      REMEDIATED on the live page (the landing of DOC-250, status: done). The
+      enumeration is now correct.
+    evidence:
+      - sidecar: odd-platform__java__service__service__HousekeepingJobManager.md
+        section: concepts.entities + understanding
+        cite: "HousekeepingJobManager.java:23 (List<HousekeepingJob> picks up 5 beans)"
+        note: "five concrete @Component HousekeepingJob beans"
+      - sidecar: feature-reflector live cross-reference
+        section: docs_cross_referenced
+        cite: "WebFetch /configuration-and-deployment/odd-platform 2026-06-01 status 200"
+        note: "live page now says 'five cleanup tasks' — sidecar's 'three' is stale"
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: doc-gap-candidate   # remediation-confirmation only; see ## doc_drift_findings
+
+- id: H-005
+  hypothesis: >-
+    When an operator soft-deletes a data entity (sets it to DELETED status), the
+    entity is permanently purged 30 days later by `data_entity_delete_days` — the
+    "oops I clicked delete" 30-day recovery window the feature advertises.
+  derivation: >-
+    The key `data_entity_delete_days` (default 30) + the soft-delete grace ADR
+    (HousekeepingTTLProperties.md:implicit_adrs[1] "30 days is operator-comfortable
+    for 'oops I clicked delete' recovery") promise time-based purge of DELETED
+    entities. This is the core capability of the data-entity reaper.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The purge NEVER fires. DataEntityHousekeepingJob's cutoff predicate filters
+      on `DATA_ENTITY.STATUS_UPDATED_AT <= now() - data_entity_delete_days` — but
+      `STATUS_UPDATED_AT` is NEVER bumped on the transition INTO DELETED status,
+      because `DataEntityMapperImpl.applyStatus` calls `pojo.setStatus(...)` BEFORE
+      the change-detection guard `if (statusDto.getId() != pojo.getStatus())` — the
+      guard's condition is therefore always false and the `statusUpdatedAt` write
+      is skipped (concepts.yaml cross-batch invariant D+F, lines 185-192 +
+      lines 124-127). With STATUS_UPDATED_AT left at its original (creation-era)
+      value or null, the cutoff predicate either matches nothing relevant or
+      behaves unpredictably, and DELETED entities persist indefinitely. The
+      feature advertises a 30-day soft-delete-grace purge; the code delivers
+      no purge at all.
+    evidence:
+      - sidecar: concepts.yaml (cross-batch invariant, the reducer-aggregated finding)
+        section: "lines 185-192 (TTL retention broken by statusUpdatedAt nullification) + 124-127"
+        cite: "DataEntityMapperImpl.applyStatus (setStatus before the prior-status check)"
+        note: "the upstream ordering bug; DataEntityHousekeepingJob query depends on STATUS_UPDATED_AT"
+        source_read_for_validation: false
+      - sidecar: odd-platform__java__org_opendatadiscovery_oddplatform_housekeeping_config__config-properties-class__HousekeepingTTLProperties.md
+        section: dependencies_semantic.requires-feature[2]
+        cite: "DataEntityHousekeepingJob.java:71-80 consumes DataEntityStatusDto.DELETED + STATUS_UPDATED_AT"
+        note: "confirms the reaper's cutoff is keyed on STATUS_UPDATED_AT"
+    operator_visible_failure: |
+      (1) The soft-delete "recovery window then permanent purge" the feature exists
+      to provide is a no-op: DELETED data entities accumulate forever, defeating
+      the bounded-growth purpose of housekeeping for the single largest cascade
+      table-set in the platform. (2) An operator who soft-deletes sensitive data
+      expecting it to be permanently gone after 30 days (a GDPR right-to-erasure
+      workflow) is silently NOT erased — a compliance failure, not just a growth
+      problem. (3) The two failure surfaces compound: even if H-002 (TTL=0) were
+      fixed, the data-entity reaper still would not fire because its cutoff column
+      is dead. This is the highest-severity catch in this reflection because the
+      feature's central promise is contradicted by a bug two layers upstream that
+      no single housekeeping-tier sidecar can see.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-006
+  hypothesis: >-
+    When a platform generates activity events continuously, the `activity` audit
+    table is bounded by housekeeping the same way alerts and search facets are —
+    old activity ages out.
+  derivation: >-
+    The feature is a "housekeeping cycle that purges stale data" and the live
+    Activity-Feed Configuration page frames `odd.activity.partition-period` as
+    controlling "retention and partitioning"; the operator expects activity to be
+    retention-bounded.
+  seed_source: cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      There is NO time-based retention for the `activity` table anywhere in the
+      codebase. `HousekeepingTTLProperties` has exactly three fields and NO
+      `activityDays`. The only activity-touching housekeeping path,
+      `ActivityEmptyPartitionsHousekeepingJob`, drops a partition ONLY when it is
+      BOTH past-end-date AND empty (`SELECT count(*) = 0`, PartitionServiceImpl.java:133-142).
+      Each partition spans `2 × odd.activity.partition-period = 60 days`. On a
+      steadily-used platform a 60-day window is never empty by the time it is past,
+      so NO partition is ever dropped; the activity table grows monotonically (the
+      repo-tier ReactiveActivityRepositoryImpl has zero `deleteFrom(ACTIVITY)`
+      calls — F-010 batch-R). `odd.activity.partition-period` controls partition
+      WIDTH only, not retention.
+    evidence:
+      - sidecar: odd-platform__java__housekeeping__job__ActivityEmptyPartitionsHousekeepingJob.md
+        section: bugs_limitations_corner_cases[0]
+        cite: "ActivityEmptyPartitionsHousekeepingJob.java:14-17 + PartitionServiceImpl.java:82-118"
+        note: "near-no-op on steadily-used platforms → monotonic growth; LSN-001-shape silent-data-growth"
+      - sidecar: odd-platform__java__housekeeping__job__ActivityEmptyPartitionsHousekeepingJob.md
+        section: stress_findings Q-B.3
+        cite: "WebFetch /features/active-platform-features/activity-feed#configuration"
+        note: "the 'retention and partitioning' framing drifts; retention is volume-conditional, not time-based"
+      - sidecar: odd-platform__java__org_opendatadiscovery_oddplatform_housekeeping_config__config-properties-class__HousekeepingTTLProperties.md
+        section: bugs_limitations_corner_cases[0]
+        cite: "HousekeepingTTLProperties.java:8-12 (no activity field)"
+        note: "second-angle confirmation — no activity*Days field exists"
+    operator_visible_failure: |
+      (1) A high-volume deployment (e.g. 1M events/day) accumulates hundreds of GB
+      of audit data per year with NO recovery path short of manual
+      `DROP TABLE activity_YYYYMMDD_YYYYMMDD` — eventual storage exhaustion. (2) An
+      operator who reads "retention and partitioning are controlled by
+      partition-period" and sets it expecting old activity to be purged gets WIDTH
+      control only; nothing ages out. (3) Compliance frameworks requiring BOUNDED
+      audit-log retention (SOX, GDPR records-of-processing) cannot be satisfied —
+      there is no time-based mechanism to bound activity retention. The symmetric
+      gap applies to the `message` table (DataCollaboration, default-off — narrower
+      blast radius).
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-007
+  hypothesis: >-
+    When an empty past `activity` partition is dropped, no concurrently-written
+    activity row is lost — the "empty partitions only" name guarantees the drop is
+    safe against in-flight writes.
+  derivation: >-
+    The class name `ActivityEmptyPartitionsHousekeepingJob` promises it only drops
+    EMPTY partitions; an operator trusts that an audit row being written at the
+    same moment is not silently destroyed.
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      The empty-check (`SELECT count(*) = 0`) and the `DROP TABLE` (no `IF EXISTS`)
+      are TWO separate statements on the shared connection, NOT wrapped in a
+      transaction and holding no pre-emptive lock (PartitionServiceImpl.java:108-127;
+      EmptyPartitionsHousekeepingJob does NOT wrap in `transaction(...)`, unlike
+      AlertHousekeepingJob/DataEntityHousekeepingJob). An `INSERT INTO activity`
+      that lands AFTER the count-zero check but BEFORE the DROP would succeed
+      (committed on the writer's autocommit connection), then DROP TABLE destroys
+      the just-inserted row with no recheck and no error to the original caller.
+      Static analysis says the race window is real (Q-E.3, Q-B.2); whether it is
+      reachable under realistic write timing requires running the system.
+    evidence:
+      - sidecar: odd-platform__java__housekeeping__job__ActivityEmptyPartitionsHousekeepingJob.md
+        section: bugs_limitations_corner_cases[1] + stress_findings Q-E.3 / Q-B.2
+        cite: "PartitionServiceImpl.java:108-127 (two-statement non-transactional pattern)"
+        note: "race window between empty-check and DROP; silent row loss if INSERT wins"
+    operator_visible_failure: |
+      If confirmed: silent loss of an audit-trail row that the writing code saw as
+      committed-success — the worst kind of audit defect (the record the operator
+      believes was saved is gone, with no error and no compensating undo). Severity
+      HIGH if reachable.
+    severity: HIGH
+    confidence: MEDIUM
+    probe_id: P-022
+    routes_to_finding: bug-candidate
+
+- id: H-008
+  hypothesis: >-
+    When ODD is deployed with multiple replicas, exactly one housekeeping cycle
+    runs per 15-minute slot — ShedLock guarantees no two instances purge
+    concurrently.
+  derivation: >-
+    The doc states housekeeping "uses ShedLock so only one platform instance runs
+    it at a time in a multi-instance deployment"; the operator expects safe
+    multi-replica behaviour.
+  seed_source: doc-claim
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      The orchestrator's lock is `lockAtLeastFor="14m" / lockAtMostFor="14m"`
+      against a `fixedRate=15` schedule (HousekeepingJobManager.java:25-26) — only
+      60 seconds of slack between maximum lock and next invocation. A cycle running
+      ≥14 minutes (a large DataEntityHousekeepingJob cascade, especially with the
+      `.block()` on S3 deletions) releases the lock BEFORE it commits, and a second
+      instance can acquire at the 15-minute mark while the first is still
+      finalising — two instances running housekeeping concurrently. Most row
+      DELETEs are idempotent, but the data-entity cascade reads-then-deletes, so
+      two concurrent snapshots could diverge; the empty-partition DROP (no
+      IF EXISTS) raises an error on the loser. Whether a real cascade exceeds 14
+      minutes (and thus whether the race is reachable) requires running the system.
+    evidence:
+      - sidecar: odd-platform__java__service__service__HousekeepingJobManager.md
+        section: bugs_limitations_corner_cases[3] + implicit_adrs[2]
+        cite: "HousekeepingJobManager.java:25-26 (14m lock vs 15m schedule)"
+        note: "razor-thin window; lock can release before commit on slow cycles"
+      - sidecar: odd-platform__java__housekeeping__job__ActivityEmptyPartitionsHousekeepingJob.md
+        section: stress_findings Q-E.1
+        cite: "EmptyPartitionsHousekeepingJob.java:30-32 + HousekeepingJobManager.java:25-26"
+        note: "two concurrent instances → DROP TABLE error on the loser, log noise, wasted work"
+    operator_visible_failure: |
+      If confirmed under a realistic backlog: divergent data-entity cascade
+      behaviour between two concurrent instances, plus per-cycle ERROR-log noise on
+      the empty-partition DROP race, on every interval where a cycle straddles the
+      15-minute boundary. Severity MEDIUM (theoretical until the soft-delete
+      backlog grows the cascade past 14 minutes).
+    severity: MEDIUM
+    confidence: MEDIUM
+    probe_id: P-011
+    routes_to_finding: caveat-candidate
+
+- id: H-009
+  hypothesis: >-
+    When MinIO/S3 attachment storage is unreachable, the housekeeping cycle still
+    completes its alert + search-facet purges and only the data-entity cascade is
+    affected.
+  derivation: >-
+    A robust per-cycle design isolates a failing dependency; the operator expects
+    one broken subsystem (S3) not to wedge unrelated cleanup. (The feature DOES
+    have per-job exception isolation — HousekeepingJobManager.java:41-47 — so the
+    naive expectation is that S3 failure is contained.)
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      The per-job try/catch isolates a job that THROWS, but
+      `fileUploadService.deleteFiles(filePojos).block()` at
+      DataEntityHousekeepingJob.java:142 is `.block()`ed with NO timeout INSIDE the
+      ~25-table transaction (DataEntityHousekeepingJob.java:71). Under an
+      accepted-but-silent S3 endpoint the `.block()` HANGS rather than throws — and
+      because all five jobs run sequentially on ONE shared connection
+      (HousekeepingJobManager.java:32-35) with NO ordering contract
+      (HousekeepingJobManager.java:23), a hung DataEntityHousekeepingJob that runs
+      first blocks the alert + search-facet purges for that cycle. If S3 eventually
+      throws, the transaction rolls back ALL ~25 deletes and the next cycle retries
+      the whole batch — under persistent misconfiguration the data-entity backlog
+      never drains, with only `log.error` as signal. Whether the block hangs vs
+      bounds depends on the S3 client timeout; requires running the system to
+      know which jobs are blocked and for how long.
+    evidence:
+      - sidecar: odd-platform__java__service__service__HousekeepingJobManager.md
+        section: bugs_limitations_corner_cases[2] + coupling[3]
+        cite: "DataEntityHousekeepingJob.java:71,142 + HousekeepingJobManager.java:32-35,45"
+        note: ".block() inside transaction, no timeout, shared connection, no @Order — REFACTOR-145"
+    operator_visible_failure: |
+      If confirmed: (1) a misconfigured S3 region/credential (LSN-002 shape) stalls
+      the entire housekeeping cycle until the read-timeout or 14m ShedLock expiry,
+      and — depending on bean order — silently prevents the alert + search-facet
+      purges from running at all; (2) soft-deleted entities never fully purge while
+      S3 is down (silent backlog accumulation); (3) the only operator signal is a
+      single ERROR log line — no metric, no per-job failure counter. Severity
+      MEDIUM.
+    severity: MEDIUM
+    confidence: MEDIUM
+    probe_id: P-310
+    routes_to_finding: bug-candidate
+
+- id: H-010
+  hypothesis: >-
+    When an operator needs to answer "how much did housekeeping delete yesterday?"
+    or "is housekeeping keeping up with the soft-delete rate?", the platform
+    exposes an observable surface (metric, log, or report).
+  derivation: >-
+    A retention subsystem that permanently deletes data is expected, by any
+    operator of a system of this class, to expose what it deleted (an implicit
+    operational + compliance requirement).
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      No observability exists. Per-job logging is `log.debug` (default-off in
+      production); manager-level success is `log.debug`, failure is `log.error`.
+      There is NO Micrometer counter (`housekeeping_deleted_total{table=...}`), NO
+      cycle-duration histogram, NO backlog gauge, NO structured audit event, NO
+      `@ActivityLog`. An operator answering "how much was deleted" must run a SQL
+      count manually; an operator asking "is housekeeping keeping up" has no
+      surface at all (grep of the housekeeping package for Micrometer types returns
+      zero).
+    evidence:
+      - sidecar: odd-platform__java__service__service__HousekeepingJobManager.md
+        section: bugs_limitations_corner_cases[4] + performance.known_performance_gaps[1]
+        cite: "HousekeepingJobManager.java:30,45 + AlertHousekeepingJob.java:45 + grep zero Micrometer"
+        note: "all logging debug-level; no counter/gauge/histogram"
+      - sidecar: odd-platform__java__service__service__HousekeepingJobManager.md
+        section: security.known_security_gaps[0]
+        cite: "HousekeepingTTLProperties.java + jobs (no audit annotations)"
+        note: "no tamper-evident audit of deletions or TTL config changes"
+    operator_visible_failure: |
+      (1) A successful cycle is completely silent in production logging — an
+      operator cannot pre-configure a "housekeeping failed" or "backlog growing"
+      alert without pattern-matching literal ERROR strings. (2) Compliance
+      frameworks requiring "data deletions must be logged and reviewable" (SOX /
+      GDPR records-of-processing) are not satisfied — there is no record of what
+      was deleted, when, or under what cutoff. (3) Combined with H-002/H-005, an
+      operator cannot even DETECT that the TTL=0 wipe or the dead-cutoff bug
+      occurred until users report missing data.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-011
+  hypothesis: >-
+    When a deployment uses PostgreSQL-backed sessions and runs multiple replicas,
+    the expired-session cleanup (like the rest of housekeeping) runs on exactly one
+    instance.
+  derivation: >-
+    The session-expiry purge is housekeeping-shaped (a scheduled DELETE of stale
+    rows); an operator who learned the housekeeping subsystem is ShedLock-guarded
+    reasonably extends that expectation to the session cleanup.
+  seed_source: cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      `PostgreSQLSessionHousekeepingJobHandler.java:13` is
+      `@Scheduled(fixedRate=1, timeUnit=HOURS)` with NO `@SchedulerLock`, NO
+      advisory-lock, NO `@ConditionalOnProperty` leader-election guard — the SOLE
+      `@Scheduled` job in the codebase without leader election (inconsistent with
+      the 5 HousekeepingJobManager jobs, NotificationSubscriber, the two
+      DataCollaboration jobs, ActivityTablePartitionManager). On an N-replica
+      `INTERNAL_POSTGRESQL` deployment, every replica runs
+      `DELETE FROM SPRING_SESSION WHERE expiry_time < now()` hourly — N× redundant
+      DB load. (`@EnableSchedulerLock(defaultLockAtMostFor="1h")` does NOT cover it:
+      the default applies only to `@SchedulerLock`-annotated methods that omit
+      their own timing, not to bare `@Scheduled`.) The live doc now documents this
+      gap verbatim (2026-06-01).
+    evidence:
+      - sidecar: F-010 feature-flow batch-X notes (SessionConfiguration enrichment)
+        section: "drift facet postgresql_session_housekeeping_job_no_scheduler_lock_..."
+        cite: "PostgreSQLSessionHousekeepingJobHandler.java:13"
+        note: "no @SchedulerLock; N× hourly DB load on multi-replica"
+      - sidecar: F-010 feature-flow batch-ZK notes (SchedulingConfiguration enrichment)
+        section: "drift facet (6) cross-sidecar confirmation"
+        cite: "SchedulingConfiguration.java:14 (defaultLockAtMostFor does not cover bare @Scheduled)"
+        note: "the @EnableSchedulerLock mental model is refuted at the config tier"
+    operator_visible_failure: |
+      (1) On a multi-replica INTERNAL_POSTGRESQL deployment, N× redundant hourly
+      DELETE load on SPRING_SESSION — wasted DB IOPS, not a correctness bug
+      (deletes are idempotent). (2) Incident-response surprise: an operator reading
+      `application.yml`'s four `*.advisory-lock-id` keys cannot trace the extra
+      SPRING_SESSION load back to a leaderless job. Severity MEDIUM (cost +
+      inconsistency, not data loss).
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-012
+  hypothesis: >-
+    When an operator deploys with default session settings, expired sessions are
+    cleaned up by the session-housekeeping job (bounded SPRING_SESSION growth).
+  derivation: >-
+    The session-housekeeping job's WHERE clause is `expiry_time < now()`; the
+    operator expects it to bound the session table.
+  seed_source: cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The shipped default is `spring.session.timeout: -1` (never-expire). Under
+      `-1`, sessions are written with an `expiry_time` that never falls before
+      `now()`, so the session-housekeeping predicate `expiry_time < now()` never
+      matches — the job is a NO-OP and SPRING_SESSION grows monotonically with the
+      high-water-mark of authenticated users. The live doc now states both the
+      `-1` default and that it means "sessions never expire" (2026-06-01).
+    evidence:
+      - sidecar: F-010 feature-flow batch-X notes
+        section: "drift facet postgresql_session_housekeeping_job_no_op_under_default_spring_session_timeout_minus_one_..."
+        cite: "application.yml:2-3 (spring.session.timeout: -1) + PostgreSQLSessionHousekeepingJob.java:30"
+        note: "WHERE expiry_time < now() never matches under -1; session table grows"
+    operator_visible_failure: |
+      (1) On an INTERNAL_POSTGRESQL deployment left at the default, SPRING_SESSION
+      grows without bound — another monotonic-growth surface under default config,
+      sibling to H-006. (2) The session-housekeeping job exists but does nothing
+      until the operator sets a finite timeout — and only THEN does H-011's N×
+      load surface. Severity MEDIUM (default-config silent growth; the live doc now
+      warns, so the doc-side is covered).
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-013
+  hypothesis: >-
+    When an operator misconfigures a TTL to a destructive value (e.g.
+    `data_entity_delete_days=1` or `0`), the platform protects them — a preview,
+    a dry-run, a validation rejection, or an archive-before-delete.
+  derivation: >-
+    Any operator of a system that permanently deletes data expects a guard rail
+    against a fat-fingered retention value; this is an implicit safety requirement
+    for a destructive subsystem.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      There is NO guard rail. `HousekeepingTTLProperties` has NO `@Validated`, NO
+      `@Min(1)`/`@Max`, NO `@DefaultValue`, NO `@PostConstruct validate()` (contrast
+      the sibling ODDLDAPProperties which DOES carry a `@PostConstruct validate()`).
+      There is no `housekeeping.dry-run=true` mode, no `archive-table`, no
+      operator-overrideable gate, and no in-cycle abort. A misconfigured
+      `data_entity_delete_days=1` (or `0`, or a negative producing a future cutoff)
+      silently binds and the next 15-minute cycle hard-deletes / cascades with no
+      recovery path. Once a cycle starts, the only "abort" is killing the JVM
+      mid-cycle to force a rollback.
+    evidence:
+      - sidecar: F-010 feature-flow batch-ZK notes (2)
+        section: "drift facet housekeeping_ttl_no_validated_no_min_no_max_no_postconstruct_validate_no_fail_fast"
+        cite: "HousekeepingTTLProperties.java:1-12 (no @Validated/@Min/@PostConstruct)"
+        note: "no fail-fast at boot on a destructive misconfiguration; sibling class has validate()"
+      - sidecar: odd-platform__java__service__service__HousekeepingJobManager.md
+        section: bugs_limitations_corner_cases[5] + security.known_security_gaps[1]
+        cite: "HousekeepingJobManager.java:25-39 (no dry-run/preview/kill-switch)"
+        note: "destructive cycle fires unconditionally; ~15 min from misconfig to cascade"
+    operator_visible_failure: |
+      (1) A typo in a retention value (or an intentional `0` for a one-off test
+      left in place) destroys data on the next cycle with no boot rejection and no
+      preview — the LSN-001 shape (silent default + immediate destructive action +
+      no preview). (2) An operator who notices the bad value in real time has ~15
+      minutes and no in-cycle abort short of a JVM restart. Severity MEDIUM (the
+      validator gap is the proposed fix-option-B of PLT-083, so this folds into
+      that hardening item).
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-001
+  severity: HIGH
+  one_line: >-
+    AlertHousekeepingJob jOOQ operator-precedence: manual RESOLVED alerts
+    hard-deleted on the next cycle regardless of resolved_alerts_days.
+  dedup_status: already_tracked
+  tracked_as: PLT-005
+  note: >-
+    PLT-005 ("AlertHousekeepingJob WHERE clause precedence — manual RESOLVED alerts
+    hard-deleted on first run regardless of retention", severity high) tracks this
+    EXACT finding (same file:line AlertHousekeepingJob.java:28-34, same failure).
+    Convergent validation — reflection independently re-derived a filed issue. Do
+    NOT re-file. Doc-side is DOC-250 Caveat 2 (done).
+
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: >-
+    Java-side TTL fields default to 0; partial application.yml override silently
+    wipes all retained data within 15 min of restart (LSN-001 shape).
+  dedup_status: already_tracked
+  tracked_as: PLT-083
+  note: >-
+    PLT-083 Defect 1 ("Java-side TTL fields default to 0; partial config override
+    silently wipes... within 15 minutes of restart (HIGHEST — LSN-001 shape)")
+    tracks this EXACTLY (HousekeepingTTLProperties.java:8-12). Convergent
+    validation. Do NOT re-file. Doc-side is DOC-250 Caveat 1 (done).
+
+- hypothesis_id: H-005
+  severity: HIGH
+  one_line: >-
+    STATUS_UPDATED_AT never bumped on the DELETE transition → DataEntityHousekeepingJob
+    cutoff never matches → soft-deleted entities never purge (the feature's core
+    promise is contradicted).
+  dedup_status: already_tracked
+  tracked_as: PLT-027
+  note: >-
+    PLT-027 (SHB-004 — "DataEntityMapperImpl.applyStatus mutates pojo BEFORE
+    change-detection guard → status_updated_at NEVER set → 30-day retention TTL
+    never fires → DELETED entities persist forever") tracks this EXACTLY, including
+    the code-fix + data-fix backfill migration. Convergent validation — this is the
+    HIGHEST-severity catch of the reflection AND it is already filed. Do NOT
+    re-file. NEW drift_class proposed for the ontology
+    (status_updated_at_never_bumped_breaks_data_entity_ttl_cutoff...) so the
+    feature-flow records the promise-vs-delivery contradiction at the F-010 level.
+
+- hypothesis_id: H-007
+  severity: HIGH
+  one_line: >-
+    Activity empty-partition check-then-DROP race: a concurrent INSERT between the
+    count(*)=0 check and DROP TABLE silently destroys a committed audit row.
+  dedup_status: net_new
+  distinct_from: F-021
+  note: >-
+    No issues/ or backlog/ item tracks this code defect; it is carried as a
+    feature-flow drift facet + probe P-022 only (F-021 / VAL-LSN-019-B surfaced the
+    same race from the Activity Feed side but did not file a PLT). Routes for filing
+    once P-022 confirms reachability.
+  recommended_log_as: BUG-NNN (gated on P-022 outcome)
+  proposed_fix_anchor: >-
+    Wrap getEmptyPastPartitions empty-check + dropPartition in a single
+    transaction with an ACCESS EXCLUSIVE lock taken BEFORE the count check, OR
+    re-check emptiness under the lock immediately before DROP (PartitionServiceImpl.java:108-127).
+
+- hypothesis_id: H-009
+  severity: MEDIUM
+  one_line: >-
+    DataEntityHousekeepingJob .block()s S3 deleteFiles with no timeout inside the
+    jOOQ transaction on a shared connection → persistent S3 failure wedges the
+    cycle and (order-dependent) blocks the alert/search-facet purges.
+  dedup_status: net_new
+  distinct_from: PLT-086
+  note: >-
+    PLT-086 covers the MinioConfig SDK-builder unset httpClient/timeouts (a
+    different locus + a different defect). PLT-083/DOC-250 name the cascade+S3
+    delete only as blast-radius CONTEXT, not as the cycle-wedge anti-pattern. No
+    item tracks the .block()-inside-transaction-on-shared-connection cycle wedge.
+    Probe P-310 emitted. Routes for filing once P-310 confirms.
+  recommended_log_as: BUG-NNN (gated on P-310 outcome)
+  proposed_fix_anchor: >-
+    Move S3 deletion OUTSIDE the jOOQ transaction (best-effort post-commit), OR add
+    .block(Duration.ofSeconds(N)) + a structured failure metric
+    (DataEntityHousekeepingJob.java:71,142).
+
+- hypothesis_id: H-011
+  severity: MEDIUM
+  one_line: >-
+    PostgreSQLSessionHousekeepingJobHandler has no @SchedulerLock → N× redundant
+    hourly SPRING_SESSION DELETE on multi-replica deployments.
+  dedup_status: already_tracked
+  tracked_as: PLT-083
+  note: >-
+    PLT-083 Defect 2 ("PostgreSQLSessionHousekeepingJobHandler has no @SchedulerLock
+    (multi-replica N× DB load)") tracks this EXACTLY
+    (PostgreSQLSessionHousekeepingJobHandler.java:13). Convergent validation. Do
+    NOT re-file. Doc-side is DOC-250 Caveat 4 (done).
+
+- hypothesis_id: H-013
+  severity: MEDIUM
+  one_line: >-
+    No @Validated / @Min / @PostConstruct on HousekeepingTTLProperties and no
+    dry-run/preview/kill-switch → a destructive TTL misconfiguration binds silently
+    and fires on the next cycle.
+  dedup_status: already_tracked
+  tracked_as: PLT-083
+  note: >-
+    The validator gap is PLT-083 Defect 1 "Option B (validators + fail-fast)" — the
+    same finding framed as a fix option. The dry-run/preview absence is the broader
+    LSN-001-shape framing PLT-083 already carries. Convergent — do NOT re-file as a
+    distinct item; if the maintainer wants the dry-run/preview tracked separately,
+    that is a scope decision on PLT-083, not a new finding.
+
+### caveat_candidates
+- hypothesis_id: H-003
+  one_line: >-
+    `housekeeping.enabled` is strict opt-in (no matchIfMissing) — omitting the key
+    in a custom application.yml silently disables housekeeping, not "on by default".
+  dedup_status: already_tracked
+  tracked_as: DOC-250
+  note: >-
+    Folded into the DOC-250 (done) housekeeping caveat set's framing of the
+    application.yml-dependence of the defaults; the strict-opt-in mechanism is the
+    same root as Caveat 1's "true only when bundled application.yml is resolved".
+  recommended_log_as: caveat in /configuration-and-deployment/odd-platform (covered by DOC-250)
+
+- hypothesis_id: H-006
+  one_line: >-
+    Activity (and message) tables have NO time-based retention; partition-period is
+    WIDTH only; the table grows monotonically on busy platforms.
+  dedup_status: already_tracked
+  tracked_as: DOC-250
+  note: >-
+    DOC-250 Caveat 3 documents the two empty-partition reapers + clarifies they
+    consume partition-rotation state NOT housekeeping.ttl; the partition-period
+    "retention" mis-framing is DOC-GAP-041. The CODE-side remediation (add an
+    activityDays/messageDays TTL field + a row-delete-by-age job) is NOT tracked by
+    any issue — surfaced here as a candidate the maintainer may wish to file if
+    bounded activity retention becomes a requirement.
+  recommended_log_as: caveat in /configuration-and-deployment/odd-platform (DOC-250) + optional new PLT for the code-side TTL field
+
+- hypothesis_id: H-008
+  one_line: >-
+    14m/14m ShedLock against a 15m schedule gives only 60s slack — a ≥14m cascade
+    can release the lock before commit and let a second instance run concurrently.
+  dedup_status: net_new
+  note: >-
+    No issues/ or backlog/ item tracks the 14m/15m window specifically; it is a
+    feature-flow drift facet (shedlock_window_dangerously_close_to_schedule) + probe
+    P-011. Probe-gated; routes as a caveat (or a one-line lockAtMostFor bump) if
+    P-011 shows reachability.
+  recommended_log_as: caveat in /configuration-and-deployment/odd-platform OR a one-line fix (lockAtMostFor >= 2 x fixedRate)
+
+- hypothesis_id: H-010
+  one_line: >-
+    No metric / no audit log / no backlog gauge on a subsystem that permanently
+    deletes data — operators cannot observe deletions or detect a stuck cycle;
+    compliance "deletions must be logged" unmet.
+  dedup_status: net_new
+  note: >-
+    The observability absence is a feature-flow drift facet
+    (no_observability_metrics_or_audit_log) carried across multiple sidecars but is
+    NOT tracked as a filed issue or backlog item. Distinct from PLT-083 (which is
+    the two data-loss/consistency defects). Routes for filing as an operability/
+    compliance hardening item.
+  recommended_log_as: BUG-NNN (operability — housekeeping_deleted_total / cycle_duration / backlog metrics + structured audit event)
+
+- hypothesis_id: H-012
+  one_line: >-
+    spring.session.timeout: -1 shipped default makes the session-housekeeping job a
+    no-op; SPRING_SESSION grows monotonically on INTERNAL_POSTGRESQL deployments.
+  dedup_status: already_tracked
+  tracked_as: PLT-074
+  note: >-
+    PLT-074 ("Session cookie posture epic: spring.session.timeout=-1 shipped
+    default + ...") tracks the -1 default. Doc-side is DOC-250 Caveat 4 cross-link
+    + DOC-GAP-221. Convergent — do NOT re-file. (The session table is
+    cross-pillar; this caveat surfaces it from the housekeeping-retention angle.)
+  recommended_log_as: caveat covered by PLT-074 + DOC-250
+
+### probes_emitted
+- probe_id: P-310
+  hypothesis_id: H-009
+  probe_path: "lineage/odd-platform/probes/P-310.yaml"
+  note: >-
+    NEW — no existing probe covered the .block()-S3-stall cycle-wedge (P-022/P-012
+    = activity check-then-drop race; P-013 = count-scan I/O; P-011/P-182 =
+    multi-instance race). emitted_by: feature-reflector; status:
+    pending-reflection-verification.
+
+### probes_referenced
+- probe_id: P-022
+  hypothesis_id: H-007
+  probe_path: "lineage/odd-platform/probes/P-022.yaml"
+  note: "existing — activity empty-partition check-then-drop race (VAL-LSN-019-B). Not re-emitted."
+- probe_id: P-011
+  hypothesis_id: H-008
+  probe_path: "lineage/odd-platform/probes/P-011.yaml"
+  note: "existing — multi-instance ShedLock race / autocommit posture. Not re-emitted."
+- probe_id: P-012
+  hypothesis_id: H-007
+  probe_path: "lineage/odd-platform/probes/P-012.yaml"
+  note: "existing — race window empty-check → INSERT → DROP TABLE silent row loss (sibling to P-022)."
+
+### validation_gaps
+- sidecar: "(feature-level — no UI sidecar in the F-010 chain)"
+  field_insufficient: "ui_routes / ui_shell / any UI interaction node"
+  proposed_refresh: >-
+    Per feature-reflector Rule 9 (APPROACH.md §0.2): this feature has NO UI surface
+    in its chain — it is operator-configuration-only (application.yml keys), with no
+    screen, form, or modal. This reflection is therefore CONFIG/BACKEND-only by the
+    feature's nature, NOT by a frame-blindness omission (contrast LSN-023/F-031,
+    where a user-facing feature was judged from its API alone). The senior-PO UX
+    questions (understandability, convenience, customisability, cross-device) are
+    answered at the config layer: the operator's ONLY affordances are the four
+    config keys; the load-bearing UX defect is that the destructive subsystem
+    offers no preview, no dry-run, and no observable feedback (H-010, H-013). No UI
+    refresh is owed; recorded here to make the API-only scope explicit and
+    deliberate.
+- sidecar: "AlertHousekeepingJob / SearchFacetsHousekeepingJob / DataEntityHousekeepingJob / MessageEmptyPartitionsHousekeepingJob"
+  field_insufficient: "no standalone stress-complete sidecar (chain evidence only)"
+  proposed_refresh: >-
+    These four jobs are enriched only via the HousekeepingJobManager sidecar +
+    F-010 chain hop evidence, not as standalone stress-complete sidecars (the
+    Activity reaper got one in batch-2 VAL-LSN-019). A standalone file-analyser
+    pass on AlertHousekeepingJob (Category B name-behavior + Category F predicate
+    interrogation) and DataEntityHousekeepingJob (the ~25-table cascade + the
+    .block() resource boundary) would primary-source H-001 and H-009 at the job
+    level rather than via the orchestrator sidecar.
+
+### doc_drift_findings
+- hypothesis_id: H-004
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform"
+  doc_says: >-
+    (HISTORICAL, in the sidecars 2026-05-12/19/20) "three cleanup tasks". (LIVE,
+    2026-06-01) "five cleanup tasks: resolved alerts, search-facet history,
+    soft-deleted data entities, empty activity table partitions, and empty message
+    table partitions."
+  code_does: "Five @Component HousekeepingJob beans (HousekeepingJobManager.java:23)."
+  recommended_log_as: >-
+    REMEDIATED — the 3-vs-5 drift the sidecars carried is now corrected on the live
+    page (landing of DOC-250, status: done). No new doc-gap. Flagged so the next
+    sidecar refresh updates the stale 'three cleanup tasks' verbatim quotes in
+    HousekeepingTTLProperties.md / HousekeepingJobManager.md /
+    ActivityEmptyPartitionsHousekeepingJob.md docs_link_semantic blocks.
+- hypothesis_id: H-001
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform"
+  doc_says: >-
+    (LIVE 2026-06-01) the jOOQ precedence bug with the emitted SQL verbatim ("the
+    TTL predicate binds only to the auto-resolved branch").
+  code_does: "AlertHousekeepingJob.java:28-34 — the bug as described."
+  recommended_log_as: >-
+    REMEDIATED on the doc side (DOC-250 Caveat 2). The CODE bug remains open
+    (PLT-005). Doc now correctly warns; the upstream fix is still owed.
+- hypothesis_id: "H-011 / H-012"
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform"
+  doc_says: >-
+    (LIVE 2026-06-01) session-housekeeping "has no leader-election guard... every
+    replica runs the DELETE... every hour"; and "spring.session.timeout: -1 means
+    sessions never expire."
+  code_does: >-
+    PostgreSQLSessionHousekeepingJobHandler.java:13 (no @SchedulerLock) +
+    application.yml -1 default — as described.
+  recommended_log_as: >-
+    REMEDIATED on the doc side (DOC-250 Caveat 4 + DOC-GAP-221). The CODE
+    inconsistency remains open (PLT-083 Defect 2). Doc now warns; the fix is owed.
+
+## maintainer_notes
+
+(none — net-new reflection. Note for the maintainer: this feature is unusually
+well-covered by prior work — 5 of the 7 bug-candidates and 3 of the 5
+caveat-candidates are ALREADY tracked (PLT-005, PLT-027, PLT-074, PLT-083 ×3, DOC-250
+×3). The reflection's NET-NEW contributions are: (a) H-005 reframed as a
+feature-level promise-vs-delivery CONTRADICTION with a proposed new drift_class —
+the soft-delete-grace TTL the feature exists to enforce never fires, which the
+housekeeping-tier sidecars cannot see because the root cause is two layers upstream
+in DataEntityMapperImpl; (b) the .block()-S3 cycle-wedge as a distinct code defect
+(H-009 / probe P-310), separated from the SDK-builder issue PLT-086; (c) the
+observability/audit absence (H-010) and the empty-partition check-then-drop race
+(H-007) as net-new code findings not yet filed; (d) confirmation that three
+historical doc-drift findings are now REMEDIATED on the live page. The convergent
+re-derivation of PLT-005/PLT-027/PLT-083 by an independent method is itself a
+high-confidence signal those findings are real.)

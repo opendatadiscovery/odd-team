@@ -1,0 +1,935 @@
+---
+feature_id: F-019
+pillar_anchored_id: P-08:F-003
+pillar: "P-08 Management & Administration"
+feature_name: "Owner Lifecycle Management — the Management → Owners CRUD trinity (create / rename+rebind-roles / cascade-blocked soft-delete)"
+reflected_at: 2026-06-01T00:00:00Z
+reflected_at_commit: 43d13eb
+prompt_version: feature-reflector/0.2.0
+contributing_sidecars_read:
+  - odd-platform__java__service__service__OwnerServiceImpl.md
+  - odd-platform__ts__react-component__component__OwnersList.md
+  - odd-platform__java__OwnerController__controller-method__deleteOwner.md
+  # Consulted via the F-019 feature-flow detail's exhaustively-transcribed
+  # observed_vs_expected facets + batch notes (E/P/Q/S/V/ZF/ZH) + shoebox
+  # extensions (SHB-084/093/095 + ui-review-2026-05-26) rather than re-read in
+  # full this invocation (Rule 8 — the feature flow already transcribed each
+  # sidecar's load-bearing claims with file:line citations):
+  #   OwnerController.createOwner (batch E), OwnerController.updateOwner (batch P),
+  #   OwnerController (controller-class, batch ZF), OwnerAssociationRequestController
+  #   (controller-class, batch V), ReactiveOwnerRepositoryImpl (hop 3, unresolved),
+  #   ReactiveOwnerToRoleRepositoryImpl, ReactiveUserOwnerMappingRepositoryImpl,
+  #   routes/managementRoutes (batch ZH), OwnerForm.tsx + EditableOwnerItem.tsx
+  #   (UI primary source, ui-review-2026-05-26 slice G).
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/management"
+    last_verified_at: "2026-05-20T00:00:00Z"
+    last_verified_status: 200
+    note: |
+      Verified live status 200 in the OwnersList sidecar (batch Q, 2026-05-20).
+      Names the Owners tab verbatim ("Create owners that map to teams or
+      individuals; attach them to data entities") but is SILENT on form
+      mechanics, the empty-roles destructive UPDATE, the delete confirmation,
+      infinite-scroll/debounce ergonomics, soft-delete visibility, and the
+      absence of any audit/recent-changes surface. WebFetch not re-exercised
+      this invocation (Rule 8 — the sidecar transcribed the fetched_excerpts
+      verbatim with the 2026-05-20 timestamp).
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/owners"
+    last_verified_at: "2026-05-20T00:00:00Z"
+    last_verified_status: 200
+    note: |
+      Verified live status 200 in the deleteOwner sidecar (batch P, 2026-05-20).
+      Establishes only "Owners are Data Owners ... managed in the Management →
+      Owners tab" and "Users should associate with existing owners." Silent on
+      deletion semantics (soft-delete, cascade-block, name re-use, role-binding
+      hard-delete, orphan owner_association_request, idempotency).
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions"
+    last_verified_at: "2026-05-20T00:00:00Z"
+    last_verified_status: 200
+    note: |
+      Verified live status 200 in the trinity sidecars (batch P, 2026-05-20).
+      Defines OWNER_CREATE ("Allows creating a new owner entity"), OWNER_UPDATE
+      ("Allows editing an existing owner"), OWNER_DELETE ("Allows deleting an
+      owner") verbatim. Silent on what "editing" covers (name? roles? both?),
+      on the three getOrCreate side-doors that mint Owners without OWNER_CREATE,
+      and on the absence of any OWNER_READ permission (GET /api/owners is
+      ungated).
+hypothesis_summary:
+  total: 13
+  confirmed: 2
+  contradicted: 7
+  partial: 3
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-002
+    severity: HIGH
+    one_line: |
+      An operator renaming an Owner through the Edit dialog who clears the role
+      chips (3 clicks, no confirmation) silently and IRREVERSIBLY hard-deletes
+      every role binding for that Owner — the more-destructive operation has NO
+      confirmation modal while the reversible Delete does, and no audit trail
+      records that the roles were ever there.
+related_feature_flows:
+  - F-006   # P-09:F-001 RBAC — the Owner-side OWNER_TO_ROLE hard-delete is the POSITIVE case-law contrast to the Policy/Role soft-delete orphan-grant half; shares the audit-silence root cause
+  - F-011   # P-09:F-002 Principal-to-Owner Resolution — OWNER.NAME rename SAFE half vs OIDC_USERNAME rename HAZARDOUS half (REFACTOR-391); USER_OWNER_MAPPING consumer
+  - F-021   # P-07:F-004 Activity Feed — the audit surface whose schema (activity.data_entity_id NOT NULL) + enum root-cause makes Owner-lifecycle audit physically impossible
+  - F-076   # Cross-Management cascade-check TOCTOU structural-class anchor (Owner is the least-bad of Owner/Namespace/DataSource)
+  - F-075   # DIRECT_OWNER_SYNC self-mint-and-self-bind chain — compounds with the getOrCreate side-door into a full privilege chain (SHB-084/087)
+  - F-171   # OwnerAssociations triage — POSITIVE-CONTRAST UX (confirm-on-destructive done right)
+related_concepts:
+  - "Owner (RBAC binding)"
+  - "Owner Directory (Management)"
+  - "USER_OWNER_MAPPING"
+  - "OWNER_TO_ROLE (binding table)"
+  - "Owner-Mapping Stability (rename hazard surface — safe OWNER.NAME vs dangerous OIDC_USERNAME)"
+  - "Owner-Side Orphan-Binding Closure (positive case-law contrast)"
+  - "Owner-Lifecycle Audit Silence (6/7-sidecar pattern)"
+  - "permission-bypass-via-owner-auto-create-side-door-write-path"
+related_drift_classes:
+  # Confirmed by this reflection from the feature-flow's drift_class_summary:
+  - forensic_silence_on_owner_lifecycle_mutations
+  - empty_roles_field_silently_destroys_bindings_on_update
+  - owner_create_permission_side_door_via_getorcreate_three_service_tier_callsites
+  - get_owner_list_unauthenticated_read_no_owner_read_permission_in_catalog
+  - openapi_201_vs_impl_200_class_wide_create_and_update
+  - delete_no_not_found_validation_owner_side
+  - delete_search_vector_not_refreshed_owner_side
+  - owner_association_request_orphan_rows_persist
+  - soft_deleted_owner_visible_via_get_by_id_but_hidden_from_list
+  - service_tier_cascade_check_non_atomic_with_soft_delete_owner_side
+  - owner_name_rename_safe_for_user_owner_mapping_but_oidc_username_rename_orphans  # positive half confirmed
+  - partial_unique_index_enables_name_reuse_after_soft_delete  # positive — confirmed intended
+  - owner_to_role_hard_delete_closes_orphan_binding_positive_case_law  # positive — confirmed
+new_drift_classes_proposed:
+  - owner_edit_destructive_role_strip_lacks_confirmation_while_reversible_delete_has_one_inverted_risk_model
+  - rename_collision_usr003_400_not_409_conflict_owner_side  # ergonomic — client cannot distinguish bad-input from duplicate
+---
+
+# Owner Lifecycle Management — product-owner reflection
+
+## product_owner_narrative
+
+Owner Lifecycle Management is the **operator-facing directory for the catalog's stewardship identities**. A product owner introduces it to a new customer like this: "An *Owner* is the catalog-side identity — a team or a person — that you attach to data entities and terms to say 'this is who stewards this'. The **Management → Owners** tab is where you author that directory: create an Owner, give it a name, attach RBAC roles to it, rename it later, and delete it when the team disbands. Owners are the join point between your authenticated users (who *associate* themselves with an Owner) and your RBAC roles (which *grant permissions* to an Owner)." The audiences are the platform-operator and the data-steward-owner (per `system-mission.md:222-246` P-08 pillar), and the pillar's framing is that Management is the *mutating* surface — "every tab here lets an operator add, edit, or remove a piece of catalog configuration" (`system-mission.md:228`), in contrast to the read-oriented Catalog and Directory.
+
+A user interacts with the feature through one UI surface and three REST verbs. The **UI** is the `OwnersList` React component mounted at `/management/owners` — an infinite-scroll (page size 100), 500ms-debounced-search list of Owner cards, where each card carries Edit and Delete affordances and the page header carries a Create button (per `OwnersList.md` understanding). Every mutating affordance is hidden behind a `WithPermissions` wrapper gated by `OWNER_CREATE` / `OWNER_UPDATE` / `OWNER_DELETE` (per `OwnersList.md` security.authorization_assertions). Underneath, the three verbs are `POST /api/owners` (createOwner), `PUT /api/owners/{owner_id}` (updateOwner), and `DELETE /api/owners/{owner_id}` (deleteOwner), all delegating to `OwnerServiceImpl` (per the F-019 chain hops 1a/1b/1c → hop 2). Create mints an Owner row + N role-binding rows; Update renames the row, *rewrites* the role-binding set by deletion-of-the-complement, and refreshes the FTS search vectors; Delete runs a three-leg cascade-block (term-ownership + ownership + user-owner-mapping), then hard-deletes the role bindings and soft-deletes the Owner row (per `OwnerServiceImpl.md` operations).
+
+The working parts a product owner would demo: **role attachment via a chip/tag picker** (the Edit dialog renders each attached role as a removable TagItem, per `OwnersList.md` invariants[1]); **a confirmation modal on Delete** ("\"{name}\" will be deleted permanently", per `OwnersList.md` invariants[0]); **cascade-delete defence** (you can't delete an Owner that still owns data entities or terms, or whose user mapping is live — the platform raises HTTP 400 USR004, per `deleteOwner.md` concepts); **name re-use after delete** (delete is soft, and a partial unique index `owner_name_unique ... WHERE deleted_at IS NULL` frees the name for a fresh Owner, per `OwnerServiceImpl.md` invariants); and **permission-gated affordances** that vanish from the DOM when the user lacks the verb (per `OwnersList.md` implicit_adrs[0]). The customer's mental model — "this is a normal admin CRUD screen; Delete is the dangerous button; renaming is safe" — is *reasonable and mostly wrong at the load-bearing edges*. The reflection's job is to find where the assembled product inverts the operator's risk model and where the audit/permission story diverges from what an operator running a real, multi-admin, audited deployment expects.
+
+The integration story has three legs (per `system-mission.md` cross-pillar graph + the F-019 `cross_pillar_relationships`). Owner Lifecycle **feeds P-09 Security** — the Owner is the binding target for RBAC roles, and the Owner-side OWNER_TO_ROLE hard-delete is the *positive* case-law contrast to F-006's Policy/Role soft-delete orphan-grant half (`F-019:cross_pillar_relationships` + `OwnerServiceImpl.md` coherence_notes). It **shares data with P-01 Discovery and P-06 Glossary** — every owner-scoped read (getMyObjects, ownership panels) consumes these directory rows. And it is **schema-coupled to P-07's Activity Feed** — the audit trail an operator would expect to record "who renamed Owner X" is the same `activity` table that F-021 owns, whose `data_entity_id NOT NULL` FK plus the `ActivityEventTypeDto` enum scope mean Owner mutations *physically cannot be recorded there* (per `OwnerServiceImpl.md` invariants + the F-006 chain batch-R/U confirmation). This single coupling is the source of the feature's audit-silence finding.
+
+A product owner would flag five edge cases in a demo. (a) **Clearing the role chips and clicking Save wipes all roles, permanently, with no warning** — the form validates only the name field (`OwnersList.md` invariants[1]); the more-destructive operation has *no* confirmation while Delete does. (b) **The audit trail is empty for everything you do here** — create, rename, delete: nothing in the Activity Feed, no log line, no authorship column (per the 6/7-sidecar audit-silence pattern). (c) **Any signed-in user can read the entire Owner directory** including every Owner's name and roles — the GET path has no permission gate at all (`OwnersList.md` security.known_security_gaps[1]). (d) **Owners can be minted without `OWNER_CREATE`** — three service-tier callers (`getOrCreate`) auto-create Owner rows from a typed name, bypassing the gate the `/permissions` doc names (`OwnerServiceImpl.md` upstream_callers). (e) **A deleted Owner is gone from the list but still readable by id**, and its association requests persist as orphans pointing into soft-deleted space (`deleteOwner.md` bugs_limitations_corner_cases). Each of these is the operator's real contract; the live docs are silent on all five.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |
+    When an operator (or a compliance auditor) opens the Activity Feed and asks
+    "who created, renamed, or deleted this Owner, and when?", the platform shows
+    them the answer — because Management is the platform's mutating surface and
+    Owner directory mutations are security-relevant configuration changes an
+    audited deployment must be able to reconstruct.
+  derivation: |
+    Pillar P-08 frames Management as the surface where operators "add, edit, or
+    remove a piece of catalog configuration" (system-mission.md:228); a senior
+    operator of any access-control-adjacent system treats "who changed the
+    stewardship/permission bindings" as a load-bearing audit question
+    (negative-space). The OWNER table carries created_at/updated_at columns and
+    the platform HAS an Activity Feed (F-021) — the user reasonably assumes
+    directory mutations land there.
+  seed_source: pillar-mission + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Owner create/update/delete emit NOTHING to any audit surface.
+      OwnerServiceImpl carries no @ActivityLog on any of the three lifecycle
+      methods (Grep-verified across <odd-platform-api>/service/*.java 2026-05-20:
+      10 service files carry the annotation; NONE is OwnerServiceImpl), no
+      @Slf4j, and no Logger (the controller-class is equally silent per the
+      batch-ZF finding — no @Slf4j, no info/debug/warn/error calls). The UI tier
+      provides no "recent changes" panel and renders no created_by/created_at
+      column (OwnersList.md understanding, verified end-to-end). The gap is not a
+      missing annotation: it is schema-rooted — `activity.data_entity_id` is NOT
+      NULL with an FK to data_entity(id) (V0_0_48__add_activity.sql:4,12), so an
+      Owner mutation (which has no data-entity context) would FAIL at the SQL
+      layer even if @ActivityLog were added; AND enum-rooted —
+      ActivityEventTypeDto has no OWNER_CREATED/UPDATED/DELETED values, so the
+      annotation would not compile. The positive-half contrast is operator-
+      visible: the sibling OwnerAssociationRequest workflow DOES have a typed
+      audit table (owner_association_request_activity, 5 typed event values),
+      so "who approved Alice's mapping" is auditable while "who renamed Owner X"
+      is not. Confirmed across the 6/7-sidecar audit-silence pattern (createOwner
+      E + updateOwner P + deleteOwner P + service-tier S + UI Q + route-tier ZH).
+    evidence:
+      - sidecar: odd-platform__java__service__service__OwnerServiceImpl.md
+        section: concepts.invariants[1]
+        cite: "OwnerServiceImpl.java:38-122 (Grep @ActivityLog → zero; 10 sibling service files carry it)"
+        note: "Service tier — zero audit annotation on create/update/delete; sibling OwnershipServiceImpl IS audited (asymmetry)."
+      - sidecar: odd-platform__java__OwnerController__controller-method__deleteOwner.md
+        section: security.known_security_gaps[0]
+        cite: "OwnerServiceImpl.java:87-100"
+        note: "Delete (the most destructive verb) emits no audit; role bindings hard-deleted with no historical record."
+      - sidecar: '(F-006 feature-flow detail — schema/enum root cause)'
+        section: batch_extensions[batch=R/U]
+        cite: "V0_0_48__add_activity.sql:4,12 + ActivityEventTypeDto.java:3-31"
+        note: "Double-rooted: NOT NULL data_entity_id FK + no OWNER_* enum values — cannot be closed by an annotation."
+    operator_visible_failure: |
+      (1) Compliance: an operator under SOX/SOC2/HIPAA/GDPR audit obligations
+      cannot answer "who created/renamed/deleted Owner X at time T" from any
+      platform surface — the directory's mutation history is unrecoverable.
+      (2) Forensics: combined with H-002 (silent role-strip) and H-008 (name
+      re-use after soft-delete), an attacker with brief admin access can strip an
+      Owner's roles, delete it, and re-create a different Owner with the same
+      name, leaving NO trace anywhere except the soft-deleted row's deleted_at
+      timestamp (no operator-readable surface) and the owner_to_role row-count
+      delta. (3) Trust: the partial-half asymmetry (association requests ARE
+      audited) means an operator reasonably assumes ALL Owner-related actions are
+      audited, and is wrong precisely for the highest-impact ones.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-002
+  hypothesis: |
+    When an operator opens the Edit dialog on an Owner to rename it, and removes
+    the role chips (because they only meant to change the name, or to swap one
+    role), the platform either preserves the roles they did not explicitly
+    intend to remove, or warns them before destroying role bindings — because a
+    rename is the operator's mental "safe" operation and role-stripping is
+    irreversible.
+  derivation: |
+    UI-label seed: the Edit dialog renders roles as removable TagItems with an X
+    icon (OwnerForm.tsx:95-103) and a Save button; the operator's screen-level
+    mental model is "this is the edit form; Save persists my changes." A senior
+    PO reasons from the screen: a destructive set-replacement behind an
+    unguarded Save inverts the normal risk model. The Delete affordance HAS a
+    confirmation modal — so the operator infers Save (edit) is the safer action.
+  seed_source: ui-label + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The Edit dialog treats `roles` as REPLACE-WITH-WHAT-IS-SUBMITTED, not
+      "leave untouched what I did not change." Removing every TagItem submits
+      OwnerFormData with roles: []. The form's Save button is enabled because
+      formState.isValid checks ONLY the name field (OwnerForm.tsx:73-86 declares
+      `rules={{ required: true, validate: value => !!value.trim() }}` for name;
+      the roles useFieldArray at OwnerForm.tsx:40-43 carries NO rules block). On
+      submit, OwnerServiceImpl.update calls
+      `deleteOwnerRelationsExcept(ownerId, getRoleIdsList(form))` then
+      `createRelations(ownerId, ...)`; getRoleIdsList (OwnerServiceImpl.java:117-122)
+      collapses both null AND empty to List.of(); the jOOQ-generated
+      `notIn(emptyCollection)` folds to a tautology, so the DELETE becomes
+      `DELETE FROM OWNER_TO_ROLE WHERE OWNER_ID = ?` — wiping ALL role bindings —
+      and the create-half inserts nothing. The bindings are HARD-deleted
+      (irreversible; no soft-delete, no audit row per H-001). The UI provides NO
+      confirmation modal, NO before/after diff, NO warning banner for the
+      role-strip — while the reversible Delete (soft-delete + name re-use) DOES
+      have a ConfirmationDialog. The risk model is inverted at the UI layer:
+      the irreversible operation is unguarded, the reversible one is guarded.
+      Reachable in 3 clicks (Edit → click X on each chip → Save), confirmed at
+      UI primary source (ui-review-2026-05-26 slice G).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__OwnersList.md
+        section: concepts.invariants[1] + bugs_limitations_corner_cases[5]
+        cite: "OwnerForm.tsx:40-43, 73-86, 95-103, 108-117"
+        note: "Save enabled with roles:[]; only name is validated; no confirmation on the role-strip."
+      - sidecar: odd-platform__java__service__service__OwnerServiceImpl.md
+        section: concepts.invariants (getRoleIdsList collapse + shared destructive primitive)
+        cite: "OwnerServiceImpl.java:76-81, 117-122 + ReactiveOwnerToRoleRepositoryImpl.java:52-56"
+        note: "null+empty → List.of(); notIn(empty) tautology → DELETE all bindings; same primitive delete() uses intentionally at line 97."
+      - sidecar: odd-platform__ts__react-component__component__OwnersList.md
+        section: implicit_adrs[2]
+        cite: "EditableOwnerItem.tsx:55-72 (Delete has ConfirmationDialog) vs OwnerForm.tsx (Save does not)"
+        note: "Confirmation asymmetry — guarding the reversible verb, not the irreversible one."
+    operator_visible_failure: |
+      (1) An operator renaming an Owner via a clear-and-retype-chips flow, or
+      simply pruning one role, silently removes ALL role bindings — every
+      permission the Owner conferred to its associated users vanishes
+      immediately and irreversibly. (2) No confirmation, no diff, no undo, no
+      audit (H-001) — the operator has no signal it happened until a downstream
+      user reports lost access. (3) Shoulder-surfing / brief-access risk: anyone
+      with a logged-in operator session can strip any Owner's roles in 3 clicks
+      with zero friction, and leave no trace. (4) The inverted risk model trains
+      operators to fear Delete and trust Edit — exactly backwards.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-003
+  hypothesis: |
+    When an API consumer (a provisioning script, a CI tool, an integration)
+    issues `PUT /api/owners/{id}` with body `{"name": "new-name"}` to rename an
+    Owner — omitting `roles` to mean "leave the roles unchanged" — the platform
+    preserves the existing role bindings, because `roles` is OpenAPI-optional and
+    a well-behaved PUT/PATCH treats an omitted optional field as "no change."
+  derivation: |
+    Endpoint-shape seed: OwnerFormData.roles is declared optional in the OpenAPI
+    spec (components.yaml:419-422, no `required` marker). The standard REST
+    consumer expectation for an optional field omitted from the body is
+    "unchanged" (PATCH-merge semantics) — especially when the endpoint is named
+    "update," not "replace."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The backend makes NO distinction between "roles omitted" and "roles: []".
+      getRoleIdsList (OwnerServiceImpl.java:117-122) uses
+      `CollectionUtils.isEmpty(formData.getRoles())` which is true for BOTH null
+      (omitted) and empty list. Both collapse to List.of(), which (per H-002)
+      triggers the `DELETE FROM OWNER_TO_ROLE WHERE OWNER_ID = ?` tautology and
+      wipes all bindings. So a consumer renaming an Owner by sending only
+      `{"name": "..."}` SILENTLY STRIPS ALL ROLES. The UI happens to mask this
+      because it always sends the current roles list (read-modify-write), so the
+      hazard is invisible in normal UI flows — but any direct API consumer that
+      follows the PATCH-merge convention is exposed. This is a PUT-with-destructive-
+      omission semantic that the OpenAPI optional marker actively misleads on.
+    evidence:
+      - sidecar: odd-platform__java__service__service__OwnerServiceImpl.md
+        section: concepts.invariants (getRoleIdsList null+empty collapse)
+        cite: "OwnerServiceImpl.java:117-122 + components.yaml:419-422"
+        note: "Optional `roles` + null/empty collapse = destructive-on-omission; the discriminator between 'don't touch' and 'clear' is lost at the service layer."
+      - sidecar: '(F-019 feature-flow detail — observed_vs_expected facet)'
+        section: empty_roles_field_silently_destroys_bindings (observed)
+        cite: "OwnerServiceImpl.java:71, 76-81"
+        note: "Feature-flow confirms: UI masks the hazard; any API consumer omitting roles strips all bindings."
+    operator_visible_failure: |
+      (1) A provisioning/IaC script that renames Owners in bulk (common in a
+      team-rename or merge operation) wipes every renamed Owner's roles in one
+      pass, with HTTP 200 success and no error — a silent mass de-permissioning.
+      (2) An integration that PATCHes one field unknowingly clears roles, and
+      (combined with H-001) leaves no audit trail to diagnose the resulting
+      access outage. (3) The OpenAPI `optional` marker is a documentation lie —
+      it signals "safe to omit" while omission is destructive; consumers reading
+      the spec are actively misled.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-004
+  hypothesis: |
+    When a caller attempts any Owner directory mutation, they need the matching
+    `OWNER_CREATE` / `OWNER_UPDATE` / `OWNER_DELETE` permission the live
+    /permissions doc describes — in particular, creating an Owner row requires
+    `OWNER_CREATE`.
+  derivation: |
+    Pillar-mission + doc-claim seed: the live /permissions page defines
+    OWNER_CREATE as "Allows creating a new owner entity." A user reading that
+    doc forms the model "an Owner cannot enter the directory without OWNER_CREATE."
+    SecurityConstants.SECURITY_RULES[143] gates POST /api/owners with OWNER_CREATE.
+  seed_source: pillar-mission + doc-claim
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The DIRECT mutation path is gated correctly: POST/PUT/DELETE /api/owners
+      are each registered in SecurityConstants.SECURITY_RULES[143-147] with the
+      matching OWNER_* permission, and a caller crafting a direct request without
+      the permission receives 403 from the central pipeline. BUT the permission
+      gate is PATH-anchored, not method-anchored, so the OWNER table is writable
+      from THREE service-tier side-doors that never touch /api/owners:
+      OwnerServiceImpl.getOrCreate (lines 38-42) is called by
+      OwnerAssociationRequestServiceImpl.java:57 (POST /api/owner_association_request
+      — NOT in SECURITY_RULES, reachable by ANY authenticated user),
+      OwnershipServiceImpl.java:52 (POST /api/dataentities/{id}/ownerships — gated
+      by DATA_ENTITY_OWNERSHIP_CREATE), and TermOwnershipServiceImpl.java:35
+      (gated by TERM_OWNERSHIP_CREATE). A caller supplying a never-seen ownerName
+      mints a new OWNER row WITHOUT holding OWNER_CREATE, and it appears in
+      GET /api/owners immediately. So the hypothesis holds for the documented
+      path and is contradicted for the side-door paths. The mint is also
+      audit-silent (H-001).
+    evidence:
+      - sidecar: odd-platform__java__service__service__OwnerServiceImpl.md
+        section: upstream_callers + concepts.invariants (getOrCreate side-door)
+        cite: "OwnerServiceImpl.java:38-42 + OwnerAssociationRequestServiceImpl.java:57 + OwnershipServiceImpl.java:52 + TermOwnershipServiceImpl.java:35 + SecurityConstants.java:143"
+        note: "Three callers mint Owners; the OWNER_CREATE rule is path-anchored on POST /api/owners only."
+      - sidecar: '(F-019 feature-flow detail — batch ZF + SHB-084)'
+        section: shoebox_extensions_2026_05_26[SHB-084]
+        cite: "SecurityConstants.java:148-162 (POST /api/owner_association_request NOT in SECURITY_RULES)"
+        note: "Self-request side-door reachable by any authenticated user; compounds with F-075 DIRECT_OWNER_SYNC."
+    operator_visible_failure: |
+      (1) Directory pollution: a caller holding only DATA_ENTITY_OWNERSHIP_CREATE
+      (or merely authenticated, via the association-request POST) can spam the
+      Owner directory with arbitrary names (typos under autocomplete freeSolo,
+      injected entries), none gated by OWNER_CREATE. (2) The /permissions doc is
+      authoritatively wrong: it tells operators OWNER_CREATE controls Owner
+      creation; three paths bypass it. (3) Combined with audit-silence (H-001)
+      and name-reuse (H-008), the side-door is a self-mint primitive in a
+      privilege chain (compounds with F-075 DIRECT_OWNER_SYNC self-mint-and-
+      self-bind per SHB-087).
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-005
+  hypothesis: |
+    When a non-privileged authenticated user (no OWNER_* permissions) navigates
+    to the Owners tab or calls the list endpoint, they do NOT get to enumerate
+    the entire Owner directory with every Owner's name and roles — because the
+    directory may contain personally-named or team-sensitive identities and the
+    operator expects reads of an admin surface to be gated.
+  derivation: |
+    Endpoint-shape + negative-space: the three mutating verbs are permission-
+    gated (OWNER_CREATE/UPDATE/DELETE); a user reasonably assumes the READ of the
+    same admin resource is gated too (e.g. by an OWNER_READ-style permission).
+    The UI hides the mutating buttons for unprivileged users (WithPermissions),
+    reinforcing "this is an admin area."
+  seed_source: endpoint-shape + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      GET /api/owners has NO SecurityRule entry. SecurityConstants.java:143-147
+      registers ONLY POST/PUT/DELETE on /api/owners* (verified via Grep 2026-05-25:
+      exactly four mutation-path matches, zero GET matches). OwnerController.getOwnerList
+      (lines 30-38) carries no @PreAuthorize, no programmatic check. Per the
+      platform's central authorization design, an endpoint with no matching rule
+      is allowed for any authenticated caller (read-collaborative posture,
+      ADR-CANDIDATE-003). The OwnersList UI consumes this freely with no ids/
+      allowedForSync filter — any signed-in user sees the full directory + the
+      total count + every Owner's roles. There is no OWNER_READ permission in the
+      catalog. Under auth.type=DISABLED the endpoint is anonymously reachable.
+      This is INTENTIONAL platform posture (consistent with read-collaborative)
+      but contradicts the user's reasonable expectation AND is undocumented on
+      both the live /owners and /permissions pages (both silent, verified
+      2026-05-25).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__OwnersList.md
+        section: security.owner_scoping + security.known_security_gaps[1]
+        cite: "SecurityConstants.java:143-147 (grep) + OwnerController.java:30-38 + OwnersList.tsx:45,54,58"
+        note: "No rule on GET /api/owners; UI lists all owners + count + roles to any authenticated user."
+      - sidecar: '(F-019 feature-flow detail — batch ZF finding 2)'
+        section: batch_extensions[batch=ZF]
+        cite: "SecurityConstants.java:143-147"
+        note: "GET path is unauthenticated-read at the rule layer; PII-disclosure surface for personally-named Owners."
+    operator_visible_failure: |
+      (1) Information disclosure: in a deployment where Owner names carry PII or
+      team-internal strings (e.g. `alice@acme.com`, project-internal names), any
+      authenticated user — and anonymously under DISABLED — enumerates the full
+      directory plus per-Owner role assignments. (2) The hide-not-disable UI
+      gating gives the FALSE impression the tab is admin-only (the read is open;
+      only the buttons are hidden). (3) Reconnaissance: a low-privilege user can
+      record Owner ids during normal browsing, then (per H-007) iterate by-id
+      reads post-deletion to recover PII the operator believed they removed
+      (SHB-095 GDPR-erasure scenario).
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-006
+  hypothesis: |
+    When a client creates an Owner via `POST /api/owners`, the HTTP response
+    status code matches what the OpenAPI spec declares for that operation — so a
+    generated client or a strict integration that asserts on the declared status
+    succeeds.
+  derivation: |
+    Endpoint-shape + doc-claim: the OpenAPI spec is the contract a generated
+    client (the platform's own openapi-generator UI client, plus any external
+    consumer) is built against. The spec declares responses.'201' for createOwner
+    and updateOwner (openapi.yaml:165-171, 195-201).
+  seed_source: endpoint-shape + doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The OpenAPI spec declares 201 for BOTH createOwner and updateOwner; the
+      controller returns 200 on both (OwnerController.java:26 for create via
+      ResponseEntity::ok, line 53 for update). The drift is class-wide on both
+      201-declaring methods (deleteOwner correctly aligns: spec 204, impl 204;
+      getOwnerList aligns: 200/200). Doubly anomalous: declaring 201 for a
+      PUT-update is itself non-canonical (201 signals POST-creation), AND the
+      impl disagrees with the spec on both. Sibling controllers (Policy/Role/Tag)
+      show the same pattern — platform-wide. A strict client asserting the
+      declared 201 receives 200 and treats the successful create/update as a
+      protocol error.
+    evidence:
+      - sidecar: '(F-019 feature-flow detail — batch ZF finding 3 + observed_vs_expected)'
+        section: observed_vs_expected.facet=openapi_201_vs_impl_200_class_wide
+        cite: "openapi.yaml:165-171, 195-201 vs OwnerController.java:26, 53"
+        note: "201 declared, 200 returned, on both create and update; class-wide and platform-wide."
+      - sidecar: odd-platform__java__OwnerController__controller-method__deleteOwner.md
+        section: docs_link_semantic.doc_drift_findings[2]
+        cite: "openapi.yaml:204-219 (delete declares 204) vs OwnerController.java:44 (returns 204)"
+        note: "Delete ALIGNS — confirming the drift is specific to the two 201-declaring methods."
+    operator_visible_failure: |
+      (1) A strictly-validating generated or hand-written client that checks the
+      declared 201 sees a successful create/update fail its status assertion —
+      it may retry (creating duplicates) or surface a spurious error. (2) The
+      spec is wrong in BOTH directions (201-for-PUT is non-canonical, and the
+      impl returns 200), so neither "fix the impl to 201" nor "trust the spec"
+      is correct without first repairing the spec. (3) Low operator-facing
+      severity in the UI (the platform's own client tolerates 200), but a real
+      contract defect for external API consumers.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-007
+  hypothesis: |
+    When an operator deletes an Owner and it disappears from the Owners list,
+    the Owner is no longer readable anywhere — a subsequent `GET /api/owners/{id}`
+    for that Owner returns 404, because "deleted" should mean "gone" consistently
+    across the list and by-id surfaces.
+  derivation: |
+    Negative-space + response-shape: the list view hides soft-deleted Owners, so
+    the operator's screen-level model is "it's deleted, it's gone." A user
+    reasonably assumes the by-id read is consistent with the list read.
+  seed_source: negative-space + response-shape
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The LIST path correctly hides soft-deleted Owners: OwnerServiceImpl.list →
+      ReactiveOwnerRepositoryImpl.list → enrichSelect → listCondition (inherited
+      from ReactiveAbstractSoftDeleteCRUDRepository) adds `deleted_at IS NULL`
+      (confirmed positive, OwnersList.md invariants[2]). BUT the by-id path does
+      NOT: getOwnerDtoById → ReactiveOwnerRepositoryImpl.getDto issues
+      `WHERE OWNER.ID.eq(id)` with NO `deleted_at IS NULL` filter (lines 65-83);
+      switchIfEmpty(NotFoundException) fires only when the id NEVER existed. So a
+      direct GET /api/owners/{id} for a soft-deleted Owner RETURNS the row —
+      including its name and previously-attached roles — instead of 404. The
+      visibility is INCONSISTENT across list (hidden) and by-id (visible). The
+      hypothesis holds for the list surface (the one the UI uses) and is
+      contradicted for the by-id surface (reachable by any direct API caller per
+      H-005's ungated read posture).
+    evidence:
+      - sidecar: odd-platform__java__OwnerController__controller-method__deleteOwner.md
+        section: bugs_limitations_corner_cases (visibility asymmetry)
+        cite: "ReactiveOwnerRepositoryImpl.java:65-83 (getDto, no deleted_at filter) vs :86-121 (list, filtered)"
+        note: "list hides soft-deleted; by-id surfaces them; asymmetry unstated."
+      - sidecar: '(F-019 feature-flow detail — SHB-095)'
+        section: shoebox_extensions_2026_05_26[SHB-095]
+        cite: "OwnerServiceImpl.java:102-107 + ReactiveOwnerRepositoryImpl.java:65-83"
+        note: "GDPR right-to-erasure failure: PII recoverable by-id after deletion; USER_OWNER_MAPPING rows persist."
+    operator_visible_failure: |
+      (1) GDPR/erasure: an operator who deletes an Owner to satisfy a
+      right-to-erasure request leaves the Owner's name + roles recoverable via a
+      direct by-id read (and the USER_OWNER_MAPPING rows persist) — the deletion
+      is not the erasure the operator believes it is. (2) Reconnaissance (with
+      H-005): a low-privilege user records ids during browsing, then reads
+      soft-deleted Owners by id after the operator "removes" them. (3) Operator
+      confusion: "I deleted it but it's still there if I hit the id directly."
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-008
+  hypothesis: |
+    When an operator deletes an Owner whose role bindings should be revoked, the
+    delete (a) actually revokes the permissions immediately (no orphan grant) and
+    (b) frees the name so a fresh Owner can re-use it — i.e. the delete behaves
+    the way an operator decommissioning a team expects.
+  derivation: |
+    Pillar-mission + cross-pillar: the F-006 RBAC pillar surfaces an orphan-grant
+    drift on the Policy/Role side; a senior PO checks whether the Owner side has
+    the same defect, and whether name re-use (a natural decommission-and-recreate
+    workflow) is supported.
+  seed_source: pillar-mission + cross-pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      Both halves hold, and this is the feature's POSITIVE case-law.
+      (a) Owner delete HARD-deletes the OWNER_TO_ROLE bindings via
+      `deleteOwnerRelationsExcept(id, List.of())` (OwnerServiceImpl.java:97 →
+      ReactiveOwnerToRoleRepositoryImpl.java:52-56, a DSL.delete not an UPDATE),
+      so permissions are revoked IMMEDIATELY with no orphan grant — closing the
+      orphan-binding gap that F-006 leaves open on the Policy/Role half (which
+      inherits soft-delete on both tiers). (b) The Owner row is soft-deleted
+      (UPDATE deleted_at = NOW()), and the partial unique index
+      `owner_name_unique ON owner(name) WHERE deleted_at IS NULL`
+      (V0_0_64:68-70) excludes soft-deleted rows, so a subsequent
+      POST /api/owners with the same name succeeds with a fresh id — the intended
+      decommission-and-recreate workflow. The mixed soft+hard-delete is a
+      deliberate trade (audit-history-preserving owner row + immediate
+      permission revocation), codified as ADR-CANDIDATE-145.
+    evidence:
+      - sidecar: odd-platform__java__OwnerController__controller-method__deleteOwner.md
+        section: implicit_adrs[1] (OWNER_TO_ROLE hard-delete)
+        cite: "OwnerServiceImpl.java:97 + ReactiveOwnerToRoleRepositoryImpl.java:52-56"
+        note: "Hard-delete of bindings = immediate revocation, no orphan grant; POSITIVE contrast to F-006 Policy/Role half."
+      - sidecar: odd-platform__java__service__service__OwnerServiceImpl.md
+        section: concepts.invariants (mixed soft+hard-delete) + requires-runtime
+        cite: "V0_0_64__remove_is_deleted_field.sql:68-70 (partial unique index)"
+        note: "Name freed for re-use after soft-delete — intended operator workflow."
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-009
+  hypothesis: |
+    When an operator tries to delete an Owner that still owns data entities,
+    terms, or has a live user mapping, the platform refuses and tells them why —
+    so they don't orphan ownership records.
+  derivation: |
+    Endpoint-shape + pillar-mission: a cascade-block is the expected defence on a
+    directory-entity delete; the operator expects a clear "can't delete, still in
+    use" signal rather than a silent orphaning.
+  seed_source: endpoint-shape + pillar-mission
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The cascade-block works for THREE of FOUR referencing relations and
+      returns a clear-but-vague error. OwnerServiceImpl.delete (lines 90-96)
+      runs Mono.zip over termOwnership.existsByOwner + ownership.existsByOwner +
+      userOwnerMapping.isOwnerAssociated; if any is true it raises
+      CascadeDeleteException → HTTP 400 USR004 "Owner cannot be deleted: there
+      are still resources attached." Gap 1: the FOURTH relation —
+      owner_association_request — is NOT checked (the table has an FK to owner(id)
+      with no ON DELETE clause, V0_0_51:11; Owner uses soft-delete so the FK is
+      never consulted), so a PENDING/APPROVED association request for the deleted
+      Owner persists as an ORPHAN pointing into soft-deleted space, and the next
+      GET /api/owner_association_request returns it. Approving such an orphan
+      creates a USER_OWNER_MAPPING pointing at a soft-deleted Owner (no liveness
+      cross-check, per batch-V finding). Gap 2: the error message does not say
+      WHICH resource blocks the delete (one-bit channel), so the operator must
+      go hunting. Gap 3 (race, see H-013): the check is non-atomic with the
+      soft-delete.
+    evidence:
+      - sidecar: odd-platform__java__OwnerController__controller-method__deleteOwner.md
+        section: bugs_limitations_corner_cases (owner_association_request orphan)
+        cite: "OwnerServiceImpl.java:90-91 (3 legs, no 4th) + V0_0_51__add_owner_association_request.sql:11 (FK no ON DELETE)"
+        note: "4th cascade leg missing; orphan association_request rows survive Owner delete."
+      - sidecar: '(F-019 feature-flow detail — batch V OwnerAssociationRequestController)'
+        section: batch_extensions[batch=V] finding 1
+        cite: "OwnerAssociationRequestController.java:56-63 + OwnerAssociationRequestServiceImpl.java:184-190"
+        note: "Approving an orphan request creates a mapping to a soft-deleted Owner — no liveness check."
+    operator_visible_failure: |
+      (1) Orphan association requests: after deleting an Owner, the Associations
+      tab still shows a request for it; if the name was re-used (H-008) the
+      request is NOT re-linked to the new Owner (different id) and points into
+      soft-deleted space with no UI signal the original is gone. (2) Approving
+      such an orphan mints a USER_OWNER_MAPPING to a dead Owner. (3) The vague
+      USR004 message forces the operator to manually find which data entity/term/
+      mapping blocks the delete. (4) Persistence-technique surface: an attacker
+      with OWNER_ASSOCIATION_* can plant orphan rows that survive directory churn.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-010
+  hypothesis: |
+    When an operator renames an Owner, the users associated with that Owner stay
+    associated (their access is preserved) — because the rename is a cosmetic
+    label change, not an identity change.
+  derivation: |
+    Response-shape + cross-pillar: USER_OWNER_MAPPING binds users to Owners; a
+    senior PO checks whether a rename breaks that binding (the F-011 OIDC_USERNAME
+    rename-orphan hazard makes this a live question for the Owner side).
+  seed_source: response-shape + cross-pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The rename is SAFE for user-owner associations. USER_OWNER_MAPPING.owner_id
+      REFERENCES owner(id) — the FK is by the bigserial PK, stable across name
+      changes (V0_0_4__add_user_owner_mapping.sql:3). PUT /api/owners/{id} renames
+      owner.name via OwnerMapper.applyToPojo + ownerRepository.update; the
+      mapping rows continue to resolve to the same Owner identity. This is the
+      LOAD-BEARING SAFE half of the rename-hazard surface — the contrast to
+      F-011's REFACTOR-391 OIDC_USERNAME-rename orphan (where the handler keys on
+      `oidc_username='login'`, a free-rename string with no stable-id fallback,
+      and DOES orphan the mapping). The two findings together describe the
+      complete rename-hazard surface: OWNER.NAME rename safe; OIDC_USERNAME
+      rename hazardous.
+    evidence:
+      - sidecar: odd-platform__java__service__service__OwnerServiceImpl.md
+        section: coherence_notes (distinguishes-from REFACTOR-391) + downstream_side_effects
+        cite: "V0_0_4__add_user_owner_mapping.sql:3 (FK by owner.id) + OwnerServiceImpl.java:75"
+        note: "FK by id not name → rename preserves the association; SAFE half of the rename surface."
+    operator_visible_failure: |
+      None for the rename itself (positive finding). The only operator-facing
+      gap is documentation: the live owners + user-owner-association docs do not
+      state "OWNER.NAME rename is safe; OIDC username rename is hazardous (see
+      REFACTOR-391)" — operators have no cross-linked guidance on which rename is
+      safe. Routed as a caveat/doc-gap, not a bug.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-011
+  hypothesis: |
+    When two operators try to rename two different Owners to the same name, the
+    platform rejects the second with a clear "name already in use / conflict"
+    signal a client can distinguish from a malformed-input error.
+  derivation: |
+    Endpoint-shape: a uniqueness constraint on owner.name implies a conflict
+    response; the canonical HTTP status for a name collision is 409 Conflict
+    (RFC 9110 §15.5.10), which a client uses to distinguish "duplicate" from
+    "bad input."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The partial unique index owner_name_unique (V0_0_64:70) catches the second
+      rename-to-same-active-name; jOOQ raises DataAccessException →
+      ExceptionUtils.translateDatabaseException → UniqueConstraintException →
+      ControllerAdvice.handleUniqueConstraint → HTTP 400 with
+      ErrorCode.UNIQUE_CONSTRAINT (USR003). The client receives 400, NOT the
+      canonically-correct 409 Conflict. The same pattern holds on create. No test
+      verifies the path; no API doc states which code to expect. A client cannot
+      distinguish "you sent garbage" (400) from "that name is taken" (also 400).
+    evidence:
+      - sidecar: '(F-019 feature-flow detail — observed_vs_expected facet)'
+        section: observed_vs_expected.facet=rename_collision_usr003_400_not_409
+        cite: "V0_0_64__remove_is_deleted_field.sql:70 + ControllerAdvice.handleUniqueConstraint + ErrorCode.UNIQUE_CONSTRAINT"
+        note: "Collision → USR003/400, not 409; identical on create and rename (class-wide ergonomic gap)."
+    operator_visible_failure: |
+      (1) A client (UI or integration) cannot programmatically distinguish a
+      duplicate-name conflict from a validation error — both are 400 — so it
+      cannot offer the operator a targeted "pick a different name" message vs a
+      generic "bad request." (2) The UI surfaces a generic error on rename
+      collision rather than a clear "name in use." (3) Low operator severity (the
+      operation is correctly rejected) but a real API-ergonomics defect; routes
+      to caveat unless the maintainer treats 409-correctness as a fix.
+    severity: LOW
+    confidence: MEDIUM
+    routes_to_finding: caveat-candidate
+
+- id: H-012
+  hypothesis: |
+    When an operator searches the catalog for a data entity by its owner's name
+    right after deleting that owner, the deleted owner's name no longer surfaces
+    in search results — because deleting the owner should remove its
+    searchability.
+  derivation: |
+    Response-shape + negative-space: update refreshes the FTS search vectors
+    (updateSearchVectors); a senior PO checks whether delete maintains the same
+    FTS hygiene, since a stale index surfaces deleted identities.
+  seed_source: response-shape + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Delete does NOT refresh the FTS index — asymmetric with update.
+      OwnerServiceImpl.update calls updateSearchVectors(owner) (line 82 →
+      lines 109-114), refreshing BOTH searchEntrypointRepository and
+      termSearchEntrypointRepository vectors inside the transaction.
+      OwnerServiceImpl.delete (lines 87-100) has NO updateSearchVectors call. So
+      after a successful delete, catalog search continues to surface the deleted
+      owner's name (matching against search_entrypoint.search_vector for the data
+      entities the owner bore) until those entities are otherwise modified. The
+      create path also omits the refresh (FTS seeding is lazy) — so the asymmetry
+      is create+delete (no refresh) vs update (refreshes). Mirrors the F-006
+      batch-K delete_search_vector_not_refreshed facet on a sibling delete path.
+    evidence:
+      - sidecar: odd-platform__java__service__service__OwnerServiceImpl.md
+        section: concepts.invariants (updateSearchVectors called from update only)
+        cite: "OwnerServiceImpl.java:82, 109-114 (update refreshes) vs 87-100 (delete does not)"
+        note: "Delete leaves FTS vectors stale; deleted owner name surfaces in catalog search until other events refresh."
+    operator_visible_failure: |
+      (1) A deleted Owner's name keeps appearing in catalog search results for an
+      unbounded window (until each affected data entity is independently
+      re-indexed), so operators and users see a "ghost" steward. (2) Combined
+      with name re-use (H-008), search can show both the soft-deleted old Owner's
+      stale match and the new Owner with the same name, confusingly. (3) Medium
+      severity — correctness/freshness gap, not data loss; routes to bug.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-013
+  hypothesis: |
+    When one operator deletes an Owner at the same moment another operator (or an
+    ingestion call) attaches a new ownership to that same Owner, the platform
+    serialises the two so the result is consistent — either the delete is blocked
+    by the new ownership, or the new ownership is rejected because the Owner is
+    being deleted; it never produces an ownership row pointing at a deleted Owner.
+  derivation: |
+    Negative-space (concurrency): the cascade-block reads three existence checks
+    then writes the soft-delete; a senior engineer asks whether that read-then-
+    write is atomic against a concurrent ownership insert (the TOCTOU class).
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      Static analysis shows the cascade-check (3 existsBy* reads, lines 90-91)
+      and the soft-delete UPDATE (line 98) run inside one @ReactiveTransactional
+      boundary (line 88) but with NO row-level lock (no SELECT FOR UPDATE, no
+      Postgres advisory lock on owner_id) and under READ COMMITTED isolation
+      (Spring/R2DBC default). The structure is consistent with a TOCTOU window:
+      a concurrent POST /api/dataentities/{id}/ownership could insert an
+      OWNERSHIP row after the existence read and before the soft-delete commits,
+      producing an OWNERSHIP row pointing at a soft-deleted OWNER. Whether the
+      window is actually observable depends on R2DBC connection-per-transaction
+      semantics, statement timing, and Postgres MVCC snapshot behaviour under
+      READ COMMITTED — which require RUNNING the system to confirm, not reading
+      it. The Owner branch is the least-bad of the cross-Management cascade family
+      (Owner/Namespace/DataSource); F-076 is the structural-class anchor.
+      Verdict deferred to a local probe (P-340).
+    evidence:
+      - sidecar: odd-platform__java__service__service__OwnerServiceImpl.md
+        section: concepts.invariants (cascade-block non-atomic) + coherence_notes (REFACTOR-430)
+        cite: "OwnerServiceImpl.java:88-100 (no forUpdate; @ReactiveTransactional under READ COMMITTED)"
+        note: "Static evidence of a TOCTOU window; observability requires a concurrency probe."
+      - sidecar: '(F-019 feature-flow detail — SHB-093)'
+        section: shoebox_extensions_2026_05_26[SHB-093]
+        cite: "F-076 (cross-Management cascade TOCTOU structural-class anchor)"
+        note: "Owner is the least-bad branch (3-leg @ReactiveTransactional); Namespace is worst (no transaction)."
+    probe_id: P-340
+    routes_to_finding: bug-candidate
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: "Edit dialog role-strip (3 clicks, no confirmation) IRREVERSIBLY hard-deletes all role bindings; the reversible Delete has a confirmation, the irreversible role-strip does not — inverted risk model."
+  dedup_status: already_tracked
+  tracked_as: PLT-066
+  recommended_log_as: null
+  proposed_fix_anchor: |
+    PLT-066 covers the backend half (OwnerServiceImpl.getRoleIdsList collapse).
+    This reflection ADDS the UI-tier inverted-risk-model finding (confirmation on
+    Delete but not on the more-destructive Save-with-empty-roles, OwnerForm.tsx
+    :40-43,108-117 + EditableOwnerItem.tsx:55-72). Convergent validation: the
+    feature-reflector independently re-derived PLT-066 from the screen + chain.
+    Fix lands BOTH at OwnerForm (add `rules={{ validate: () => fields.length>0
+    || 'Owner must have at least one role' }}` OR a "Save with no roles"
+    confirmation modal) AND at the service (distinguish omitted from cleared).
+
+- hypothesis_id: H-003
+  severity: HIGH
+  one_line: "PUT /api/owners with roles omitted (PATCH-merge convention) silently strips all role bindings — getRoleIdsList collapses null==empty; the OpenAPI optional marker misleads API consumers."
+  dedup_status: already_tracked
+  tracked_as: PLT-066
+  recommended_log_as: null
+  proposed_fix_anchor: |
+    SAME code locus as H-002/PLT-066 (OwnerServiceImpl.java:117-122 +
+    deleteOwnerRelationsExcept). PLT-066's "What" section already names the
+    API-consumer omission-vs-empty hazard verbatim. Recorded here as the
+    API-shape facet of the same finding (not a re-file). The structural fix is
+    the same: discriminate `roles` omitted (no-change) from `roles: []` (clear).
+
+- hypothesis_id: H-001
+  severity: HIGH
+  one_line: "Owner create/rename/delete emit ZERO to any audit surface; gap is schema-rooted (activity.data_entity_id NOT NULL) + enum-rooted (no OWNER_* values) — un-closable by annotation."
+  dedup_status: already_tracked
+  tracked_as: PLT-062
+  recommended_log_as: null
+  proposed_fix_anchor: |
+    PLT-062 is the 3-tier coordinated audit-silence migration and explicitly
+    lists OwnerServiceImpl:87-100 in its "Where" table as one of the 9 audit-
+    silent sidecars. This reflection corroborates from the product-owner lens
+    (the compliance + forensic + positive-half-asymmetry framing). Convergent
+    validation; not a re-file. Fix lands per PLT-062's ADR-class migration
+    (extend `activity` OR add `platform_event`).
+
+- hypothesis_id: H-004
+  severity: HIGH
+  one_line: "OWNER table is mintable WITHOUT OWNER_CREATE via three service-tier getOrCreate side-doors (path-anchored gate); /permissions doc says OWNER_CREATE controls creation — it does not."
+  dedup_status: net_new
+  distinct_from: PLT-101
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: |
+    DISTINCT from PLT-101/PLT-059: those track the TERM and NAMESPACE getOrCreate
+    side-doors (namespaceService.getOrCreate via createTerm/updateTerm). This is
+    the OWNER-side side-door — OwnerServiceImpl.getOrCreate reached from
+    OwnerAssociationRequestServiceImpl.java:57 + OwnershipServiceImpl.java:52 +
+    TermOwnershipServiceImpl.java:35, none holding OWNER_CREATE. Tracked only as
+    a doc-gap extension (DOC-262 → Owner-side per the F-019 scanner_reviews), NOT
+    as a code-side PLT. Fix family: gate getOrCreate at the service method (or
+    document the side-door as intentional in /permissions). Compounds with F-075
+    DIRECT_OWNER_SYNC self-mint-and-self-bind (SHB-087) — file as the Owner-side
+    sibling of PLT-101 with the privilege-chain cross-link.
+
+- hypothesis_id: H-007
+  severity: MEDIUM
+  one_line: "GET /api/owners/{id} returns soft-deleted Owners (name + roles) — getDto omits the deleted_at filter that list applies; deletion is not erasure (GDPR), PII recoverable by-id post-delete."
+  dedup_status: net_new
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: |
+    Not in any existing PLT (PLT-110 is the Policy-grant-path deleted_at omission;
+    this is the Owner getDto read-path omission). SHB-095 seeded this with the
+    GDPR-erasure scenario but no PLT exists. Fix: add
+    `.where(OWNER.DELETED_AT.isNull())` to ReactiveOwnerRepositoryImpl.getDto
+    (SHB-095 fix_one_line), and audit every getDto-style method in soft-delete
+    repositories for the same omission.
+
+- hypothesis_id: H-009
+  severity: MEDIUM
+  one_line: "Owner delete cascade-block checks 3 of 4 referencing relations — owner_association_request (FK no ON DELETE) is unchecked; orphan PENDING/APPROVED requests survive and can be approved into mappings on a dead Owner."
+  dedup_status: net_new
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: |
+    Not in an existing PLT (PLT-087 is the DataSource-side orphan TOKEN; this is
+    the Owner-side owner_association_request orphan). Fix family: add a 4th
+    cascade leg checking owner_association_request OR set an ON DELETE behaviour
+    on the FK (V0_0_51:11) OR cross-check getOwnerId().deleted_at on the approve
+    path (OwnerAssociationRequestServiceImpl.java:184-190). File alongside the
+    F-076 cross-Management cascade structural-class.
+
+- hypothesis_id: H-012
+  severity: MEDIUM
+  one_line: "Owner delete does NOT refresh FTS search vectors (update does) — deleted Owner names surface in catalog search for an unbounded window until affected entities are independently re-indexed."
+  dedup_status: net_new
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: |
+    Not in an existing PLT (PLT-087 names the DataSource-side FTS-not-cleared
+    asymmetry; this is the Owner-side delete-vs-update asymmetry). Fix: call
+    updateSearchVectors(owner) (or an FTS-removal equivalent) in
+    OwnerServiceImpl.delete inside the transactional boundary, OR document the
+    stale-index window. Sibling of the F-006 batch-K delete_search_vector_not_
+    refreshed facet — consider a cross-feature "delete-path FTS hygiene" sweep.
+
+- hypothesis_id: H-006
+  severity: MEDIUM
+  one_line: "OpenAPI declares 201 for createOwner AND updateOwner; the controller returns 200 on both (class-wide, platform-wide) — strict generated clients asserting 201 fail on successful create/update."
+  dedup_status: net_new
+  recommended_log_as: upstream-issue
+  proposed_fix_anchor: |
+    Not in an existing PLT. Spec is wrong in both directions (201-for-PUT is
+    non-canonical; impl returns 200). Fix: repair the spec FIRST (201 for
+    createOwner POST, 200 for updateOwner PUT), then align the impl. Platform-
+    wide pattern (Policy/Role/Tag controllers identical) — file as a spec-vs-impl
+    status-code sweep, not an Owner-only fix.
+
+### caveat_candidates
+- hypothesis_id: H-005
+  one_line: "GET /api/owners is ungated (no OWNER_READ permission); any authenticated user — anonymous under DISABLED — enumerates the full Owner directory + roles. Intentional read-collaborative posture but a PII-disclosure surface, undocumented."
+  dedup_status: already_tracked
+  tracked_as: DOC-187
+  recommended_log_as: null
+
+- hypothesis_id: H-008
+  one_line: "Owner delete is soft (name re-usable via partial unique index) + OWNER_TO_ROLE bindings hard-deleted (immediate revocation, no orphan grant) — POSITIVE case-law vs F-006 Policy/Role; the live owners doc is silent on all of it."
+  dedup_status: already_tracked
+  tracked_as: DOC-251
+  recommended_log_as: null
+
+- hypothesis_id: H-010
+  one_line: "OWNER.NAME rename is SAFE for USER_OWNER_MAPPING (FK by id); the dangerous half is OIDC_USERNAME rename (F-011 REFACTOR-391). Docs do not cross-link the safe-vs-dangerous rename surface."
+  dedup_status: net_new
+  recommended_log_as: "doc-gap — cross-link the rename-hazard surface on the live owners + user-owner-association doc pages (OWNER.NAME safe; OIDC username hazardous, see REFACTOR-391)"
+
+- hypothesis_id: H-011
+  one_line: "Owner name collision (create + rename) returns USR003/HTTP 400, not 409 Conflict; clients cannot distinguish duplicate from bad-input. No API doc states the expected code."
+  dedup_status: net_new
+  recommended_log_as: "doc-gap / API-ergonomics — document the USR003/400-on-collision contract OR adopt 409; class-wide (create + rename) and platform-wide pattern"
+
+### probes_emitted
+- probe_id: P-340
+  hypothesis_id: H-013
+  probe_path: "lineage/odd-platform/probes/P-340.yaml"
+
+### validation_gaps
+- sidecar: '(F-019 chain hop 3 — ReactiveOwnerRepositoryImpl)'
+  field_insufficient: "sidecar absent (hop marked unresolved: true) — the soft-delete getDto-vs-list visibility asymmetry (H-007) is transcribed only via the deleteOwner sidecar's secondhand citation, not a primary-source repository sidecar."
+  proposed_refresh: |
+    Enrich ReactiveOwnerRepositoryImpl as a standalone node — pin getDto (lines
+    65-83, no deleted_at filter) vs list/enrichSelect (lines 86-121, filtered)
+    at primary source, plus the soft-delete UPDATE inherited from
+    ReactiveAbstractSoftDeleteCRUDRepository. Hop 3 is the only unresolved hop in
+    the F-019 chain; H-007's by-id-visibility verdict rests on a secondhand cite.
+
+### doc_drift_findings
+- hypothesis_id: H-004
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions"
+  doc_says: "OWNER_CREATE — Allows creating a new owner entity."
+  code_does: "Three service-tier getOrCreate side-doors mint Owner rows without OWNER_CREATE (path-anchored gate on POST /api/owners only)."
+  recommended_log_as: "doc-gap (extends DOC-262 to the Owner side) — /permissions must state OWNER_CREATE gates only the direct POST, and that Owners are also minted via ownership/association flows"
+- hypothesis_id: H-005
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/owners"
+  doc_says: "Owners are Data Owners ... managed in the Management → Owners tab. (silent on read access)"
+  code_does: "GET /api/owners is ungated — any authenticated user (anonymous under DISABLED) reads the full directory + roles; no OWNER_READ permission exists."
+  recommended_log_as: "doc-gap (DOC-187) — document the read-collaborative posture on the Owner directory + the PII-disclosure caveat for personally-named Owners"
+- hypothesis_id: H-001
+  doc_url: "https://docs.opendatadiscovery.org/features/management"
+  doc_says: "(silent on audit — describes the Owners tab as add/edit/remove with no mention of audit trail)"
+  code_does: "No Owner-lifecycle mutation is recorded on any audit surface; the gap is schema+enum-rooted and un-closable by annotation."
+  recommended_log_as: "doc-gap (DOC-246 audit-trail-scope companion + DOC-251) — state that Owner CRUD is NOT audited and recommend external compensating controls"
+
+## maintainer_notes
+
+(none — first reflection for F-019; no maintainer-curated hypotheses to preserve.)

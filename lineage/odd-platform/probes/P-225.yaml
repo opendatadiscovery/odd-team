@@ -1,0 +1,129 @@
+---
+probe_id: P-225
+emitted_by: feature-reflector
+emitted_in_reflection: lineage/odd-platform/feature-reflections/detail/F-005.yaml
+emitted_for_hypothesis: H-010
+emitted_at: 2026-06-01T00:00:00Z
+status: pending-reflection-verification
+feature_id: F-005
+test_class: performance
+verified_against_commit: 43d13eb
+maintainer_curated: false
+stack_profile: odd-minimal-with-headless-browser
+local_execution_blocked: false
+expected_outcome: |
+  H-010 (verbatim): "When a user progressively expands many nodes via 'Load N
+  more' during a long lineage-exploration session, the canvas lets them collapse
+  expansions back, or otherwise bounds memory — the view does not grow without
+  limit until the page is left."
+
+  Static reading (CONFIRMED from primary source, dataEntityLineage.slice.ts
+  :30-48, 206-220, 281-282 + LoadMoreButton.tsx:55-65): the slice merges new
+  nodes monotonically into module-level mutable accumulators
+  (`localDownstreamState.allNodes` / `allEdges`) with NO remove-expansion
+  action, NO LRU eviction, NO max-size cap; the accumulators reset ONLY on
+  root-entity navigation. The LoadMore button hides itself after click but the
+  data persists. So the "collapse" half of H-010 is statically FALSE — there is
+  no collapse affordance.
+
+  The UNMEASURED, load-bearing question: how does client memory + rendered SVG
+  DOM grow across a realistic long session, and at what expansion count does the
+  no-virtualisation render (every node + link as an SVG primitive,
+  LineageGraph.tsx:55-110) degrade the browser frame budget to an
+  operator-visible stall? This requires driving the real UI in a headless
+  browser (Playwright / Puppeteer) and sampling JS heap + DOM-node count.
+
+  PASS for the "bounds memory" half of H-010 = heap + DOM-node growth plateaus
+  or stays within a sane ceiling across N expansions. FAIL = monotonic
+  unbounded growth to a frame-budget-stalling size, confirming the long-session
+  reliability gap for power users tracing large graphs.
+
+  Note: this probe pins the CLIENT memory/render profile only. The backend
+  cost of each LoadMore (one depth-1 fetch) is not the concern here.
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: sql
+    description: A root entity with a wide downstream fan-out (one root, 120 direct children) so repeated LoadMore on leaves has many targets to accumulate
+    query: |
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, created_at)
+      VALUES (8701, '//probe-source/p-225/root', 'p225_root', 1, 3, NOW());
+
+      -- 120 child entities + 120 lineage edges root->child_i, generated in one statement
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, created_at)
+      SELECT 8700 + g, '//probe-source/p-225/child' || g, 'p225_child' || g, 1, 3, NOW()
+      FROM generate_series(2, 121) AS g;
+
+      INSERT INTO lineage (parent_oddrn, child_oddrn, establisher_oddrn, is_deleted)
+      SELECT '//probe-source/p-225/root', '//probe-source/p-225/child' || g, '//probe-source/p-225/est', false
+      FROM generate_series(2, 121) AS g;
+
+      -- give each child its own downstream leaf so a LoadMore on the child returns a new hop
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, created_at)
+      SELECT 9700 + g, '//probe-source/p-225/leaf' || g, 'p225_leaf' || g, 1, 3, NOW()
+      FROM generate_series(2, 121) AS g;
+
+      INSERT INTO lineage (parent_oddrn, child_oddrn, establisher_oddrn, is_deleted)
+      SELECT '//probe-source/p-225/child' || g, '//probe-source/p-225/leaf' || g, '//probe-source/p-225/est', false
+      FROM generate_series(2, 121) AS g
+act:
+  - kind: browser
+    description: Open the Lineage tab on the root entity in a headless browser at depth=1, then click "Load N more" on 100 leaf nodes in sequence; sample JS heap + DOM-node count after every 25 clicks
+    engine: playwright
+    steps:
+      - goto: "/dataentities/8701/lineage?d=1"
+      - wait_for_selector: "[data-test='lineage-canvas']"   # adjust selector to the canvas root once confirmed in source
+      - sample_metric: { js_heap_mb: heap_at_0, dom_nodes: dom_at_0 }
+      - repeat:
+          times: 100
+          do:
+            - click_each: "[data-test='load-more-button']"   # one LoadMore per available leaf, sequentially
+          sample_every: 25
+          sample_metric: { js_heap_mb: heap_series, dom_nodes: dom_series }
+    capture_as: browser_metrics
+observe:
+  - kind: derived
+    description: Compute heap + DOM growth slope across the 100-click session
+    expression: "heap_growth_mb = max(heap_series) - heap_at_0; dom_growth = max(dom_series) - dom_at_0"
+    capture_as: growth_summary
+assert:
+  - "browser_metrics.session_completed == true  # the UI did not crash/stall to unusability across 100 LoadMore clicks"
+  - "growth_summary.heap_growth_mb < 300  # SOFT ceiling: heap growth across 100 expansions stays bounded on the minimal fixture (calibrate per host)"
+  - "growth_summary.dom_growth < 20000  # SOFT ceiling: SVG DOM-node count growth stays under a frame-budget-stalling threshold"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM lineage WHERE establisher_oddrn = '//probe-source/p-225/est';
+      DELETE FROM data_entity WHERE oddrn LIKE '//probe-source/p-225/%'
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__react-component__component__LineageGraph
+  related_features:
+    - F-005
+  retrospectives:
+    - LSN-017
+realism_caveats: |
+  The probe pins the CLIENT-SIDE memory/render profile of a long LoadMore
+  session, not correctness. If the session completes with bounded heap + DOM
+  growth, the "bounds memory" half of H-010 is CONFIRMED at runtime and the
+  remaining gap is purely the missing collapse affordance (a UX item, not a
+  reliability bug). If heap/DOM grows unbounded toward a stall, the long-session
+  reliability gap is real for power users.
+
+  The selectors (`[data-test='lineage-canvas']`, `[data-test='load-more-button']`)
+  are PLACEHOLDERS — the probe-runner must confirm the actual selectors from the
+  LineageGraph / LoadMoreButton source before the run (the components may not
+  carry data-test attributes yet; if not, the first run adds them or uses the
+  rendered class/text selectors). This is flagged so the probe-runner does not
+  treat a selector miss as a behavioural FAIL.
+
+  The heap (300MB) and DOM (20000-node) thresholds are calibration starting
+  points; the load-bearing signal is the GROWTH SHAPE (plateau vs monotonic
+  unbounded), not the absolute numbers — interpret relatively across hosts.
+
+  Per Rule 6 / Rule 12: Playwright headless browser + local docker-compose +
+  Postgres, entirely on the maintainer's workstation; no remote infrastructure,
+  no hosted browser grid. Fixtures use the 8700/9700-range; cleanup is
+  oddrn-prefix-scoped.

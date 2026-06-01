@@ -1,0 +1,154 @@
+---
+probe_id: P-390
+feature_id: F-044
+test_class: performance
+emitted_by: feature-reflector
+status: pending-reflection-verification
+emitted_in_reflection: lineage/odd-platform/feature-reflections/detail/F-044.yaml
+emitted_for_hypothesis: H-004
+emitted_at: 2026-06-01T00:00:00Z
+verified_against_commit: 43d13eb
+prompt_version: probe-runner/0.1.0
+maintainer_curated: false
+stack_profile: odd-minimal
+local_execution_blocked: false
+expected_outcome: |
+  Quoting hypothesis H-004 verbatim:
+  "When a large backlog of entities matures in the same window (e.g. 5,000
+  entities with status_switch_time all elapsing within one hour), each tick
+  processes a bounded batch so the job completes inside its 9-minute ShedLock
+  window and the next tick is not skipped."
+
+  The NO-CAP STRUCTURE is already confirmed statically (DataEntityStatusSwitchJob
+  .run() collectList()s the full unbounded getPojosForStatusSwitch result — no
+  .take(N), no LIMIT). What is NOT statically settle-able is the TIMING OUTCOME:
+  does a single tick over a 5K-entity backlog × the soft-delete cascade fan-out
+  actually EXCEED the 9-minute lockAtMostFor window? That depends on real Postgres
+  latency, cascade write count per entity, and machine — it must be MEASURED.
+
+  This probe seeds a 5K-entity DEPRECATED backlog with status_switch_time already
+  elapsed, then drives ONE status-switch tick (by invoking the job's write path
+  against the seeded set) and measures wall-clock duration + verifies all 5K
+  flipped to DELETED in one pass.
+
+  PASS/verdict mapping for H-004:
+  - If tick duration < 9 minutes AND all 5K flipped in the single tick →
+    the burst is absorbed safely → H-004 verdict flips probe-needed → confirmed
+    (the no-cap structure exists but does not breach the window at 5K scale;
+    record the duration + the scale headroom).
+  - If tick duration >= 9 minutes (lock would release before commit) OR the job
+    splits across ticks under the lock → H-004 verdict flips probe-needed →
+    contradicted, severity MEDIUM, with the measured duration recorded and the
+    multi-instance race window quantified. PLT-027 Thread C (add LIMIT) becomes
+    measurement-justified rather than precautionary.
+  - Record the per-entity cascade write count observed (pg_stat) so the LIMIT
+    value in PLT-027 Thread C (proposed 200/tick) can be tuned against real fan-out.
+---
+
+# P-390 — status-switch burst completes within the 9-minute ShedLock window (H-004)
+
+arrange:
+  - kind: docker-compose-up
+    note: |
+      Local docker-compose stack (platform + Postgres), APPROACH.md §9 rule 12
+      local-only. The platform's DataEntityStatusSwitchJob runs every 10 minutes
+      under a 9-minute ShedLock; this probe does not wait for the natural cadence
+      — it seeds an elapsed backlog and triggers/observes a single tick's work.
+
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name)
+      VALUES (3900, '//probe-source-P-390/db', 'probe-source-P-390')
+      ON CONFLICT (id) DO NOTHING
+
+  # Seed 5000 DEPRECATED entities whose status_switch_time has ALREADY elapsed
+  # (now - 1 minute), so the next status-switch tick selects the entire set in one
+  # unbounded getPojosForStatusSwitch read. status=4 is DEPRECATED (switchable).
+  - kind: sql
+    query: |
+      INSERT INTO data_entity
+        (id, oddrn, external_name, data_source_id, type_id, status,
+         status_switch_time, source_created_at, source_updated_at)
+      SELECT 3900000 + g,
+             '//probe-source-P-390/db/tables/p390_' || g,
+             'p390_' || g,
+             3900, 1, 4,
+             NOW() - INTERVAL '1 minute',
+             NOW(), NOW()
+      FROM generate_series(0, 4999) AS g
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      SELECT count(*) FROM data_entity
+      WHERE id BETWEEN 3900000 AND 3904999 AND status = 4
+    capture_as: seeded_deprecated_count
+
+act:
+  # Trigger ONE status-switch tick and time it end-to-end. The harness invokes the
+  # job's write path once (e.g. via a test-only actuator endpoint, a direct bean
+  # call in an integration-test harness, or by aligning the seed to the next
+  # natural @Scheduled tick and timing from first-write to last-write). The
+  # measured value is the wall-clock duration of the single bulk flip.
+  - kind: timed-job-invocation
+    target: "DataEntityStatusSwitchJob.run() (service/job/DataEntityStatusSwitchJob.java:23)"
+    base: "http://localhost:18080"
+    timeout_seconds: 1200          # 20 min ceiling so a >9-min breach is observable, not truncated
+    capture_duration_as: tick_duration_seconds
+
+observe:
+  - kind: sql
+    query: |
+      SELECT count(*) FROM data_entity
+      WHERE id BETWEEN 3900000 AND 3904999 AND status = 5   -- 5 = DELETED
+    capture_as: flipped_to_deleted_count
+
+  # Confirm the H-002 interaction in passing: the flipped rows have status_updated_at
+  # NULL (the applyStatus bug). Recorded as corroboration of PLT-027, not asserted
+  # as the pass condition of THIS probe (P-390 is the timing probe).
+  - kind: sql
+    query: |
+      SELECT count(*) FROM data_entity
+      WHERE id BETWEEN 3900000 AND 3904999 AND status = 5
+        AND status_updated_at IS NULL
+    capture_as: flipped_with_null_status_updated_at
+
+assert:
+  # All 5000 flipped in the single tick (no split across ticks under the lock).
+  - "flipped_to_deleted_count == 5000"
+  # The headline timing assertion: the tick completed inside the 9-minute
+  # (540-second) ShedLock window. FAIL here is the load-bearing result — it
+  # converts H-004 from probe-needed to contradicted and justifies PLT-027 Thread C.
+  - "tick_duration_seconds < 540"
+
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  refactoring_scopes: []
+  test_gaps: []
+  related_concepts: ["data-entity-status", "housekeeping-ttl-retention", "soft-delete-is-the-platforms-deletion-model"]
+  upstream_issues: [PLT-027]   # Thread C (per-tick batch cap) — this probe measures whether the cap is needed at 5K
+  retrospectives: []
+  reflection: "lineage/odd-platform/feature-reflections/detail/F-044.yaml#H-004"
+
+realism_caveats: |
+  - LOCAL-ONLY (APPROACH.md §9 rule 12): docker-compose stack + SQL seed + a single
+    timed job invocation + DB count — no cloud, no managed DB, no remote runner.
+  - The probe measures a SINGLE-instance tick duration. The multi-instance race
+    (a second replica acquiring the lock at minute 10 while the first is still
+    committing past minute 9) is the downstream consequence IF tick_duration >= 540;
+    a true 2-replica reproduction is a heavier follow-up and is intentionally out of
+    scope here — this probe establishes whether the window is breached at all.
+  - 5000 is the F-044 substrate's stated worst-case burst figure
+    (drift_class scheduled_auto_flip_no_per_tick_batch_cap). If the local machine's
+    Postgres is materially faster/slower than a production deployment, record the
+    observed per-entity cascade write count (pg_stat_statements) alongside the
+    duration so the result can be scaled — the per-entity fan-out is the portable
+    quantity, not the absolute wall-clock on one laptop.
+  - status_switch_time is seeded as elapsed (now - 1 min) so getPojosForStatusSwitch
+    selects the full set immediately; this faithfully reproduces a backfill that
+    DRAFT/DEPRECATED-marks a large set with switch-times in the recent past.
+  - flipped_with_null_status_updated_at is captured as PASSIVE corroboration of the
+    H-002 applyStatus bug (it should equal 5000); it is NOT the pass gate of P-390.

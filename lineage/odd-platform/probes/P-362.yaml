@@ -1,0 +1,155 @@
+---
+probe_id: P-362
+feature_id: F-024
+test_class: integration
+emitted_by: feature-reflector
+status: pending-reflection-verification
+emitted_in_reflection: lineage/odd-platform/feature-reflections/detail/F-024.yaml
+emitted_for_hypothesis: H-010
+emitted_at: 2026-06-01T00:00:00Z
+verified_against_commit: 43d13eb
+prompt_version: probe-runner/0.1.0
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Quoting hypothesis H-010 verbatim:
+  "When a user deletes a term, that term immediately disappears from the
+  Dictionary-tab search results and the search-suggestions dropdown — a deleted
+  term never appears in catalog browse/search."
+
+  RATIONALE FOR PROBE-NEEDED: there are two competing static signals and only a
+  run settles which dominates the USER-VISIBLE result.
+   (a) ReactiveTermSearchEntrypointRepositoryImpl.md bugs_limitations_corner_cases[0]:
+       term DELETE leaves the row in `term_search_entrypoint` (TermServiceImpl.delete
+       never calls any vector-clear method) — the FTS vector for the deleted term
+       persists indefinitely.
+   (b) ReactiveTermRepositoryImpl.md invariants: every read filters
+       `TERM.DELETED_AT IS NULL`, AND findByState/getQuerySuggestions JOIN term →
+       term_search_entrypoint. IF the search query JOINs `term` (with the deleted_at
+       filter) the stale vector is masked; IF any search/suggestion path queries
+       term_search_entrypoint WITHOUT re-joining term, the deleted term leaks.
+  The sidecar explicitly flags (b) as the open question: "any reader that queries
+  term_search_entrypoint directly without joining term would surface deleted terms."
+  Whether the live findByState / getQuerySuggestions on the Dictionary tab does the
+  protective join is the thing to run — the orchestrating TermSearchService is
+  un-enriched.
+
+  PASS (H-010 -> confirmed) if, after deleting a term, it is absent from both
+  GET /api/termsearch/{id}/results (matching its name) and
+  GET /api/termsearch/suggestions?query={name}.
+  FAIL (H-010 -> contradicted; route to bug-candidate) if the deleted term still
+  appears in either the results list or the suggestions dropdown.
+---
+
+# P-362 — Deleted term still in Dictionary-tab search/suggestions (H-010; stale term_search_entrypoint vector)
+
+arrange:
+  - kind: docker-compose-up
+
+  # Create a uniquely-named term so the FTS query has an unambiguous target.
+  - kind: http
+    method: POST
+    path: /api/terms
+    base: "http://localhost:18080"
+    body: |
+      {"name": "ZzxQGhostTerm", "definition": "p362 ghost term unique token", "namespace_name": "p362_ns"}
+    capture_json_as: created_term
+    capture_status_as: create_status
+
+  # Confirm it IS searchable BEFORE deletion (baseline — proves the FTS index picked
+  # it up, so a post-delete absence means deletion worked, not that it never indexed).
+  - kind: http
+    method: POST
+    path: /api/termsearch
+    base: "http://localhost:18080"
+    body: |
+      {"query": "ZzxQGhostTerm", "pageSize": 30, "filters": {}}
+    capture_json_as: pre_session
+  - kind: http
+    method: GET
+    path: "/api/termsearch/{{pre_session.searchId}}/results?page=1&size=30"
+    base: "http://localhost:18080"
+    capture_json_as: pre_delete_results
+
+act:
+  # Delete the term (soft-delete: sets term.deleted_at; per the sidecar, does NOT
+  # clear term_search_entrypoint).
+  - kind: http
+    method: DELETE
+    path: "/api/terms/{{created_term.id}}"
+    base: "http://localhost:18080"
+    capture_status_as: delete_status
+
+  # Search again for the same token via a fresh session.
+  - kind: http
+    method: POST
+    path: /api/termsearch
+    base: "http://localhost:18080"
+    body: |
+      {"query": "ZzxQGhostTerm", "pageSize": 30, "filters": {}}
+    capture_json_as: post_session
+  - kind: http
+    method: GET
+    path: "/api/termsearch/{{post_session.searchId}}/results?page=1&size=30"
+    base: "http://localhost:18080"
+    capture_json_as: post_delete_results
+
+  # And via the suggestions endpoint (getQuerySuggestions — the autocomplete path).
+  - kind: http
+    method: GET
+    path: "/api/termsearch/suggestions?query=ZzxQGhostTerm"
+    base: "http://localhost:18080"
+    capture_json_as: post_delete_suggestions
+
+  # Direct DB check: confirm the row IS still in term_search_entrypoint (proves the
+  # stale-vector premise (a) regardless of whether the read masks it).
+  - kind: sql
+    query: |
+      SELECT count(*) AS stale_vectors
+      FROM term_search_entrypoint
+      WHERE term_id = {{created_term.id}}
+    capture_as: stale_vector_count
+
+observe:
+  - kind: noop
+    note: "pre/post result sets + suggestions + stale-vector count captured in act"
+
+assert:
+  # Sanity: term created and was searchable before delete.
+  - "create_status == 200"
+  - "delete_status >= 200 and delete_status < 300"
+  - "len(pre_delete_results['items']) >= 1"
+  # H-010 confirmed: the deleted term is GONE from both user-visible search surfaces.
+  - "len([t for t in post_delete_results['items'] if t.get('name') == 'ZzxQGhostTerm']) == 0"
+  - "len([t for t in post_delete_suggestions['items'] if t.get('name') == 'ZzxQGhostTerm']) == 0"
+
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  related_features: [F-002]
+  related_concepts: ["Term Search Session (Dictionary tab)"]
+  reflection: "lineage/odd-platform/feature-reflections/detail/F-024.yaml#H-010"
+  note: |
+    The `stale_vector_count` capture is diagnostic, not a hard gate: it is EXPECTED
+    to be >= 1 (the sidecar-confirmed stale-vector premise). The user-visible verdict
+    is the results/suggestions assertions. If stale_vector_count >= 1 AND the results
+    assertions PASS, the protective `term.deleted_at` join masks the stale vector —
+    confirmed-but-with-a-latent-cleanup-gap (note for the maintainer: the stale row
+    is harmless to readers today but is a landmine for any future direct
+    term_search_entrypoint query — the cleanup gap itself is worth a caveat).
+
+realism_caveats: |
+  - LOCAL-ONLY (APPROACH.md §9 rule 12): docker-compose + local Postgres + HTTP
+    client + one diagnostic SQL count. No cloud, no managed DB.
+  - Runs under auth.type=DISABLED (odd-minimal default). Under LOGIN_FORM the harness
+    must hold TERM_CREATE + TERM_DELETE to seed and delete.
+  - If the term cannot be deleted because it is mentioned in a description
+    (hasDescriptionRelations guard — TermServiceImpl.delete errors 400), the seed
+    term here has no inbound mentions so the guard is not triggered; the harness must
+    NOT add a [[p362_ns:ZzxQGhostTerm]] mention anywhere or the DELETE will 400.
+  - The response field for suggestion items may be a TermRefList (`items[].name`) or a
+    flat list depending on the OpenAPI shape; the harness adapts the JSONPath to the
+    actual TermRefList contract (TermController.getTermSearchSuggestions returns
+    TermRefList per the controller sidecar).

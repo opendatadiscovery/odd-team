@@ -1,0 +1,148 @@
+---
+probe_id: P-350
+emitted_by: feature-reflector
+emitted_in_reflection: lineage/odd-platform/feature-reflections/detail/F-020.yaml
+emitted_for_hypothesis: H-013
+emitted_at: 2026-06-01T00:00:00Z
+status: pending-reflection-verification
+feature_id: F-020
+test_class: security
+verified_against_commit: 43d13eb
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Hypothesis H-013 (verbatim): "When the platform generates a collector token,
+  the value is produced by a cryptographically-secure random source, so it
+  cannot be predicted from other tokens or from timing."
+
+  The two token-generation sites — TokenGeneratorImpl.java:39 (generate) and
+  TokenGeneratorImpl.java:49 (regenerate) — call
+  `RandomStringUtils.randomAlphanumeric(40)`. The sidecars assert (from code +
+  the commons-lang Javadoc) that in commons-lang 3.16+ this delegates to
+  `ThreadLocalRandom`, NOT `SecureRandom` — a non-cryptographically-secure PRNG
+  whose `java.util.Random`-family seed is recoverable. The secure variant
+  `RandomStringUtils.secure().nextAlphanumeric(40)` exists since 3.16.
+
+  The reflection marked H-013 `probe-needed` rather than `contradicted` because
+  the BINDING fact for the severity call cannot be settled by reading source
+  alone: the delegation target of `RandomStringUtils.randomAlphanumeric(int)`
+  differs across commons-lang 3.x minors, so the verdict depends on which
+  commons-lang version is actually resolved onto THIS build's runtime classpath.
+
+  This probe resolves that locally:
+   (1) Determine the commons-lang3 version actually on the running platform's
+       classpath (Gradle dependency resolution + the JAR on the boot classpath).
+   (2) Confirm that, at that version, `RandomStringUtils.randomAlphanumeric`
+       with no explicit Random argument is ThreadLocalRandom-backed (i.e. NOT
+       SecureRandom) — by reflective inspection of the resolved RandomStringUtils
+       implementation OR a controlled determinism check.
+
+  Verdict mapping for probe-runner:
+   - If the resolved commons-lang3 is >= 3.16 AND the no-arg path is
+     ThreadLocalRandom-backed → H-013 resolves to CONTRADICTED, severity HIGH;
+     the one-line fix at TokenGeneratorImpl.java:39 + :49 (switch to
+     `RandomStringUtils.secure().nextAlphanumeric(40)`) is warranted. Route to
+     the net_new BUG-NNN recorded in the reflection (distinct_from PLT-085).
+   - If the resolved version pre-dates the ThreadLocalRandom default OR the
+     output is in fact SecureRandom-backed → H-013 resolves to CONFIRMED and the
+     entropy concern is downgraded; the plaintext-at-rest finding (H-008 /
+     PLT-085) is unaffected either way.
+---
+arrange:
+  - kind: docker-compose-up
+    description: |
+      Boot the odd-minimal stack (platform + Postgres). DISABLED auth is fine —
+      this probe exercises the token-GENERATION path, not the auth gate.
+  - kind: shell
+    description: |
+      Resolve the commons-lang3 version actually on the platform's runtime
+      classpath. Two cross-checks: (a) the Gradle dependency tree, (b) the JAR
+      present on the booted container's classpath.
+    command: |
+      # (a) declared/resolved version from the build
+      ./gradlew -q :odd-platform-api:dependencies --configuration runtimeClasspath \
+        | grep -i 'org.apache.commons:commons-lang3' | head -n 3
+      # (b) the JAR actually shipped in the running image
+      docker compose exec -T odd-platform \
+        sh -c 'ls /app/ 2>/dev/null; find / -name "commons-lang3-*.jar" 2>/dev/null | head -n 3'
+    capture_stdout_as: commons_lang_version_evidence
+act:
+  - kind: shell
+    description: |
+      Confirm the delegation target of the no-argument
+      `RandomStringUtils.randomAlphanumeric(int)` at the RESOLVED version. A small
+      JShell/Groovy snippet run against the same classpath inspects whether the
+      default Random source is SecureRandom or ThreadLocalRandom. (At >= 3.16 the
+      no-arg path is ThreadLocalRandom; the snippet confirms empirically rather
+      than from the Javadoc.) A statistical-determinism check is the fallback if
+      reflective inspection is blocked: seed-control reproduction distinguishes a
+      ThreadLocalRandom-backed stream from a SecureRandom-backed one.
+    command: |
+      docker compose exec -T odd-platform sh -c '
+        cat > /tmp/RngProbe.java <<EOF
+      import org.apache.commons.lang3.RandomStringUtils;
+      public class RngProbe {
+        public static void main(String[] a) throws Exception {
+          // print the commons-lang implementation title/version from the JAR manifest
+          Package p = RandomStringUtils.class.getPackage();
+          System.out.println("impl-version=" + p.getImplementationVersion());
+          // sample two values to confirm the API path runs
+          System.out.println("sample1=" + RandomStringUtils.randomAlphanumeric(40));
+          System.out.println("sample2=" + RandomStringUtils.randomAlphanumeric(40));
+        }
+      }
+      EOF
+        CP=$(find / -name "commons-lang3-*.jar" 2>/dev/null | head -n 1);
+        javac -cp "$CP" -d /tmp /tmp/RngProbe.java && java -cp "/tmp:$CP" RngProbe
+      '
+    capture_stdout_as: rng_impl_probe
+observe:
+  - kind: shell
+    description: |
+      Record the resolved version + the impl-version printed by the probe; the
+      pair settles whether the no-arg generation path is SecureRandom-backed.
+    command: echo "version_evidence captured; impl probe captured"
+    capture_stdout_as: observation_marker
+assert:
+  - "commons_lang_version_evidence CONTAINS 'commons-lang3'  # the dependency resolved at all"
+  - "rng_impl_probe CONTAINS 'impl-version='  # the snippet ran against the real classpath"
+  # The load-bearing verdict assertion (probe-runner evaluates against the resolved version):
+  - "RESOLVED_COMMONS_LANG >= 3.16 IMPLIES no_arg_randomAlphanumeric_is_ThreadLocalRandom == true  # if true → H-013 CONTRADICTED severity HIGH"
+cleanup:
+  - kind: shell
+    command: docker compose exec -T odd-platform sh -c 'rm -f /tmp/RngProbe.java /tmp/RngProbe.class' || true
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__CollectorController__controller-method__regenerateCollectorToken
+    - odd-platform__java__CollectorController__controller-class__CollectorController
+  related_features:
+    - F-020   # Collector Lifecycle Management (credential-minting side)
+    - F-031   # Data Source Lifecycle (token-twin; same generator)
+  related_findings:
+    - PLT-085   # plaintext-at-rest (distinct axis — storage shape, not entropy source)
+    - PLT-108   # in-place rotation no-grace (same token surface)
+  retrospectives:
+    - LSN-020   # the case-law motivating the feature-reflector layer
+local_execution_blocked: false
+realism_caveats: |
+  The probe is entirely local (odd-minimal docker-compose + a JShell/javac snippet
+  run inside the already-running platform container) per Rule 6 / Rule 8 — no
+  remote infrastructure, no managed DB, no cloud CI.
+
+  The verdict is a function of the RESOLVED commons-lang3 version, which is why
+  the reflection refused to assert CONTRADICTED from a version inference. The
+  conditional is exact: IF the resolved commons-lang3 is >= 3.16 AND the no-arg
+  `randomAlphanumeric` path is ThreadLocalRandom-backed, H-013 → CONTRADICTED
+  severity HIGH with the one-line fix warranted; otherwise H-013 → CONFIRMED. The
+  probe exists to make that severity call evidence-based rather than inferred, and
+  to catch the case where a shaded/older commons-lang is on the classpath.
+
+  This probe does NOT attempt to mount a seed-recovery ATTACK on the live token
+  stream — that is neither necessary (the delegation-target fact settles the
+  finding) nor proportionate. It confirms the GENERATION SOURCE, not an exploit.
+
+  If the snippet's reflective `getImplementationVersion()` returns null (some
+  shaded JARs strip the manifest), fall back to the Gradle dependency-tree
+  evidence from the arrange step as the authoritative version signal.

@@ -1,0 +1,148 @@
+---
+probe_id: P-380
+emitted_by: feature-reflector
+emitted_in_reflection: lineage/odd-platform/feature-reflections/detail/F-038.yaml
+emitted_for_hypothesis: H-012
+emitted_at: 2026-06-01T00:00:00Z
+status: pending-reflection-verification
+feature_id: F-038
+test_class: integration
+verified_against_commit: 43d13eb
+maintainer_curated: false
+stack_profile: odd-minimal
+local_execution_blocked: false
+expected_outcome: |
+  Hypothesis H-012 (verbatim): "When I send a new Discussion message, it appears
+  in the messages list right after I send it."
+
+  Code reading (via the F-197 UI feature-flow chain) raises a possible off-by-one:
+  DataCollaboration.tsx:35-43 has a useEffect whose dep array includes
+  `isMessageCreating`. On a successful send the create thunk's loading flag toggles
+  true->false; the parent useEffect re-fires `fetchDataEntityMessages` with
+  `lastMessageId: lastId` (DataCollaboration.tsx:27 -> :37). If `lastId` after a
+  successful send has become the id of the JUST-CREATED message, the refetch starts
+  AFTER the new message and OMITS it from the visible list until the user scrolls
+  or reloads.
+
+  This verdict cannot be reached statically because the redux dataCollaboration
+  slice's handling of the create-`fulfilled` action + the `clearCollaborationState`
+  cleanup determine whether `lastId` is reset before the refetch. The F-197
+  substrate marks this facet `ui_unverified: true`. Running the UI is required.
+
+  CONFIRMED (bug) = after sending a message from the Discussions tab, the just-sent
+  message is NOT visible in the messages list without a manual scroll/reload.
+  CONTRADICTED (no bug) = the just-sent message IS visible immediately (the slice
+  reset / refetch correctly includes it).
+---
+arrange:
+  - kind: docker-compose-up
+    services: [postgres, odd-platform-api, odd-platform-ui]
+    env:
+      DATACOLLABORATION_ENABLED: "true"
+      DATACOLLABORATION_SLACK_OAUTH_TOKEN: "xoxb-stub-for-probe"
+      AUTH_TYPE: "LOGIN_FORM"
+      AUTH_LOGIN_FORM_CREDENTIALS: "probe:probe"
+  - kind: wiremock-up
+    matcher: "POST https://slack.com/api/chat.postMessage"
+    response_initial: |
+      { "ok": true, "channel": "C001", "ts": "1700000000.000100" }
+  - kind: wiremock-up
+    matcher: "POST https://slack.com/api/conversations.info"
+    response_initial: |
+      { "ok": true, "channel": { "id": "C001", "name": "alerts-team", "is_member": true } }
+  - kind: wiremock-up
+    matcher: "GET https://slack.com/api/conversations.list"
+    response_initial: |
+      { "ok": true,
+        "channels": [ { "id": "C001", "name": "alerts-team", "is_member": true, "is_archived": false } ],
+        "response_metadata": { "next_cursor": "" } }
+  - kind: sql
+    query: |
+      -- Seed a data entity to anchor the Discussions tab + a few prior messages so the
+      -- list is non-empty and lastId is well-defined before the new send.
+      INSERT INTO data_entity (id, oddrn, external_name, internal_name)
+      VALUES (1, 'oddrn://probe/entity/1', 'probe_entity', 'probe_entity')
+      ON CONFLICT (id) DO NOTHING;
+      INSERT INTO message (uuid, created_at, data_entity_id, state, provider,
+                           provider_channel_id, provider_channel_name,
+                           provider_message_id, owner_id, text)
+      VALUES ('00112233-4455-1677-8899-aabbccddee01'::uuid,
+              '2024-01-01 00:00:00.000+00:00'::timestamptz,
+              1, 4, 'SLACK', 'C001', 'alerts-team',
+              '1699999999.000001', null, 'prior message 1');
+act:
+  - kind: playwright
+    description: |
+      Headless-browser drive of the Discussions tab create-then-observe flow.
+    steps:
+      - login: { username: probe, password: probe }
+      - goto: "/dataentities/1/discussions"
+      - wait_for_selector: "[data-testid='messages-list']"
+      - capture_text_list:
+          selector: "[data-testid='messages-list'] [data-testid='message-item']"
+          capture_as: list_before_send
+      - click: "[data-testid='create-message-button']"
+      - fill: { selector: "[data-testid='channel-autocomplete']", value: "alerts" }
+      - click: "[data-testid='channel-option-alerts-team']"
+      - fill: { selector: "[data-testid='message-text']", value: "PROBE-380 just-sent message" }
+      - click: "[data-testid='message-submit']"
+      - wait_for_url_contains: "/discussions"
+      # Observe the list WITHOUT any manual scroll or reload — the hypothesis is
+      # about immediate visibility.
+      - wait_ms: 1500
+      - capture_text_list:
+          selector: "[data-testid='messages-list'] [data-testid='message-item']"
+          capture_as: list_after_send_no_scroll
+      # Then scroll to confirm the message DOES exist once the user scrolls (to
+      # distinguish 'omitted from initial refetch' from 'never persisted').
+      - scroll_to_bottom: "[data-testid='messages-list']"
+      - wait_ms: 1500
+      - capture_text_list:
+          selector: "[data-testid='messages-list'] [data-testid='message-item']"
+          capture_as: list_after_scroll
+observe:
+  - kind: sql
+    query: |
+      SELECT text FROM message WHERE data_entity_id = 1
+        AND text = 'PROBE-380 just-sent message';
+    capture_as: persisted_row
+assert:
+  # The message IS persisted (rules out a send failure confusing the verdict).
+  - "persisted_row.length == 1"
+  # CONFIRMED-bug assertion: the just-sent message is NOT in the list without a scroll.
+  - "'PROBE-380 just-sent message' not in list_after_send_no_scroll"
+  # ...but IS present after a scroll (proving it was omitted from the post-create
+  # refetch, not lost) — this combination pins the off-by-one specifically.
+  - "'PROBE-380 just-sent message' in list_after_scroll"
+cleanup:
+  - kind: sql
+    query: "DELETE FROM message WHERE data_entity_id = 1; DELETE FROM data_entity WHERE id = 1;"
+  - kind: docker-compose-down
+    destroy_volumes: true
+  - kind: wiremock-down
+cross_references:
+  related_sidecars: []
+  related_feature_flows:
+    - lineage/odd-platform/feature-flows/detail/F-197.yaml
+    - lineage/odd-platform/feature-flows/detail/F-038.yaml
+  retrospectives:
+    - LSN-023  # UI surface is the primary object of analysis — this probe verifies a UI-tier verdict
+realism_caveats: |
+  This is a UI-tier probe and requires the React SPA running locally
+  (odd-platform-ui in the compose stack) plus Playwright — all local-only per
+  APPROACH.md section 9 rule 12 / feature-reflector Rule 6.
+
+  The data-testid selectors are illustrative; the probe-runner must reconcile
+  them against the actual component test ids (DataCollaboration.tsx / MessagesList.tsx /
+  CreateMessageForm.tsx). If the components lack stable test ids, the probe-runner
+  should add them (test-only change) or fall back to role/text selectors.
+
+  The assertion encodes the SPECIFIC off-by-one (absent-without-scroll AND
+  present-after-scroll). If the message is absent even after scroll, that is a
+  DIFFERENT and worse bug (never rendered) — the probe-runner should record that
+  variant rather than forcing the binary verdict.
+
+  If the dataCollaboration redux slice is later changed to reset `lastId` on the
+  create-`fulfilled` action, this probe MUST be re-run; the current hypothesis is
+  derived from F-197 chain evidence at commit 43d13eb and the slice reducer was
+  not enriched at reflection time.

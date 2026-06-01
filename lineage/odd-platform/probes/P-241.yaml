@@ -1,0 +1,133 @@
+---
+probe_id: P-241
+emitted_by: feature-reflector
+emitted_in_reflection: lineage/odd-platform/feature-reflections/detail/F-031.yaml
+emitted_for_hypothesis: H-013
+emitted_at: 2026-06-01T00:00:00Z
+status: pending-reflection-verification
+feature_id: F-031
+test_class: integration
+verified_against_commit: 43d13eb
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Reflection hypothesis H-013 (negative-space): "When two operators submit changes
+  to the same data source concurrently, the platform serialises them so no change
+  is silently lost."
+
+  The static trace establishes the UPDATE (PUT /api/datasources/{id}) path has NO
+  optimistic-lock / version column (DataSourceServiceImpl.update,
+  DataSourceServiceImpl.java:68-83) and the edit is a full-form REPLACE
+  (MapStruct @MappingTarget, DataSourceMapper.java:49-56 — the H-003 finding). The
+  open question that needs runtime: do two concurrent PUTs to the SAME data_source
+  id produce a silent lost-update — i.e. does the later commit overwrite the
+  earlier operator's field changes with no detection, no 409, no version conflict?
+
+  Hypothesis: YES — last-write-wins with no detection. Operator A edits the
+  description; operator B (or the same operator in a second tab) concurrently edits
+  the name leaving the description field showing its OWN stale pre-fill; B's PUT
+  commits second and REPLACES the whole row, silently reverting A's description
+  change. Neither operator is told. This is the concurrent_update_lost_update_no_
+  optimistic_lock facet (F-031) — distinct from the double-submit-register case
+  (P-077, ODDRN-unique-index-serialised) and the concurrent-token-rotation case
+  (P-050, last-write-wins on the token row only). No existing probe covers the
+  concurrent metadata UPDATE.
+
+  If the hypothesis holds, the Edit path ships a silent lost-update on concurrent
+  edits — a data-integrity defect compounded by the REPLACE semantics (H-003): the
+  loss is not just the field B touched but every field A had changed.
+---
+arrange:
+  - kind: docker-compose-up
+    note: odd-platform + Postgres via the local odd-minimal compose stack (NO cloud infra — Rule 6 local-only)
+  - kind: env
+    auth_type: DISABLED
+    note: DISABLED so two API clients reach PUT /api/datasources/{id} with the open permission set; DATA_SOURCE_UPDATE granted
+  - kind: sql
+    query: |
+      -- A single live data source with all three mutable fields populated
+      INSERT INTO data_source (id, name, oddrn, description, namespace_id, active, deleted_at)
+      VALUES (8241, 'p241-original-name', '//probe/p241/ds', 'p241-original-description', NULL, true, NULL);
+act:
+  - kind: http
+    step: read-baseline
+    request: "GET /api/datasources?query=p241-original-name&size=1"
+    capture_as: baseline
+    note: confirm name + description as stored before the concurrent edits
+  - kind: http-concurrent
+    step: two-concurrent-puts
+    note: |
+      Fire both PUTs as close to simultaneously as the harness allows (same
+      millisecond window) against the SAME id 8241, each a full-form body (the UI
+      always sends all 4 fields). Client A changes ONLY description; Client B
+      changes ONLY name. Both carry the OTHER field at its baseline value (the UI's
+      pre-fill), so each body is a complete REPLACE.
+    requests:
+      - id: client_a
+        request: "PUT /api/datasources/8241"
+        body: '{"name":"p241-original-name","oddrn":"//probe/p241/ds","description":"A-EDITED-description","namespaceName":""}'
+      - id: client_b
+        request: "PUT /api/datasources/8241"
+        body: '{"name":"B-EDITED-name","oddrn":"//probe/p241/ds","description":"p241-original-description","namespaceName":""}'
+  - kind: http
+    step: read-final
+    request: "GET /api/datasources?query=&size=200"
+    capture_as: final
+    note: read the row's final name + description after both PUTs settle
+observe:
+  - kind: capture
+    name: client_a_status
+    from: "PUT client_a HTTP status"
+  - kind: capture
+    name: client_b_status
+    from: "PUT client_b HTTP status"
+  - kind: capture
+    name: final_name
+    from: "final — data_source 8241 .name"
+  - kind: capture
+    name: final_description
+    from: "final — data_source 8241 .description"
+  - kind: capture
+    name: any_conflict_status
+    from: "boolean: did either PUT return 409 / a version-conflict / any non-2xx that signals concurrent-edit detection"
+assert:
+  - "client_a_status >= 200 and client_a_status < 300  # both PUTs accepted"
+  - "client_b_status >= 200 and client_b_status < 300"
+  - "any_conflict_status == false  # HYPOTHESIS: no optimistic-lock / no 409 — both commit silently"
+  - >
+    NOT (final_name == 'B-EDITED-name' AND final_description == 'A-EDITED-description')
+    # HYPOTHESIS: the two concurrent edits do NOT both survive — the later full-form
+    # REPLACE reverts the earlier operator's change. A merge would yield both edits;
+    # last-write-wins yields exactly one client's full body. If this assertion FAILS
+    # (both edits present), the platform DOES merge concurrently and H-013 is wrong.
+  - >
+    (final_name == 'B-EDITED-name' AND final_description == 'p241-original-description')
+    OR (final_name == 'p241-original-name' AND final_description == 'A-EDITED-description')
+    # the surviving state is exactly ONE client's complete body — the loser's edit is
+    # silently lost. Which one wins is timing-dependent; either outcome confirms
+    # last-write-wins-with-silent-loss.
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__DataSourceController__controller-method__updateDataSource
+    - odd-platform__ts__react-component__component__DataSourceForm
+  related_probes:
+    - P-077   # double-submit register (ODDRN-unique-index serialised) — distinct
+    - P-050   # concurrent token rotation (token row last-write-wins) — distinct
+    - P-076   # REPLACE-not-MERGE from the UI (H-003) — the semantic this lost-update compounds
+  retrospectives: [LSN-017, LSN-020]
+local_execution_blocked: false
+realism_caveats: |
+  The probe pins the concurrent-UPDATE lost-update. Forcing a true simultaneous
+  commit window under READ COMMITTED may require the harness to hold both requests
+  at the controller boundary (e.g. a small injected latency before the service
+  UPDATE) to make the race deterministic; if the harness cannot interleave them
+  precisely, run N rounds and assert that AT LEAST one round exhibits the
+  silent-loss (a single observed loss proves the absence of optimistic locking).
+  The probe runs under auth.type=DISABLED for reachability; it does not exercise
+  the cross-auth-mode permission matrix (that is H-012 / P-044). It tests the
+  backend PUT path directly (two API clients) rather than two browser tabs — the
+  lost-update lives at the service/repository tier, so the API-client form is the
+  faithful and simpler reproduction; the UI double-click variant is P-077's scope.

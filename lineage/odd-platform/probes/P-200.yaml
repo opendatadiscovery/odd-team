@@ -1,0 +1,161 @@
+---
+probe_id: P-200
+emitted_by: feature-reflector
+emitted_in_reflection: lineage/odd-platform/feature-reflections/detail/F-017.yaml
+emitted_at: 2026-06-01T00:00:00Z
+status: pending-reflection-verification
+feature_id: F-017       # P-01:F-005 Search Filter Facets
+hypothesis_id: H-009
+test_class: integration
+verified_against_commit: 80637ed
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Reflection hypothesis H-009 (negative-space + endpoint-shape, traced
+  through the `search_facets`-no-user-binding + GET-is-a-write shape):
+  "When User A shares a /search/{uuid} deep-link with User B, User B sees
+  the facet/query state User A INTENDED to share — a stable snapshot."
+
+  Static reading (search route sidecar request_inputs Q5 + SearchController.facets
+  bugs[1] + ReactiveSearchFacetRepositoryImpl.get UPDATE-RETURNING) says this is
+  CONTRADICTED: the URL is a pointer-to-current-row, not a snapshot. The same
+  `search_facets` row is MUTATED in place by every `PUT /api/search/{uuid}/facets`
+  (every facet click on A's side) AND every `GET` side-effect-writes
+  `last_accessed_at`. There is no per-user binding (no owner_id / created_by
+  column — V0_0_1__init.sql:204-211), so B reads A's live row.
+
+  What the static trace CANNOT determine — and what this probe resolves — is
+  the OBSERVABLE severity of the race for a real two-user timeline:
+
+  1. Does B's GET, arriving WHILE A is mid-edit (between A's facet click and
+     the debounced/synchronous PUT resolving), return a partially-applied
+     state (some facets A picked, not others)?
+  2. Does B's own subsequent facet click (a PUT on the SAME shared UUID)
+     OVERWRITE A's state — so that A, on their next GET / page interaction,
+     silently inherits B's filter selections (bidirectional stomping)?
+  3. Does the GET-side `last_accessed_at` UPDATE from B's read contend on the
+     row lock with A's in-flight PUT (the side_effect_update_on_every_get
+     facet) — producing observable latency or a serialised stall under two
+     concurrent clients on one UUID?
+
+  Expected (from static reading): all three observable — B sees A's live
+  (possibly mid-edit) state; B's clicks stomp A's; concurrent access serialises
+  on the row lock. The probe pins the user-visible shape of the
+  bearer-token-shaped-session + GET-is-a-write drift facets as a TWO-ACTOR
+  timeline, which no single sidecar can express.
+---
+arrange:
+  - kind: docker-compose-up
+  - kind: rest
+    # User A creates a session (acts as the deep-link originator).
+    method: POST
+    path: /api/search
+    body: |
+      {"query": "alpha", "pageSize": 30, "filters": {}, "myObjects": false}
+    capture_as: a_session_response
+  - kind: capture
+    expression: a_session_response.searchId
+    capture_as: shared_uuid
+  # A applies a deliberate facet state — the state A INTENDS to share.
+  - kind: rest
+    method: PUT
+    path: /api/search/{{shared_uuid}}/facets
+    body: |
+      {"query": "alpha", "pageSize": 30, "filters": {"TYPES": [1]}, "myObjects": false}
+    capture_as: a_intended_state_response
+  - kind: sql
+    query: |
+      SELECT id, query_string, filters, last_accessed_at
+      FROM search_facets WHERE id = '{{shared_uuid}}'::uuid
+    capture_as: a_intended_row
+
+act:
+  # B opens the shared deep-link (GET — also side-effect-writes last_accessed_at).
+  - kind: rest
+    method: GET
+    path: /api/search/{{shared_uuid}}
+    capture_as: b_first_view
+  - kind: sql
+    query: |
+      SELECT last_accessed_at FROM search_facets WHERE id = '{{shared_uuid}}'::uuid
+    capture_as: row_after_b_read
+  # A keeps editing (a second facet click) AFTER B has the link open.
+  - kind: rest
+    method: PUT
+    path: /api/search/{{shared_uuid}}/facets
+    body: |
+      {"query": "alpha", "pageSize": 30, "filters": {"TYPES": [1], "TAGS": [7]}, "myObjects": false}
+    capture_as: a_second_edit_response
+  # B re-opens the SAME url 30s later and now sees A's CHANGED state.
+  - kind: rest
+    method: GET
+    path: /api/search/{{shared_uuid}}
+    capture_as: b_second_view
+  # B applies their OWN facet selection on the shared UUID (stomp test).
+  - kind: rest
+    method: PUT
+    path: /api/search/{{shared_uuid}}/facets
+    body: |
+      {"query": "beta-from-userB", "pageSize": 30, "filters": {"STATUSES": [2]}, "myObjects": true}
+    capture_as: b_stomp_response
+  - kind: rest
+    # A re-reads "their" session — now carries B's edits.
+    method: GET
+    path: /api/search/{{shared_uuid}}
+    capture_as: a_view_after_b_stomp
+
+observe:
+  - kind: capture
+    expression: b_first_view.facetState
+    capture_as: b_saw_initial
+  - kind: capture
+    expression: b_second_view.facetState
+    capture_as: b_saw_after_a_edit
+  - kind: capture
+    expression: a_view_after_b_stomp.query
+    capture_as: a_query_after_b_stomp
+
+assert:
+  # H1: B sees A's live state (not an isolated snapshot) — shared mutable pointer.
+  - "b_first_view.status == 200"
+  - "b_second_view.facetState != b_first_view.facetState"   # A's mid-stream edit reached B
+  # H2: B's PUT overwrote A's row — A now inherits B's query (bidirectional stomp).
+  - "a_view_after_b_stomp.query == 'beta-from-userB'"
+  - "a_view_after_b_stomp.myObjects == true"
+  # H3: GET side-effect-wrote last_accessed_at (GET is not idempotent).
+  - "row_after_b_read.last_accessed_at != a_intended_row.last_accessed_at"
+
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM search_facets WHERE id = '{{shared_uuid}}'::uuid
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  related_sidecars:
+    - odd-platform__ts__routes__route__search
+    - odd-platform__java__SearchController__controller-method__facets
+    - odd-platform__ts__react-component__component__Search
+  related_probes:
+    - P-168    # bookmark longevity / TTL window — the time-axis sibling of this race
+  related_issues:
+    - PLT-090  # search_facets no owner binding (the static finding this probe gives an observable two-actor shape to)
+  retrospectives:
+    - LSN-020  # Category F input-name vs implementation drift
+    - LSN-023  # do not judge from the API alone; the shared-URL behaviour is what the user lives through
+
+realism_caveats: |
+  The probe pins the TWO-ACTOR observable shape of three already-static-confirmed
+  drift facets (bearer_token_shaped_session_uuids + search_session_no_user_binding
+  + side_effect_update_on_every_get). It uses sequential REST calls to SIMULATE
+  the A/B timeline deterministically; it does NOT inject true wall-clock
+  concurrency, so the row-lock-contention sub-question (H3 latency, not just the
+  last_accessed_at write) is only partially exercised — a follow-up k6/wrk
+  two-client load probe would be needed to characterise the lock-stall latency
+  under genuine parallelism. What this probe DOES establish unambiguously: the
+  deep-link is a pointer-to-current-row (B sees A's edits), the row is
+  bidirectionally stompable (A inherits B's query), and GET mutates the row.
+  All three are the user-visible surface of the no-user-binding design; the
+  reflection's H-009 verdict flips from probe-needed to contradicted on a green
+  run. Local-only: docker-compose ODD + Postgres; no remote/cloud dependency.

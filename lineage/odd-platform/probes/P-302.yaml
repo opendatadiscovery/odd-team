@@ -1,0 +1,142 @@
+---
+probe_id: P-302
+feature_id: F-001
+test_class: performance
+emitted_by: feature-reflector
+status: pending-reflection-verification
+emitted_in_reflection: lineage/odd-platform/feature-reflections/detail/F-001.yaml
+emitted_for_hypothesis: H-013
+emitted_at: 2026-06-01T00:00:00Z
+verified_against_commit: 43d13eb
+prompt_version: probe-runner/0.1.0
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Quoting hypothesis H-013 verbatim:
+  "Performance of the Popular strip stays acceptable as the catalog grows —
+  opening the home page does not get materially slower at 50K-100K entities."
+
+  The Popular query is `ORDER BY view_count DESC` against data_entity with NO
+  index on view_count (verified across all 91 migration files in getPopular.md).
+  At small N, the LIMIT lets Postgres use a top-N sort; at 50K-100K+ entities
+  every home-page render becomes a sequential scan + sort over the whole table,
+  on the platform's hottest surface, with no caching layer to absorb repeated
+  home-page loads / back-button re-fetches.
+
+  This probe seeds a large catalog and measures GET /api/dataentities/popular
+  p50/p95/p99 latency, and captures the query plan, to settle whether the home
+  page degrades at scale.
+
+  PASS (H-013 -> confirmed) if p95 stays under a documented bound (300ms is the
+  reflection's working threshold for "materially slower"; the maintainer may
+  retune). FAIL/CONTRADICTED if p95/p99 climbs materially above the small-seed
+  P-003 baseline (p50=106ms) — in which case the missing-index REFACTOR-221 is
+  the empirically-confirmed root cause and the fix anchor is the partial index
+  on (view_count DESC) WHERE hollow=false AND status != DELETED.
+---
+
+# P-302 — Popular ranking latency at catalog scale (H-013; REFACTOR-221 empirical close)
+
+arrange:
+  - kind: docker-compose-up
+
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name)
+      VALUES (3020, '//probe-source-P-302/db', 'probe-source-P-302')
+      ON CONFLICT (id) DO NOTHING
+
+  # Seed 80,000 non-hollow, non-deleted entities with a realistic spread of
+  # view_count (most 0, a long tail of higher values) so the ORDER BY view_count
+  # DESC has to scan + top-N sort over a large table. setseed makes it reproducible.
+  - kind: sql
+    query: |
+      SELECT setseed(0.302)
+  - kind: sql
+    query: |
+      INSERT INTO data_entity
+        (id, oddrn, external_name, data_source_id, type_id, view_count, hollow,
+         exclude_from_search, source_created_at, source_updated_at)
+      SELECT 3020000 + g,
+             '//probe-source-P-302/db/tables/p302_' || g,
+             'p302_scale_' || g,
+             3020, 1,
+             (CASE WHEN random() < 0.9 THEN 0 ELSE (random() * 100000)::bigint END),
+             false, false, NOW(), NOW()
+      FROM generate_series(0, 79999) AS g
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      ANALYZE data_entity
+
+  # Capture the query plan so the seq-scan-vs-index-scan question is recorded,
+  # not just the latency. With no index on view_count this should show a Seq Scan
+  # + Sort (or top-N heapsort); the presence of an Index Scan would mean the index
+  # was added (REFACTOR-221 fixed) and the assertion threshold can tighten.
+  - kind: sql
+    query: |
+      EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
+      SELECT id FROM data_entity
+      WHERE hollow = false AND status IS DISTINCT FROM 8
+      ORDER BY view_count DESC, id DESC
+      LIMIT 5 OFFSET 0
+    capture_as: popular_query_plan
+
+act:
+  # Sustained load against the real endpoint (the UI fetches page=1 size=5; that
+  # is the dominant traffic shape). 500 requests at concurrency 20 gives a stable
+  # latency distribution. Harness should warm up ~10 throwaway calls first to
+  # discount JIT-warmup p99 outliers (as seen in P-003).
+  - kind: http-load
+    method: GET
+    path: /api/dataentities/popular?page=1&size=5
+    base: "http://localhost:18080"
+    concurrency: 20
+    total_requests: 500
+    warmup_requests: 10
+    capture_latency_curve_as: popular_latency_curve
+    capture_status_counts_as: popular_status_counts
+
+observe:
+  - kind: noop
+    note: "latency curve + status counts + query plan all captured in arrange/act"
+
+assert:
+  # All requests succeed.
+  - "popular_status_counts['200'] == 500"
+  # Working threshold for "not materially slower": p95 < 300ms at 80K entities.
+  # (Tunable by the maintainer; the point is to settle confirmed-vs-contradicted
+  # against a written bound rather than a banned-phrase hedge.)
+  - "popular_latency_curve.p95_ms < 300"
+  # Record (not gate hard) p99 for the maintainer; a soft ceiling well above p95
+  # to catch a pathological tail.
+  - "popular_latency_curve.p99_ms < 1500"
+
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  refactoring_scopes: [REFACTOR-221, REFACTOR-220]
+  test_gaps: [TEST-GAP-312]
+  related_concepts: ["Popular Entities Ranking", "Data Entity"]
+  reflection: "lineage/odd-platform/feature-reflections/detail/F-001.yaml#H-013"
+
+realism_caveats: |
+  - LOCAL-ONLY (APPROACH.md §9 rule 12): docker-compose + local Postgres seeded
+    via SQL + k6/wrk (or a small async HTTP loop) + EXPLAIN ANALYZE. No cloud, no
+    managed DB, no hosted observability.
+  - 80K is a deliberately conservative "realistic medium catalog" figure; the
+    maintainer can rerun at 50K / 100K / 250K by changing the generate_series
+    bound to chart the degradation curve. A single point is enough to confirm-or-
+    contradict H-013; multiple points characterise REFACTOR-221's slope.
+  - The status filter in the EXPLAIN uses `status IS DISTINCT FROM 8` as a stand-in
+    for `addSoftDeleteFilter` (STATUS != DELETED.getId()); the DELETED id is the
+    enum ordinal — the harness should substitute the real id from the running
+    schema (DataEntityStatusDto.DELETED) rather than hardcode 8 if it differs.
+  - The 300ms p95 threshold is the reflection's working bound, not a published
+    SLA — it exists so the verdict is a measured confirmed/contradicted, not a
+    hedge. If the maintainer has a real home-page latency budget, substitute it.
+  - p99 outliers driven by first-call JIT warmup (as seen in P-003) are discounted
+    by the warmup_requests preamble; the measured curve is the post-warmup 500.

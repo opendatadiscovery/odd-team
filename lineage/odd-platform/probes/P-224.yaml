@@ -1,0 +1,136 @@
+---
+probe_id: P-224
+id: P-224
+status: pending-reflection-verification
+emitted_by: feature-reflector
+emitted_at: 2026-06-01T00:00:00Z
+emitted_in_batch: REFLECT-F-008
+emitted_from_sidecar: lineage/odd-platform/feature-reflections/detail/F-008.yaml
+feature_id: F-008
+hypothesis_id: H-013
+test_class: integration
+verified_against_commit: substrate-manifest-inherited
+maintainer_curated: false
+expected_outcome: |
+  Hypothesis H-013 (verbatim from the reflection):
+
+  "When a collector re-ingests an entity via POST /ingestion/entities with a
+  metadata set that OMITS a field present last tick (and a lineage edge list
+  that OMITS an edge present last tick), the platform PRESERVES the previously-
+  ingested metadata fields and lineage edges (merge semantics) — a collector
+  that drops a field due to a transient scrape failure does not lose catalog
+  state."
+
+  Static trace (IngestionServiceImpl sidecar + MetadataIngestionRequestProcessor.java:72-80
+  + LineageIngestionRequestProcessor.java:17 + LineageServiceImpl.java:124-133):
+  the chain is REPLACE, not merge. MetadataIngestionRequestProcessor computes
+  `bindingsToDelete = existing.difference(current)` and DELETES the omitted
+  bindings inside the same @ReactiveTransactional; LineageIngestionRequestProcessor
+  calls `replaceLineagePaths` which `batchDeleteByEstablisherOddrn` then
+  `batchInsertLineages`. The STATIC verdict is CONTRADICTED with HIGH confidence.
+  This probe is emitted NOT because the verdict is in doubt (the code is
+  unambiguous) but because the BLAST RADIUS and the exact operator-observable
+  end state have NEVER been measured (F-008 test_matrix: 0 of 4 cells probed;
+  integration suite covers happy-path write but never the destructive subtraction
+  surface — a regression that "fixes" delete-on-absence to merge would land green
+  in CI). A measured run pins the destructive contract so the regression is
+  caught and gives the doc-gap (DOC-195 / F-008 substrate) a reproduced artefact.
+
+stress_category: F (request-input-vs-implementation behaviour — re-ingest subtraction semantics)
+
+triggers:
+  - MetadataIngestionRequestProcessor.java:72-80 (difference-then-delete of omitted bindings)
+  - LineageIngestionRequestProcessor.java:17 (replaceLineagePaths verb)
+  - LineageServiceImpl.java:124-133 (batchDeleteByEstablisherOddrn then batchInsertLineages, @ReactiveTransactional)
+  - IngestionServiceImpl.java:66 (outer @ReactiveTransactional binding the whole batch)
+  - F-008 observed_vs_expected facets [silent metadata-delete-on-absence, silent lineage-replace-on-each-call]
+
+arrange:
+  - Build odd-platform from main against docker-compose Postgres with the BUNDLED
+    defaults (auth.type=DISABLED, auth.ingestion.filter.enabled=false — the shipped
+    posture; this also exercises H-001's anonymous-reach surface in the same run).
+  - Register a datasource D (POST /ingestion/datasources with a collector token, OR
+    seed it directly) so D.oddrn resolves.
+  - TICK 1: POST /ingestion/entities a DataEntityList for D containing one DATA_SET
+    entity E (oddrn E.oddrn) with metadata {owner: "team-a", pii: "true"} and a
+    DATA_TRANSFORMER entity T whose targetList = [E.oddrn] (establishing a lineage
+    edge T -> E established by T).
+  - Confirm via GET /api/dataentities/{E.id}/metadata that BOTH metadata fields are
+    present, and via the lineage read surface that the T -> E edge exists.
+
+act:
+  - TICK 2 (metadata subtraction): POST /ingestion/entities a DataEntityList for D
+    containing the SAME entity E but with metadata {owner: "team-a"} ONLY (pii field
+    OMITTED — simulating a partial scrape). No change to T.
+  - TICK 3 (lineage subtraction): POST /ingestion/entities a DataEntityList for D
+    containing the SAME transformer T but with targetList = [] (the T -> E edge
+    OMITTED — simulating a transient source read that returned no downstream).
+
+observe:
+  - kind: rest_response
+    target: TICK 2 + TICK 3
+    capture:
+      - status_code              # expect 200/201 on both — the destruction is silent
+      - response_body            # expect Mono<Void> empty body — no diff of what was removed
+  - kind: rest_response
+    target: GET /api/dataentities/{E.id}/metadata AFTER TICK 2
+    capture:
+      - metadata_fields_present  # is `pii` still present (merge) or GONE (replace)?
+  - kind: rest_response
+    target: lineage read AFTER TICK 3
+    capture:
+      - edge_T_to_E_present      # is the T -> E edge still present (merge) or GONE (replace)?
+  - kind: log_scan
+    target: platform stdout during TICK 2 + TICK 3
+    capture:
+      - warn_on_delete           # any log.warn naming the deleted binding/edge? (expected: NONE — @Slf4j unused)
+  - kind: db_state
+    target: activity table AFTER TICK 2 + TICK 3
+    capture:
+      - activity_event_on_delete # any ACTIVITY row recording the metadata/lineage deletion? (expected: NONE)
+
+oracle:
+  confirms_hypothesis_if:
+    - metadata_fields_present includes `pii` AFTER TICK 2 AND edge_T_to_E_present == true
+      AFTER TICK 3 (merge semantics — the hypothesis H-013 holds).
+  contradicts_hypothesis_if:
+    - metadata_fields_present does NOT include `pii` AFTER TICK 2 (the omitted field
+      was DELETED) OR edge_T_to_E_present == false AFTER TICK 3 (the omitted edge was
+      DELETED) — REPLACE semantics confirmed; H-013 CONTRADICTED. This is the expected
+      outcome per the static trace.
+  records_silence_if:
+    - warn_on_delete == false AND activity_event_on_delete == false (the destruction
+      is forensically silent — strengthens the F-008 audit-silence facet + the
+      @Slf4j-unused finding).
+
+routes_to_finding_on_contradiction:
+  - contradicts_hypothesis_if: already_tracked — the destructive-replace contract is
+    F-008 substrate (batch 1) + DOC-195 (error-contract half) + DOC-194/PLT-044
+    (stats-endpoint sibling). This probe pins the contract with a reproduced artefact
+    and is the missing regression-guard the F-008 test_matrix flags (integration cell
+    state PARTIAL — destructive subterfuge uncovered). Recommend a
+    MetadataDeleteOnAbsenceTest + LineageReplaceNotMergeTest in the integration suite.
+    Severity HIGH (silent catalog data loss on a routine collector retry).
+
+local_execution_only:
+  enforced: true
+  mechanism: docker-compose Postgres + local odd-platform build + a curl/httpie
+             script issuing the three POSTs and the two GET assertions; no remote
+             infrastructure, no managed DB, no cloud CI.
+  approach_md_anchor: APPROACH.md section 9 rule 12 (local-only verification)
+  local_execution_blocked: false
+
+cleanup:
+  - DELETE the seeded datasource D, entity E, transformer T and their metadata /
+    lineage / activity rows; stop the docker-compose stack.
+
+confidence_required: HIGH (the static verdict is already CONTRADICTED with HIGH
+  confidence from unambiguous code; the probe converts the un-probed F-008
+  destructive surface into a measured, regression-guarding artefact — pinning the
+  exact end state operators encounter on a partial re-ingest).
+
+cross_references:
+  - sidecar: odd-platform__java__service__service__IngestionServiceImpl.md (bugs_limitations_corner_cases + invariants[8] establisher-keyed rewrite)
+  - sidecar: odd-platform__java__service__service__LineageServiceImpl.md (replaceLineagePaths)
+  - reflection: lineage/odd-platform/feature-reflections/detail/F-008.yaml H-013
+  - tracked_finding: DOC-195 (error-contract half) + F-008 substrate (destructive-replace half) + DOC-194/PLT-044 (stats sibling)

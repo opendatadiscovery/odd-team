@@ -1,0 +1,245 @@
+---
+probe_id: P-320
+feature_id: F-014
+test_class: security
+emitted_by: feature-reflector
+status: pending-reflection-verification
+emitted_in_reflection: lineage/odd-platform/feature-reflections/detail/F-014.yaml
+emitted_for_hypothesis: H-010
+emitted_at: 2026-06-01T00:00:00Z
+verified_against_commit: 43d13eb
+prompt_version: probe-runner/0.1.0
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Quoting hypothesis H-010 verbatim:
+  "When the audit-export workaround is exercised end-to-end (cross-owner read +
+  soft-deleted-entity read + a large page) the platform behaves as the doc-
+  recommended workaround implies — a complete, owner-irrelevant export of the
+  entity's alert history."
+
+  The per-hop static verdicts are NOT in doubt (H-001 cross-owner, H-005 soft-
+  deleted-entity read, H-003 unbounded size are each contradicted from primary
+  source). This probe pins the COMPOUND the F-014 control_summary names as the
+  highest-leverage unprobed cells ("0 of 4 cells COVERED") as one measured local
+  artefact, so a future security tightening (owner-scope or soft-delete-exclude
+  or @Max clamp) breaks the build against a concrete failing assertion rather
+  than silently changing the documented workaround.
+
+  Four measured sub-assertions:
+
+  (a) CROSS-OWNER READ of an entity the caller does NOT own. Seed two unrelated
+      owners (B owns entity X) + create alerts on X. As user A (authenticated,
+      NO ownership of X, NO role granting it) call GET /api/dataentities/{X}/alerts
+      and assert 200 with X's full alert history. PASS for the CURRENT (contradicted)
+      posture = A reads X's alerts. A future owner-scoping fix flips this to
+      403/empty and the assertion fails loudly (the regression pin).
+
+  (b) SOFT-DELETED-ENTITY READ. Flip data_entity.status of an entity Y (with prior
+      alerts) to the DELETED code, then GET /api/dataentities/{Y}/alerts and assert
+      200 with Y's pre-deletion alert history (existsIncludingSoftDeleted admits it).
+      Contrast: confirm Y is ABSENT from a catalog list endpoint (the cross-channel
+      split — visible via alerts API, hidden in the catalog).
+
+  (c) UNBOUNDED SIZE. Call GET /api/dataentities/{X}/alerts?page=1&size=1000000 and
+      assert the request is ACCEPTED (200, not a 4xx clamp) — characterise response
+      size / latency. Separately call page=0 and record the error shape (expect a
+      Postgres negative-OFFSET error surfacing as a 5xx, NOT a clean 400 — H-003).
+
+  (d) ANONYMOUS REACH UNDER DISABLED. With the stack's default auth.type=DISABLED,
+      assert an UNAUTHENTICATED GET /api/dataentities/{X}/alerts returns 200 (H-002).
+
+  PASS (pins current behaviour) = (a) 200 cross-owner read; (b) 200 soft-deleted
+  read + Y hidden from catalog list; (c) size=1000000 accepted + page=0 errors as
+  5xx; (d) anonymous 200 under DISABLED. The reflection verdict for H-010 flips
+  from probe-needed to confirmed if the compound reproduces as traced, or to
+  partial/contradicted if any leg behaves differently (with the observed shape
+  recorded — e.g. if size IS clamped somewhere not visible in the static trace).
+---
+
+# P-320 — audit-export workaround compound: cross-owner + soft-deleted read + unbounded size + anonymous-under-DISABLED (H-010)
+
+arrange:
+  - kind: docker-compose-up
+
+  - kind: sql
+    query: |
+      INSERT INTO data_source (id, oddrn, name)
+      VALUES (3200, '//probe-source-P-320/db', 'probe-source-P-320')
+      ON CONFLICT (id) DO NOTHING
+
+  # Two unrelated owners — B owns the target entities; A owns nothing here.
+  - kind: sql
+    query: |
+      INSERT INTO owner (id, name) VALUES
+        (32001, 'probe-P320-owner-A'),
+        (32002, 'probe-P320-owner-B')
+      ON CONFLICT (id) DO NOTHING
+
+  # Entity X (owned by B) — the cross-owner-read + unbounded-size target.
+  - kind: sql
+    query: |
+      INSERT INTO data_entity
+        (id, oddrn, external_name, data_source_id, type_id,
+         source_created_at, source_updated_at)
+      VALUES (320100, '//probe-source-P-320/db/tables/p320_X', 'p320_X',
+              3200, 1, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+
+  # Entity Y — the soft-deleted-read target (status flipped to DELETED in act).
+  - kind: sql
+    query: |
+      INSERT INTO data_entity
+        (id, oddrn, external_name, data_source_id, type_id,
+         source_created_at, source_updated_at)
+      VALUES (320200, '//probe-source-P-320/db/tables/p320_Y', 'p320_Y',
+              3200, 1, NOW(), NOW())
+      ON CONFLICT (id) DO NOTHING
+
+  # Ownership: B owns X and Y; A owns neither (the cross-owner setup).
+  - kind: sql
+    query: |
+      INSERT INTO ownership (id, data_entity_id, owner_id, title_id)
+      VALUES (320001, 320100, 32002, NULL),
+             (320002, 320200, 32002, NULL)
+      ON CONFLICT (id) DO NOTHING
+
+  # Seed alerts on X (60 rows — enough to exercise pagination beyond size=30) and on Y (5 rows).
+  - kind: sql
+    query: |
+      INSERT INTO alert
+        (id, data_entity_oddrn, type, status, status_updated_at, last_created_at)
+      SELECT 3201000 + g,
+             '//probe-source-P-320/db/tables/p320_X',
+             'DISTRIBUTION_ANOMALY', 'OPEN', NOW(), NOW()
+      FROM generate_series(0, 59) AS g
+      ON CONFLICT (id) DO NOTHING
+
+  - kind: sql
+    query: |
+      INSERT INTO alert
+        (id, data_entity_oddrn, type, status, status_updated_at, last_created_at)
+      SELECT 3202000 + g,
+             '//probe-source-P-320/db/tables/p320_Y',
+             'DISTRIBUTION_ANOMALY', 'RESOLVED', NOW(), NOW()
+      FROM generate_series(0, 4) AS g
+      ON CONFLICT (id) DO NOTHING
+
+act:
+  # (a) CROSS-OWNER READ — as user A (no ownership of X). Under DISABLED the call
+  # is anonymous, which already satisfies "a caller with no ownership"; if the
+  # harness runs a LOGIN_FORM variant it authenticates as A (owner 32001) here.
+  - kind: http
+    method: GET
+    path: /api/dataentities/320100/alerts?page=1&size=100
+    base: "http://localhost:18080"
+    capture_status_as: cross_owner_read_status
+    capture_json_as: cross_owner_read_body
+
+  # (b) SOFT-DELETED READ — flip Y to DELETED, then read its alerts.
+  - kind: sql
+    query: |
+      UPDATE data_entity
+      SET status = (SELECT id FROM data_entity_status WHERE name = 'DELETED' LIMIT 1),
+          deleted_at = NOW()
+      WHERE id = 320200
+    note: |
+      The DELETED status code is resolved from the data_entity_status enum table; if
+      the schema stores status as an inline int the harness substitutes the
+      DataEntityStatusDto.DELETED.getId() value. The load-bearing effect is that Y is
+      hidden from the catalog list endpoints while its alerts remain readable here.
+
+  - kind: http
+    method: GET
+    path: /api/dataentities/320200/alerts?page=1&size=100
+    base: "http://localhost:18080"
+    capture_status_as: soft_deleted_read_status
+    capture_json_as: soft_deleted_read_body
+
+  # cross-channel contrast: Y must NOT appear in a catalog list/search surface.
+  - kind: http
+    method: GET
+    path: /api/dataentities?page=1&size=1000
+    base: "http://localhost:18080"
+    capture_json_as: catalog_list_body
+
+  # (c) UNBOUNDED SIZE — accepted, not clamped.
+  - kind: http
+    method: GET
+    path: /api/dataentities/320100/alerts?page=1&size=1000000
+    base: "http://localhost:18080"
+    capture_status_as: unbounded_size_status
+
+  # (c') page=0 negative-OFFSET error shape.
+  - kind: http
+    method: GET
+    path: /api/dataentities/320100/alerts?page=0&size=30
+    base: "http://localhost:18080"
+    capture_status_as: page_zero_status
+
+  # (d) ANONYMOUS REACH UNDER DISABLED — explicit no-auth-header call.
+  - kind: http
+    method: GET
+    path: /api/dataentities/320100/alerts?page=1&size=30
+    base: "http://localhost:18080"
+    no_auth: true
+    capture_status_as: anonymous_read_status
+
+observe:
+  - kind: noop
+    note: "All assertions are over the captured statuses / bodies above."
+
+assert:
+  # (a) cross-owner read of an un-owned entity succeeds (pins the contradicted posture).
+  - "cross_owner_read_status == 200"
+  - "len(cross_owner_read_body['items']) > 0"
+
+  # (b) soft-deleted entity's alerts are served...
+  - "soft_deleted_read_status == 200"
+  - "len(soft_deleted_read_body['items']) == 5"
+  # ...while the entity itself is hidden from the catalog list (the cross-channel split).
+  - "320200 not in [e['id'] for e in catalog_list_body['items']]"
+
+  # (c) unbounded size accepted (not clamped to a 4xx); page=0 errors as 5xx not a clean 400.
+  - "unbounded_size_status == 200"
+  - "page_zero_status >= 500"
+
+  # (d) anonymous read succeeds under DISABLED.
+  - "anonymous_read_status == 200"
+
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  refactoring_scopes: [REFACTOR-024]
+  doc_gaps: [DOC-GAP-157, DOC-GAP-022, DOC-GAP-009]
+  test_gaps: []   # no TEST-GAP item exists for the per-entity alert read (backlog/tests/ is empty) — the audit_export_use_case_uncovered_by_tests facet has no tracked TEST-GAP yet
+  related_concepts: ["Per-Entity Alert View", "Cross-Owner Enumeration", "Soft-Delete (Data Entity STATUS)", "Alert"]
+  retrospectives: [LSN-017, LSN-020]
+  reflection: "lineage/odd-platform/feature-reflections/detail/F-014.yaml#H-010"
+  sibling_probes:
+    - note: "Same soft-deleted-read cross-channel class as F-022 P-220 (DQ tab) — P-320 is the alerts-read instance."
+
+realism_caveats: |
+  - LOCAL-ONLY (APPROACH.md §9 rule 12): docker-compose stack (ODD platform + Postgres) +
+    direct HTTP (a small script / curl) + DB SELECT/UPDATE seeding — no cloud, no managed DB,
+    no hosted runner. Satisfies feature-reflector Rule 6.
+  - The DISABLED-default variant (sub-assertions a + d) needs no auth header: under
+    auth.type=DISABLED every call is anonymous, which is itself the "caller with no ownership"
+    condition (and the H-002 anonymous-reach pin). To ALSO pin the authenticated-cross-owner
+    leg (H-001 under a real auth mode), the harness can re-run sub-assertion (a) against a
+    LOGIN_FORM-configured stack authenticated as owner A (32001) — same expected 200. The
+    DISABLED run is the minimum; the LOGIN_FORM run is the stronger pin.
+  - This probe PINS THE CURRENT (contradicted) BEHAVIOUR deliberately: PASS = the cross-owner +
+    soft-deleted + unbounded-size compound reproduces. A future fix (owner-scope, soft-delete-
+    exclude, or @Max clamp) is EXPECTED to make these assertions FAIL — that is the regression
+    signal, and at that point H-001/H-003/H-005/H-010 flip to confirmed-fixed and this probe is
+    updated to assert the new secure posture.
+  - The status_updated_by username-PII leg (H-009) is NOT asserted here because it depends on the
+    AlertItem render path (Owner-name vs raw-username), which has no enriched UI sidecar — see the
+    reflection's validation_gaps. A UI-render probe is the right vehicle once the per-entity tab is
+    enriched, not this API-level compound.
+  - If the harness observes size clamping somewhere not visible in the static trace (e.g. an R2DBC
+    fetch-size ceiling), record the observed effective cap — that converts H-003's unbounded half
+    from contradicted to partial.

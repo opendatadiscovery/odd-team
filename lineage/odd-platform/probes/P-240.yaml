@@ -1,0 +1,115 @@
+---
+probe_id: P-240
+id: P-240
+status: pending-reflection-verification
+emitted_by: feature-reflector
+emitted_at: 2026-06-01T00:00:00Z
+emitted_in_batch: REFLECT-F-008
+emitted_from_sidecar: lineage/odd-platform/feature-reflections/detail/F-008.yaml
+feature_id: F-008
+hypothesis_id: H-014
+test_class: integration
+verified_against_commit: 43d13eb
+maintainer_curated: false
+expected_outcome: |
+  Hypothesis H-014 (verbatim from the reflection):
+
+  "When a collector restarts and two of its instances briefly run concurrently,
+  each POST-ing the same datasource ODDRN to /ingestion/datasources, both
+  registrations succeed (or one cleanly wins) without a 5xx."
+
+  Static trace (DataSourceIngestionServiceImpl sidecar coherence_check
+  conflicts_surfaced[1]): the existing-row resolution `getDtosByOddrns` (line 47)
+  does NOT use forUpdate (unlike the entity-ingestion path's
+  getIdByOddrnForUpdate). Two concurrent @ReactiveTransactional invocations can
+  both see the ODDRN as absent, both partition it into toCreate, one wins the
+  bulkCreate, the other races a bulkCreate that violates the partial unique
+  index `data_source_oddrn_unique ... WHERE deleted_at IS NULL` (V0_0_31:29) and
+  rolls back the WHOLE batch with a 5xx. Whether READ COMMITTED isolation + the
+  transaction timing actually produces this under realistic collector-restart
+  concurrency, or whether the window is too narrow to hit, CANNOT be determined
+  from the code alone. PROBE-NEEDED (genuine — the verdict is timing-dependent).
+
+stress_category: A (concurrency / race window)
+
+triggers:
+  - DataSourceIngestionServiceImpl.java:47 (getDtosByOddrns — no forUpdate)
+  - DataSourceIngestionServiceImpl.java:57,66 (bulkUpdate / bulkCreate inside @ReactiveTransactional line 40)
+  - V0_0_31__add_deleted_at_field.sql:29 (partial unique index data_source_oddrn_unique WHERE deleted_at IS NULL)
+  - F-008 batch-S conflicts_surfaced[1] (concurrent re-registration race)
+
+arrange:
+  - Build odd-platform from main against docker-compose Postgres.
+  - Seed/register a Collector C with a valid token (so a POST /ingestion/datasources
+    authenticates via the always-on IngestionDataSourceFilter and the WebSession
+    bridge resolves COLLECTOR_ID_SESSION_KEY).
+  - Prepare a DataSourceList payload naming a SINGLE brand-new ODDRN
+    (e.g. //postgresql/host/db/datasource-race-9002) that does NOT yet exist in
+    data_source — so both concurrent requests classify it as a CREATE.
+  - Prepare a local concurrency harness (k6, or a small async script firing two
+    requests with minimal skew) that authenticates as Collector C and fires the
+    SAME registration payload from two virtual users simultaneously, repeated
+    across many iterations to widen the chance of overlapping the read→write gap.
+
+act:
+  - CALL (xN iterations): fire two simultaneous
+    POST /ingestion/datasources requests for the same new ODDRN from Collector C.
+  - After each iteration, query data_source to confirm exactly one row exists for
+    the ODDRN, then DELETE it to reset for the next iteration.
+
+observe:
+  - kind: rest_response
+    target: the two concurrent CALLs per iteration
+    capture:
+      - status_codes            # [200,200] (both succeed — merge/idempotent) vs [200,5xx] (one rolled back)
+      - error_body_on_5xx       # does the 5xx surface SQLSTATE 23505 (unique violation) or a generic 500?
+  - kind: db_state
+    target: data_source AFTER each iteration (before reset-delete)
+    capture:
+      - row_count_for_oddrn     # expect exactly 1 (the partial unique index prevents 2 live rows)
+  - kind: counter
+    target: across all iterations
+    capture:
+      - iterations_with_5xx     # how many of N iterations produced a 5xx on the losing request (the race-hit rate)
+
+oracle:
+  confirms_hypothesis_if:
+    - iterations_with_5xx == 0 across a high iteration count (the read→write window is
+      not observably hit; concurrent registration is effectively safe — H-014 holds).
+  contradicts_hypothesis_if:
+    - iterations_with_5xx > 0 (at least one losing request 5xx'd on the unique-index
+      violation, rolling back its whole batch — H-014 contradicted; the race is real).
+  records_severity_from:
+    - the race-hit rate (iterations_with_5xx / N) calibrates severity: a high rate on
+      a single-ODDRN payload means real-world collector restarts will intermittently
+      fail; a near-zero rate means the window is narrow (LOW severity, document-only).
+
+routes_to_finding_on_contradiction:
+  - contradicts_hypothesis_if: caveat-candidate (net_new) — document that collector
+    restarts must not run two concurrent registration ticks, OR upstream-issue to add
+    `.forUpdate()` on getDtosByOddrns (or an ON CONFLICT DO NOTHING / upsert) so the
+    losing request merges instead of violating the index. Severity from the hit rate.
+    NOTE: if the multi-datasource payload case is also tested, a single-ODDRN
+    collision rolls back ALL datasources in the losing collector's batch (the
+    all-or-nothing transaction) — amplifying the blast radius beyond the colliding row.
+
+local_execution_only:
+  enforced: true
+  mechanism: docker-compose Postgres + local odd-platform build + a local k6 (or
+             async script) firing concurrent requests; no remote infrastructure,
+             no managed DB, no cloud CI.
+  approach_md_anchor: APPROACH.md section 9 rule 12 (local-only verification)
+  local_execution_blocked: false
+
+cleanup:
+  - DELETE the race ODDRN row(s); delete the seeded Collector C and its token;
+    stop the docker-compose stack.
+
+confidence_required: HIGH (flips H-014 from probe-needed to confirmed/contradicted;
+  the verdict is genuinely timing-dependent — READ COMMITTED isolation + transaction
+  duration determine whether the read→write window is hit, which only a measured
+  concurrent run can establish).
+
+cross_references:
+  - sidecar: odd-platform__java__service__service__DataSourceIngestionServiceImpl.md coherence_check.conflicts_surfaced[1]
+  - reflection: lineage/odd-platform/feature-reflections/detail/F-008.yaml H-014

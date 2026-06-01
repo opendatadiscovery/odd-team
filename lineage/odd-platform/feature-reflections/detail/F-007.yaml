@@ -1,0 +1,716 @@
+---
+feature_id: F-007
+pillar_anchored_id: P-07:F-001
+pillar: "P-07 Active Platform Features"
+feature_name: "AlertManager Integration — Prometheus webhook ingest (POST /ingestion/alert/alertmanager) + the global Alerts read surface (/alerts/*)"
+reflected_at: 2026-06-01T00:00:00Z
+reflected_at_commit: 43d13eb
+prompt_version: feature-reflector/0.2.0
+contributing_sidecars_read:
+  - odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__AlertManagerController.md
+  - odd-platform__java__AlertManagerController__controller-method__postAlerts.md
+  - odd-platform__java__service__service__AlertServiceImpl.md
+  - odd-platform__java__repository_reactive__repository__ReactiveAlertRepositoryImpl.md
+  - odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md   # cited via AlertServiceImpl + feature-flow batch R; not re-opened end-to-end (audit-write hop)
+  - odd-platform__ts__react-component__component__Alerts.md
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/active-platform-features/alerting"
+    last_verified_at: "2026-06-01T00:00:00Z"
+    last_verified_status: 200
+    note: |
+      MATERIALLY UPDATED since the sidecars were enriched (2026-05-20 / 2026-05-26).
+      The live page NOW documents, verbatim: (a) the webhook is unauthenticated
+      ("the POST /ingestion/alert/alertmanager endpoint is not authenticated ...
+      whitelists /ingestion/**"); (b) "Anyone with network reach to the webhook can
+      inject a forged Distribution Anomaly on any catalogued entity"; (c) the
+      cross-tenant entity_oddrn write ("no existence check, no ownership check, no
+      permission check ... any caller can POST an entity_oddrn pointing at any other
+      team's dataset"); (d) idempotency absence ("Prometheus retries duplicate
+      alerts ... each retry creates a fresh alert row"); (e) the All-tab OPEN-only
+      behaviour ("None of the three global tabs shows resolved history: the queries
+      behind All, My Objects and Dependents all filter to status = OPEN, so a
+      RESOLVED ... alert disappears from every global tab"); (f) the halt-toggle
+      no-op ("The Distribution anomaly halt toggle has no effect on alert
+      creation"). This closes most DOC-side gaps the sidecars flagged — the
+      CODE gaps remain. Several verdicts below are therefore "code-contradicts-
+      secure-expectation, doc already warns" rather than doc-drift.
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform"
+    last_verified_at: "2026-06-01T00:00:00Z"
+    last_verified_status: 200
+    note: |
+      Config-tier AlertManager section — confirms the endpoint path + 204-on-success,
+      the unauthenticated posture, the entity_oddrn-required + orphan-on-absence
+      behaviour, DISTRIBUTION_ANOMALY routing, and three perimeter-control
+      mitigations (network segmentation / reverse-proxy auth / mTLS). Reused as the
+      operator-config cross-reference.
+hypothesis_summary:
+  total: 14
+  confirmed: 2
+  contradicted: 10
+  partial: 1
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-001
+    severity: HIGH
+    one_line: "POST /ingestion/alert/alertmanager is unauthenticated under EVERY auth.type mode (whitelisted /ingestion/**, NOT covered by the ingestion filter) — anonymous under DISABLED, any-authenticated-user otherwise — so anyone with network reach creates OPEN alerts on any data entity."
+related_feature_flows: [F-009, F-004, F-014, F-022, F-021, F-006]
+related_concepts:
+  - Alert
+  - "Ingestion (External Webhook)"
+  - "Activity Event"
+  - "read-collaborative posture (REFACTOR-024)"
+  - "AlertActionResolver asymmetry"
+related_drift_classes:
+  # from the F-007 feature-flow drift_class_summary that this reflection re-confirmed top-down
+  - unauthenticated_payload_trust
+  - cross_tenant_alert_creation
+  - no_idempotency_no_audit
+  - alerts_all_tab_name_promises_open_and_resolved_sql_filters_status_open_only_resolved_invisible_globally
+  - resolve_reopen_button_rendered_unconditionally_permission_probe_post_click_late_binding_late_message
+  - fetchAlertsTotals_useEffect_empty_deps_no_refresh_after_resolve_stale_badges_until_full_reload
+  - downstream_notification_delivery_chain_amplifies_forged_alertmanager_to_every_configured_channel_with_mrkdwn_injection_compound
+  - audit_emission_asymmetry_ingress_gap_vs_state_transition_audited_via_batch_save
+new_drift_classes_proposed:
+  - statusUpdatedBy_oidc_username_rendered_verbatim_on_cross_owner_All_tab_pii_leak_to_every_authenticated_user
+  - all_tab_orphan_alerts_null_entity_oddrn_persisted_but_invisible_everywhere
+---
+
+# AlertManager Integration — product-owner reflection
+
+## product_owner_narrative
+
+AlertManager Integration is one of the two halves of P-07's Alerting sub-feature: it is the **inbound bridge** that lets an operator's existing Prometheus AlertManager push distribution-anomaly alerts into ODD so they sit next to the platform's own data-quality / failed-job / schema-break alerts (per system-mission.md P-07 sub-feature "Notifications ... AlertManager inbound webhook /ingestion/alert/alertmanager", and the live config doc's "Prometheus AlertManager Integration" section). The promise to a customer is: *"point your Prometheus AlertManager at one URL, label each rule with the data entity it concerns, and those external anomalies show up on the entity's page and on your platform-wide alerts feed alongside everything else ODD detects."* The audiences are the platform-operator (who wires AlertManager's `webhook_configs[].url` to the endpoint and labels rules with `entity_oddrn`), the external prometheus-alertmanager system (the canonical caller), and the odd-platform-ui-end-user / steward who reads the resulting alerts (per the postAlerts sidecar `concepts.audiences`).
+
+How a user interacts with it splits into two surfaces that the feature-flow stitches together. The **write surface** is machine-facing: there is no screen, no form — AlertManager POSTs a JSON body (`{alerts:[{labels, generatorURL, startsAt}]}`) to `POST /ingestion/alert/alertmanager`, the 4-line `alertManagerWebhook` handler delegates to `AlertServiceImpl.handleExternalAlerts`, and the platform returns `204 No Content` unconditionally (per `postAlerts` sidecar understanding + AlertManagerController.java:21-26). The **read surface** is human-facing: the global Alerts page mounted at `/alerts/*` (the `Alerts` React component), with three tabs — All / My Objects / Dependents — each an infinite-scroll list, plus per-row Resolve/Reopen buttons and three count badges (per `Alerts.md` understanding). So an inbound forged or real alert becomes a row a steward reads on `/alerts/all`; that is the feature's observable end-to-end loop.
+
+The working parts, described as the operator experiences them. On the write side: every inbound alert is hard-typed `DISTRIBUTION_ANOMALY` regardless of AlertManager's `alertname`/`severity` labels (AlertServiceImpl.java:177); the `entity_oddrn` label routes the alert to a data entity by writing it verbatim to `alert.data_entity_oddrn` (line 178); the Prometheus `generatorURL` is embedded in the alert's chunk description as clickable text (line 185); and the whole batch is one `@ReactiveTransactional` INSERT with no de-duplication (the path deliberately SKIPS `AlertActionResolver`, which the in-platform ingestion path DOES use — AlertServiceImpl.java:222-227 vs 151-191). On the read side: the three global tabs all hard-filter `status = OPEN` (ReactiveAlertRepositoryImpl.java:143-145 + the My/Dependents siblings) and share one Redux slot cleared on every tab switch; the list pages 30 at a time with `LAST_CREATED_AT DESC, ID DESC` ordering; and each row exposes a Resolve/Reopen button whose permission (`DATA_ENTITY_ALERT_RESOLVE`) is only checked AFTER the click (`Alerts.md` stress_findings + bugs[1]).
+
+The integration story is where F-007 is load-bearing for the whole "Active Platform" pitch. The OPEN alert this feature writes is the START of a chain: the INSERT on the `ALERT` table is captured by Postgres logical replication and drives **F-009** (WAL-driven outbound notification fan-out to Slack / webhook / email), which is where a forged alert reaches every operator-configured channel and where the F-004 Slack mrkdwn-injection surface lives (per F-007 feature-flow batch Y + related_features F-009/F-004). The same alert displays at **F-014** (per-entity Alert view) and surfaces on **F-022** (per-dataset DQ Test reports tab). And the alert-state transitions (OPEN_ALERT_RECEIVED / RESOLVED_ALERT_RECEIVED / ALERT_STATUS_UPDATED) are written to the Activity feed (**F-021**) via the `save(List<ActivityPojo>)` batch path with `is_system_event=true` (per AlertServiceImpl downstream_side_effects + ReactiveActivityRepositoryImpl batch R). So one POST to one unauthenticated URL fans out to: a DB row, a global-tab display, a per-entity display, a per-dataset display, an Activity-feed audit row, AND an outbound Slack/webhook/email message — the compound the feature-flow's headline drift_class names.
+
+Edge cases a product owner would call out in a demo. (1) The endpoint is unauthenticated by design — the docs now say so verbatim and recommend network-perimeter controls — which means in any deployment whose network edge does not gate `/ingestion/alert/alertmanager`, anyone who can reach it can forge alerts on any team's entities. (2) The "All" tab is named "All" but shows only OPEN alerts; a steward looking for a recently-resolved alert on the global page cannot find it and may assume it was purged (the data still exists, reachable only from a single entity's Alerts tab). (3) The Resolve button is shown to everyone, but the permission check fires on click — a viewer who cannot resolve sees the button, clicks, and only then gets "No access!". (4) The tab badges fetch once on mount and never refresh, so after resolving an alert the count stays stale. (5) An alert POSTed without `entity_oddrn` is persisted with a NULL FK — orphaned, invisible everywhere, but counted in the platform-wide totals. The feature has ZERO automated test coverage on the webhook path and ZERO UI-test coverage on the Alerts page (verified across all five sidecars) — every behaviour below is traced from primary source, not from a passing test.
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When AlertManager (or any caller) POSTs to /ingestion/alert/alertmanager on a platform configured with a real UI auth mode (LOGIN_FORM / OAUTH2 / LDAP), the caller must be authenticated (or carry a shared secret / S2S token) for the alert to be accepted."
+  derivation: "Endpoint-shape + pillar security posture: P-09 says ODD has independently-configured auth surfaces and a webhook is a server-to-server boundary; a senior PO expects the ingest of authoritative state to require SOME credential under a non-DISABLED auth mode."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The endpoint is unauthenticated under EVERY auth.type mode, not just DISABLED. The path
+      sits in SecurityConstants.WHITELIST_PATHS[/ingestion/**] (SecurityConstants.java:96), which
+      exempts it from the UI auth chain across DISABLED / LOGIN_FORM / OAUTH2 / LDAP alike. The
+      one ingestion auth filter, IngestionDataEntitiesFilter, is @ConditionalOnProperty
+      (auth.ingestion.filter.enabled) AND its matcher binds ONLY to /ingestion/entities POST
+      (IngestionDataEntitiesFilter.java:28) — it does NOT cover /ingestion/alert/alertmanager.
+      So even with auth.ingestion.filter.enabled=true AND OAUTH2 for the UI, this path accepts
+      any AlertManager-shaped POST from any caller with network reach. The handler itself has no
+      @PreAuthorize, no @Secured, no header inspection (AlertManagerController.java:21-26). Auth
+      is delegated entirely to operator network controls.
+    evidence:
+      - sidecar: odd-platform__java__AlertManagerController__controller-method__postAlerts.md
+        section: security.auth_mode_relevance + known_security_gaps[0]
+        cite: "AlertManagerController.java:21-26 + SecurityConstants.java:96 + IngestionDataEntitiesFilter.java:28"
+        note: "no method auth; /ingestion/** whitelisted across all modes; the only ingestion filter binds to a sibling path"
+      - sidecar: odd-platform__java__service__service__AlertServiceImpl.md
+        section: dependencies_semantic.requires-config (indirect auth.ingestion.filter.enabled)
+        cite: "AlertServiceImpl.java:151-191"
+        note: "handleExternalAlerts consults no AuthIdentityProvider (the UI paths do at 84/93/117/235)"
+    operator_visible_failure: |
+      An operator who has carefully enabled OAUTH2 for the UI and auth.ingestion.filter.enabled
+      for /ingestion/entities reasonably believes the whole /ingestion surface is gated. It is
+      not: the AlertManager path is wide open under every mode. In any deployment whose network
+      edge does not separately restrict this path (the default Kubernetes/Compose ingress exposes
+      it through the same edge as the protected UI), any party with network reach POSTs alerts.
+      The doc now states this verbatim and recommends perimeter controls — but the gap between
+      "the UI is locked" and "this one ingest path is not" is exactly the P-09 "enabling one
+      surface does not protect the other" footgun, here with no in-platform toggle to close it.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    dedup_note: "Code-fix tracked as PLT-014 (gate-or-shared-secret); doc-caveat shipped as DOC-179 (done). Routed as caveat-candidate because the in-platform fix is the upstream PLT and the operator mitigation is documented."
+
+- id: H-002
+  hypothesis: "When a caller POSTs an AlertManager payload with labels.entity_oddrn set to a data entity owned by a DIFFERENT team, the platform either rejects it or scopes the alert so it cannot be attributed to an entity the caller has no permission on."
+  derivation: "Category-F request-input naming: the label is named entity_oddrn ('the entity THIS alert is about'); a senior PO expects the platform to validate that the caller may alert that entity, the way every mutation elsewhere is owner/permission-gated (P-09 feeds every pillar's mutations)."
+  seed_source: endpoint-shape
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      Static trace says the secure expectation is CONTRADICTED with HIGH confidence:
+      AlertServiceImpl.java:178 maps labels.get("entity_oddrn") verbatim to AlertPojo.dataEntityOddrn
+      with three negations confirmed in the sidecar — no DATA_ENTITY existence lookup, no caller-
+      identity check, no ownership/permission gate. Combined with the unauthenticated path (H-001)
+      and the cross-owner global read (H-006 / REFACTOR-024), this is the full forge-and-display
+      compound. I mark it probe-needed (not contradicted) ONLY because the END-TO-END compound
+      across auth modes (anonymous-under-DISABLED forge AND authenticated-cross-owner forge AND
+      a THIRD user seeing the forged row on /alerts/all AND the duplicate-on-retry) has never been
+      run, and the F-007 feature-flow control_summary explicitly names this as the highest-leverage
+      unprobed cell ("0 of 4 cells PROBED"). The probe pins the compound as one measured artefact;
+      the per-hop static verdict is not in doubt.
+    evidence:
+      - sidecar: odd-platform__java__service__service__AlertServiceImpl.md
+        section: invariants (handleExternalAlerts no entity_oddrn validation) + downstream_side_effects[handleExternalAlerts]
+        cite: "AlertServiceImpl.java:178"
+        note: "setDataEntityOddrn(externalAlert.getLabels().get(\"entity_oddrn\")) — verbatim, three negations"
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveAlertRepositoryImpl.md
+        section: bugs_limitations_corner_cases[0] + security.owner_scoping
+        cite: "ReactiveAlertRepositoryImpl.java:143-145"
+        note: "listAllWithStatusOpen has no owner predicate — the forged alert is globally readable"
+    operator_visible_failure: |
+      A hostile or careless caller attributes false-positive Distribution Anomaly alerts to any
+      team's data entity. Those alerts surface on the platform-wide All tab readable by every
+      authenticated user (and anonymously under DISABLED), where a steward triaging cannot
+      distinguish forged from real. In a compliance-driven multi-tenant deployment this is
+      arbitrary cross-team alert injection with no audit of who POSTed it (H-009). The same
+      forged content also fans out to every Slack/webhook/email channel via F-009.
+    severity: HIGH
+    confidence: HIGH
+    probe_id: P-391
+    routes_to_finding: bug-candidate
+    dedup_note: "ALREADY TRACKED as PLT-014 Defect 1 (entity_oddrn existence/ownership check). The probe is convergent confirmation, not a new filing."
+
+- id: H-003
+  hypothesis: "When Prometheus retries the same AlertManager webhook (its standard behaviour on a transient network error), the platform de-duplicates so the operator sees ONE alert, not N copies."
+  derivation: "Endpoint-shape + robustness: a webhook receiver for an at-least-once producer (Prometheus) should be idempotent; a senior PO expects retries not to multiply the operator's alert list."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The AlertManager path is NOT idempotent. handleExternalAlerts deliberately skips
+      AlertActionResolver (the application-level de-dup the in-platform ingestion path uses at
+      AlertServiceImpl.java:222-227), and the shared createAlerts helper issues bulk
+      INSERT ... RETURNING with NO .onConflict(...) clause (ReactiveAlertRepositoryImpl.java:332-342).
+      AlertUniqueConstraint.fromAlert de-duplicates only WITHIN a single batch (AlertServiceImpl.java:187),
+      not across POSTs. Each Prometheus retry of the same group creates a fresh ALERT row. There is
+      also no cross-batch lookup against an existing OPEN alert of the same (entity_oddrn, type), so
+      AlertManager's repeat_interval re-sends also accumulate duplicates.
+    evidence:
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveAlertRepositoryImpl.md
+        section: bugs_limitations_corner_cases[2]
+        cite: "ReactiveAlertRepositoryImpl.java:332-342"
+        note: "INSERT ... RETURNING, no ON CONFLICT; the SQL-level idempotency gap"
+      - sidecar: odd-platform__java__service__service__AlertServiceImpl.md
+        section: invariants (handleExternalAlerts SKIPS AlertActionResolver) + performance.known_performance_gaps[1]
+        cite: "AlertServiceImpl.java:151-191 vs 222-227"
+        note: "the de-dup asymmetry — webhook path bypasses the resolver the ingestion path uses"
+    operator_visible_failure: |
+      Every transient network blip between AlertManager and ODD multiplies the operator's alert
+      list. A steward reviewing /alerts/all sees the same anomaly N times with no way to tell
+      they are retries; the burst also fans out N copies through F-009 to Slack/email. Combined
+      with the unauthenticated path, an attacker can deliberately induce duplication to bury real
+      alerts. The live doc now warns about this; the code gap remains.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    dedup_note: "ALREADY TRACKED as PLT-014 Defect 3 (ON CONFLICT / idempotency-key)."
+
+- id: H-004
+  hypothesis: "When an alert's chunk description contains a Prometheus generatorURL, clicking that URL in the ODD alerts UI takes the operator to a safe Prometheus query — the platform does not render an attacker-controlled javascript: or arbitrary-host URL."
+  derivation: "Response-shape + security: the generatorURL is user/external-supplied and rendered back as clickable text; a senior PO expects the rendered surface to be sanitised."
+  seed_source: response-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The generatorURL is parsed via UriComponentsBuilder.fromUri(...) (AlertServiceImpl.java:168),
+      which validates URI shape but does NOT constrain the scheme — javascript: passes. It is then
+      embedded verbatim into the chunk description via String.format("Distribution Anomaly. URL: %s",
+      queryUrl) (line 185). The description is read back on the alert read paths and rendered in the
+      UI. There is no scheme allow-list at the controller boundary, the service, or (per the Alerts
+      sidecar) a sanitised renderer guaranteed on the description field. Combined with the
+      unauthenticated webhook, any caller plants the payload; combined with the cross-owner read,
+      every authenticated user sees it — a stored-XSS / open-redirect surface.
+    evidence:
+      - sidecar: odd-platform__java__AlertManagerController__controller-method__postAlerts.md
+        section: bugs_limitations_corner_cases[5] + security.data_exposure[2]
+        cite: "ExternalAlert.java:13 (URI, no scheme constraint) + AlertServiceImpl.java:168, 185"
+        note: "URI shape-only; embedded verbatim in the rendered description"
+      - sidecar: odd-platform__ts__react-component__component__Alerts.md
+        section: security.data_exposure
+        cite: "AlertItem.tsx:86 (chunk/description render surface)"
+        note: "alert payload incl. alertChunkList rendered to any authenticated user on the All tab"
+    operator_visible_failure: |
+      A forged alert whose generatorURL is javascript:... or a phishing host renders as a clickable
+      link in the alerts UI that any authenticated user (anonymous under DISABLED) may click —
+      stored XSS or an open redirect that inherits the trust of "the ODD platform showed me this
+      link". The live doc warns about the surface; the code gap remains.
+    severity: HIGH
+    confidence: MEDIUM
+    routes_to_finding: bug-candidate
+    dedup_note: "ALREADY TRACKED as PLT-014 Defect 2 (scheme allow-list + UI sanitisation). Confidence MEDIUM because the exact UI render path of the description (innerHTML vs text node) is not pinned in an enriched AlertItem render sidecar — the XSS upper-bound depends on it."
+
+- id: H-005
+  hypothesis: "When AlertManager sends an alert with status=resolved (its standard 'this anomaly is over' signal), ODD marks the corresponding alert RESOLVED."
+  derivation: "Doc-claim / endpoint-shape: AlertManager's wire format carries status (firing|resolved); a senior PO integrating Prometheus expects ODD to honour the resolve signal so the alert auto-closes."
+  seed_source: endpoint-shape
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The platform never sees the field. The inbound DTOs are hand-rolled and lossy: AlertManagerRequest
+      carries only List<ExternalAlert> (AlertManagerController.java:28-32), and ExternalAlert carries
+      only labels, generatorURL, startsAt (ExternalAlert.java:9-15). The AlertManager v2 wire fields
+      status, endsAt, annotations, fingerprint, groupKey, etc. are all silently dropped by Jackson on
+      deserialisation. The most operationally-impactful drop is status: resolved — every inbound alert
+      is created OPEN (AlertServiceImpl.java:179) and there is no path that consumes a resolved signal.
+      An AlertManager-driven alert can only be resolved manually in the ODD UI or auto-resolved by the
+      in-platform ingestion path, never by AlertManager's own resolve.
+    evidence:
+      - sidecar: odd-platform__java__AlertManagerController__controller-method__postAlerts.md
+        section: bugs_limitations_corner_cases[4]
+        cite: "AlertManagerController.java:28-32 + ExternalAlert.java:9-15"
+        note: "DTO drops status/endsAt/annotations/fingerprint/... — status:resolved never seen"
+      - sidecar: odd-platform__java__service__service__AlertServiceImpl.md
+        section: invariants (hardcodes type=DISTRIBUTION_ANOMALY; status OPEN on create)
+        cite: "AlertServiceImpl.java:177, 179"
+        note: "every inbound alert hard-typed + created OPEN; no resolved-path"
+    operator_visible_failure: |
+      An operator who configures Prometheus with send_resolved: true (the common pattern so alerts
+      auto-close) finds ODD never closes them — the anomaly recovers in Prometheus, AlertManager
+      sends resolved, ODD ignores it, and the OPEN alert lingers on the entity and the global feed
+      until a human resolves it (or housekeeping deletes it). Combined with H-003's duplication,
+      the operator's ODD alert list diverges sharply from the actual Prometheus state. The doc's
+      halt-toggle note hints at this asymmetry but does not state "resolved is silently dropped".
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    dedup_note: "net_new — the lossy-DTO / status:resolved-dropped behaviour is named in the F-007 sidecar bugs but I find no PLT or DOC item tracking 'AlertManager resolved-signal silently dropped' as its own finding. Distinct from PLT-014 (which covers auth/XSS/idempotency, not the dropped resolve-signal)."
+
+- id: H-006
+  hypothesis: "When a steward opens the 'All' tab on the global Alerts page, they see ALL alerts across the platform — both open AND resolved — so they can review recently-closed anomalies."
+  derivation: "UI-label seed: the tab is literally labelled 'All', and the live doc historically described it as 'Every open and resolved alert across the whole platform'; a senior PO reads 'All' as the complete population."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The "All" tab shows only OPEN alerts. ReactiveAlertRepositoryImpl.listAllWithStatusOpen hard-
+      filters ALERT.STATUS.eq(OPEN.getCode()) (line 143-145), and the My Objects and Dependents
+      sibling queries carry the identical hard-coded STATUS=OPEN filter. RESOLVED and
+      RESOLVED_AUTOMATICALLY alerts NEVER appear on ANY of the three global tabs. The data is not
+      gone — a single entity's Alerts tab uses getAlertsByDataEntityId which has NO status filter
+      (line 182-199) — but the global page cannot surface it. There is NO status query parameter on
+      getAllAlerts/getAssociatedUserAlerts/getDependentEntitiesAlerts (AlertController.java:36-57),
+      and ALERT.STATUS is the available-but-unused column the list-API ignores. Same Category-B
+      name-vs-behaviour class as LSN-019 (TagController.listMostPopular).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Alerts.md
+        section: stress_findings.name_behavior_pairs[All-tab] + bugs_limitations_corner_cases[0]
+        cite: "AlertsTabs.tsx:22 (label 'All') + ReactiveAlertRepositoryImpl.java:142-145"
+        note: "label promises 'All'; backend filters STATUS=OPEN; Category B drift"
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveAlertRepositoryImpl.md
+        section: bugs_limitations_corner_cases[0] + operations (list-alerts-by-data-entity — no status filter)
+        cite: "ReactiveAlertRepositoryImpl.java:143-145 vs 182-199"
+        note: "global tabs OPEN-only; per-entity tab unfiltered — the data exists, the global UI hides it"
+    operator_visible_failure: |
+      A steward searching the global Alerts page for an alert they resolved an hour ago cannot find
+      it and reasonably concludes it was purged — potentially re-investigating the underlying issue
+      or filing a support ticket about "lost alerts". The only way to view a resolved alert is to
+      navigate to the specific entity's Alerts tab (if they know which entity). The live doc NOW
+      documents the OPEN-only behaviour, so the doc-side is corrected; the UI label and the absence
+      of any status filter remain the code-side gap.
+    severity: HIGH
+    confidence: HIGH
+    probe_id: P-194
+    routes_to_finding: bug-candidate
+    dedup_note: "net_new (code-side). The DOC side is closed (live page documents OPEN-only); PLT-050 covers the Alerts UX cluster (redirect / hidden tabs / size-30 / no filter / no bulk) but does NOT cover the 'All'-label-lies name-vs-behaviour drift or a status filter. P-194 already pins the resolved-visibility behaviour."
+
+- id: H-007
+  hypothesis: "When a viewer who lacks resolve permission looks at an alert row, they do NOT see a Resolve/Reopen action they cannot use (the UI hides actions the user is not entitled to)."
+  derivation: "Senior-PO UX consistency question ('is the UI intuitive / does it show only what I can do?') + UI-label seed on the Resolve button; consistent platforms gate action affordances by permission."
+  seed_source: ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The Resolve/Reopen button is rendered on EVERY alert row unconditionally; the permission probe
+      (DATA_ENTITY_ALERT_RESOLVE via fetchResourcePermissions) fires ONLY on click (AlertItem.tsx:159-166
+      renders the button; AlertItem.tsx:48-70 checks permission on click). A viewer with read-only access
+      sees the button, clicks it, and only then receives the late-binding "No access!" caption. This is
+      the same systemic WithPermissions-is-a-context-not-a-gate failure class catalogued across the UI.
+      Two operator-visible consequences: (a) UX leak — an action is visible to users who cannot perform
+      it; (b) signal leak — the button text itself ('Resolve' vs 'Reopen') discloses the alert's OPEN
+      vs RESOLVED lifecycle state via the affordance, separate from the payload.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Alerts.md
+        section: bugs_limitations_corner_cases[1] + security.known_security_gaps[0] + stress_findings.auth_gates
+        cite: "AlertItem.tsx:159-166 + AlertItem.tsx:48-70"
+        note: "button rendered unconditionally; permission resolved post-click; late 'No access!'"
+    operator_visible_failure: |
+      A read-only steward (or a privacy-conscious operator inferring entitlement from the visible
+      button) clicks Resolve expecting it to work, and is denied after the fact. The action affordance
+      is misleading and inconsistent with permission-gated controls elsewhere; at scale every alert
+      row shows an action most viewers cannot take, eroding trust in the UI's signal. The deeper fix
+      is the systemic WithPermissions render-block, not a per-row patch.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    dedup_note: "ALREADY TRACKED as PLT-034 (WithPermissions is a context, not a gate — the systemic fix; PLT-034 explicitly cites F-021 batch-ZL note #6 = this same Resolve-button pattern). The global /alerts/* AlertItem instance is a distinct LOCUS of the same class."
+
+- id: H-008
+  hypothesis: "When a steward resolves an alert, the three tab badges (All / My Objects / Dependents counts) update to reflect one fewer open alert."
+  derivation: "Senior-PO UX correctness: a count badge next to a list a user just mutated should reflect the mutation; a stale badge is an obvious 'is this working?' defect."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The badges are fetched ONCE on mount and never refreshed. Alerts.tsx:15-17 dispatches
+      fetchAlertsTotals inside a useEffect with an EMPTY dependency array; nothing re-invalidates the
+      totals after a Resolve, after a tab switch, or after the backend creates new alerts. The
+      operator resolves an alert, the row updates, but the badge stays off-by-one until a full reload
+      of /alerts. The totals fetch is also non-trivial — Mono.zipDelayError(allCount, countByOwner,
+      countDependent) runs three COUNT queries, the last walking a recursive lineage CTE — so the
+      "fetch once" choice is a deliberate cost trade-off that leaves the badge silently wrong.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Alerts.md
+        section: bugs_limitations_corner_cases[2] + performance.hot_paths
+        cite: "Alerts.tsx:15-17 + AlertServiceImpl.java:90-109"
+        note: "useEffect([]) — no refresh after resolve; totals are a 3-COUNT + recursive-CTE fetch"
+    operator_visible_failure: |
+      An on-call steward working a queue of alerts watches the All badge stay at, say, 47 while they
+      resolve alerts one by one — it never ticks down. They cannot trust the badge as a count of
+      outstanding work, and may reload repeatedly (re-paying the 3-COUNT + lineage-CTE cost) to get a
+      fresh number. A small but constant UX irritant on the operator's primary diagnostic surface.
+    severity: LOW
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    dedup_note: "net_new. PLT-050 is the Alerts UX cluster but does NOT include the stale-badge-after-resolve (useEffect empty-deps) finding; not found in any other PLT. Distinct from PLT-050."
+
+- id: H-009
+  hypothesis: "When a webhook POST creates alerts, the platform records WHO POSTed it (a request-level audit entry), so after a forged-alert incident an operator can reconstruct the source."
+  derivation: "Pillar mission + security: P-07's audit story and a forensic expectation for an unauthenticated authoritative-write surface; a senior PO expects an ingress audit trail given the forge risk."
+  seed_source: pillar
+  validation:
+    verdict: partial
+    actual_behavior: |
+      The audit story is asymmetric. The WEBHOOK INGRESS itself is unaudited: handleExternalAlerts
+      has no log.info of who POSTed, no @Timed Micrometer counter, no correlation-id capture
+      (postAlerts sidecar known_security_gaps[3]; AlertServiceImpl downstream cross-method invariant 1).
+      BUT the resulting alert-STATE-transitions ARE audited: each created alert emits an
+      OPEN_ALERT_RECEIVED Activity event (systemEvent=true) via registerNewAlertsActivityEvents ->
+      ActivityService.createActivityEvents -> ReactiveActivityRepositoryImpl.save(List) batch path
+      with is_system_event=true (AlertServiceImpl.java:309-325 + batch R). So the platform records
+      THAT an alert was received on an entity, but NOT the network source / principal of the POST.
+      The Activity row's source identity is the SecurityContext username at emit time — which is
+      anonymous for the unauthenticated webhook. So the hypothesis holds for "an alert was received"
+      and fails for "who POSTed it".
+    evidence:
+      - sidecar: odd-platform__java__AlertManagerController__controller-method__postAlerts.md
+        section: security.known_security_gaps[3]
+        cite: "AlertManagerController.java:21-26"
+        note: "no entry log / no @Timed / no correlation-id — ingress is unaudited"
+      - sidecar: odd-platform__java__service__service__AlertServiceImpl.md
+        section: downstream_side_effects (cross-method invariant 1) + invariants (manual createActivityEvents)
+        cite: "AlertServiceImpl.java:309-325"
+        note: "OPEN_ALERT_RECEIVED Activity events DO persist via the batch save path (the audited half)"
+    operator_visible_failure: |
+      After a forged-alert incident, an operator can see in the Activity feed that alerts were
+      received on the affected entities (and roughly when), but cannot answer "which IP / which
+      principal POSTed them" — the ingress is anonymous and unlogged. Forensic reconstruction of the
+      attack source is impossible from ODD telemetry; the operator must correlate with reverse-proxy
+      / ingress logs they may not retain. The partial-commit risk on the batch Activity save under
+      partition rotation (no transaction wrap in executeInPartition) can also drop a subset of the
+      received-alert audit rows (F-007 drift_class alert_activity_partial_commit_under_partition_rotation).
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    dedup_note: "net_new as a SPECIFIC F-007 ingress-audit caveat. The broader audit-silence family is tracked (F-006 + DOC-179 mentions the absence), and the AlertManager-ingress-unaudited facet is in the F-007 sidecar; but I find no standalone PLT/DOC for 'webhook ingress has no request-level audit'. Distinct from PLT-014 (which is auth/XSS/idempotency, not ingress audit)."
+
+- id: H-010
+  hypothesis: "When an alert is POSTed WITHOUT an entity_oddrn label, the caller gets an error (or the alert is clearly surfaced as unrouted) — a write that goes nowhere is not silently accepted."
+  derivation: "Negative-space + endpoint-shape: entity_oddrn is the routing key; a senior PO expects a missing routing key to fail loudly rather than persist an invisible row."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      An alert POSTed without entity_oddrn is silently accepted with a 204 and persisted with
+      data_entity_oddrn = NULL. AlertServiceImpl.java:178 maps labels.get("entity_oddrn") which
+      returns null when the key is absent; no validation rejects it; the controller returns 204
+      unconditionally (AlertManagerController.java:25). The orphaned row is invisible on every UI
+      surface (the joins resolve no entity) yet it IS persisted and counted in the platform-wide
+      open-alert total (countAlertsWithStatusOpen has no entity-FK predicate). The live config doc
+      acknowledges the orphan ("will not appear on any entity's page, and is effectively orphaned").
+    evidence:
+      - sidecar: odd-platform__java__service__service__AlertServiceImpl.md
+        section: tests_coverage_semantic.uncovered_behaviours (orphan-on-missing-entity_oddrn)
+        cite: "AlertServiceImpl.java:178"
+        note: "null entity_oddrn -> AlertPojo with null FK; no rejection"
+      - sidecar: odd-platform__java__AlertManagerController__controller-method__postAlerts.md
+        section: tests_coverage_semantic.uncovered_behaviours (Orphan alert) + invariants (unconditional 204)
+        cite: "AlertManagerController.java:25"
+        note: "204 returned regardless; caller cannot tell the alert was orphaned"
+    operator_visible_failure: |
+      An operator who mislabels an AlertManager rule (typo'd or omitted entity_oddrn) gets a 204
+      success and assumes the alert is flowing — but it lands as an invisible orphan that no entity
+      page or global tab shows, while still inflating the global open-alert count badge (H-008's
+      badge can read higher than the sum of visible alerts). The misconfiguration is silent at both
+      ends: no error on POST, no visible row to debug from. Over time orphans accumulate in the
+      total until housekeeping TTL deletes them.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    dedup_note: "net_new. The orphan behaviour is doc-acknowledged (config page) but I find no PLT/DOC tracking the count-inflation / silent-204 consequence as a finding. New drift class proposed (all_tab_orphan_alerts_null_entity_oddrn_persisted_but_invisible_everywhere)."
+
+- id: H-011
+  hypothesis: "When a steward reads the global Alerts list, the alert rows do not expose another user's personal identity (e.g. an OIDC/LDAP login name) to everyone — only what they need to triage."
+  derivation: "Negative-space + security/privacy: a cross-team-readable list should not leak personal identifiers; a senior PO treats raw login names rendered to all users as a privacy concern."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The global Alerts list renders statusUpdatedBy.identity.username VERBATIM (AlertItem.tsx:86)
+      when the user-owner mapping does not resolve to an Owner display name. The All tab is cross-
+      owner readable to every authenticated user (and anonymous under DISABLED) with no owner
+      predicate (ReactiveAlertRepositoryImpl.java:143-145). So the raw OIDC/LDAP username of whoever
+      last triaged any alert leaks to every user who can reach /alerts/all. The Alerts sidecar
+      itself flags this as the same anonymous-fingerprint / username-PII class identified in the
+      DOC-GAP-082 read-collaborative-posture family.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Alerts.md
+        section: security.data_exposure (username-leak) + known_security_gaps
+        cite: "AlertItem.tsx:86 + ReactiveAlertRepositoryImpl.java:143-145"
+        note: "statusUpdatedBy.identity.username rendered verbatim on a cross-owner-readable list"
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveAlertRepositoryImpl.md
+        section: security.data_exposure
+        cite: "ReactiveAlertRepositoryImpl.java:143-156"
+        note: "All-tab payload incl. the human who last triaged — no owner scoping"
+    operator_visible_failure: |
+      Every authenticated user (anonymous under DISABLED) can read the OIDC/LDAP login names of
+      colleagues who triaged alerts across teams — a personal-identifier leak on a cross-team
+      surface. In a multi-tenant or compliance-sensitive deployment this is a privacy exposure: the
+      username is often an email-local-part or a corporate SSO id. It is the alerts-surface instance
+      of the platform-wide read-collaborative-posture finding (DOC-GAP-082 META).
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    dedup_note: "net_new as the F-007 Alerts-list instance; cross-links to DOC-GAP-082 META (the systemic read-collaborative-posture / anonymous-fingerprint stance). Distinct_from DOC-GAP-082 in that it is the specific statusUpdatedBy-username-on-the-global-Alerts-list locus."
+
+- id: H-012
+  hypothesis: "When an operator wants to scan a large alert backlog (filter by status/type/date/entity, or bulk-resolve), the global Alerts page gives them the tools to do it."
+  derivation: "Senior-PO customisation + scale question ('can it be customised / does it work at scale?'); the sibling Activity page has a 7-facet filter panel, so a consistent platform would offer the same on Alerts."
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The global Alerts list has no filter UI, no sort control, no status/type/date/entity-name
+      selector, no bulk-select / bulk-resolve, and a hard-coded page size of 30 with no operator
+      override (AlertsList.tsx:72 + the no-filter render). The sibling Activity page has a 7-facet
+      filter panel; Alerts has nothing. With tens of thousands of open alerts the operator must
+      infinite-scroll a non-virtualised list (O(N) DOM nodes) one 30-row page at a time, resolving
+      one alert per click. The feature pushes any real-scale operator to direct API calls.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Alerts.md
+        section: bugs_limitations_corner_cases[5] (scroll race) + performance.known_performance_gaps + stress_findings.tunables
+        cite: "AlertsList.tsx:72 + AlertsList.tsx:84-99"
+        note: "hard-coded size=30; no filter/sort/bulk; no DOM virtualisation"
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveAlertRepositoryImpl.md
+        section: bugs_limitations_corner_cases (negative-page) + operations
+        cite: "AlertController.java:36-57"
+        note: "no status/type/date query params on the list endpoints to back a filter UI"
+    operator_visible_failure: |
+      An operator on a busy platform cannot triage at scale from the UI: no way to filter to a
+      severity or entity, no bulk-resolve, no way to widen the page size, and the list degrades
+      (DOM cost) as they scroll. They are forced to script against the API. This is a missing-
+      capability gap, not a correctness bug — it routes to caveat/enhancement.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    dedup_note: "ALREADY TRACKED as PLT-050 (Alerts UX cluster: hardcoded size-30 + no filter UI + no bulk-resolve + default-tab redirect + hidden-but-navigable tabs)."
+
+- id: H-013
+  hypothesis: "When the operator turns the feature on, an inbound AlertManager alert reaches the entity page and the global feed without further action — the happy path works end to end."
+  derivation: "Pillar primary user action ('receive alerts ... from external anomalies'); the baseline confirm that the feature delivers its core promise when correctly configured."
+  seed_source: pillar
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The happy path is intact. A correctly-labelled POST (valid entity_oddrn referencing a real
+      entity, http(s) generatorURL) flows: alertManagerWebhook -> handleExternalAlerts (one
+      @ReactiveTransactional batch) -> createAlerts INSERT into ALERT with status=OPEN, type=
+      DISTRIBUTION_ANOMALY, data_entity_oddrn=<entity> + createChunks for the description ->
+      OPEN_ALERT_RECEIVED Activity event -> the alert is readable on that entity's Alerts tab and,
+      while OPEN, on the global All tab. No further operator action is required. (The endpoint
+      requires no auth, which is the H-001 contradiction, but for the HAPPY-PATH delivery the chain
+      mechanically works.)
+    evidence:
+      - sidecar: odd-platform__java__service__service__AlertServiceImpl.md
+        section: understanding + downstream_side_effects[handleExternalAlerts]
+        cite: "AlertServiceImpl.java:151-191, 309-325"
+        note: "transactional batch INSERT + chunk + OPEN_ALERT_RECEIVED activity emission"
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveAlertRepositoryImpl.md
+        section: downstream_side_effects[createAlerts]
+        cite: "ReactiveAlertRepositoryImpl.java:332-342"
+        note: "INSERT ... RETURNING materialises the OPEN alert the read paths surface"
+    confidence: HIGH
+    routes_to_finding: none
+
+- id: H-014
+  hypothesis: "When two alerts share the same last_created_at, the global list orders them deterministically so infinite-scroll paging does not skip or duplicate a row at the page boundary."
+  derivation: "Negative-space + response-shape: a paginated, infinite-scroll list needs a stable total order or boundary rows are skipped/duplicated; a senior PO expects deterministic ordering."
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The ordering is deterministic and total. createAlertJoinQuery declares
+      List.of(OrderByField(ALERT.LAST_CREATED_AT, DESC), OrderByField(ALERT.ID, DESC)) and applies
+      it to BOTH the inner paginate CTE and the outer select (ReactiveAlertRepositoryImpl.java:474-483,
+      505). ALERT.ID is monotonic per insert, so ties on last_created_at break by id DESC — a stable
+      total order. The UI receives the items as-is with no client re-sort (alerts.thunks.ts +
+      alerts.slice.ts), so page boundaries are stable. (Caveat: a page=0 / negative-page request
+      produces a negative OFFSET that Postgres rejects — a visible error, not a silent skip — and a
+      page-1/page-2 race can briefly show a longer list before settling, but neither skips/duplicates
+      the committed order.)
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__Alerts.md
+        section: stress_findings.orderings
+        cite: "ReactiveAlertRepositoryImpl.java:475-476"
+        note: "(LAST_CREATED_AT DESC, ID DESC) applied to inner + outer select; stable total order"
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactiveAlertRepositoryImpl.md
+        section: invariants (pagination via pageifyResult) + bugs_limitations_corner_cases (negative OFFSET)
+        cite: "ReactiveAlertRepositoryImpl.java:147, 474-483"
+        note: "deterministic order; negative-page is a visible error not a silent skip"
+    confidence: HIGH
+    routes_to_finding: none
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: "Unauthenticated webhook + verbatim entity_oddrn (no existence/ownership/permission check) lets any caller forge OPEN alerts on any team's entity, visible to all on the cross-owner /alerts/all tab — the forge-and-display compound."
+  dedup_status: already_tracked
+  tracked_as: PLT-014
+  proposed_fix_anchor: "AlertServiceImpl.java:178 — validate entity_oddrn exists + caller-permission gate; AlertManagerController.java:21-26 — shared-secret / S2S gate (PLT-014 Defect 1)."
+- hypothesis_id: H-006
+  severity: HIGH
+  one_line: "The global 'All' tab is labelled 'All' but the backend hard-filters STATUS=OPEN (all three global tabs) — resolved alerts are invisible on the global page; no status query param exists; ALERT.STATUS is the available-but-unused column (Category-B name-vs-behaviour, LSN-019 class)."
+  dedup_status: net_new
+  distinct_from: PLT-050
+  recommended_log_as: BUG-NNN (or upstream-issue opendatadiscovery/odd-platform)
+  proposed_fix_anchor: "Add an optional status query param on getAllAlerts/getAssociatedUserAlerts/getDependentEntitiesAlerts (AlertController.java:36-57) + plumb it to ReactiveAlertRepositoryImpl.listAllWithStatusOpen (drop the hard-coded eq OPEN, default to OPEN); OR relabel the tab from 'All' to 'Open' to match behaviour. DOC side already corrected. Distinct from PLT-050 which covers redirect/hidden-tabs/size-30/no-filter/no-bulk but not the 'All'-label name-drift / status filter."
+- hypothesis_id: H-003
+  severity: MEDIUM
+  one_line: "AlertManager webhook path is non-idempotent (skips AlertActionResolver; createAlerts INSERT has no ON CONFLICT) — Prometheus retries / repeat_interval re-sends duplicate alert rows."
+  dedup_status: already_tracked
+  tracked_as: PLT-014
+  proposed_fix_anchor: "ReactiveAlertRepositoryImpl.java:332-342 — ON CONFLICT (data_entity_oddrn, type, status, external_id=labels.fingerprint) DO NOTHING (PLT-014 Defect 3)."
+- hypothesis_id: H-004
+  severity: HIGH
+  one_line: "generatorURL accepted with no scheme allow-list (UriComponentsBuilder.fromUri does not block javascript:) and embedded verbatim into the alert description rendered on the cross-owner alerts UI — stored-XSS / open-redirect surface."
+  dedup_status: already_tracked
+  tracked_as: PLT-014
+  proposed_fix_anchor: "AlertServiceImpl.java:168 — scheme allow-list (http/https) at URL ingestion + UI-side sanitised renderer on the description field (PLT-014 Defect 2)."
+- hypothesis_id: H-007
+  severity: MEDIUM
+  one_line: "Resolve/Reopen button rendered on every alert row unconditionally; the DATA_ENTITY_ALERT_RESOLVE permission probe fires only on click (late 'No access!') — action affordance visible to users who cannot use it (the systemic WithPermissions-is-a-context-not-a-gate class)."
+  dedup_status: already_tracked
+  tracked_as: PLT-034
+  proposed_fix_anchor: "Systemic: WithPermissions render-block / fail-closed (PLT-034 Option B); the global /alerts/* AlertItem.tsx:159-166 is a distinct locus of the same class."
+
+### caveat_candidates
+- hypothesis_id: H-001
+  one_line: "POST /ingestion/alert/alertmanager is unauthenticated under EVERY auth.type mode (whitelisted /ingestion/**; the ingestion filter only covers /ingestion/entities) — no in-platform toggle closes it; operator must use network/proxy/mTLS perimeter controls."
+  dedup_status: already_tracked
+  tracked_as: DOC-179
+  recommended_log_as: "doc already done (DOC-179); code-fix tracked as PLT-014. No new filing."
+- hypothesis_id: H-005
+  one_line: "AlertManager status=resolved (and endsAt/annotations/fingerprint/...) are silently dropped by the hand-rolled lossy DTO — alerts never auto-close from AlertManager's resolve signal; every inbound alert is created OPEN and only a human or in-platform auto-resolve can close it."
+  dedup_status: net_new
+  recommended_log_as: "caveat in https://docs.opendatadiscovery.org/features/active-platform-features/alerting (state that status:resolved is not honoured; recommend Prometheus send_resolved:false) | doc-gap-NNN. Distinct from PLT-014."
+- hypothesis_id: H-009
+  one_line: "The webhook INGRESS is unaudited (no request-level log / @Timed / correlation-id of WHO POSTed); only the alert-state transitions are audited (OPEN_ALERT_RECEIVED Activity events) — forensic reconstruction of a forge incident's source is impossible from ODD telemetry."
+  dedup_status: net_new
+  recommended_log_as: "caveat on the alerting page + backlog item for an ingress audit (correlation-id + @Timed); cross-link F-006 audit-silence family. Distinct from PLT-014."
+- hypothesis_id: H-010
+  one_line: "An alert POSTed without entity_oddrn is silently accepted with 204 and persisted with a NULL FK — invisible on every UI surface yet counted in the platform-wide open-alert total (can make the badge read higher than the sum of visible alerts)."
+  dedup_status: net_new
+  recommended_log_as: "caveat (orphan-on-missing-entity_oddrn inflates totals) | doc-gap-NNN; OR upstream bug to exclude null-FK alerts from counts / reject the orphan POST."
+- hypothesis_id: H-011
+  one_line: "statusUpdatedBy OIDC/LDAP username is rendered verbatim on the cross-owner-readable /alerts/all tab — a personal-identifier leak to every authenticated user (anonymous under DISABLED); the alerts-surface instance of the read-collaborative-posture / anonymous-fingerprint finding."
+  dedup_status: already_tracked
+  tracked_as: DOC-GAP-082
+  recommended_log_as: "tracked under DOC-GAP-082 META (read-collaborative posture / anonymous-fingerprint). This is the specific statusUpdatedBy-on-Alerts-list locus — record as a corroborating instance under DOC-GAP-082."
+- hypothesis_id: H-008
+  one_line: "Alert tab badges fetch once on mount (useEffect empty deps) and never refresh after a Resolve / new alert — the count stays stale until a full reload (and re-pays a 3-COUNT + recursive-lineage-CTE fetch)."
+  dedup_status: net_new
+  distinct_from: PLT-050
+  recommended_log_as: "caveat | small UI bug — re-fetch totals after a status mutation. Distinct from PLT-050 (which covers size-30/filter/bulk/redirect/hidden-tabs, not the stale-badge useEffect-empty-deps)."
+- hypothesis_id: H-012
+  one_line: "Global Alerts page has no filter/sort/bulk-resolve and a hard-coded size-30 non-virtualised list — unusable at scale; pushes operators to the API; inconsistent with the 7-facet Activity page."
+  dedup_status: already_tracked
+  tracked_as: PLT-050
+
+### probes_emitted
+- probe_id: P-391
+  hypothesis_id: H-002
+  probe_path: "lineage/odd-platform/probes/P-391.yaml"
+  note: "End-to-end forge-and-display + cross-tenant + duplicate-on-retry regression-pin (the feature-flow's named highest-leverage unprobed cell). Confirms PLT-014 Defects 1+3 as one measured artefact. Feature-scoped id used (parallel-batch mode; sequential P-220..P-224 claimed concurrently)."
+- probe_id: P-194
+  hypothesis_id: H-006
+  probe_path: "lineage/odd-platform/probes/P-194.yaml"
+  note: "PRE-EXISTING analyser-emitted probe (Alerts.tsx sidecar) — pins the All-tab resolved-alert-visibility (Category-B) drift. Referenced, not re-minted."
+
+### validation_gaps
+- sidecar: "(AlertItem.tsx render path — no standalone enriched sidecar)"
+  field_insufficient: "The exact render mechanism of the alert chunk description / generatorURL in AlertItem.tsx (text node vs dangerouslySetInnerHTML vs MUI Link) is not pinned in an enriched sidecar — the Alerts component sidecar covers the page shell + list + item behaviour but not a line-level render-sink trace of the description field. This caps H-004's XSS verdict at MEDIUM confidence (stored-XSS upper-bound vs open-redirect lower-bound)."
+  proposed_refresh: "A file-analyser pass on AlertItem.tsx with a Category-render-sink trace of alertChunkList[].description and statusUpdatedBy.identity.username — confirm whether the description is rendered as a text node (escaped) or via innerHTML/Link (XSS-exposed), to settle PLT-014 Defect 2's severity."
+- sidecar: "odd-platform__java__repository__reactive__repository__ReactiveActivityRepositoryImpl.md (audit-write hop)"
+  field_insufficient: "The OPEN_ALERT_RECEIVED audit-write half of H-009 is traced THROUGH AlertServiceImpl + the F-007 feature-flow batch-R notes, not re-opened end-to-end here; the partial-commit-under-partition-rotation risk that can drop received-alert audit rows is asserted from the feature-flow drift_class, not re-verified in this reflection."
+  proposed_refresh: "Confirm at ReactiveActivityRepositoryImpl.save(List) (lines ~57-71) whether executeInPartition is transaction-wrapped; if not, the alert-received audit can partially commit under midnight partition rotation — pin it as a probe or strengthen the F-007 alert_activity_partial_commit drift facet."
+
+### doc_drift_findings
+- hypothesis_id: H-005
+  doc_url: "https://docs.opendatadiscovery.org/features/active-platform-features/alerting"
+  doc_says: "Documents the unauthenticated posture, cross-tenant entity_oddrn, idempotency absence, All-tab OPEN-only, and the halt-toggle no-op — but does NOT state that AlertManager's status=resolved is silently dropped (alerts never auto-close from the resolve signal)."
+  code_does: "The hand-rolled ExternalAlert DTO carries only labels/generatorURL/startsAt; status (firing|resolved) + endsAt + annotations + fingerprint are dropped by Jackson; every inbound alert is created OPEN and there is no resolved-consumption path."
+  recommended_log_as: doc-gap-NNN (add a 'resolved is not honoured — use Prometheus send_resolved:false' note; cross-link the lossy-DTO behaviour)
+- hypothesis_id: H-010
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform"
+  doc_says: "Acknowledges an alert without entity_oddrn 'will not appear on any entity's page, and is effectively orphaned' / 'stored with an empty owner'."
+  code_does: "The orphan is persisted with a NULL data_entity_oddrn AND counted in the platform-wide open-alert total (countAlertsWithStatusOpen has no entity-FK predicate) — the doc notes invisibility but not the count-inflation consequence."
+  recommended_log_as: doc-gap-NNN (extend the orphan note to mention it still counts toward the open-alert totals badge) — minor; pairs with the H-010 caveat.
+
+## maintainer_notes
+
+(none — net-new reflection. Observations for the maintainer:
+
+1. F-007 is a TWO-SURFACE feature (machine-facing webhook INGEST + human-facing global Alerts READ),
+   and the senior-PO "from the screen" lens applies to the READ surface, which IS enriched
+   (Alerts.tsx sidecar — page shell + AlertsTabs + AlertsRoutes + AlertsList + AlertItem primary-source
+   walk). So this is NOT a ui-incomplete reflection: the operator-visible screen is in the chain.
+   The write surface is correctly reasoned from the operator's configuration experience (AlertManager
+   rule labelling) + the external-system contract, the right reframing of "from the screen" for a
+   webhook.
+
+2. DEDUP is the headline of this reflection. The three F-007 INGEST defects (H-002 forge-and-display
+   + cross-tenant entity_oddrn, H-004 generatorURL XSS, H-003 no-idempotency) are ALL already tracked
+   as PLT-014 (+ DOC-179, done). This reflection is therefore mostly CONVERGENT VALIDATION on the
+   ingest side — the top-down PO pass independently re-derived the same three defects PLT-014 filed
+   from the scanner pipeline. That agreement is a high-confidence signal, captured (not re-filed) via
+   dedup_status: already_tracked. The NET-NEW value is on the READ surface + the contract edges:
+   H-006 (All-tab name-vs-behaviour / no status filter — net_new, distinct from PLT-050), H-005
+   (status:resolved silently dropped — net_new), H-008 (stale badges — net_new, distinct from PLT-050),
+   H-009 (ingress unaudited — net_new), H-010 (orphan inflates totals — net_new), H-011 (username PII
+   on the cross-owner list — corroborates DOC-GAP-082 META).
+
+3. The live doc has been MATERIALLY improved since the sidecars were enriched: it now documents the
+   unauthenticated posture, the cross-tenant write, the idempotency gap, the All-tab OPEN-only
+   behaviour, AND the halt-toggle no-op. Several sidecar doc_drift_findings are therefore STALE
+   (closed on the doc side). The CODE gaps all remain. A file-analyser refresh of the postAlerts +
+   ReactiveAlertRepositoryImpl + Alerts sidecars should re-verify against the current live page and
+   downgrade the closed doc-drifts (this matches the F-009 reflection's note 3 about the doc improving
+   under the same window).
+
+4. Two new drift classes proposed (not yet in the F-007 feature-flow drift_class_summary):
+   statusUpdatedBy_oidc_username_rendered_verbatim_on_cross_owner_All_tab_pii_leak (H-011) and
+   all_tab_orphan_alerts_null_entity_oddrn_persisted_but_invisible_everywhere (H-010).
+
+5. Contradiction density: 10 of 14 contradicted + 1 partial + 1 probe-needed (2 confirmed). The two
+   HIGH-severity headlines (H-001 unauthenticated-under-every-mode, H-002 forge-and-display) are the
+   security spine PLT-014 already owns; the highest NET-NEW finding is H-006 (the 'All' tab silently
+   hides resolved alerts), which is the same operator-trust failure class (the UI promises a population
+   it does not deliver) as the F-022 soft-deleted-DQ-tab and F-009 email-payload-parity contradictions
+   in this batch.
+
+6. Bug-candidate dedup tally: 5 bug_candidates — 4 already_tracked (H-002/H-003/H-004 -> PLT-014;
+   H-007 -> PLT-034), 1 net_new (H-006, distinct_from PLT-050). Caveat-candidate tally: 7 caveats —
+   3 already_tracked (H-001 -> DOC-179; H-011 -> DOC-GAP-082; H-012 -> PLT-050), 4 net_new
+   (H-005, H-008 [distinct_from PLT-050], H-009, H-010).)

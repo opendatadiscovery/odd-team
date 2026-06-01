@@ -1,0 +1,211 @@
+---
+probe_id: P-243
+emitted_by: feature-reflector
+emitted_in_reflection: lineage/odd-platform/feature-reflections/detail/F-029.yaml
+emitted_for_hypothesis: H-012
+emitted_at: 2026-06-01T00:00:00Z
+status: pending-reflection-verification
+feature_id: F-029
+test_class: integration
+verified_against_commit: 43d13eb
+maintainer_curated: false
+stack_profile: odd-minimal
+local_execution_blocked: false
+expected_outcome: |
+  Reflection hypothesis H-012 (verbatim): "When the platform ships a release,
+  the OpenAPI spec is verified to match the running platform — a developer can
+  trust that every spec'd operation, on the wire, returns the declared status
+  code and the declared response-DTO field-set."
+
+  Verdict at reflection time: probe-needed. Static evidence (the spec sidecar)
+  establishes there is ZERO conformance test between the spec and the running
+  platform, and statically-enumerable drifts already exist (status-code 201-vs-200
+  across 7+ controller families; the getMyObjects inverse-semantic SUMMARY; the
+  QueryExampleFormData missing-name field). What CANNOT be known from the sidecars
+  alone is whether ANY currently-shipped operation drifts in its RESPONSE-DTO
+  field-set on the wire (a renamed / now-nullable / newly-required field) beyond
+  the already-enumerated status + summary drifts. That requires standing up the
+  platform and diffing the live responses against the spec.
+
+  This probe is the spec-driven contract conformance check the feature recommends
+  as its single highest-leverage remediation: build-it-once, run-it-on-every-PR.
+  It is scoped here to a TRACTABLE, LOCAL-ONLY first cut that pins the three
+  load-bearing, statically-known drifts as regression cases AND surfaces any
+  unknown response-DTO drift on a representative sample of read operations.
+
+  Three assertions the probe pins (statically-known, must reproduce on the wire):
+  (A) STATUS-CODE DRIFT — a Create operation the spec declares 201 (e.g. POST
+      /api/tags createTag, openapi.yaml:372) returns 200 on the wire (controller
+      ResponseEntity::ok). The probe confirms the spec<->runtime status mismatch
+      is real and observable, not a spec-read artefact.
+  (B) PATH-PARITY / REFACTOR-217 — the spec-declared PLURAL term-link path
+      /api/dataentities/{id}/terms is the path the client actually hits and
+      succeeds against (proving the spec path is authoritative), while the
+      SecurityConstants SINGULAR /term registration means an unauthorized principal
+      is NOT rejected under a non-DISABLED auth mode (proving the gate never fires).
+  (C) SECURITYSCHEMES ABSENCE — the served /api/v3/api-docs document contains NO
+      components.securitySchemes and NO operation-level security — confirming a
+      generated SDK would carry no auth code (H-001).
+
+  One open assertion the probe MEASURES (unknown until run):
+  (D) RESPONSE-DTO PARITY — for a sample of GET operations, every required field
+      the spec declares in the 2xx response schema is present in the live response
+      body, and no field the live body returns is absent from the spec schema
+      (the bidirectional field-set diff). The probe REPORTS any drift; it does not
+      assume a specific result.
+
+  Resolution rule for the reflection: if (A)+(B)+(C) reproduce, H-012's verdict
+  firms from probe-needed to CONTRADICTED (the contract is demonstrably not
+  guaranteed to match the platform). If (D) surfaces any response-DTO drift, add
+  the specific operation(s) as additional bug-candidates. If (D) is clean across
+  the sample, record that response-DTO field-set parity HOLDS for the sample while
+  the status-code + summary + path drifts persist (a partial-confirmation nuance).
+---
+arrange:
+  - kind: docker-compose-up
+    note: |
+      odd-minimal stack: the ODD platform built at the verified commit + a Postgres
+      container. No external services. The platform serves both the live API at
+      /api/** and the spec at /api/v3/api-docs. Two short runs are needed because
+      assertion (B) requires a NON-DISABLED auth mode while (A)/(C)/(D) are simplest
+      under DISABLED — see the two env blocks below; the harness brings the stack up
+      once per auth mode.
+  - kind: env
+    profile: run-1-disabled
+    AUTH_TYPE: "DISABLED"
+    note: "Run 1 covers assertions (A) status-code, (C) securitySchemes, (D) response-DTO parity — all readable without auth."
+  - kind: env
+    profile: run-2-loginform
+    AUTH_TYPE: "LOGIN_FORM"
+    note: |
+      Run 2 covers assertion (B) — the REFACTOR-217 path-parity gate only matters
+      under a mode where authorization is enforced. LOGIN_FORM is the lightest
+      non-DISABLED mode to stand up locally (no external IdP); seed one non-admin
+      user WITHOUT the DATA_ENTITY_ADD_TERM permission and one data entity + one term.
+  - kind: spec-load
+    description: "Parse the platform-api openapi.yaml + components.yaml at the verified commit into an in-memory operation table (operationId -> method, path, declared 2xx status, declared 2xx response schema $ref)."
+    source: "odd-platform-specification/openapi.yaml + components.yaml"
+    capture_as: spec_ops
+
+act:
+  # ---- Run 1 (DISABLED) ----
+  - kind: rest
+    profile: run-1-disabled
+    description: "(A) Create a Tag via the spec'd POST /api/tags (createTag) — capture the live status code."
+    method: POST
+    path: /api/tags
+    headers: {Content-Type: "application/json"}
+    body: '{"tagList":[{"name":"PROBE-243-TAG","important":false}]}'
+    capture_as: create_tag_response
+  - kind: rest-spec-walk
+    profile: run-1-disabled
+    description: |
+      (D) For a representative sample of GET operations with no required path-param
+      beyond ids the probe can seed (e.g. GET /api/tags, GET /api/owners,
+      GET /api/namespaces, GET /api/datasources, GET /api/dataentities with a query),
+      fire each and capture the live response body + HTTP status.
+    sample_from: spec_ops
+    sample_filter: "method == GET AND path-params subset of {seedable ids} AND 2xx-response-schema is an object/array"
+    sample_size: 12
+    capture_as: get_sample_responses
+  - kind: http-get
+    profile: run-1-disabled
+    description: "(C) Fetch the served OpenAPI document the Swagger UI renders."
+    path: /api/v3/api-docs
+    capture_as: served_spec_doc
+  # ---- Run 2 (LOGIN_FORM) ----
+  - kind: rest
+    profile: run-2-loginform
+    description: |
+      (B) As the seeded non-admin user WITHOUT DATA_ENTITY_ADD_TERM, POST to the
+      spec-declared PLURAL term-link path to link the seeded term to the seeded entity.
+    method: POST
+    path: /api/dataentities/{seeded_entity_id}/terms
+    headers: {Content-Type: "application/json"}
+    auth_as: "probe-243-nonadmin-user"
+    body: '{"termId": "{seeded_term_id}"}'
+    capture_as: termlink_as_unauthorized
+
+observe:
+  - kind: capture-status
+    source: create_tag_response
+    capture_as: create_tag_status
+  - kind: spec-vs-live-diff
+    description: "(D) For each sampled GET, diff the live response body field-set against the spec's declared 2xx response schema (bidirectional: spec-required-fields-present + no-live-field-absent-from-spec)."
+    spec_table: spec_ops
+    live_responses: get_sample_responses
+    capture_as: dto_parity_report
+    fields: [operationId, missing_required_fields, extra_live_fields, drift_flag]
+  - kind: json-probe
+    source: served_spec_doc
+    description: "(C) Inspect the served document for securitySchemes + any operation-level security."
+    capture_as: served_security_presence
+    fields: [has_components_securitySchemes, count_operation_level_security]
+  - kind: capture-status
+    source: termlink_as_unauthorized
+    capture_as: termlink_status
+
+assert:
+  # (A) status-code drift reproduces on the wire
+  - "create_tag_status == 200  # spec declares 201 (openapi.yaml:372); controller returns 200 — drift is real on the wire"
+  # (C) securitySchemes absence reproduces in the SERVED document (not just the source file)
+  - "served_security_presence.has_components_securitySchemes == false  # generated SDKs would carry no auth code (H-001)"
+  - "served_security_presence.count_operation_level_security == 0"
+  # (B) REFACTOR-217 — the unauthorized user is NOT rejected, proving the gate never fires on the spec's plural path
+  - "termlink_status != 403  # a working DATA_ENTITY_ADD_TERM gate would 403 this user; the singular /term registration never matches the plural /terms path, so the link is NOT blocked for an authorization reason"
+  - "termlink_status in [200, 201, 204]  # the link is ACCEPTED despite the user lacking DATA_ENTITY_ADD_TERM — the silent authorization bypass (H-006), reproduced live"
+  # (D) response-DTO parity — REPORTED, asserted clean-by-default; any drift becomes a new bug-candidate
+  - "dto_parity_report.where(drift_flag == true).length == 0  # SOFT — if non-empty, do NOT treat as probe failure: record each drifting operationId as a new H-012-child bug-candidate and re-verdict"
+
+cleanup:
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  related_reflection: lineage/odd-platform/feature-reflections/detail/F-029.yaml
+  related_sidecars:
+    - odd-platform__openapi__spec__odd-platform-public-api
+  related_backlog:
+    - SPC-001   # status-code drift (A) + securitySchemes (C) remediation
+    - SPC-002   # getMyObjects inverse-semantic (a sibling response-summary drift this probe does not cover)
+    - PLT-012   # REFACTOR-217 term path mismatch (B) — this probe is the live regression-pin
+    - PLT-061   # the build-time path-parity validator (the structural fix this probe argues for)
+  retrospectives:
+    - LSN-020   # the cross-file semantic-mismatch class the reflection layer + this probe exist to catch
+
+realism_caveats: |
+  Probe-id note: this probe is P-243 (not P-160). P-160 was already taken by a
+  prior file-analyser GenAI probe; the feature-reflector allocated the next clear
+  id above the contiguous block (max observed P-241) and stepped past the likely
+  max+1 grab to avoid a parallel-batch collision.
+
+  Scope. This is a TRACTABLE FIRST CUT of the full conformance test H-012 argues
+  for, not the complete 194-operation sweep. It pins the three statically-known,
+  load-bearing drifts (A status-code, B path-parity/REFACTOR-217, C securitySchemes)
+  as live regression cases and samples 12 GET operations for response-DTO parity
+  (D). The full version (fire EVERY spec'd operation, assert status + response-DTO
+  for all 194) is the build-it-once-run-on-every-PR deliverable; this probe proves
+  the approach works locally and reproduces the known drifts before that investment.
+
+  Local-only (Rule 6). Everything runs on docker-compose + a local Postgres +
+  WebTestClient/script. No remote VM, no managed DB, no cloud CI in the probe loop.
+
+  Assertion (B) sensitivity. The seeded non-admin user must genuinely LACK
+  DATA_ENTITY_ADD_TERM (verify the Policy/Role wiring in the seed step). If the
+  link is REJECTED with 403, that would mean the SecurityConstants path was fixed
+  to plural since the verified commit — re-read SecurityConstants.java:237-242 and,
+  if so, mark H-006 as superseded_by_refresh (the bug is closed) rather than a
+  probe failure.
+
+  Assertion (D) is intentionally SOFT. A non-empty dto_parity_report is a
+  FINDING, not a probe malfunction — each drifting operationId is logged as a new
+  bug-candidate child of H-012 and the reflection re-verdicts. A clean (D) across
+  the sample is recorded as "response-DTO field-set parity holds for the sample
+  while status-code + summary + path drifts persist" — which firms H-012 to
+  CONTRADICTED on the (A)/(B)/(C) axes while noting (D) is clean-so-far.
+
+  What this probe does NOT cover: the getMyObjects inverse-semantic (a behavioural
+  summary drift — needs an owned-vs-reachable data fixture, tracked at SPC-002);
+  the createDataEntityTagsRelations replace-vs-create semantic (needs a
+  pre-existing-tags fixture); rate-limit / pagination-cap absence (information-only
+  spec gaps). Those are separable probes if the maintainer wants them pinned.

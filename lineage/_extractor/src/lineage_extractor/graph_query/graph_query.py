@@ -473,7 +473,10 @@ def _build_signature(lineage_dir: Path) -> str:
     doc page and rebuilding re-embeds it (only the changed sections, via the
     embed cache)."""
     parts: list[tuple[str, int, int]] = []
-    for name in ("nodes.jsonl", "edges.jsonl", "doc-nodes.jsonl"):
+    # All top-level generated mirrors — incl. the ground-truth anchors
+    # (adr-nodes / test-nodes), else an `adrs-ingest` / `tests-ingest` does not
+    # invalidate the cache and `graph-build` silently serves a stale graph.
+    for name in ("nodes.jsonl", "edges.jsonl", "doc-nodes.jsonl", "adr-nodes.jsonl", "test-nodes.jsonl"):
         p = lineage_dir / name
         if p.is_file():
             st = p.stat()

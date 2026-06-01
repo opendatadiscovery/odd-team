@@ -87,11 +87,12 @@ The subagent reads the inputs, runs the 8-step workflow defined in its system pr
 
 Read the subagent's reply. Surface the second line to the maintainer with:
 - The contradiction count (the bug-candidates surfaced)
+- The **net-new vs already-tracked split**. The agent dedups each bug/caveat candidate against `issues/` + `backlog/` at emission (`dedup_status` per candidate, `feature-reflector/0.2.0`). Surface "N net-new / M corroborated" so the maintainer triages only the net-new ones and reads the corroborations as convergent validation (two independent methods agreeing — high confidence; cross-link, don't re-file).
 - The probe-emitted count (the runtime questions the reflection raised)
 - The highest-severity contradiction's one-line summary (so the maintainer immediately sees the headline finding)
 - The path to the reflection detail file
 
-If the reflection contains `contradictions >= 1 with severity HIGH`, add a one-line followup recommendation: "Triage the contradictions; each HIGH one is a candidate bug-fix or operator-facing caveat that should be logged via `/log-issue` (upstream) or as a backlog item (in-repo)."
+If the reflection contains `contradictions >= 1 with severity HIGH` tagged `dedup_status: net_new`, add a one-line followup recommendation: "Triage the NET-NEW HIGH contradictions; each is a candidate bug-fix or operator-facing caveat to log via `/log-issue` (upstream) or as a backlog item (in-repo). Already-tracked ones are convergent confirmation of existing items — cross-link, don't re-file."
 
 ### 6. Exit
 

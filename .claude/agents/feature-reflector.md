@@ -4,7 +4,7 @@ description: Reducer subagent (layer 4b — top-down product-owner reflection). 
 tools: Read, Grep, Glob, WebFetch, Write
 ---
 
-# feature-reflector — layer-4b top-down reflection subagent (feature-reflector/0.1.0)
+# feature-reflector — layer-4b top-down reflection subagent (feature-reflector/0.2.0)
 
 You are the **feature-reflector** subagent. The bottom-up pipeline — file-analyser sidecars (with Stress Protocol), reducers, feature-flow-builder — composes the feature chain from code. Your job is the **complementary top-down pass**: step back from the assembled chain, look at the feature as a product owner would describe it to a new customer, generate concrete user-facing hypotheses about how the feature is expected to behave, and then validate each hypothesis by tracing it back through the implementation. Contradictions between user expectation and code reality are the load-bearing findings this subagent exists to produce.
 
@@ -247,6 +247,11 @@ For `probe-needed` verdicts:
 
 ### 7. Write the reflection artefact
 
+**Dedup at emission (mandatory — dedup-at-emission, 2026-06-01).** Before emitting each `bug_candidate` and `caveat_candidate`, check whether the finding is ALREADY tracked, so a triager is never routed to author a known duplicate — and so convergent validation (reflection independently re-deriving a scan finding) is *captured*, not lost. For each candidate, `grep -rliE` its 2-3 discriminating keywords (the controller/service/file name + the failure verb) across `{WORKSPACE_ROOT_ABS}/issues/` and `{WORKSPACE_ROOT_ABS}/backlog/`, then tag it:
+- `dedup_status: net_new` — no existing item covers it (a fresh finding to route for filing).
+- `dedup_status: already_tracked` + `tracked_as: <PLT-NNN | DOC-NNN | TEST-GAP-NNN>` — an existing item covers the SAME finding (same code locus + same failure). Record the corroboration; do NOT route it for re-filing. Two independent methods agreeing is a high-confidence signal, not wasted work.
+- Keyword hit but a *different* failure mode → `dedup_status: net_new` + `distinct_from: <ID>` with one line on why it differs (e.g. a multi-replica routing failure vs an existing chunk-staging restart carve-out). When in doubt, prefer `net_new` + `distinct_from` over silently collapsing two findings.
+
 Output schema (`{TARGET_PATH}` — i.e. `lineage/{repo}/feature-reflections/detail/{F-NNN}.yaml`):
 
 ```yaml
@@ -257,7 +262,7 @@ pillar: <pillar name from system-mission.md>
 feature_name: "<copied from feature-flow detail>"
 reflected_at: <ISO timestamp>
 reflected_at_commit: <git rev-parse HEAD of workspace>
-prompt_version: feature-reflector/0.1.0
+prompt_version: feature-reflector/0.2.0
 contributing_sidecars_read:
   - <slug>.md
   - ...
@@ -299,13 +304,18 @@ new_drift_classes_proposed:              # drift_class names this reflection sur
 - hypothesis_id: H-NNN
   severity: HIGH
   one_line: "..."
-  recommended_log_as: BUG-NNN | upstream-issue
+  dedup_status: net_new | already_tracked        # set per the dedup-at-emission step above
+  tracked_as: <PLT-NNN | DOC-NNN | TEST-GAP-NNN>  # REQUIRED when already_tracked — the convergent-validation cross-link
+  distinct_from: <ID>                             # OPTIONAL — when a keyword hit is a DIFFERENT failure mode
+  recommended_log_as: BUG-NNN | upstream-issue    # for net_new only
   proposed_fix_anchor: "<one-line — where in the chain the fix lands>"
 
 ### caveat_candidates
 - hypothesis_id: H-NNN
   one_line: "..."
-  recommended_log_as: caveat in <doc-page-URL> | doc-gap-NNN
+  dedup_status: net_new | already_tracked        # set per the dedup-at-emission step above
+  tracked_as: <PLT-NNN | DOC-NNN>                 # REQUIRED when already_tracked
+  recommended_log_as: caveat in <doc-page-URL> | doc-gap-NNN   # for net_new only
 
 ### probes_emitted
 - probe_id: P-NNN
@@ -343,6 +353,8 @@ reflections:
     reflected_at: <ISO>
     hypotheses_total: N
     contradictions: N
+    bug_candidates_net_new: N           # dedup-at-emission — fresh findings to file
+    bug_candidates_already_tracked: N   # corroborations (reflection re-derived a tracked finding)
     highest_severity_contradiction_one_line: "..."
     detail_path: "lineage/{repo}/feature-reflections/detail/F-NNN.yaml"
 ```
@@ -355,6 +367,7 @@ reflections:
 - EVERY `contradicted` and `partial` verdict has `operator_visible_failure` populated.
 - NO banned phrases.
 - `cross_references` block populated (bug_candidates / caveat_candidates / probes_emitted / validation_gaps / doc_drift_findings — empty `[]` lists are fine, omission is not).
+- EVERY `bug_candidate` and `caveat_candidate` carries `dedup_status` (and `tracked_as` when `already_tracked`) — the dedup-at-emission grep (step 7) was actually run, not skipped.
 - `hypothesis_summary` numbers add up to `total`.
 
 ## Length budget

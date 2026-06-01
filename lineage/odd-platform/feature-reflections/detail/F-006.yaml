@@ -1,0 +1,964 @@
+---
+feature_id: F-006
+pillar_anchored_id: P-09:F-001
+pillar: "P-09 Security & Access Control"
+feature_name: "Role-Based Access Control — RBAC policy/role/owner lifecycle with soft-delete permission-grant persistence"
+reflected_at: 2026-06-01T00:00:00Z
+reflected_at_commit: fbd17e6fd375ef0c241759f296e1cebb7da08811
+prompt_version: feature-reflector/0.1.0
+contributing_sidecars_read:
+  - odd-platform__java__service__service__PolicyServiceImpl.md
+  - odd-platform__java__repository_reactive__repository__ReactivePolicyRepositoryImpl.md
+  - odd-platform__java__service__service__RoleServiceImpl.md
+  - odd-platform__java__service__service__OwnerServiceImpl.md
+  - odd-platform__ts__react-component__component__PolicyList.md
+  - odd-platform__ts__react-component__component__RolesList.md
+  # Additional contributing nodes consulted via the F-006 feature-flow detail's
+  # exhaustively-enumerated observed_vs_expected facets + batch notes (E/H/N/P/Q/R/S/U/V/Y/ZH/ZK)
+  # rather than re-read in full this invocation (Rule 8 — the feature flow already
+  # transcribed each sidecar's load-bearing claims with file:line citations):
+  #   PolicyController.createPolicy (batch E), ReactiveRoleRepositoryImpl (batch N),
+  #   OwnerController.deleteOwner (batch P), ReactiveActivityRepositoryImpl (batch R),
+  #   TermServiceImpl (batch U), OwnerAssociationRequestController + DatasetFieldController (batch V),
+  #   PostgresWALMessageProcessor (batch Y), routes/managementRoutes (batch ZH),
+  #   ODDLDAPProperties (batch ZK), getResourcePermissions (Permission concept).
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/roles"
+    last_verified_at: "2026-05-20T00:00:00Z"
+    last_verified_status: 200
+    note: "Verified live status 200 in the RolesList sidecar (batch Q, 2026-05-20). Describes Roles abstractly ('Owner roles can be managed via Management - Roles section'; ADMIN/USER predefined) but is SILENT on the UI listing surface, the principal-aware list fork, predefined-name protection mechanics, and soft-delete semantics. Docs say 'ADMIN'/'USER'; code uses 'Administrator'/'User' — naming disagreement."
+  - url: "https://docs.opendatadiscovery.org/features/management"
+    last_verified_at: "2026-05-20T00:00:00Z"
+    last_verified_status: 200
+    note: "Verified live status 200 in the RolesList sidecar (batch Q). 'Create roles and attach Policies to them'; 'Tab visibility is permission-aware'. Does NOT document who sees which roles, the search box, pagination, soft-delete visibility."
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/policies"
+    last_verified_at: "2026-05-12T00:00:00Z"
+    last_verified_status: 200
+    note: "Verified status 200 (batch E inheritance, carried through batch H + S sidecars). Documents the policy JSON shape but is silent on the lost-update race, the IllegalArgumentException-500 mapping, the cascade-delete contract, the Administrator-name CREATE-side asymmetry, and persistence/soft-delete semantics. WebFetch not re-exercised this invocation."
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions"
+    last_verified_at: "2026-05-12T00:00:00Z"
+    last_verified_status: 200
+    note: "Verified status 200 (batch E/V inheritance). Catalogues permission keys; the live page is the authority the DatasetField permission-misrouting drift (DATASET_FIELD_ADD_TERM) is measured against."
+hypothesis_summary:
+  total: 14
+  confirmed: 1
+  contradicted: 12
+  partial: 0
+  probe_needed: 1
+  highest_severity_contradiction:
+    hypothesis_id: H-001
+    severity: HIGH
+    one_line: "The Activity Feed (the platform's only operator-readable audit trail) records ZERO RBAC mutations — who created/edited/deleted a policy, role, or owner is unrecoverable; the gap is schema-rooted (activity.data_entity_id NOT NULL) AND enum-rooted (ActivityEventTypeDto has no POLICY/ROLE/OWNER lifecycle values), so it cannot be closed by adding an annotation."
+related_feature_flows:
+  - F-021   # P-07:F-004 Activity Feed — the audit surface whose schema/enum root-cause produces F-006's audit-silence
+  - F-019   # P-08:F-003 Owner Lifecycle — the Owner half of the RBAC mutation surface (positive case-law contrast on hard-delete of bindings)
+  - F-002   # P-06 Business Glossary — Term lifecycle shares the enum-rooted audit-silence second root cause
+  - F-004   # P-01 dataset-field metadata — shares the SecurityConstants permission-misrouting drift (batch V supersede)
+  - F-011   # P-09:F-003 Principal-to-Owner Resolution — admin-group mapping + the OAuth/LDAP principal chain feeding RBAC
+related_concepts:
+  - "Policy (Authorization)"
+  - "Role (Authorization)"
+  - "Owner (Authorization directory entry)"
+  - "Permission (Authorization)"
+  - "User-Owner Mapping"
+  - "Auth Mode"
+related_drift_classes:
+  # Confirmed by this reflection from the feature-flow's drift_class_summary:
+  - forensic_silence_on_rbac_mutations
+  - audit_silence_schema_rooted_activity_data_entity_fk_not_null
+  - audit_silence_enum_rooted_activity_event_type_dto_term_namespace_owner_lifecycle
+  - permission_persistence_after_soft_delete
+  - soft_delete_aware_visibility_inconsistency        # alias used across batch H/Q/S
+  - catalogue_vs_grant_render_asymmetry_ui_visible_half
+  - role_create_administrator_name_asymmetry_mirror
+  - role_service_predefined_name_case_sensitivity_mismatch
+  - error_class_misrepresented_validator_throws_illegalargument
+  - authorization_hot_path_no_cache_2_joins_per_authorized_request
+  - principal_aware_list_fork_ui_silent_no_filtered_messaging
+  - lost_update_race
+  - policy_service_cascade_check_non_atomic_with_soft_delete_mirror
+  - owner_delete_owner_to_role_hard_delete_closes_orphan_binding_owner_side
+  - dataset_field_terms_post_permission_wiring_bug_data_entity_add_term_instead_of_dataset_field_add_term
+  - alert_status_put_permission_copy_paste_dataset_field_add_term_misrouted
+  - ldap_admin_groups_substring_match_short_token_admin_escalation_collision
+new_drift_classes_proposed:
+  - rbac_no_human_readable_permission_catalogue_operator_authors_against_raw_enum_codes   # NEW from H-013 — the LSN-001-shaped catalogue-vs-effect gap on the policy-authoring screen; no doc maps MANAGEMENT_CONTROL/POLICY_CREATE codes to what they grant
+  - rbac_management_screens_no_authorship_column_no_created_by_no_created_at_on_any_row   # NEW from H-012 — the UI-tier manifestation of audit-silence: not one RBAC screen renders who/when; an operator has no in-product affordance to investigate "who added this"
+---
+
+# Role-Based Access Control — product-owner reflection
+
+## product_owner_narrative
+
+Role-Based Access Control is ODD Platform's **authorization governance surface** — the operator-facing machinery that decides *which authenticated identity may mutate which part of the catalog*. A product owner introduces it to a new customer like this: "ODD ships read-collaborative — every signed-in user can browse the whole catalog — but every WRITE (tagging an entity, editing a description, registering a datasource, granting ownership) is gated. You control those gates here. You write **Policies** (named JSON rules that grant permission verbs over resource types — `DATA_ENTITY`, `TERM`, `QUERY_EXAMPLE`, `MANAGEMENT`), you bundle policies into **Roles**, and you attach roles to **Owners** — the directory entries your authenticated users associate themselves with. Two roles ship seeded: `Administrator` (everything) and `User` (nothing by default)." The audiences are the platform-operator and the data-steward-owner (per `system-mission.md:222-268` P-09 + P-08 pillar blocks); the load-bearing constraint the pillar states verbatim is that ODD has **two independent authentication surfaces** and "enabling one does not protect the other" (`system-mission.md:254-256`).
+
+A user interacts with RBAC through two front doors. The **Management UI** (the `/management/policies` and `/management/roles` SPA routes, per the batch-ZH `routes/managementRoutes` sidecar) renders two structurally-identical tabs: each lists the entities (id + name only) with infinite-scroll + a debounced search box, gates the "Create" button behind a `WithPermissions` wrapper, and exposes per-row Edit/Delete affordances (per `PolicyList.md` understanding + `RolesList.md` understanding). The **REST API** is the same chain underneath — `POST/GET/PUT/DELETE /api/policies`, `/api/roles`, `/api/owners`, plus the ownership-binding endpoints `POST /api/dataentities/{id}/ownership` (per the F-006 chain `contributing_nodes` + `PolicyServiceImpl.md` upstream_callers). Behind every front door the same persistence pattern repeats: soft-delete (`UPDATE ... SET deleted_at = NOW()`, never `DELETE`), a partial unique index that frees the name on soft-delete (`policy_name_unique ... WHERE deleted_at IS NULL`, per `ReactivePolicyRepositoryImpl.md` invariants[2]), and — critically — the authorization **hot path** `getRolesPolicies(roleIds)` that resolves the calling user's effective permissions on *every authorized HTTP request* (per `PolicyServiceImpl.md` invariants[5] + `ReactivePolicyRepositoryImpl.md` performance.hot_paths).
+
+The working parts a product owner would demo: **policy authoring** (a JSON editor validated against a bundled JSON-Schema at write time, per `PolicyServiceImpl.md` invariants[0]); **role bundling** (attach N policies to a role; the role-policy edge set is rewritten wholesale on update, per `RolesList.md` concepts); **predefined-entity protection** (the seeded `Administrator`/`User` rows can't be renamed or deleted through the normal path); **a four-mode authentication front** (`auth.type` = DISABLED / LOGIN_FORM / OAUTH2 / LDAP, the last enriched at batch ZK); and **cascade-delete defence** (you can't delete a policy that's still bound to a role — the platform raises HTTP 400 and tells you to detach first, per `PolicyServiceImpl.md` invariants[2]). The customer's mental model is reasonable and mostly honoured on the happy path. The reflection's job is to find where the *assembled product* diverges from what an operator running a real, multi-admin, audited deployment would expect.
+
+The integration story has three legs (per `system-mission.md` cross-pillar graph). RBAC **feeds every other pillar** — "Authorization gates every mutation in Discovery ... the read-collaborative posture means READS bypass per-owner scoping" (`system-mission.md:447-450`). It **feeds-from P-08 Management** — the Management UI is the authoring surface for the policy/role/owner bundles (`system-mission.md:455-458`). And it is **schema-coupled to P-07's Activity Feed** — the audit trail an operator would expect to record RBAC changes is the *same* `activity` table that F-021 owns, and that table's `data_entity_id NOT NULL` FK plus the `ActivityEventTypeDto` enum scope mean RBAC mutations **physically cannot be recorded there** (per the F-006 chain batch-R + batch-U notes, confirmed across 9-to-12 sidecars). This single coupling is the source of the feature's highest-severity finding.
+
+A product owner would flag four edge cases in a demo. (a) **The audit trail is empty for everything you do on these screens** — create a policy, edit a role, delete an owner: nothing appears in the Activity Feed, no log line, no UI authorship column (per the 9-sidecar audit-silence pattern + `PolicyList.md`/`RolesList.md` confirming the UI tier renders only id+name). (b) **A deleted policy can keep granting** — the catalogue-vs-grant asymmetry: the list shows "gone" while a surviving role binding keeps the permission live (per `PolicyList.md` security.known_security_gaps[1] + `ReactivePolicyRepositoryImpl.md` bugs[0]). (c) **A non-admin sees a different list than an admin, silently** — the principal-aware list fork returns only the caller's own roles/policies with no "showing N of M" affordance, so a non-admin may conclude "this platform has one role" (per `RolesList.md` invariants + `PolicyServiceImpl.md` invariants[4]). (d) **The seeded Administrator's protection is a case-sensitive string** — `name === 'Administrator'` at the UI, service-update, and SQL-index layers, but `equalsIgnoreCase` at the service-delete layer, producing a lowercase-`administrator` row that is editable, undeletable, and bypasses the UI guard (per `RolesList.md` invariants + `PolicyList.md` invariants[2]).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: |
+    When an operator (or a compliance auditor) opens the Activity Feed and asks
+    "who created / edited / deleted this RBAC policy, role, or owner, and when?",
+    the platform shows them the answer — because the pillar's primary user action
+    is "audit metadata changes" and RBAC mutations are the most security-relevant
+    metadata changes the platform supports.
+  derivation: |
+    Pillar mission P-07 enumerates "audit metadata changes on the global Activity
+    feed" as a primary user action (system-mission.md:203); P-09 frames RBAC as the
+    gate on every mutation. A senior operator of any access-control system treats
+    "who changed the permissions" as the single most load-bearing audit question.
+  seed_source: pillar-mission + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      RBAC mutations emit NOTHING to any audit surface. PolicyServiceImpl,
+      RoleServiceImpl, and OwnerServiceImpl carry no @Slf4j, no Logger, no log.*
+      call, and no @ActivityLog annotation (Grep-verified across the class bodies,
+      per PolicyServiceImpl.md downstream_side_effects + RoleServiceImpl/OwnerServiceImpl
+      via the F-006 chain batch-S notes). The UI tier is equally silent — PolicyList
+      and RolesList render only id+name, no created_by, no created_at (PolicyList.md
+      security.known_security_gaps[4] + RolesList.md downstream_side_effects). The
+      gap is not a missing annotation: it is DOUBLE-rooted. (1) Schema root cause —
+      `activity.data_entity_id` is NOT NULL with FK to data_entity(id)
+      (V0_0_48__add_activity.sql:4,12); RBAC mutations have no data-entity context,
+      so the write would fail at the SQL layer even if @ActivityLog were added
+      (F-006 chain batch R). (2) Enum root cause — ActivityEventTypeDto has NO
+      POLICY_CREATED/ROLE_CREATED/OWNER_CREATED (or *_UPDATED/*_DELETED) values, so
+      `@ActivityLog(POLICY_CREATED)` would not even compile (F-006 chain batch U).
+      The pattern is confirmed across 9 distinct sidecars (controller E + policy-repo
+      H + role-repo N + UI Q + activity-repo R + owner-service P + policy/role-service S
+      + term-service U) and extends to a 10th surface (notification delivery, batch Y).
+    evidence:
+      - sidecar: odd-platform__java__service__service__PolicyServiceImpl.md
+        section: downstream_side_effects (final paragraph)
+        cite: "PolicyServiceImpl.java:1-117 (Grep @Slf4j|Logger|log.|@ActivityLog → zero)"
+        note: "Service tier emits zero security-relevant log lines on create/update/delete."
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactivePolicyRepositoryImpl.md
+        section: security.known_security_gaps[1]
+        cite: "ReactivePolicyRepositoryImpl.java:1-40 + ExceptionUtils.java:34"
+        note: "Repository tier — only log.error on non-uniqueness DB errors; no mutation audit."
+      - sidecar: '(F-006 feature-flow detail — batch R notes)'
+        section: batch_extensions[batch=R]
+        cite: "V0_0_48__add_activity.sql:4,12"
+        note: "activity.data_entity_id NOT NULL FK — schema cannot store a non-data-entity event."
+      - sidecar: '(F-006 feature-flow detail — batch U notes)'
+        section: observed_vs_expected facet audit_silence_enum_rooted
+        cite: "ActivityEventTypeDto.java:3-31"
+        note: "Enum has no POLICY/ROLE/OWNER lifecycle values — @ActivityLog(POLICY_CREATED) would not compile."
+      - sidecar: odd-platform__ts__react-component__component__PolicyList.md
+        section: security.known_security_gaps[4]
+        cite: "PolicyList.tsx:118-120"
+        note: "UI rows render id+name only — no authorship affordance for the operator."
+    operator_visible_failure: |
+      Multiple operator-visible consequences:
+      (a) A security incident reviewer asked "who created the MANAGEMENT/ALL policy
+          on 2026-05-30?" has ZERO in-application records — not in the Activity Feed,
+          not in server logs, not in any UI panel. The investigation dead-ends.
+      (b) A regulated deployment (SOC2 / ISO27001 access-review requirement) cannot
+          produce an access-change audit trail from ODD telemetry at all — the
+          control simply does not exist for the RBAC surface.
+      (c) An operator who notices an unexpected role binding cannot answer "did I
+          do this, did a teammate, or was the platform compromised?" — there is no
+          authorship anywhere.
+      (d) The fix is NON-trivial and the operator-facing severity compounds because
+          the docs are silent on the scope: the live Activity Feed docs do not state
+          that the feed covers data-entity mutations ONLY (F-006 chain batch U
+          recommendation) — so an operator may BELIEVE the audit is complete when
+          it records nothing for the most sensitive surface.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    sme_consultation_recommended: true
+    sme_consultation_question: "What audit-trail completeness do operators of a data-catalog access-control surface (DataHub policies, Amundsen, OpenMetadata roles) consider load-bearing-by-default — is per-mutation actor+timestamp on RBAC changes table-stakes, and what is the canonical industry term ('access review log' / 'audit log' / 'change history')?"
+    sme_consultation_archetype: implicit-requirements
+
+- id: H-002
+  hypothesis: |
+    When an operator deletes a Policy via the Management → Policies tab and the
+    platform reports success (the policy disappears from the list), that policy no
+    longer grants any permission to any user.
+  derivation: |
+    Endpoint shape — DELETE /api/policies/{id} + the UI Delete affordance promise
+    removal; the operator's mental model of "delete = revoke" is universal. A
+    security operator deleting a policy during incident response expects the grant
+    to stop.
+  seed_source: endpoint-shape + ui-label + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Two things are true at once, and their interaction is the contradiction. The
+      NORMAL UI delete path is DEFENDED: PolicyServiceImpl.delete (lines 89-92)
+      raises CascadeDeleteException (HTTP 400) if the policy is still bound to any
+      role — so an operator deleting a bound policy through the UI gets an error and
+      cannot complete the delete (the happy-path defence works). BUT the underlying
+      authorization JOIN getRolesPolicies (ReactivePolicyRepositoryImpl.java:32-35)
+      carries NO `policy.deleted_at IS NULL` predicate. So if a soft-delete reaches
+      a bound policy by ANY path the service defence does not cover — a DB-direct
+      hot-fix UPDATE, a migration mistake, or a future refactor that drops the
+      cascade check — the policy is "gone" from the list (the list query auto-applies
+      deleted_at IS NULL) while it CONTINUES to grant its permissions on every
+      authorized request via the unfiltered JOIN. The list shows revoked; the
+      enforcer keeps granting. The cascade defence is the SOLE protection and it
+      lives in service code only — there is no DB trigger and no repository-layer
+      filter (PolicyServiceImpl.md invariants[2] + ReactivePolicyRepositoryImpl.md
+      coupling[1]). The hypothesis is therefore false whenever the soft-deleted-but-
+      bound state is reached: the deletion does NOT universally revoke.
+    evidence:
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactivePolicyRepositoryImpl.md
+        section: bugs_limitations_corner_cases[0] + security.known_security_gaps[0]
+        cite: "ReactivePolicyRepositoryImpl.java:32-35"
+        note: "getRolesPolicies JOIN has no deleted_at filter — soft-deleted bound policy still resolves."
+      - sidecar: odd-platform__java__service__service__PolicyServiceImpl.md
+        section: invariants[2]
+        cite: "PolicyServiceImpl.java:89-92"
+        note: "CascadeDeleteException is the sole defence; lives in service code, bypassable out-of-band."
+      - sidecar: odd-platform__ts__react-component__component__PolicyList.md
+        section: security.known_security_gaps[1] + bugs_limitations_corner_cases[5]
+        cite: "PolicyList.tsx:118-120 + PolicyServiceImpl.java:53-58"
+        note: "UI list auto-filters deleted_at IS NULL — operator sees 'gone' while grant survives."
+    operator_visible_failure: |
+      (a) Incident-response failure: an operator removing a privileged policy during
+          a breach believes the privilege is revoked when the UI shows the policy
+          gone; if the role binding survived (via any out-of-band soft-delete), every
+          user in that role retains the permission. The incident response is
+          incomplete and the operator has no signal (SHB-111 operator-incident
+          narrative, F-006 chain shoebox-F).
+      (b) The defence's fragility is itself the operator hazard: any DB-direct
+          cleanup script doing `UPDATE policy SET deleted_at = NOW()` (a natural
+          operator instinct for "remove this row") silently creates the orphan-grant
+          state — the platform offers no warning that the safe path is via the UI/API
+          cascade check.
+      (c) A scripted cleanup catching the HTTP 400 USR004 must detach roles FIRST
+          then delete the policy; the dependency ordering is undocumented (F-006
+          chain shoebox-F facet policy_delete_cascade_detach_order_dependency_undocumented).
+    severity: HIGH
+    confidence: HIGH
+    probe_id: P-198
+    routes_to_finding: bug-candidate
+    verdict_note: |
+      Marked `contradicted` (not `partial`) because the user-facing PROMISE "delete =
+      no longer grants" is FALSE whenever the soft-deleted-but-bound state is reached,
+      and the only thing keeping that state out of the happy path is a single
+      service-layer check with no DB or repository backstop — fragile enough that the
+      operator-visible failure is the load-bearing finding. P-198 MEASURES the grant
+      persistence end-to-end (a confirming probe on a contradicted verdict, per the
+      schema — the probe sharpens evidence, it does not downgrade the verdict).
+
+- id: H-003
+  hypothesis: |
+    When an operator looks at the Management → Roles tab, the Policies listed in a
+    role's chip list are the policies that are actually live and granting — a
+    deleted policy does not appear attached to a role.
+  derivation: |
+    Response-shape — RoleItem renders `policies.map(p => p.name)` as chips; the
+    operator reads each chip as "this role currently grants this (live) policy".
+    A role catalogue that shows deleted policies as if attached misrepresents the
+    role's actual grant.
+  seed_source: response-shape + ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The role-dto JOIN against POLICY in getDto/listDto/getByName
+      (ReactiveRoleRepositoryImpl.java:45-48, 67-70, 87-90) has NO
+      `policy.deleted_at IS NULL` predicate (the mirror of the Policy-half drift).
+      A Role whose Policy has been soft-deleted but whose role_to_policy edge
+      survives WILL render the deleted Policy's name in the per-row chip list, with
+      no visual differentiation (RolesList.md invariants + RoleItem.tsx:42-48). The
+      role catalogue shows a ghost policy as if attached and granting.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__RolesList.md
+        section: invariants ("Soft-deleted Policies STILL APPEAR")
+        cite: "RoleItem.tsx:42-48 + ReactiveRoleRepositoryImpl.java:45-48,67-70,87-90"
+        note: "Per-row chips render LEFT-JOINed policies with no deleted_at filter."
+      - sidecar: '(F-006 feature-flow detail — batch N notes)'
+        section: drift_class role_repo_left_join_no_policy_deleted_at_filter_mirror
+        cite: "ReactiveRoleRepositoryImpl.java:45-48"
+        note: "Role-repo LEFT JOIN no policy.deleted_at filter — primary source."
+    operator_visible_failure: |
+      (a) Operational-intelligence leak: an operator (or an attacker with read
+          access to the role catalogue) can enumerate HISTORICAL policy names that
+          were once attached and then deleted — names like "PII Custodian" or
+          "Finance Admin" reveal organisational structure that the deletion was
+          meant to retire.
+      (b) Misrepresentation of effective grants: an operator auditing "what does the
+          Editor role grant?" reads a chip for a deleted policy and either
+          double-counts a grant that is gone (if the binding was cleaned) or
+          under-reacts to a grant that survives (if the binding persists — which it
+          does, chaining into H-002). Either way the chip list is not a truthful
+          statement of the role's live grant.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-004
+  hypothesis: |
+    When a non-administrator operator opens the Management → Roles (or Policies)
+    tab, the list they see is the complete catalogue of roles/policies configured
+    on the platform — or, if it is filtered, the UI tells them so.
+  derivation: |
+    UI-label + view-mode — the tab is titled "Roles" / "Policies" with a "N roles
+    overall" subtitle; a user reads a list page as "everything that exists." If the
+    set is principal-filtered, a senior product owner expects a "showing N of M" or
+    "filtered by your access" affordance (the platform's own convention question).
+  seed_source: ui-label + view-mode + cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      RoleServiceImpl.list (lines 40-47) and PolicyServiceImpl.list (lines 52-60)
+      both fork on principal: ADMIN callers get the full paginated catalogue;
+      non-ADMIN callers get ONLY their own attached roles/policies via an in-memory
+      filter. The UI is identical and UNAWARE of the fork — it renders whatever the
+      API returns with a "N overall" subtitle and NO "showing N of M", NO
+      "filtered-by-your-access" disclaimer, NO admin-contact CTA (RolesList.md
+      invariants + PolicyServiceImpl.md invariants[4]). A non-ADMIN with only the
+      USER role sees exactly one row and has no affordance indicating other roles
+      exist. (Additional wrinkle: the non-ADMIN Policy path hardcodes
+      Page.hasNext=false and ignores page/size, so pagination semantics also differ
+      silently — PolicyServiceImpl.md bugs[3].)
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__RolesList.md
+        section: invariants ("Server-side principal-aware list fork") + doc_drift_findings[4]
+        cite: "RoleServiceImpl.java:40-47 + RolesList.tsx:78-80"
+        note: "Different row sets to ADMIN vs non-ADMIN; UI renders 'N overall' with no filter signal."
+      - sidecar: odd-platform__java__service__service__PolicyServiceImpl.md
+        section: invariants[4] + bugs_limitations_corner_cases[3]
+        cite: "PolicyServiceImpl.java:52-60, 109-116"
+        note: "Non-admin in-memory branch ignores page/size, hasNext hardcoded false."
+    operator_visible_failure: |
+      (a) UX defect: a non-admin operator reasonably concludes "the platform has
+          only one role / a handful of policies configured" and may file a support
+          ticket or duplicate an existing role they cannot see.
+      (b) Security-adjacent argument: an attacker (or a confused user) can claim
+          "role X doesn't exist" citing the empty/short UI surface — the absence of
+          a "filtered by your access" affordance means the UI cannot be used to prove
+          a role's existence or non-existence.
+      (c) Inconsistency with platform convention: the read-collaborative posture
+          (every user sees the whole catalog) holds for data entities but is
+          INVERTED here (Roles/Policies are principal-filtered) with no affordance
+          marking the inversion — violating the cross-feature consistency a senior
+          product owner expects.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    sme_consultation_recommended: true
+    sme_consultation_question: "When a data-catalog RBAC console shows a principal-filtered list (a non-admin sees only their own roles), do operators expect an explicit 'filtered by your access' affordance, and how do comparable consoles (DataHub/OpenMetadata) signal this?"
+    sme_consultation_archetype: comparative
+
+- id: H-005
+  hypothesis: |
+    When an operator deletes an Owner, that owner's previously-attached roles no
+    longer confer their permissions to anyone — the deletion fully revokes the
+    owner's access.
+  derivation: |
+    Endpoint-shape — DELETE /api/owners/{id}; pillar-mission "create owners and
+    attach roles" implies the inverse (delete owner = remove the role attachment).
+    The negative-space concern is the orphan-binding family pattern (does deletion
+    leave a granting binding?).
+  seed_source: endpoint-shape + negative-space + pillar-mission
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      Owner deletion HARD-DELETES the owner_to_role rows via
+      ownerToRoleRepository.deleteOwnerRelationsExcept(id, List.of())
+      (OwnerServiceImpl.java:97 → ReactiveOwnerToRoleRepositoryImpl.java:52-56
+      DSL.delete) — a physical DELETE, not a soft-delete. The F-006 family pattern
+      permission_persistence_after_soft_delete is closed CORRECTLY on the OWNER
+      side: a deleted Owner does NOT continue to confer their previously-attached
+      roles' permissions because the binding row is physically removed. This is the
+      POSITIVE case-law contrast to the POLICY/ROLE half (where soft-delete leaves
+      orphan grants). The Owner ROW itself is soft-deleted (name freed for reuse via
+      the partial unique index) but the role BINDINGS are hard-gone.
+    evidence:
+      - sidecar: '(F-006 feature-flow detail — batch P notes, finding (2))'
+        section: owner_to_role_hard_delete_closes_orphan_binding
+        cite: "OwnerServiceImpl.java:97 + ReactiveOwnerToRoleRepositoryImpl.java:52-56"
+        note: "Hard-delete of owner_to_role rows — the binding is physically removed on owner delete."
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    confirmed_note: |
+      Routes to caveat-candidate NOT because it is broken but because the asymmetry
+      is operator-surprising and undocumented: Owner deletion hard-deletes role
+      bindings while Policy and Role deletions soft-delete and leave bindings. An
+      operator reasoning about "what does deletion do to grants" gets THREE different
+      answers across the three RBAC entities. Worth a doc sentence (F-006 chain batch
+      P related_doc_gaps candidate).
+
+- id: H-006
+  hypothesis: |
+    When an operator POSTs a malformed Policy JSON body (a schema-invalid policy),
+    the platform returns a 400 Bad Request with a message describing what is wrong,
+    so the operator can correct it.
+  derivation: |
+    Endpoint-shape — POST /api/policies validates against a JSON-Schema; a user who
+    sends invalid input expects a 4xx with the validation detail (the universal REST
+    contract). The pillar exposes a JSON editor, reinforcing "the platform validates
+    and tells me."
+  seed_source: endpoint-shape + doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      PolicyJSONValidator.validate throws IllegalArgumentException("Policy is not
+      valid: " + errors) on schema failure (PolicyServiceImpl.java:64,73 →
+      PolicyJSONValidator.java:28-32). ControllerAdvice (ControllerAdvice.java:23-66)
+      has handlers for BadUserRequestException→400, NotFoundException→404,
+      UniqueConstraintException→400, CascadeDeleteException→400,
+      WebExchangeBindException→400, and a catch-all Exception.class→500.
+      IllegalArgumentException has NO dedicated handler — it falls through to the
+      catch-all and surfaces as HTTP 500 with body "Internal Server Error", NOT 400
+      with the validator's detail (PolicyServiceImpl.md bugs[2] + invariants[0]).
+    evidence:
+      - sidecar: odd-platform__java__service__service__PolicyServiceImpl.md
+        section: bugs_limitations_corner_cases[2] + invariants[0] + doc_drift_findings (SERVICE-DOC-GAP-D)
+        cite: "PolicyJSONValidator.java:28-32 + ControllerAdvice.java:61-66"
+        note: "IllegalArgumentException has no handler — malformed policy yields HTTP 500."
+    operator_visible_failure: |
+      (a) An operator authoring a policy and getting a field wrong receives a generic
+          "Internal Server Error" 500 with NO indication of what was malformed —
+          they cannot tell whether they sent a bad body or hit a server bug, and the
+          validator's detailed error message is only in the server logs they may not
+          have access to.
+      (b) The error class misclassification breaks client retry logic: a 500 signals
+          "server problem, retry later" while the correct signal is "your input is
+          wrong, do not retry without fixing it." Automation built against the API
+          will retry a permanently-failing request.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-007
+  hypothesis: |
+    When two administrators edit the same Policy concurrently, the platform either
+    serialises their edits or warns about the conflict — one admin's change is not
+    silently overwritten by the other's.
+  derivation: |
+    Negative-space — a multi-admin deployment is the explicit audience (P-08
+    platform-operator + data-steward-owner). A senior operator of a shared admin
+    console expects last-writer-wins to at least be transactionally scoped, or an
+    optimistic-concurrency conflict to surface.
+  seed_source: negative-space + cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      PolicyServiceImpl.update (lines 71-81) issues policyRepository.get(id) then
+      policyRepository.update(...) — two separate R2DBC calls OUTSIDE any
+      @ReactiveTransactional. There is no version column on PolicyPojo and no
+      row-level lock. Two concurrent PUTs both read v1, both write; the second write
+      (derived from v1, not from the first writer's v2) wins and the first writer's
+      change is silently lost. The sibling RoleServiceImpl IS @ReactiveTransactional
+      on all three mutating methods (RoleServiceImpl.java:50,64,77) — the asymmetry
+      is the platform's own evidence that the Policy-side absence is an oversight,
+      not a design (PolicyServiceImpl.md bugs[0] + invariants[3] + the batch-S
+      service_tier_transactional_asymmetry finding).
+    evidence:
+      - sidecar: odd-platform__java__service__service__PolicyServiceImpl.md
+        section: bugs_limitations_corner_cases[0] + invariants[3]
+        cite: "PolicyServiceImpl.java:71-81 vs RoleServiceImpl.java:50,64,77"
+        note: "Policy update read-then-write under no transaction; Role side IS transactional."
+      - sidecar: odd-platform__java__repository_reactive__repository__ReactivePolicyRepositoryImpl.md
+        section: bugs_limitations_corner_cases[1] + performance.scaling_characteristics
+        cite: "ReactiveAbstractCRUDRepository.java:103-110 (no version field)"
+        note: "No optimistic-concurrency token; concurrent updates lost-update."
+    operator_visible_failure: |
+      (a) In a multi-admin team, two operators tightening a policy at the same time
+          can have one of the two edits silently vanish — the policy ends up in a
+          state neither operator fully authored, with no error and (per H-001) no
+          audit trail to reconstruct what happened.
+      (b) The asymmetry with the Role side means an operator who learned "edits are
+          safe" from the Roles tab carries a false expectation to the Policies tab.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-008
+  hypothesis: |
+    When the platform is deployed with the default-shipped auth posture, a caller
+    who is not an authenticated administrator cannot create or rebind RBAC policies
+    and roles.
+  derivation: |
+    Pillar-mission — P-09 frames RBAC as the authorization gate; the negative-space
+    concern is the as-shipped default posture (the LSN-001/LSN-002 class — what does
+    the default deployment expose?). An operator assumes the security feature is
+    secure by default.
+  seed_source: pillar-mission + negative-space + cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The platform ships `auth.type=DISABLED` as the bundled default
+      (application.yml). Under DISABLED, DisabledAuthSecurityConfiguration applies
+      `anyExchange().permitAll()` — the SECURITY_RULES gate (which wires
+      POLICY_CREATE/ROLE_CREATE/OWNER_CREATE) is entirely short-circuited. Any
+      network-reachable caller can POST a MANAGEMENT/ALL policy and bind it to a
+      role with no credential (concepts.yaml Policy/Role security_aggregate
+      "bypassed under auth.type=DISABLED"; PolicyServiceImpl.md requires-config). The
+      escalation leaves no audit trace (H-001). This is a known-by-design dev mode,
+      but the operator-facing reality is that the as-shipped default is an open RBAC
+      write surface, and the live docs do not enumerate the specific RBAC exposure.
+    evidence:
+      - sidecar: '(concepts.yaml — Policy / Role security_aggregate)'
+        section: authorization_consistency.detail
+        cite: "DisabledAuthSecurityConfiguration.java:13-18 (anyExchange().permitAll())"
+        note: "DISABLED short-circuits SECURITY_RULES — POLICY_CREATE/ROLE_CREATE unenforced."
+      - sidecar: odd-platform__java__service__service__PolicyServiceImpl.md
+        section: requires-config (auth.type indirect)
+        cite: "PolicyServiceImpl.java:98 (indirect) + batch-E capture"
+        note: "Under DISABLED the principal is a synthesised anonymous-admin; the gate does not run."
+    operator_visible_failure: |
+      (a) An operator who deploys ODD with the bundled config on a reachable network
+          port (the LSN-001/LSN-002 default-trap class) has, without realising it, an
+          RBAC surface any unauthenticated caller can fully rewrite — including
+          minting a MANAGEMENT/ALL policy + role (full platform control).
+      (b) Combined with H-001, the escalation is invisible: no audit, no log, no UI
+          authorship.
+      (c) The P-09 docs state "enabling one does not protect the other" but do not
+          specifically walk the RBAC-surface exposure under DISABLED — an operator
+          reading the docs gets the general warning but not the concrete "anyone can
+          become admin" consequence for this feature.
+    severity: HIGH
+    confidence: HIGH
+    probe_id: P-199
+    routes_to_finding: caveat-candidate
+    contradicted_note: |
+      Routes to caveat-candidate (not bug-candidate) because DISABLED-mode openness
+      is an intentional dev-mode design; the deliverable is a documentation caveat
+      naming the concrete RBAC exposure + the as-shipped default, NOT a code change
+      to DISABLED semantics. The bug-candidate sibling is the LOGIN_FORM "every user
+      is ADMIN" and S2S "every API key is ADMIN" postures (out of this hypothesis's
+      scope; cross-ref concepts.yaml Role weaknesses). P-199 MEASURES the anonymous
+      escalation + the audit-silence (a confirming probe on a contradicted verdict).
+
+- id: H-009
+  hypothesis: |
+    When an operator creates a Policy or Role, the platform protects the seeded
+    `Administrator` identity the same way it does on edit and delete — an operator
+    cannot create a second entity named `Administrator` and ride the trusted name.
+  derivation: |
+    Negative-space + cross-pillar — the platform reserves `Administrator` on update
+    and delete (visible in the UI guard + service guard); a consistent product
+    protects the name symmetrically across all three CRUD verbs. An operator assumes
+    "Administrator is reserved" means reserved everywhere.
+  seed_source: negative-space + ui-label
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      PolicyServiceImpl.create (lines 62-69) and RoleServiceImpl.create (lines
+      51-61) have NO name check against the predefined `Administrator`/`User` names —
+      only update (line 76/68) and delete (line 87/82) do. The sole protection on
+      create is the DB partial unique index (`policy_name_unique`/`role_name_unique
+      WHERE deleted_at IS NULL`), which protects ONLY while the seeded row is live.
+      If the seeded Administrator row is ever soft-deleted out-of-band (a DB-direct
+      UPDATE), the partial index frees the name AND create has no guard — a new
+      `Administrator` policy/role with attacker-chosen statements/policies becomes
+      creatable. The UI is complicit: RoleForm declares only `{required, validate:
+      trim}` — no predefined-name reject (RolesList.md downstream_side_effects).
+    evidence:
+      - sidecar: odd-platform__java__service__service__PolicyServiceImpl.md
+        section: invariants[1] + bugs_limitations_corner_cases[1]
+        cite: "PolicyServiceImpl.java:29,62-69 vs 76,87"
+        note: "Administrator name reserved on update/delete, NOT on create."
+      - sidecar: '(F-006 feature-flow detail — batch N notes finding (2))'
+        section: drift_class role_create_administrator_name_asymmetry_mirror
+        cite: "RoleServiceImpl.java:51-61 vs 68 vs 81-84 + V0_0_64__remove_is_deleted_field.sql:88-90"
+        note: "Role-create has no name check; partial unique index frees the name on soft-delete."
+      - sidecar: odd-platform__ts__react-component__component__RolesList.md
+        section: downstream_side_effects (Create-role write side-effect)
+        cite: "RoleForm.tsx:85"
+        note: "UI form has no predefined-name reject — complicit in the create-side gap."
+    operator_visible_failure: |
+      (a) Privilege-escalation surface: an attacker who can soft-delete the seeded
+          Administrator row (DB access, or a future code path) can then use the
+          ORDINARY Create UI/API to mint a new `Administrator` with arbitrary
+          permissions — and the name confers UI trust (the case-sensitive
+          `=== 'Administrator'` guard would now hide Edit/Delete on the ATTACKER's
+          row, protecting it from removal).
+      (b) The asymmetry is invisible to an operator: the UI shows "Administrator is
+          protected" (hidden Edit/Delete on the seeded row) which sets the
+          expectation that the name is globally reserved — the create-path hole
+          contradicts that expectation silently.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-010
+  hypothesis: |
+    The `Administrator` / `User` predefined-name protection behaves consistently
+    regardless of the casing an operator types — the platform treats `administrator`
+    and `Administrator` as the same reserved name.
+  derivation: |
+    Negative-space — predefined-name protection is a security guard; a senior
+    engineer expects case-insensitive matching for a reserved identifier (operators
+    typo casing constantly). Inconsistent casing across CRUD verbs is a classic
+    guard-bypass shape.
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The guards disagree on casing. RoleServiceImpl.update (line 68) uses
+      case-SENSITIVE `.equals(UserProviderRole.ADMIN.getValue())`; RoleServiceImpl.delete
+      (line 82) uses case-INSENSITIVE `.equalsIgnoreCase(role.getName())`; create has
+      no check. The UI guards (RoleItem.tsx:24-25, PolicyItem.tsx:23, RoleForm.tsx:28)
+      are all case-SENSITIVE `=== 'Administrator'`. Net effect: an operator who
+      creates a role named `administrator` (lowercase — the partial unique index
+      permits it because Postgres VARCHAR comparison is byte-for-byte case-sensitive)
+      gets a row that is CREATABLE (no create guard), EDITABLE (update guard is
+      case-sensitive, does not match lowercase), but UNDELETABLE (delete guard is
+      case-insensitive, DOES match). The UI shows Edit AND Delete buttons on the
+      lowercase row (UI guard is case-sensitive); clicking Delete yields a server
+      error.
+    evidence:
+      - sidecar: '(F-006 feature-flow detail — batch N/S notes)'
+        section: drift_class role_service_predefined_name_case_sensitivity_mismatch
+        cite: "RoleServiceImpl.java:68 (case-sensitive) vs 82 (case-insensitive)"
+        note: "Update guard case-sensitive; delete guard case-insensitive — primary source."
+      - sidecar: odd-platform__ts__react-component__component__RolesList.md
+        section: invariants ("Predefined-role name protection is UI-only")
+        cite: "RoleItem.tsx:24-25 + RoleForm.tsx:28,90"
+        note: "UI guards case-sensitive — lowercase 'administrator' shows Edit/Delete buttons."
+    operator_visible_failure: |
+      (a) An operator who accidentally (or maliciously) creates `administrator`
+          (lowercase) produces an UNDELETABLE role row — they cannot remove it via
+          the UI or API (delete is rejected), they CAN edit it, and it persists with
+          whatever policies were attached. Cleanup requires DB-direct intervention.
+      (b) A user clicking Delete on the lowercase row gets a confusing server error
+          ("Role is predefined and cannot be deleted") for a role they just created
+          and that is plainly not the seeded predefined role.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-011
+  hypothesis: |
+    When an operator deletes a Policy and the platform blocks the delete because the
+    policy is still bound to a role (the cascade-delete defence), no concurrent
+    request can slip the policy into a soft-deleted-but-still-bound state.
+  derivation: |
+    Negative-space — the cascade-delete defence is the SOLE guard against the
+    orphan-binding grant leak (H-002). A senior engineer asks whether the check and
+    the delete are atomic; if they are two separate calls, a concurrent role-bind
+    can race between them.
+  seed_source: negative-space
+  validation:
+    verdict: probe-needed
+    actual_behavior: |
+      The cascade check (isPolicyAttachedToRole at PolicyServiceImpl.java:89) and the
+      soft-delete (policyRepository.delete at line 93) are TWO separate R2DBC calls
+      OUTSIDE any @ReactiveTransactional. Statically, the race window is real: client
+      A reads isAttached=false (the policy is currently unbound), client B binds the
+      policy to a role (inserts a role_to_policy row), client A continues and
+      soft-deletes the now-bound policy — yielding the orphan-binding state the
+      defence intended to block, which (via H-002's unfiltered JOIN) keeps granting.
+      Whether the window is WIN-able under READ COMMITTED at realistic concurrency
+      requires running the system — hence probe-needed (the same non-atomic shape is
+      confirmed on the Owner-delete side, so a positive result generalises).
+    evidence:
+      - sidecar: odd-platform__java__service__service__PolicyServiceImpl.md
+        section: bugs_limitations_corner_cases[5] (cascade-check non-atomic)
+        cite: "PolicyServiceImpl.java:83-95 (check line 89, delete line 93, no transaction)"
+        note: "Two separate R2DBC calls outside any transaction — race window present in code."
+      - sidecar: '(F-006 feature-flow detail — shoebox-F notes finding (2))'
+        section: three_concurrent_client_race_description
+        cite: "PolicyServiceImpl.java:89 vs 93"
+        note: "Concrete A/B/C interleaving makes the race reproducible — probe target."
+    operator_visible_failure: |
+      If the race is WIN-able: an operator's cascade-protected delete provides FALSE
+      assurance — under concurrent role mutation the platform CAN reach the exact
+      orphan-binding state the defence advertises it prevents, and the operator
+      receives no signal (no error, no audit). The defence's value (the guard that
+      makes "the UI delete path is safe" true) is undermined under concurrency.
+    severity: MEDIUM
+    confidence: MEDIUM
+    probe_id: P-197
+    routes_to_finding: bug-candidate
+
+- id: H-012
+  hypothesis: |
+    When an operator wants to know who created or last changed a specific Role or
+    Policy, the Management screen shows that authorship — a created-by / created-at
+    column or detail field on the row.
+  derivation: |
+    Senior-product-owner UX seed (Rule 9: "does the user understand from what is on
+    screen; can the user customise / investigate") + response-shape. An access-control
+    console row is expected to carry provenance — every comparable admin UI shows at
+    least created-at.
+  seed_source: ui-label + response-shape + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Neither RBAC management screen renders any authorship metadata. PolicyList maps
+      `{ id, name }` only (PolicyList.tsx:118-120); RolesList maps
+      `{ id, name, policies }` only (RolesList.tsx:126-128). There is no created_at,
+      no created_by, no updated_at, no updated_by on any row or in any detail view.
+      The successful create/update/delete toast vanishes in ~5 seconds and is the
+      only feedback; there is no persistent UI audit panel (PolicyList.md
+      security.known_security_gaps[4] + RolesList.md implicit_adrs analytics-absence).
+      This is the UI-tier manifestation of the H-001 audit-silence — the screen
+      cannot show what the schema cannot store.
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__PolicyList.md
+        section: security.known_security_gaps[4]
+        cite: "PolicyList.tsx:118-120"
+        note: "Rows render id+name only — no authorship affordance."
+      - sidecar: odd-platform__ts__react-component__component__RolesList.md
+        section: downstream_side_effects (NO analytics) + implicit_adrs (analytics-absence)
+        cite: "RolesList.tsx:126-128"
+        note: "Rows render id+name+policies; no created_by/created_at; no analytics event on mutation."
+    operator_visible_failure: |
+      (a) An operator investigating "who added the Editor role last Tuesday" has NO
+          in-product affordance — not a column, not a detail field, not a history
+          tab. They must escalate to DB inspection (and the DB only carries
+          created_at/updated_at timestamps, not WHO — per the soft-delete base
+          columns, there is no created_by on role/policy rows).
+      (b) The screen actively misleads by omission: an operator reasonably assumes a
+          management console tracks provenance; the absence is silent, so they may
+          believe "no one changed this recently" when the screen simply never shows
+          change history.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-013
+  hypothesis: |
+    When an operator authors a Policy, the screen (or the docs it links to) tells
+    them what each permission code actually grants — e.g. what `MANAGEMENT_CONTROL`
+    or `POLICY_CREATE` lets a holder do — so they can write a correct policy without
+    reading source code.
+  derivation: |
+    Senior-product-owner UX seed (Rule 9: "is the UI intuitive; does the user
+    understand how to use this from what is on screen") + doc-claim. A policy editor
+    that offers 75 raw enum codes with no human-readable mapping is not usable by a
+    non-developer operator.
+  seed_source: ui-label + doc-claim + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The policy authoring surface (PolicyForm → AppJSONEditor) presents the operator
+      with the JSON-Schema document returned by GET /api/policies/schema — i.e. the
+      75-value Permission enum (components.yaml:158-235) as raw permission CODES. The
+      operator AUTHORS against codes like DATA_ENTITY_VIEW, MANAGEMENT_CONTROL,
+      POLICY_CREATE; the GRANT the backend resolves is getRolesPolicies →
+      role_to_policy JOIN → effective permissions per request. NO live doc page maps
+      the permission codes to user-readable descriptions of what each grants (e.g.
+      "does MANAGEMENT_CONTROL cover /api/policies/* or just /api/management/*?").
+      An operator must read both components.yaml AND the per-controller SecurityConstants
+      wiring to understand each code (PolicyList.md doc_drift_findings UI-DOC-GAP-C —
+      the LSN-001 catalogue-as-shown-vs-effect-as-applied pattern). And the wiring is
+      not even trustworthy: SecurityConstants.java:299 wires POST /api/datasetfields/{id}/terms
+      to DATA_ENTITY_ADD_TERM instead of the documented DATASET_FIELD_ADD_TERM, and
+      :295-296 wires PUT /api/alerts/{id}/status to DATASET_FIELD_ADD_TERM (a
+      copy-paste bug) — so even an operator who reads the code reads a mis-wired
+      mapping that disagrees with the live permissions doc (F-006 chain batch V
+      findings (a),(b)).
+    evidence:
+      - sidecar: odd-platform__ts__react-component__component__PolicyList.md
+        section: docs_link_semantic.doc_drift_findings (UI-DOC-GAP-C)
+        cite: "components.yaml:158-235 + PolicyForm AppJSONEditor"
+        note: "Operator authors against 75 raw permission codes; no human-readable catalogue exists."
+      - sidecar: '(F-006 feature-flow detail — batch V notes findings (a),(b))'
+        section: drift_class dataset_field_terms_post_permission_wiring_bug + alert_status_put_permission_copy_paste
+        cite: "SecurityConstants.java:299 + 295-296"
+        note: "Permission wiring disagrees with the live docs — DATASET_FIELD_ADD_TERM mis-wired; alert-status copy-paste."
+      - sidecar: '(WebFetch live doc — verified via batch V)'
+        section: permissions page
+        cite: "https://docs.opendatadiscovery.org/.../authorization/permissions (verified 2026-05-20 status 200)"
+        note: "Live page lists permission keys but does not map each code to its concrete grant; the wiring bugs contradict it."
+    operator_visible_failure: |
+      (a) Usability failure: a non-developer operator cannot correctly author a
+          policy from the screen — the editor offers codes with no explanation, so
+          the operator either over-grants (picks ALL to be safe — defeating
+          least-privilege) or under-grants (and files a ticket when a user can't do
+          their job).
+      (b) Correctness failure compounding the usability one: even the operator who
+          does the homework (reads the code) is misled — DATASET_FIELD_ADD_TERM
+          holders cannot link field-level terms (the gate is wired to
+          DATA_ENTITY_ADD_TERM) and any DATASET_FIELD_ADD_TERM holder can resolve
+          alerts (the alert-status gate copy-paste). The operator's policy does not
+          do what the permission name says.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+    sme_consultation_recommended: true
+    sme_consultation_question: "How do comparable data-catalog RBAC consoles (DataHub, OpenMetadata, Amundsen) present permission/privilege options to operators authoring a policy — a human-readable privilege catalogue with descriptions, a guided builder, or raw codes — and what do operators consider the minimum usable affordance?"
+    sme_consultation_archetype: vocabulary
+
+- id: H-014
+  hypothesis: |
+    When an operator configures LDAP authentication and sets the admin-groups list,
+    only members of the exact LDAP groups named receive Administrator privileges.
+  derivation: |
+    Endpoint/config-shape — `auth.ldap.groups.admin-groups` is the knob that maps
+    LDAP membership to ADMIN; an operator naming a group expects exact-match
+    semantics (the universal expectation for an allowlist of privileged groups).
+  seed_source: endpoint-shape + negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      ODDLDAPProperties.adminGroups is a Set<String> consumed at
+      LDAPSecurityConfiguration.java:96 via
+      OperationUtils.containsIgnoreCase(adminGroups, a.getAuthority()) — a SUBSTRING
+      + case-insensitive match, NOT exact-match. A short token collides with any LDAP
+      group whose NAME CONTAINS it: configuring `admin-groups: ['ops']` promotes
+      everyone in `devops`, `noops`, `appops`, `helpdesk-admin`, etc. The Properties
+      class does not restrict entries, does not document the substring semantics in
+      the field name, and the @PostConstruct validate() does not warn (F-006 chain
+      batch ZK finding (1)).
+    evidence:
+      - sidecar: '(F-006 feature-flow detail — batch ZK notes finding (1))'
+        section: drift_class ldap_admin_groups_substring_match_short_token_admin_escalation_collision
+        cite: "ODDLDAPProperties.java:31 + LDAPSecurityConfiguration.java:96"
+        note: "containsIgnoreCase = substring + case-insensitive match, not exact — short tokens collide."
+    operator_visible_failure: |
+      (a) Admin-escalation via operator typo/shorthand: an operator naming a concise
+          admin group (`ops`, `admin`) inadvertently grants Administrator to every
+          LDAP user in any group containing that substring — a silent
+          over-provisioning of the platform's most privileged role.
+      (b) The escalation inherits the H-001 audit-silence: no log line on first admin
+          login, no LDAP-group attribution in the (non-existent) audit trail — so the
+          over-grant is both silent at config time and unaudited at use time.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+    contradicted_note: |
+      Routes to caveat-candidate primarily (the substring-match may be a deliberate
+      "match any group containing this token" design for nested-group convenience) —
+      the deliverable is a documentation warning on the substring semantics + a
+      field-name/validation hardening proposal. Cross-ref F-011 (the OAuth/LDAP
+      principal-resolution chain) for the sibling group-mapping behaviour.
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-001
+  severity: HIGH
+  one_line: "RBAC mutations emit nothing to any audit surface (Activity Feed, logs, UI) — schema-rooted (activity.data_entity_id NOT NULL) AND enum-rooted (no POLICY/ROLE/OWNER ActivityEventTypeDto values)."
+  recommended_log_as: BUG-NNN (elevate to first-priority per F-006 chain batch R/U recommendation) + ADR-NNN draft
+  proposed_fix_anchor: "Schema migration (nullable activity.data_entity_id + subject_kind/subject_id discriminator, OR a separate platform_event table) + extend ActivityEventTypeDto with ~21 lifecycle values + ActivityHandler subclasses + @ActivityLog on ~25 mutating service methods. 4-tier coordinated fix; the bifurcation framework (batch V) says do NOT touch the OwnerAssociationRequest dedicated audit table."
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: "A soft-deleted policy reaching a bound state out-of-band continues to grant via the unfiltered getRolesPolicies JOIN; the list shows 'gone' while the enforcer keeps granting."
+  recommended_log_as: SEC-NNN / BUG-NNN
+  proposed_fix_anchor: "Add `AND policy.deleted_at IS NULL` to getRolesPolicies (ReactivePolicyRepositoryImpl.java:32-35) AND to the role-dto JOINs (ReactiveRoleRepositoryImpl.java:45-48,67-70,87-90) — the ROOT fix; the service cascade-defence becomes belt-and-braces. One line per JOIN, two repositories."
+- hypothesis_id: H-003
+  severity: MEDIUM
+  one_line: "Soft-deleted policies render as live chips in the role catalogue (no deleted_at filter on the role-dto JOIN) — historical-name leak + misrepresented grants."
+  recommended_log_as: BUG-NNN (same fix family as H-002 — the role-side JOIN filter)
+  proposed_fix_anchor: "Add `AND policy.deleted_at IS NULL` to the three ReactiveRoleRepositoryImpl JOINs OR badge deleted policies in RoleItem.tsx."
+- hypothesis_id: H-006
+  severity: MEDIUM
+  one_line: "Malformed policy JSON yields HTTP 500 'Internal Server Error' (IllegalArgumentException has no ControllerAdvice handler) instead of 400 with the validation detail."
+  recommended_log_as: BUG-NNN
+  proposed_fix_anchor: "Either PolicyJSONValidator throws BadUserRequestException, or ControllerAdvice adds an IllegalArgumentException→400 handler. One-line either way."
+- hypothesis_id: H-007
+  severity: MEDIUM
+  one_line: "PolicyServiceImpl.update is non-transactional read-then-write (lost-update race); sibling RoleServiceImpl IS @ReactiveTransactional — the asymmetry is the oversight."
+  recommended_log_as: BUG-NNN (REFACTOR family — service_tier_transactional_asymmetry)
+  proposed_fix_anchor: "Add @ReactiveTransactional to PolicyServiceImpl.create/update/delete (matching RoleServiceImpl) OR add a version column for optimistic concurrency. The transaction also tightens the H-011 cascade-check atomicity."
+- hypothesis_id: H-009
+  severity: HIGH
+  one_line: "Administrator-name reserved on update/delete but NOT on create (Policy AND Role); a soft-deleted seeded row frees the name for an attacker-chosen re-creation that the UI then trusts."
+  recommended_log_as: SEC-NNN / BUG-NNN
+  proposed_fix_anchor: "Add the UserProviderRole.values() name check to PolicyServiceImpl.create + RoleServiceImpl.create + a boot-time integrity check that detects soft-deleted seeded-name rows."
+- hypothesis_id: H-010
+  severity: MEDIUM
+  one_line: "Predefined-name guard casing is inconsistent (update case-sensitive, delete case-insensitive, create absent, UI case-sensitive) → lowercase 'administrator' is creatable+editable+UNDELETABLE."
+  recommended_log_as: BUG-NNN
+  proposed_fix_anchor: "Make all three guards (create/update/delete) + the UI checks uniformly case-insensitive; add a boot assertion that no role exists with a case-variant of a predefined name."
+- hypothesis_id: H-011
+  severity: MEDIUM
+  one_line: "Cascade-delete check and soft-delete are two non-transactional R2DBC calls — a concurrent role-bind may race into the orphan-binding state the defence advertises it prevents."
+  recommended_log_as: BUG-NNN (pending P-197 confirmation that the race is WIN-able)
+  proposed_fix_anchor: "@ReactiveTransactional on PolicyServiceImpl.delete (scopes read+delete to one connection) OR SELECT ... FOR UPDATE on isPolicyAttachedToRole. Same fix as H-007's transaction."
+- hypothesis_id: H-012
+  severity: MEDIUM
+  one_line: "No RBAC management screen renders authorship (created_by/created_at) on any row — the UI-tier manifestation of audit-silence; operators have no in-product 'who changed this' affordance."
+  recommended_log_as: BUG-NNN (UI half of the H-001 audit-fix; depends on the schema/enum fix landing first to have data to render)
+  proposed_fix_anchor: "After the H-001 audit surface exists, add a created_by/created_at column or a per-entity history view to PolicyList/RolesList/PolicyDetails."
+- hypothesis_id: H-013
+  severity: HIGH
+  one_line: "Operators author policies against 75 raw permission codes with no human-readable catalogue, AND the actual SecurityConstants wiring is mis-routed for DATASET_FIELD_ADD_TERM + alert-status — the policy does not do what the permission name says."
+  recommended_log_as: BUG-NNN (fix the two wiring bugs — SecurityConstants.java:299 + 295-296) + DOC-NNN (publish a permission-code → grant catalogue)
+  proposed_fix_anchor: "(code) Re-wire POST /api/datasetfields/{id}/terms → DATASET_FIELD_ADD_TERM and PUT /api/alerts/{id}/status → the correct ALERT permission. (docs/UI) Publish a human-readable permission catalogue mapping each code to its concrete grant."
+
+### caveat_candidates
+- hypothesis_id: H-004
+  one_line: "Non-ADMIN callers see a principal-filtered Role/Policy list with no 'showing N of M' affordance — a non-admin may conclude only one role exists."
+  recommended_log_as: caveat in /authorization/roles + /features/management docs + UI affordance backlog item
+- hypothesis_id: H-005
+  one_line: "Owner deletion HARD-deletes role bindings (closes the orphan-grant pattern correctly) while Policy/Role deletion soft-deletes and leaves bindings — three different deletion-vs-grant behaviours across the RBAC entities."
+  recommended_log_as: caveat in /authorization/owners doc (positive case-law contrast worth documenting)
+- hypothesis_id: H-008
+  one_line: "As-shipped default auth.type=DISABLED exposes the full RBAC write surface to any unauthenticated network-reachable caller; live P-09 docs give the general 'two surfaces' warning but not the concrete RBAC exposure."
+  recommended_log_as: caveat in /configuration-and-deployment/enable-security (concrete RBAC-under-DISABLED exposure) — DOC-NNN
+- hypothesis_id: H-014
+  one_line: "auth.ldap.groups.admin-groups uses substring + case-insensitive matching, not exact-match — short tokens (`ops`) grant ADMIN to any group containing the substring."
+  recommended_log_as: caveat in the LDAP configuration docs + field-name/validation hardening backlog item — DOC-NNN
+
+### probes_emitted
+- probe_id: P-197
+  hypothesis_id: H-011
+  probe_path: "lineage/odd-platform/probes/P-197.yaml"
+  note: "Concurrent cascade-check vs role-bind race — measures whether the orphan-binding state is WIN-able under READ COMMITTED."
+- probe_id: P-198
+  hypothesis_id: H-002
+  probe_path: "lineage/odd-platform/probes/P-198.yaml"
+  note: "Soft-deleted-policy-still-grants end-to-end — the highest-leverage F-006 regression-pin (F-006 control_summary's named candidate). Confirming probe on a contradicted verdict."
+- probe_id: P-199
+  hypothesis_id: H-008
+  probe_path: "lineage/odd-platform/probes/P-199.yaml"
+  note: "DISABLED-mode anonymous RBAC escalation + audit-silence — measures the as-shipped default exposure. Confirming probe on a contradicted verdict."
+
+### validation_gaps
+- sidecar: '(F-006 contributing node) odd-platform java ManagementPermissionExtractor'
+  field_insufficient: "The hot-path consumer node (ManagementPermissionExtractor, chain hop 4) is marked `unresolved: true` in the F-006 feature flow — it has no enriched sidecar. The exact per-request cost and the DISABLED-mode principal behaviour for getCurrentUserPolicies are inferred from PolicyServiceImpl's downstream view, not from the extractor's own sidecar."
+  proposed_refresh: "Enrich ManagementPermissionExtractor + AbstractContextualPermissionExtractor as first-class sidecars so the authorization hot-path cost (the performance facet authorization_hot_path_no_cache) and the DISABLED-mode principal-resolution path (H-008) are primary-source, not inferred."
+- sidecar: odd-platform__java__service__service__OwnerServiceImpl.md
+  field_insufficient: "OwnerServiceImpl was consulted via the F-006 feature-flow batch-P notes rather than read in full this invocation (parallel-batch token budget). The Owner-delete hard-delete-of-bindings claim (H-005 confirmed) rests on the feature-flow's transcription of OwnerServiceImpl.java:97; a direct read would let H-005 cite the sidecar section rather than the feature-flow note."
+  proposed_refresh: "On the next reflection refresh with full budget, read OwnerServiceImpl.md directly to upgrade H-005's evidence from feature-flow-note to sidecar-section citation."
+
+### doc_drift_findings
+- hypothesis_id: H-001
+  doc_url: "https://docs.opendatadiscovery.org/features/active-platform-features/activity-feed (Activity Feed scope) + /configuration-and-deployment/enable-security/authorization/*"
+  doc_says: "The docs are SILENT on whether the Activity Feed covers all catalog mutations or data-entity mutations only; the RBAC authorization pages do not state that RBAC changes are unaudited."
+  code_does: "RBAC mutations are recorded NOWHERE (schema+enum rooted); the audit covers data-entity-scoped events only."
+  recommended_log_as: DOC-NNN (state the Activity Feed scope explicitly + warn that RBAC/Owner/Term lifecycle changes are not audited today)
+- hypothesis_id: H-004
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/roles"
+  doc_says: "Describes Roles abstractly ('Owner roles can be managed via Management - Roles section'); silent on the principal-aware list fork — who sees which roles."
+  code_does: "Non-ADMIN callers see only their own attached roles (RoleServiceImpl.java:40-47) with no UI affordance marking the filter."
+  recommended_log_as: DOC-NNN (document the visibility model — who sees what in the Roles/Policies list)
+- hypothesis_id: H-005
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/owners"
+  doc_says: "Silent on owner-deletion semantics (soft-delete + partial-name-reuse + role-binding hard-delete + orphan owner_association_request behaviour)."
+  code_does: "Owner row soft-deleted (name freed); role bindings HARD-deleted; owner_association_request rows orphaned (4th cascade-leg absent)."
+  recommended_log_as: DOC-NNN (document owner-deletion semantics; the positive contrast vs Policy/Role deletion)
+- hypothesis_id: H-013
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/enable-security/authorization/permissions"
+  doc_says: "Lists permission keys with one-line descriptions; does not map each code to its concrete API-surface grant; presents the wiring as correct."
+  code_does: "SecurityConstants wires POST /api/datasetfields/{id}/terms → DATA_ENTITY_ADD_TERM (not DATASET_FIELD_ADD_TERM) and PUT /api/alerts/{id}/status → DATASET_FIELD_ADD_TERM (copy-paste) — the live wiring disagrees with the doc."
+  recommended_log_as: DOC-NNN (publish a permission-code → grant catalogue) + the code-fix is the H-013 bug-candidate (the doc is correct; the CODE is wrong here)
+
+## maintainer_notes
+
+(reserved for maintainer hand-edits — preserved verbatim across refreshes)
+
+- F-006 is a pillar-anchored feature that has accreted the entire RBAC lifecycle
+  (Policy + Role + Owner + Ownership-binding + the 4 auth modes) across ~17 batches.
+  The feature-flow detail's control_summary flags a possible future split into
+  per-resource sub-features (POLICY / ROLE / OWNERSHIP / OWNER); if that split
+  happens, this reflection's hypotheses partition cleanly: H-002/H-003/H-006/H-007/
+  H-011/H-013 → POLICY sub-feature; H-003/H-009/H-010/H-012 → ROLE sub-feature;
+  H-005 → OWNER sub-feature; H-008/H-014 → the auth-mode/Security sub-feature;
+  H-001/H-004/H-012 are cross-cutting (audit-silence + visibility + UI-authorship).
+- The single highest-leverage fix is H-002's one-line JOIN filter (`AND
+  policy.deleted_at IS NULL`) across two repositories — it closes the headline
+  permission_persistence_after_soft_delete drift at the root and de-risks H-003 and
+  H-011 simultaneously. The single highest-EFFORT fix is H-001's 4-tier audit
+  remediation. The maintainer should sequence: H-002/H-003 JOIN filter (cheap, high
+  value) → H-006/H-007/H-010 service-tier hardening (cheap) → H-009 create-guard +
+  boot integrity check → H-013 SecurityConstants re-wiring + permission catalogue →
+  H-001 audit remediation (ADR first) → H-012 UI authorship (depends on H-001).

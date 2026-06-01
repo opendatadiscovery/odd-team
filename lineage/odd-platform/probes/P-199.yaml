@@ -1,0 +1,100 @@
+---
+probe_id: P-199
+emitted_by: feature-reflector
+emitted_in_reflection: lineage/odd-platform/feature-reflections/detail/F-006.yaml
+emitted_for_hypothesis: H-008
+emitted_at: 2026-06-01T00:00:00Z
+status: pending-reflection-verification
+feature_id: F-006
+test_class: security
+verified_against_commit: substrate-manifest-inherited
+maintainer_curated: false
+stack_profile: odd-minimal-disabled-auth
+local_execution_blocked: false
+expected_outcome: |
+  Hypothesis H-008 (verbatim): "When the platform is deployed with the default-shipped
+  auth posture, a caller who is not an authenticated administrator cannot create or
+  rebind RBAC policies and roles."
+
+  Reflection verdict is `contradicted` from static evidence: under `auth.type=DISABLED`
+  the SECURITY_RULES gate is short-circuited (DisabledAuthSecurityConfiguration —
+  `anyExchange().permitAll()`), so POLICY_CREATE / ROLE_CREATE are not enforced and any
+  network-reachable caller can author a MANAGEMENT/ALL policy + bind it to a role. This
+  probe MEASURES that an unauthenticated caller against a DISABLED-mode deployment can
+  escalate to full platform control with no credential, leaving no audit trace.
+
+  Expected measured result:
+  (1) With NO auth header / NO session cookie, `POST /api/policies` with a
+      MANAGEMENT/ALL body returns HTTP 200 (policy created).
+  (2) With NO credential, `POST /api/roles` binding that policy returns HTTP 200.
+  (3) The created policy + role are persisted (DB rows exist).
+  (4) NO activity-feed event records the creation (the enum-rooted audit-silence —
+      ActivityEventTypeDto has no POLICY_* value, so no row can exist).
+arrange:
+  - kind: docker-compose-up
+    notes: "odd-minimal stack with auth.type=DISABLED (the documented dev-only mode). odd-platform-api on 8080. This profile reproduces the as-shipped default that ships disabled; the probe demonstrates the catastrophic-exposure posture P-09 docs warn about ('an open write endpoint')."
+act:
+  - kind: rest
+    method: POST
+    path: /api/policies
+    headers:
+      Content-Type: application/json
+    body: |
+      {"name":"p_199_escalation_policy",
+       "policy":"{\"statements\":[{\"resource\":{\"type\":\"MANAGEMENT\"},\"permissions\":[\"ALL\"]}]}"}
+    capture_as: anon_create_policy
+    notes: "NO Cookie, NO X-API-Key — a fully anonymous caller."
+  - kind: rest
+    method: POST
+    path: /api/roles
+    headers:
+      Content-Type: application/json
+    body: |
+      {"name":"p_199_escalation_role","policies":[{"id":"<id-from-anon_create_policy>"}]}
+    capture_as: anon_create_role
+    notes: "Bind the MANAGEMENT/ALL policy to a fresh role — still anonymous."
+  - kind: rest
+    method: GET
+    path: /api/activity?size=100
+    capture_as: activity_after
+observe:
+  - kind: sql
+    query: "SELECT id, name FROM policy WHERE name = 'p_199_escalation_policy';"
+    capture_as: policy_row
+  - kind: sql
+    query: "SELECT id, name FROM role WHERE name = 'p_199_escalation_role';"
+    capture_as: role_row
+assert:
+  - "anon_create_policy.status == 200                          # anonymous POLICY_CREATE succeeds under DISABLED"
+  - "anon_create_role.status == 200                            # anonymous ROLE_CREATE + bind succeeds"
+  - "policy_row.length == 1                                    # MANAGEMENT/ALL policy persisted by an anon caller"
+  - "role_row.length == 1                                      # binding role persisted"
+  - "[a for a in activity_after.items if 'POLICY' in str(a)] == []  # no audit event records the escalation (audit-silence, enum-rooted)"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM role_to_policy WHERE policy_id IN (SELECT id FROM policy WHERE name = 'p_199_escalation_policy');
+      DELETE FROM role WHERE name = 'p_199_escalation_role';
+      DELETE FROM policy WHERE name = 'p_199_escalation_policy';
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__service__service__PolicyServiceImpl
+    - odd-platform__java__service__service__RoleServiceImpl
+    - odd-platform__java__PolicyController__controller-method__createPolicy
+  retrospectives:
+    - LSN-002                # primitive default ships disabled-but-broken-when-enabled (sibling default-posture trap)
+    - LSN-020                # Layer 4b motivating case
+realism_caveats: |
+  - This probe verifies the DISABLED-mode posture only; the LOGIN_FORM-mode
+    "every form-authenticated user is ADMIN" weakness and the S2S "any X-API-Key
+    holder is ADMIN" weakness (REFACTOR-108) are sibling postures needing separate
+    probes (different stack profiles).
+  - The probe demonstrates a KNOWN-by-design dev-mode behaviour; its value is in
+    pinning the operator-visible consequence (anonymous full escalation, no audit
+    trace) so the doc-gap (P-09 page silent on the as-shipped DISABLED exposure
+    specifics for the RBAC surface) is grounded in a measured result.
+  - The activity assertion is shape-based — it confirms NO POLICY-class activity row
+    exists because ActivityEventTypeDto has no POLICY_* enum value (the enum-rooted
+    audit-silence second root cause); it does not require a specific enum name.

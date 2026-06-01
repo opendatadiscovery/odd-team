@@ -1,0 +1,125 @@
+---
+probe_id: P-195
+emitted_by: feature-reflector
+emitted_in_sidecar: odd-platform__java__DataEntityAttachmentController__controller-class__DataEntityAttachmentController.md
+emitted_at: 2026-06-01T00:00:00Z
+status: pending-reflection-verification
+feature_id: F-027
+test_class: security
+verified_against_commit: substrate-manifest-inherited
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Hypothesis under test (F-027 reflection H-005, verbatim):
+  "When a user holds DATA_ENTITY_ATTACHMENT_MANAGE on data entity A but NOT on
+   data entity B, and they issue DELETE /api/dataentities/{A}/files/{file_id_of_B}
+   (a file belonging to B, through A's URL prefix), the platform REJECTS the
+   request (403 or a belongs-to mismatch error) and B's file survives."
+
+  Predicted code behaviour (CONTRADICTS the hypothesis): the request SUCCEEDS
+  and B's file is deleted. The path's data_entity_id (A) is what the SecurityRule
+  gate evaluates DATA_ENTITY_ATTACHMENT_MANAGE against (SecurityConstants.java:248
+  — DATA_ENTITY AuthorizationManagerType), but the controller discards the path's
+  dataEntityId and the service operates on fileId alone
+  (DataEntityAttachmentController.java:83-88 + AttachmentServiceImpl.java:71-88).
+  No service-tier cross-check verifies the file belongs to the URL's data entity.
+
+  This probe DEMONSTRATES the operator-visible cross-entity privilege escalation:
+  a user authorized on any one entity can delete/modify/download/complete files +
+  links on EVERY entity in the catalog by spoofing the URL prefix. The verdict in
+  the reflection is `contradicted` (severity HIGH) on STATIC evidence; this probe
+  upgrades that to a runtime-confirmed regression-pin so that a future fix
+  (service-tier belongs-to check) flips the assertion from SUCCESS to REJECTION.
+---
+arrange:
+  - kind: docker-compose-up
+    notes: |
+      odd-minimal stack with auth ENABLED (auth.type=LOGIN_FORM) + postgres +
+      odd-platform-api on 8080 + LOCAL attachment storage (attachment.storage
+      unset → LOCAL default; the bug is storage-mode-independent, LOCAL is the
+      cheaper probe). RBAC seeded so user_a has DATA_ENTITY_ATTACHMENT_MANAGE on
+      entity A only.
+  - kind: sql
+    query: |
+      -- Two data entities owned by different owners.
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, status)
+      VALUES
+        (9201, '//probe-source/p-195/de-A', 'p_195_entity_A', 1, 1, 0),
+        (9202, '//probe-source/p-195/de-B', 'p_195_entity_B', 1, 1, 0)
+      ON CONFLICT (id) DO NOTHING;
+  - kind: sql
+    query: |
+      -- A COMPLETED file row attached to entity B (the victim file).
+      -- status COMPLETED so it is a normal visible/downloadable file, not an
+      -- in-flight PROCESSING upload. path/name shape mirrors FileMapper output.
+      INSERT INTO file (id, data_entity_id, name, path, status, upload_id)
+      VALUES
+        (9210, 9202, 'b_secret_report.pdf', '/tmp/odd/attachments/9202/b_secret_report.pdf', 'COMPLETED', NULL)
+      ON CONFLICT (id) DO NOTHING;
+    notes: |
+      The probe-runner aligns the `file` table column names + the status code with
+      the live schema at verify-time (the assertion is shape-based: a file row keyed
+      to data_entity_id=9202 must vanish or survive). If the file-status column is an
+      enum int rather than text, substitute the COMPLETED code.
+  - kind: rbac-seed
+    notes: |
+      Seed an Owner + Role bundle granting DATA_ENTITY_ATTACHMENT_MANAGE scoped to
+      data entity A (9201) ONLY, and associate user_a with that owner. user_a must
+      NOT have any permission on entity B (9202). Use the Policies/Roles/Owners
+      management surface or direct SQL into the policy/permission tables per the
+      RBAC seed helper.
+act:
+  - kind: rest
+    method: DELETE
+    path: /api/dataentities/9201/files/9210
+    headers:
+      Cookie: <session-cookie-for-user_a-authorized-on-entity-A-only>
+    capture_as: cross_entity_delete_response
+    notes: |
+      The URL prefix is entity A (9201 — user_a IS authorized here) but the file
+      9210 belongs to entity B (9202 — user_a is NOT authorized here).
+observe:
+  - kind: sql
+    query: |
+      SELECT id, data_entity_id, name, status FROM file WHERE id = 9210;
+    capture_as: victim_file_after
+assert:
+  # CURRENT (buggy) behaviour — the probe PINS the bug:
+  - "cross_entity_delete_response.status in [200, 204]   # the delete is ACCEPTED — cross-entity escalation"
+  - "victim_file_after.rows.length == 0                  # entity B's file was deleted by a user with no rights on B"
+  # AFTER-FIX expectation (flip these in once the service-tier belongs-to check lands):
+  #   - "cross_entity_delete_response.status == 403"
+  #   - "victim_file_after.rows.length == 1"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM file WHERE id = 9210;
+      DELETE FROM data_entity WHERE id IN (9201, 9202);
+  - kind: rbac-seed-teardown
+    notes: "Remove the seeded owner/role/policy + user_a association."
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__DataEntityAttachmentController
+    - odd-platform__java__DataEntityAttachmentController__controller-class__DataEntityAttachmentController
+  related_feature_flows:
+    - F-027
+  related_refactoring_scopes:
+    - REFACTOR-024   # cross-owner enumeration / cross-entity URL spoofing family
+  retrospectives:
+    - LSN-020        # parameter/path-vs-implementation drift family
+realism_caveats: |
+  - The bug is storage-mode-independent (the service discards dataEntityId for both
+    LOCAL and REMOTE); LOCAL is used here purely because it needs no MinIO container.
+  - The same cross-entity shape applies to updateLink / deleteLink / downloadFile /
+    completeFileUpload — this probe verifies DELETE file as the representative case;
+    a thorough pin would parametrise across all five mutation/read verbs.
+  - The probe assumes a working RBAC seed that scopes DATA_ENTITY_ATTACHMENT_MANAGE
+    to a single entity. If the local stack cannot express per-entity scoping for this
+    permission, set local_execution_blocked and fall back to a service-tier unit test
+    asserting AttachmentServiceImpl.deleteFile ignores any entity binding.
+  - Read-side sibling (any-authenticated-user-downloads-any-file, H-004) is a
+    distinct probe: it needs NO special RBAC — any logged-in low-privilege user
+    GET-ing /api/dataentities/{any}/files/{any} should succeed. Emit a follow-up
+    probe for the read path if the maintainer wants both pinned.

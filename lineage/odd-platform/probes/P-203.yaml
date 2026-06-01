@@ -1,0 +1,106 @@
+---
+probe_id: P-203
+emitted_by: feature-reflector
+emitted_in_sidecar: odd-platform__java__notification__sender__class__SlackNotificationSender.md
+emitted_at: 2026-06-01T00:00:00Z
+status: pending-reflection-verification
+feature_id: F-009
+test_class: security
+verified_against_commit: substrate-manifest-inherited
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Hypothesis under test (F-009 reflection H-011, verbatim):
+  "When the text describing why an alert fired (the alert-chunk description, supplied by an
+   upstream collector) contains Slack control sequences such as @channel or a fake link, the
+   Slack message renders those as plain text — it does not broadcast-notify the whole channel
+   or render an attacker-controlled clickable link."
+
+  Predicted code behaviour (CONTRADICTS the hypothesis): the alert-chunk description is
+  rendered into the Slack mrkdwn body via markdownText(...) at SlackMessageGenerator.java:77
+  with NO escaping (MrkdwnUtils.java:1-14 exposes only bold(...) and buildLink(...) for
+  platform-controlled strings; there is no escape(...) helper). Slack interprets @channel,
+  @here, <!channel>, <!here>, *bold*, _italic_, and <url|text> as markup. AlertChunkPojo
+  .description is populated from ingestion-side AlertActionResolverImpl.java:162 (upstream
+  collector content — dbt test description, GE expectation string, schema-diff narrative).
+  An upstream actor who controls a description string can broadcast-notify the entire Slack
+  channel membership (@channel / <!here>) or inject a fake clickable link. The verdict in the
+  reflection is `contradicted` (severity HIGH); this probe upgrades the STATIC finding to a
+  runtime-confirmed regression-pin so a future fix (MrkdwnUtils.escape applied at
+  SlackMessageGenerator.java:77 before markdownText) flips the assertion from "control
+  sequence rendered as markup" to "control sequence rendered as inert text".
+
+  The live doc (WebFetched 2026-06-01) now WARNS about this ("Slack notification bodies pass
+  alert descriptions verbatim into Slack markdown — @channel, <!here>, and fake-link payloads
+  render") — so the verdict routes to caveat-confirmed-but-bug-candidate, not a doc-gap.
+  Cross-feature: this is the 6th surface of F-004's description-XSS family.
+---
+arrange:
+  - kind: docker-compose-up
+    notes: |
+      odd-minimal stack + Postgres logical replication. notifications.enabled=true.
+      Configure ONLY the Slack channel: notifications.receivers.slack.url -> a WireMock stub
+      that returns 200 and RECORDS the request body verbatim. The probe inspects the recorded
+      JSON Block Kit payload to confirm the control sequence reached the wire unescaped.
+  - kind: sql
+    query: |
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, status)
+      VALUES (9204, '//probe-source/p-203/de-1', 'p_203_data_entity', 1, 1, 0)
+      ON CONFLICT (id) DO NOTHING;
+  - kind: sql
+    query: |
+      INSERT INTO alert (id, data_entity_oddrn, type, status, last_created_at, status_updated_at, status_updated_by)
+      VALUES (9204, '//probe-source/p-203/de-1', 1, 0, NOW(), NOW(), NULL)
+      ON CONFLICT (id) DO NOTHING;
+  - kind: sql
+    query: |
+      -- The alert-chunk description carries Slack control sequences as if supplied by a
+      -- malicious / careless upstream collector. created_at recent so it lands in the
+      -- "latest 3 chunks" the generator renders (SlackMessageGenerator.java:95-101).
+      INSERT INTO alert_chunk (alert_id, description, created_at)
+      VALUES (9204,
+              '<!channel> URGENT click <https://attacker.example/phish|here> to fix *now*',
+              NOW());
+act:
+  - kind: wait
+    notes: "Allow up to 30s for the WAL dispatch to POST to the Slack stub."
+observe:
+  - kind: http-stub-journal
+    target: slack_stub
+    capture_as: slack_requests
+assert:
+  # Exactly one POST reached the Slack stub
+  - "slack_requests.length == 1"
+  # The control sequence reached the wire UNESCAPED inside the Block Kit mrkdwn text.
+  # (Slack would interpret <!channel> as a broadcast and <url|text> as a clickable link.)
+  - "'<!channel>' in slack_requests[0].body    # broadcast control sequence passed through raw -> injection confirmed"
+  - "'<https://attacker.example/phish|here>' in slack_requests[0].body    # fake-link markup passed through raw"
+  # Control inversion for the FIX: after MrkdwnUtils.escape is applied, the body should contain
+  # the ESCAPED forms (e.g. '&lt;!channel&gt;') and NOT the raw control sequence.
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM alert_chunk WHERE alert_id = 9204;
+      DELETE FROM alert WHERE id = 9204;
+      DELETE FROM data_entity WHERE id = 9204;
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__notification__sender__class__SlackNotificationSender
+    - odd-platform__java__service__service__NotificationsDispatcher
+  retrospectives:
+    - LSN-020
+  related_features:
+    - F-004                  # description-XSS family — Slack mrkdwn injection is the 6th surface
+realism_caveats: |
+  - The assertion is wire-shape-based (the raw control sequence appears in the POST body). A
+    full end-to-end demonstration (an actual Slack workspace showing the @channel broadcast)
+    requires a real Slack endpoint and is out of scope + non-local; the WireMock body capture
+    is sufficient to prove the platform sends the unescaped sequence, which is the platform-side
+    defect. The Slack-side rendering is Slack's documented behaviour for those tokens.
+  - The probe uses <!channel> (the raw Slack broadcast token) rather than @channel because the
+    raw token is what reaches the wire from an unescaped passthrough; the generator does not
+    translate @channel -> <!channel> (that is Slack-side). Either token form in the description
+    demonstrates the passthrough; the probe asserts on the exact string inserted.
+  - This probe is local-only (Rule 12): WireMock stub, local Postgres, no external Slack call.

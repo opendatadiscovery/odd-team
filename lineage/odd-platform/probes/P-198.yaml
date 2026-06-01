@@ -1,0 +1,132 @@
+---
+probe_id: P-198
+emitted_by: feature-reflector
+emitted_in_reflection: lineage/odd-platform/feature-reflections/detail/F-006.yaml
+emitted_for_hypothesis: H-002
+emitted_at: 2026-06-01T00:00:00Z
+status: pending-reflection-verification
+feature_id: F-006
+test_class: security
+verified_against_commit: substrate-manifest-inherited
+maintainer_curated: false
+stack_profile: odd-minimal
+local_execution_blocked: false
+expected_outcome: |
+  Hypothesis H-002 (verbatim): "When an operator deletes a Policy via the Management →
+  Policies tab and the platform reports success (the policy disappears from the list),
+  that policy no longer grants any permission to any user."
+
+  Reflection verdict is `contradicted` from static evidence (the normal UI delete path
+  is BLOCKED for a BOUND policy by the cascade-delete defence at PolicyServiceImpl.java:89-92;
+  but the underlying repository JOIN `getRolesPolicies` at ReactivePolicyRepositoryImpl.java:32-35
+  carries NO `policy.deleted_at IS NULL` predicate, so any soft-delete reaching a bound
+  policy by ANY out-of-band path leaves the grant live). This probe MEASURES the
+  load-bearing claim end-to-end: a soft-deleted policy with a surviving role_to_policy
+  edge continues to confer its permissions on an authorized request.
+
+  Expected measured result:
+  (1) A normal `DELETE /api/policies/{id}` on a BOUND policy returns HTTP 400
+      CascadeDeleteException ("Policy is attached to a role") — the UI path is defended
+      (confirms PolicyServiceImpl.java:89-92).
+  (2) A DIRECT DB `UPDATE policy SET deleted_at = NOW() WHERE id = <bound policy>`
+      (simulating a hot-fix / migration mistake / future refactor dropping the cascade
+      check) leaves the role_to_policy edge intact.
+  (3) After (2): `GET /api/policies` (the list the UI renders) does NOT show the
+      policy (auto `deleted_at IS NULL` filter) — operator sees "gone".
+  (4) After (2): a request by a user holding the bound role STILL resolves the
+      soft-deleted policy's permission (getRolesPolicies returns it) — the grant
+      persists. THIS is the catalogue-vs-grant asymmetry, made measurable.
+
+  This is the highest-leverage F-006 regression-pin — F-006 control_summary names it:
+  "0 of 4 cells PROBED ... the headline behaviour ... is the highest-leverage candidate
+  for the next probe round".
+arrange:
+  - kind: docker-compose-up
+    notes: "odd-minimal stack — postgres + odd-platform-api on 8080. auth.type=LOGIN_FORM so SECURITY_RULES + the permission extractors are wired (DISABLED mode short-circuits the gate and would not exercise getRolesPolicies meaningfully)."
+  - kind: sql
+    query: |
+      -- Custom policy granting a single checkable MANAGEMENT permission, a role, bound.
+      -- Names avoid 'Administrator'/'User' to dodge the predefined-name guards.
+      INSERT INTO policy (id, name, policy, created_at, updated_at, is_deleted)
+      VALUES (9201, 'p_198_probe_policy',
+        '{"statements":[{"resource":{"type":"MANAGEMENT"},"permissions":["POLICY_CREATE"]}]}',
+        NOW(), NOW(), FALSE)
+      ON CONFLICT (id) DO NOTHING;
+  - kind: sql
+    query: |
+      INSERT INTO role (id, name, created_at, updated_at, is_deleted)
+      VALUES (9201, 'p_198_probe_role', NOW(), NOW(), FALSE)
+      ON CONFLICT (id) DO NOTHING;
+      INSERT INTO role_to_policy (role_id, policy_id)
+      VALUES (9201, 9201)
+      ON CONFLICT DO NOTHING;
+    notes: |
+      The probe-runner must additionally attach role 9201 to an Owner and that Owner to
+      the test user's user_owner_mapping so the permission resolves for a real
+      authenticated principal. Left as a runtime concern; exact owner/user wiring
+      depends on the seeded test identity in the chosen stack profile.
+act:
+  - kind: rest
+    method: DELETE
+    path: /api/policies/9201
+    headers:
+      Cookie: <session-cookie-for-authenticated-admin>
+    capture_as: bound_delete_response
+    notes: "Expected HTTP 400 — CascadeDeleteException; the bound policy cannot be soft-deleted via the UI path."
+  - kind: sql
+    query: "UPDATE policy SET deleted_at = NOW() WHERE id = 9201;"
+    notes: "Out-of-band soft-delete simulating the bypass the defence does not cover."
+  - kind: rest
+    method: GET
+    path: /api/policies?page=1&size=100
+    headers:
+      Cookie: <session-cookie-for-authenticated-admin>
+    capture_as: list_after_softdelete
+  - kind: rest
+    method: GET
+    path: /api/resource/MANAGEMENT/0/permissions
+    headers:
+      Cookie: <session-cookie-for-the-test-user-holding-role-9201>
+    capture_as: permissions_after_softdelete
+    notes: "Read-side permission resolution shares the getRolesPolicies graph with the mutation enforcer (Permission concept / getResourcePermissions sidecar). If POLICY_CREATE still appears, the soft-deleted policy still grants."
+observe:
+  - kind: sql
+    query: "SELECT id, deleted_at FROM policy WHERE id = 9201;"
+    capture_as: policy_row
+  - kind: sql
+    query: "SELECT role_id, policy_id FROM role_to_policy WHERE policy_id = 9201;"
+    capture_as: surviving_edge
+assert:
+  - "bound_delete_response.status == 400                       # UI delete path defended"
+  - "policy_row[0].deleted_at != null                          # soft-delete took effect out-of-band"
+  - "surviving_edge.length == 1                                # role_to_policy edge survives (no cascade)"
+  - "9201 not in [p.id for p in list_after_softdelete.items]   # operator sees 'gone' in the list"
+  - "'POLICY_CREATE' in permissions_after_softdelete           # GRANT PERSISTS — the contradiction, measured"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM role_to_policy WHERE policy_id = 9201;
+      DELETE FROM role WHERE id = 9201;
+      DELETE FROM policy WHERE id = 9201;
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__repository_reactive__repository__ReactivePolicyRepositoryImpl
+    - odd-platform__java__service__service__PolicyServiceImpl
+    - odd-platform__ts__react-component__component__PolicyList
+  retrospectives:
+    - LSN-001                # silent no-op — catalogue-as-shown vs GRANT-as-resolved
+    - LSN-020                # the Layer 4b motivating case (parameter/promise vs implementation)
+realism_caveats: |
+  - The owner/user wiring needed to make the read-side permission resolve for a real
+    principal is left to the probe-runner; if the chosen stack profile seeds an
+    Administrator-only identity, the probe should create a dedicated low-privilege test
+    user holding ONLY role 9201 so the POLICY_CREATE in the response can only have come
+    from the soft-deleted policy.
+  - The `GET /api/resource/MANAGEMENT/0/permissions` path shape may need adjustment to
+    the live PermissionResourceType enum + a valid resource id; the assertion is
+    shape-based (does POLICY_CREATE appear), not path-literal-based.
+  - This probe pins the CURRENT (vulnerable) behaviour. A future fix adding
+    `AND policy.deleted_at IS NULL` to getRolesPolicies flips assert #5 to
+    `'POLICY_CREATE' not in ...`; the probe then becomes the regression guard.

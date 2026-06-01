@@ -1,0 +1,120 @@
+---
+probe_id: P-201
+emitted_by: feature-reflector
+emitted_in_sidecar: odd-platform__java__service__service__NotificationsDispatcher.md
+emitted_at: 2026-06-01T00:00:00Z
+status: pending-reflection-verification
+feature_id: F-009
+test_class: integration
+verified_against_commit: substrate-manifest-inherited
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Hypothesis under test (F-009 reflection H-002, verbatim):
+  "When all three channels (Slack, generic webhook, email) are enabled and a single
+   alert fires, every enabled channel receives that alert — one channel's transient
+   failure does not stop the others."
+
+  Predicted code behaviour (PARTIAL — CONTRADICTED for the email-first case): the
+  promise holds when a FAILING channel is Slack or Webhook (both wrap failure as the
+  checked NotificationSenderException, caught at AlertNotificationMessageProcessor.java:31,
+  loop continues). The promise BREAKS when the failing channel is Email: it wraps
+  MessagingException | TemplateException | IOException as a raw RuntimeException
+  (EmailNotificationSender.java:58-60) which bypasses the per-sender catch and aborts
+  fan-out for the SAME alert — every channel AFTER email in the Spring-bean-discovery
+  order (undefined; AlertNotificationMessageProcessor.java:19, no @Order) receives
+  nothing. This probe pins the cross-channel abort as a runtime regression so a future
+  fix (wrap email failure as NotificationSenderException, OR catch broader Exception
+  at the dispatcher) flips the assertion from "Slack/Webhook skipped" to "Slack/Webhook
+  still delivered".
+
+  The live doc (WebFetched 2026-06-01) now WARNS about this ("A failing email channel
+  can silently abort delivery to Slack and the generic webhook on the same alert") — so
+  the verdict routes to caveat-confirmed-but-bug-candidate, not a doc-gap.
+---
+arrange:
+  - kind: docker-compose-up
+    notes: |
+      odd-minimal stack + Postgres with wal_level=logical, max_wal_senders>=1,
+      wal_keep_size>=16, max_replication_slots>=1, and the platform DB role granted
+      WITH REPLICATION. Set notifications.enabled=true. Configure ALL THREE receivers:
+        notifications.receivers.slack.url   -> WireMock stub (always 200 OK)
+        notifications.receivers.webhook.url -> WireMock stub (always 200 OK)
+        notifications.receivers.email.sender + .notification.emails -> MailHog SMTP
+      Force the email sender FIRST in the fan-out order. Spring bean-discovery order is
+      undefined; the probe-runner must either (a) add @Order(0) to EmailNotificationSender
+      via a test config, or (b) assert the resolved order at boot via a log line and
+      skip-with-note if email is not first. The hazard is only observable when email
+      precedes at least one other channel.
+  - kind: sql
+    query: |
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, status)
+      VALUES (9201, '//probe-source/p-201/de-1', 'p_201_data_entity', 1, 1, 0)
+      ON CONFLICT (id) DO NOTHING;
+  - kind: wiremock
+    notes: |
+      Stub the SMTP path to FAIL: configure MailHog to refuse the connection OR corrupt
+      the email.ftlh template on the classpath so getEmailContent throws TemplateException.
+      The simplest deterministic failure is an unroutable recipient that JavaMailSender
+      rejects with a MessagingException at send time. The point is to force the email
+      sender's catch block (EmailNotificationSender.java:58-60) to throw RuntimeException.
+  - kind: sql
+    query: |
+      -- One ALERT-table INSERT drives one WAL event -> one dispatch
+      INSERT INTO alert (id, data_entity_oddrn, type, status, last_created_at, status_updated_at, status_updated_by)
+      VALUES (9201, '//probe-source/p-201/de-1', 1, 0, NOW(), NOW(), NULL)
+      ON CONFLICT (id) DO NOTHING;
+  - kind: sql
+    query: |
+      INSERT INTO alert_chunk (alert_id, description, created_at)
+      VALUES (9201, 'probe P-201 alert chunk', NOW());
+act:
+  - kind: wait
+    notes: |
+      The WAL subscriber polls every 10ms; allow up to 30s for the dispatch to fire +
+      the email failure to propagate. Capture WireMock request journals for the Slack
+      and Webhook stubs.
+observe:
+  - kind: http-stub-journal
+    target: slack_stub
+    capture_as: slack_requests
+  - kind: http-stub-journal
+    target: webhook_stub
+    capture_as: webhook_requests
+  - kind: smtp-capture
+    target: mailhog
+    capture_as: emails_received
+assert:
+  # Email is first and fails -> RuntimeException aborts fan-out -> Slack + Webhook never called
+  - "slack_requests.length == 0    # cross-channel abort: Slack skipped because email (first) threw RuntimeException"
+  - "webhook_requests.length == 0  # cross-channel abort: Webhook skipped likewise"
+  - "emails_received.length == 0   # email itself failed to deliver"
+  # Control inversion for the FIX: after wrapping email failure as NotificationSenderException,
+  # the same arrange should yield slack_requests.length == 1 AND webhook_requests.length == 1.
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM alert_chunk WHERE alert_id = 9201;
+      DELETE FROM alert WHERE id = 9201;
+      DELETE FROM data_entity WHERE id = 9201;
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__service__service__NotificationsDispatcher
+    - odd-platform__java__notification__sender__class__EmailNotificationSender
+    - odd-platform__java__notification__sender__class__SlackNotificationSender
+    - odd-platform__java__notification__sender__class__WebhookNotificationSender
+  retrospectives:
+    - LSN-017                # cross-layer cross-half user effect (only visible across all nodes)
+    - LSN-020                # top-down reflection class
+realism_caveats: |
+  - The hazard is ORDER-DEPENDENT. If Spring resolves email LAST in the bean collection,
+    the cross-channel abort is invisible (email is the final sender, nothing follows it).
+    The probe MUST force email first; otherwise the assertion is vacuously true and proves
+    nothing. The probe-runner records the resolved order at boot and fails-with-note if it
+    cannot force email first.
+  - The probe uses a per-recipient SMTP failure as the deterministic trigger; an alternative
+    is a corrupted email.ftlh (TemplateException). Both reach the same RuntimeException wrap.
+  - This probe does NOT measure the poison-message replay loop (that is P-202) — it isolates
+    the cross-channel abort caused by exception-type asymmetry, not the WAL re-delivery.

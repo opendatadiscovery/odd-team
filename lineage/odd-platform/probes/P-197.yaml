@@ -1,0 +1,112 @@
+---
+probe_id: P-197
+emitted_by: feature-reflector
+emitted_in_reflection: lineage/odd-platform/feature-reflections/detail/F-006.yaml
+emitted_for_hypothesis: H-011
+emitted_at: 2026-06-01T00:00:00Z
+status: pending-reflection-verification
+feature_id: F-006
+test_class: security
+verified_against_commit: substrate-manifest-inherited
+maintainer_curated: false
+stack_profile: odd-minimal
+local_execution_blocked: false
+expected_outcome: |
+  Hypothesis H-011 (verbatim): "When an operator deletes a Policy and the platform
+  blocks the delete because the policy is still bound to a role (the cascade-delete
+  defence), no concurrent request can slip the policy into a soft-deleted-but-still-bound
+  state."
+
+  The reflection verdict is `probe-needed`: the cascade-delete check
+  (isPolicyAttachedToRole at PolicyServiceImpl.java:89) and the soft-delete
+  (policyRepository.delete at line 93) are TWO separate R2DBC calls OUTSIDE any
+  @ReactiveTransactional (PolicyServiceImpl has no transaction on create/update/delete;
+  sibling RoleServiceImpl does). The race window is real in the code; whether it is
+  WIN-able under READ COMMITTED at realistic concurrency requires running the system.
+
+  Expected measured result (the race, if it reproduces):
+  - Client A: DELETE /api/policies/{id} on a currently-UNBOUND policy → reads
+    isPolicyAttachedToRole=false at line 89.
+  - Client B (interleaved): POST /api/roles (or PUT /api/roles/{r}) binding the same
+    policy → inserts a role_to_policy row.
+  - Client A continues → soft-deletes the now-bound policy at line 93.
+  - Result: a soft-deleted policy WITH a surviving role binding — the orphan-binding
+    state the defence intended to block (which, via the unfiltered getRolesPolicies
+    JOIN, continues to grant — chains into the H-002 / P-195 surface).
+arrange:
+  - kind: docker-compose-up
+    notes: "odd-minimal stack, auth.type=LOGIN_FORM. The probe-runner needs two concurrent authenticated clients (A and B) with POLICY_DELETE + ROLE_UPDATE respectively (or one ADMIN session driving both)."
+  - kind: sql
+    query: |
+      INSERT INTO policy (id, name, policy, created_at, updated_at, is_deleted)
+      VALUES (9301, 'p_197_race_policy',
+        '{"statements":[{"resource":{"type":"MANAGEMENT"},"permissions":["POLICY_CREATE"]}]}',
+        NOW(), NOW(), FALSE)
+      ON CONFLICT (id) DO NOTHING;
+      INSERT INTO role (id, name, created_at, updated_at, is_deleted)
+      VALUES (9301, 'p_197_race_role', NOW(), NOW(), FALSE)
+      ON CONFLICT (id) DO NOTHING;
+    notes: "Policy starts UNBOUND (no role_to_policy row) so the cascade check reads false."
+act:
+  - kind: concurrent
+    notes: |
+      The probe-runner must drive these two requests so they INTERLEAVE between
+      PolicyServiceImpl.java line 89 (the cascade read) and line 93 (the soft-delete).
+      Because the window is sub-millisecond, the runner should either (a) inject a
+      controllable delay via a debug build, or (b) hammer the interleaving N=500 times
+      and assert the orphan state appears at least once. Option (b) is the local-only,
+      no-code-change path and is preferred for a first measurement.
+    requests:
+      - kind: rest
+        method: DELETE
+        path: /api/policies/9301
+        headers:
+          Cookie: <session-A>
+        capture_as: delete_response
+      - kind: rest
+        method: PUT
+        path: /api/roles/9301
+        headers:
+          Cookie: <session-B>
+          Content-Type: application/json
+        body: |
+          {"name":"p_197_race_role","policies":[{"id":"9301"}]}
+        capture_as: bind_response
+observe:
+  - kind: sql
+    query: "SELECT id, deleted_at FROM policy WHERE id = 9301;"
+    capture_as: policy_row
+  - kind: sql
+    query: "SELECT role_id, policy_id FROM role_to_policy WHERE policy_id = 9301;"
+    capture_as: edge_row
+assert:
+  # The race is WON when BOTH are true simultaneously: policy soft-deleted AND edge survives.
+  # If the platform is race-safe, at most one of {soft-delete, bind} succeeds and this
+  # combination never appears. The probe reports WHETHER the combination is reachable.
+  - "RACE_WON := (policy_row[0].deleted_at != null) and (edge_row.length == 1)"
+  - "report: RACE_WON  # true => orphan-binding race reproduces; false over N=500 => not WIN-able at tested concurrency"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM role_to_policy WHERE policy_id = 9301;
+      DELETE FROM role WHERE id = 9301;
+      DELETE FROM policy WHERE id = 9301;
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__service__service__PolicyServiceImpl
+    - odd-platform__java__repository_reactive__repository__ReactivePolicyRepositoryImpl
+  retrospectives:
+    - LSN-017                # cross-layer composition invisible to per-node scan
+    - LSN-020                # Layer 4b motivating case
+realism_caveats: |
+  - This is a TIMING-dependent probe. A negative result (RACE_WON=false over N=500)
+    does NOT prove race-safety — only that the window was not hit at the tested
+    concurrency on the test hardware. A positive result is conclusive (the orphan
+    state is reachable). Report the iteration count + the win rate.
+  - The same non-atomic shape exists on the Owner-delete cascade (F-019 batch P
+    cascade_check_non_atomic_owner_delete_mirror) and is a platform-wide pattern;
+    a single confirming run here generalises the finding to the family.
+  - If the maintainer prefers, a debug-build delay injection between lines 89 and 93
+    converts this into a deterministic single-shot probe — still local-only.

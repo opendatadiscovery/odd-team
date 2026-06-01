@@ -299,6 +299,17 @@ def compute(lineage_dir: Path, workspace_root: Path, repo: str, repo_path: Path)
         f"{100 * (1 - reflection_cov):.0f}% of features",
     ))
     flat["reflection_coverage"] = round(reflection_cov, 4)
+    contradictions = sum(
+        int(r.props.get("contradiction_count") or 0)
+        for r in sub.reducer_nodes if r.label == config.L_FEATURE_REFLECTION
+    )
+    trust.append(Metric(
+        "E5.contradictions", "intent↔impl contradictions surfaced", None, contradictions, contradictions,
+        AMBER if contradictions else GREEN,
+        f"{contradictions} contradictions across {reflection_count} reflected features — the deepest "
+        f"alignment-drift findings; triage feature-reflections/detail/ (HIGH → bug-fix or operator caveat)",
+    ))
+    flat["contradictions"] = contradictions
     flat["substrate_current"] = substrate_current
     flat["embeddings_available"] = emb
     flat["panel_verdict"] = panel_verdict

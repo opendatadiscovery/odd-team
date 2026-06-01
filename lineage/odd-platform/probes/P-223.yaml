@@ -1,0 +1,132 @@
+---
+probe_id: P-223
+id: P-223
+status: pending-reflection-verification
+emitted_by: feature-reflector
+emitted_at: 2026-06-01T00:00:00Z
+emitted_in_batch: REFLECT-F-022
+emitted_from_sidecar: lineage/odd-platform/feature-reflections/detail/F-022.yaml
+feature_id: F-022
+hypothesis_id: H-013
+test_class: security
+verified_against_commit: substrate-manifest-inherited
+maintainer_curated: false
+expected_outcome: |
+  Hypothesis H-013 (verbatim from the reflection):
+
+  "The image/png SLA badge endpoint is safe to embed cross-origin (e.g. in a
+  third-party BI tool's HTML) without leaking a dataset's SLA colour to an
+  untrusted embedding page beyond what the viewer is already authorised to see."
+
+  Static trace (DataQualityController sidecar security.known_security_gaps[1]):
+  the PNG endpoint sets no @CrossOrigin, no Cache-Control: private, no
+  X-Frame-Options at the method/path level. Under cookie-based auth
+  (LOGIN_FORM with a session cookie), a malicious page the victim visits while
+  logged in could <img src='{platform}/api/datasets/123/sla'> and the browser
+  would attach the auth cookie, returning the SLA colour for dataset 123 to the
+  attacker's page (a cross-site read of the colour). Whether this actually
+  leaks depends on the deployed CORS config, the auth mode, and cookie SameSite
+  settings — none determinable from the controller sidecar (the security-config
+  beans are not in this chain). PROBE-NEEDED.
+
+stress_category: D (auth-gate / cross-origin posture)
+
+triggers:
+  - DataQualityController.java:42-48 (no @CrossOrigin / no X-Frame-Options / no Cache-Control: private)
+  - F-022 security.known_security_gaps[1] (cross-origin embeddability under cookie auth)
+  - openapi.yaml:1880-1896 (image/png, no special headers)
+
+arrange:
+  - Build odd-platform from main against docker-compose Postgres with
+    auth.type=LOGIN_FORM (the cookie-auth mode that makes the leak possible).
+  - Seed a dataset (e.g. 9001) with DQ tests yielding a known SLA colour
+    (e.g. RED).
+  - Seed a UI user account and log in via the browser to obtain the session
+    cookie (SameSite/Secure attributes as the platform sets them by default).
+  - Stand up a SECOND local origin (e.g. http://localhost:9999 served by a
+    trivial local static server) hosting an attacker.html that contains
+    <img id="badge" src="http://localhost:8080/api/datasets/9001/sla"> and a
+    fetch('http://localhost:8080/api/datasets/9001/sla', {credentials:'include'})
+    probe that reports status + whether the body was readable.
+  - Use a local Playwright headless browser that has the platform session cookie
+    set, then navigate to the attacker origin.
+
+act:
+  - CALL 1 (img embed): load attacker.html in the cookie-bearing browser;
+    observe whether the <img> renders the badge (a cross-origin image load is
+    generally ALLOWED — the question is whether the COLOUR is thereby revealed
+    to the attacker page, e.g. via canvas readback or naturalWidth/height
+    differences per colour).
+  - CALL 2 (canvas readback): in attacker.html, draw the loaded <img> onto a
+    canvas and attempt getImageData; observe whether the canvas is tainted
+    (cross-origin) or readable (leak).
+  - CALL 3 (credentialed fetch): the attacker page issues
+    fetch(.../sla, {credentials:'include'}); observe the response status and
+    whether response.ok / response.blob() succeeds (i.e. whether CORS allows
+    the attacker origin to READ the bytes).
+  - CALL 4 (X-Frame-Options): attempt to load .../sla inside an <iframe> on the
+    attacker origin; observe whether the frame loads (no X-Frame-Options /
+    frame-ancestors) — clickjacking-adjacent surface.
+
+observe:
+  - kind: dom_state
+    target: CALL 1
+    capture:
+      - img_loaded               # did the badge image load cross-origin?
+  - kind: canvas_readback
+    target: CALL 2
+    capture:
+      - canvas_tainted           # true = browser blocked readback (no leak via canvas); false = colour readable
+  - kind: rest_response
+    target: CALL 3
+    capture:
+      - status_code
+      - cors_allow_origin_header # is the attacker origin allowed?
+      - body_readable            # did response.blob() succeed for the attacker origin?
+  - kind: dom_state
+    target: CALL 4
+    capture:
+      - iframe_loaded            # did the badge render in a cross-origin iframe?
+      - x_frame_options_header
+
+oracle:
+  pass_if:
+    - CALL 2.canvas_tainted == true AND CALL 3.body_readable == false
+      (the browser/CORS prevents the attacker origin from reading the colour —
+      the hypothesis holds; embedding is safe).
+  fail_if_colour_leaks:
+    - CALL 2.canvas_tainted == false (canvas readback reveals the colour) OR
+      CALL 3.body_readable == true with an ACAO header permitting the attacker
+      origin (the attacker page can read the dataset's SLA colour).
+  note_if_framable:
+    - CALL 4.iframe_loaded == true with no X-Frame-Options / frame-ancestors
+      (badge is framable cross-origin — record as a lower-severity adjacent
+      finding).
+
+routes_to_finding_on_fail:
+  - fail_if_colour_leaks: bug-candidate / caveat-candidate depending on whether
+    operators treat the SLA colour as sensitive — set Cache-Control: private,
+    a restrictive CORS policy, and/or X-Frame-Options on the badge response;
+    severity MEDIUM (HIGH if the colour is business-confidential in the
+    deployment, e.g. "this finance dataset is failing").
+  - note_if_framable: caveat-candidate (document or add frame-ancestors).
+
+local_execution_only:
+  enforced: true
+  mechanism: docker-compose Postgres + local odd-platform build + a local
+             second-origin static server + local Playwright headless browser;
+             no remote infrastructure.
+  approach_md_anchor: APPROACH.md section 9 rule 12 (local-only verification)
+  local_execution_blocked: false
+
+cleanup:
+  - DELETE the seeded dataset 9001 and its DQ rows; delete the UI user account.
+  - Stop the second-origin static server and the docker-compose stack.
+
+confidence_required: HIGH (flips H-013 from probe-needed to confirmed/contradicted;
+  the verdict is auth-mode-and-CORS-config dependent, which is exactly why a
+  measured run is required rather than a static claim).
+
+cross_references:
+  - sidecar: DataQualityController.md security.known_security_gaps[1]
+  - reflection: lineage/odd-platform/feature-reflections/detail/F-022.yaml H-013

@@ -1,0 +1,123 @@
+---
+probe_id: P-196
+emitted_by: feature-reflector
+emitted_in_sidecar: odd-platform__java__DataEntityAttachmentController__controller-class__DataEntityAttachmentController.md
+emitted_at: 2026-06-01T00:00:00Z
+status: pending-reflection-verification
+feature_id: F-027
+test_class: security
+verified_against_commit: substrate-manifest-inherited
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Hypothesis under test (F-027 reflection H-007, verbatim):
+  "When a user uploads a file whose fileName is `../../../etc/odd-probe-marker`,
+   the platform rejects the path-traversal filename (or neutralises it), and the
+   stored object stays inside attachment.local.path — it cannot be written to an
+   arbitrary location outside the attachment directory."
+
+  Predicted code behaviour (CONTRADICTS the hypothesis): the filename is propagated
+  raw into the storage path via FileMapper.java:30-31 →
+  LocalFilePathConstructor.java:31-33 (`getFileDirectory(dataEntityId).resolve(fileName)`).
+  `Path.resolve("../../../etc/odd-probe-marker")` escapes the per-entity directory;
+  the completed file is written OUTSIDE attachment.local.path. No sanitization,
+  no `..` rejection, no NUL filter, no length cap exists anywhere in the upload path.
+
+  This probe DEMONSTRATES the operator-visible path-traversal write: an authenticated
+  user with DATA_ENTITY_ATTACHMENT_MANAGE can write (and later read back, via the
+  same traversal on download) files at attacker-chosen filesystem locations relative
+  to the attachment base path. The reflection verdict is `contradicted` (severity
+  HIGH) on STATIC evidence; this probe upgrades it to a runtime-confirmed
+  regression-pin so a future sanitisation fix flips the assertion to REJECTION.
+
+  SAFETY: the probe writes a benign marker filename under a sandboxed relative path
+  inside the throwaway container; it does NOT target a real system path on the host.
+  The container is destroyed at cleanup (destroy_volumes: true).
+---
+arrange:
+  - kind: docker-compose-up
+    notes: |
+      odd-minimal stack, auth.type=DISABLED for probe simplicity (the traversal is
+      auth-independent once a caller can reach initiate), LOCAL storage with
+      attachment.local.path=/tmp/odd/attachments (the default). The probe inspects
+      the container filesystem to confirm where the bytes land.
+  - kind: sql
+    query: |
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, status)
+      VALUES (9301, '//probe-source/p-196/de-1', 'p_196_entity', 1, 1, 0)
+      ON CONFLICT (id) DO NOTHING;
+act:
+  - kind: rest
+    method: POST
+    path: /api/dataentities/9301/files
+    body_json: |
+      { "fileName": "../../../tmp/odd-probe-marker-traversal" }
+    headers:
+      Content-Type: application/json
+    capture_as: initiate_response
+    notes: |
+      initiateFileUpload with a path-traversal fileName. The relative target
+      (../../../tmp/odd-probe-marker-traversal) escapes the per-entity directory
+      /tmp/odd/attachments/9301/ upward to /tmp/. Marker name is benign + unique.
+  - kind: rest
+    method: POST
+    path: /api/dataentities/9301/files/uploads/{{initiate_response.uploadId}}/chunks?index=0
+    multipart:
+      file: "probe-bytes-P196"
+    capture_as: chunk_response
+  - kind: rest
+    method: POST
+    path: /api/dataentities/9301/files/uploads/{{initiate_response.uploadId}}/complete
+    capture_as: complete_response
+observe:
+  - kind: container-exec
+    cmd: "ls -la /tmp/odd-probe-marker-traversal 2>/dev/null; echo '---'; ls -la /tmp/odd/attachments/9301/ 2>/dev/null"
+    capture_as: fs_listing
+    notes: |
+      Confirms WHETHER the file escaped to /tmp/odd-probe-marker-traversal (outside
+      the attachment base dir) vs stayed inside /tmp/odd/attachments/9301/. The
+      probe-runner reads the captured stdout.
+  - kind: sql
+    query: |
+      SELECT id, name, path, status FROM file WHERE data_entity_id = 9301;
+    capture_as: file_row
+assert:
+  # CURRENT (buggy) behaviour — the probe PINS the traversal:
+  - "complete_response.status in [200, 201]                                   # upload succeeded with a traversal filename"
+  - "'/tmp/odd-probe-marker-traversal' in fs_listing                          # bytes landed OUTSIDE attachment.local.path"
+  - "file_row.rows[0].path contains '..' or file_row.rows[0].path startswith '/tmp/odd-probe-marker'  # stored path escaped the base dir"
+  # AFTER-FIX expectation (flip these in once filename sanitisation lands):
+  #   - "initiate_response.status == 400                                       # traversal filename rejected at initiate"
+  #   - "'/tmp/odd-probe-marker-traversal' not in fs_listing"
+cleanup:
+  - kind: container-exec
+    cmd: "rm -f /tmp/odd-probe-marker-traversal"
+  - kind: sql
+    query: |
+      DELETE FROM file WHERE data_entity_id = 9301;
+      DELETE FROM data_entity WHERE id = 9301;
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__org_opendatadiscovery_oddplatform_controller__controller__DataEntityAttachmentController
+    - odd-platform__java__DataEntityAttachmentController__controller-class__DataEntityAttachmentController
+  related_feature_flows:
+    - F-027
+  retrospectives:
+    - LSN-001        # attachment storage class — filesystem-path handling
+realism_caveats: |
+  - The CRLF-header-injection sibling (filename containing CRLF injected into the
+    Content-Disposition header on download — DataEntityAttachmentController.java:76-79)
+    is a SEPARATE assertion best driven by a raw-socket HTTP client that can read the
+    raw response head; WebFetch/WebTestClient normalise headers and would hide the
+    injection. Emit a follow-up raw-HTTP probe for the CRLF case if the maintainer
+    wants it pinned.
+  - The traversal depth (../../..) is tuned for the default base path
+    /tmp/odd/attachments/{id}; if attachment.local.path is overridden the probe-runner
+    re-tunes the relative prefix so the escape target is a writable sandbox dir
+    inside the container.
+  - This probe targets LOCAL storage. The REMOTE flavour writes the raw fileName as
+    an S3 object key; S3 key semantics differ (no real ../ traversal on the object
+    store, but key-injection / overwrite-of-another-key is the analogue). The LOCAL
+    case is the higher-severity (arbitrary filesystem write) and is pinned here.

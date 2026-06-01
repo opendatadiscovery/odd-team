@@ -1,0 +1,113 @@
+---
+probe_id: P-222
+id: P-222
+status: pending-reflection-verification
+emitted_by: feature-reflector
+emitted_at: 2026-06-01T00:00:00Z
+emitted_in_batch: REFLECT-F-022
+emitted_from_sidecar: lineage/odd-platform/feature-reflections/detail/F-022.yaml
+feature_id: F-022
+hypothesis_id: H-009
+test_class: performance
+verified_against_commit: substrate-manifest-inherited
+maintainer_curated: false
+expected_outcome: |
+  Hypothesis H-009 (verbatim from the reflection):
+
+  "When a BI dashboard with N tiles embeds N dataset SLA badges via
+  <img src=.../sla>, the badge images are client-cacheable (ETag /
+  Cache-Control), so a dashboard refresh does not refetch every badge from the
+  platform."
+
+  Static trace (DataQualityController sidecar
+  performance.known_performance_gaps[1]): no Cache-Control / ETag /
+  Last-Modified header on any response, including the PNG badge; the badge
+  body is fully determined by (datasetId, current_test_states) so an ETag is
+  derivable but not computed. The in-memory PNG cache avoids file IO but not
+  the per-request SQL aggregation. The probe (a) confirms the absence of
+  cacheability headers and (b) measures the per-request SQL cost so the
+  load-scales-with-BI-adoption claim is quantified.
+
+stress_category: C (caching / resource-boundary)
+
+triggers:
+  - DataQualityController.java:42-48 (getSLA PNG path — no header manipulation)
+  - CachingByteArraySLAResourceResolver.java:18-25 (in-memory byte cache, no ETag)
+  - openapi.yaml:1880-1896 (image/png declaration; no cache headers)
+  - F-022 chain hop 3 (ReactiveDataQualityRepositoryImpl getSLA SQL, unresolved:true)
+  - F-022 chain hop 5 (CachingByteArraySLAResourceResolver, unresolved:true)
+
+arrange:
+  - Build odd-platform from main against docker-compose Postgres
+    (auth.type=DISABLED — caching headers are auth-mode-agnostic).
+  - Seed a dataset (e.g. 8001) with a representative set of DQ tests + last-run
+    rows (e.g. 50 tests across MINOR/MAJOR/CRITICAL with mixed pass/fail) so the
+    SLA SQL aggregation does non-trivial work.
+  - Enable Postgres statement logging (log_min_duration_statement=0) OR attach
+    pg_stat_statements to count executions of the SLA aggregation query.
+
+act:
+  - CALL 1: GET /api/datasets/8001/sla — capture full response headers + body.
+  - CALL 2: immediately re-issue GET /api/datasets/8001/sla with the headers a
+    browser would replay IF an ETag/Last-Modified had been returned by CALL 1
+    (If-None-Match / If-Modified-Since). If CALL 1 returned no validators, this
+    is moot — record that.
+  - CALL 3: issue GET /api/datasets/8001/sla 100 times in a tight loop
+    (simulating a dashboard fan-out / repeated refresh). Count how many times
+    the SLA aggregation SQL executed (via pg_stat_statements delta).
+
+observe:
+  - kind: rest_response_headers
+    target: CALL 1
+    capture:
+      - ETag                     # expected: ABSENT
+      - Cache-Control            # expected: ABSENT (or default no-cache)
+      - Last-Modified            # expected: ABSENT
+      - Content-Type             # expected: image/png
+      - Content-Length           # ~1-2 KB
+  - kind: rest_response
+    target: CALL 2
+    capture:
+      - status_code              # if validators existed, a 304 would be possible; expect 200 (no validators)
+  - kind: sql_exec_count
+    target: CALL 3
+    capture:
+      - sla_aggregation_query_executions   # expected ~100 (no caching → one SQL per request)
+      - mean_query_duration_ms
+
+oracle:
+  pass_if:
+    - CALL 1 returns an ETag or Last-Modified AND CALL 2 returns 304
+      (the badge is client-cacheable — the hypothesis holds).
+  fail_if_no_cacheability:
+    - CALL 1 returns NO ETag/Cache-Control/Last-Modified (the static-trace
+      prediction — no client cacheability).
+  fail_if_sql_per_request:
+    - CALL 3.sla_aggregation_query_executions ~= 100 (every badge fetch re-runs
+      the aggregation; load scales linearly with BI-embed fetch rate).
+
+routes_to_finding_on_fail:
+  - fail_if_no_cacheability + fail_if_sql_per_request: caveat-candidate
+    (document the no-cache behaviour in sla-statuses.md BI-embed section) +
+    perf bug-candidate (add a state-derived ETag so browsers/CDNs serve 304s) —
+    MEDIUM (severity rises with BI-embed adoption + refresh frequency).
+
+local_execution_only:
+  enforced: true
+  mechanism: docker-compose Postgres (with pg_stat_statements) + local
+             odd-platform build; load loop via a local shell / k6 / wrk script;
+             no remote infrastructure.
+  approach_md_anchor: APPROACH.md section 9 rule 12 (local-only verification)
+  local_execution_blocked: false
+
+cleanup:
+  - DELETE the seeded dataset 8001 and its DQ rows.
+  - Reset Postgres log_min_duration_statement; stop the docker-compose stack.
+
+confidence_required: HIGH (flips H-009 from contradicted-by-static-trace to a
+  measured no-cacheability + a quantified SQL-per-request load figure).
+
+cross_references:
+  - sidecar: DataQualityController.md performance.known_performance_gaps[1] + hot_paths[1]
+  - reflection: lineage/odd-platform/feature-reflections/detail/F-022.yaml H-009
+  - new_drift_class: sla_badge_png_no_etag_no_cache_control_bi_dashboard_refetch_every_render

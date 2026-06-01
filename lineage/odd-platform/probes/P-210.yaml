@@ -1,0 +1,132 @@
+---
+probe_id: P-210
+emitted_by: feature-reflector
+emitted_in_feature_reflection: F-039
+emitted_at: 2026-06-01T00:00:00Z
+status: pending-reflection-verification
+feature_id: F-039
+hypothesis_id: H-009
+test_class: integration
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Reflection hypothesis H-009 (response-shape contract, seed: response-shape +
+  negative-space): "When a user POSTs a question and the external AI service
+  returns a STRUCTURED JSON object (e.g. {"answer":"42 datasets"}) rather than a
+  bare JSON-quoted string, the user receives a clean answer."
+
+  Traced behaviour (GenAIServiceImpl.java:45-47): the response is unwrapped via
+  `StringEscapeUtils.unescapeJava(CharMatcher.is('"').trimFrom(item))`. This
+  assumes the external service returns a JSON-quoted string (e.g.
+  `"the answer text\n"`). For a structured object `{"answer":"the answer text"}`
+  the boundary characters are `{` and `}` (not `"`), so trimFrom strips nothing at
+  the boundaries; the caller receives the LITERAL JSON object text
+  `{"answer":"the answer text"}` in GenAIResponse.body — silently wrong, not an
+  error. The hypothesis is expected to be CONTRADICTED.
+
+  This probe pins the operator-visible consequence: same endpoint, two external
+  response shapes (bare quoted string vs structured object), and asserts the
+  quoted-string case unwraps cleanly while the structured-object case leaks raw
+  JSON to the caller with HTTP 200.
+---
+arrange:
+  - kind: docker-compose-up
+    note: |
+      odd-minimal stack with auth.type=LOGIN_FORM, genai.enabled=true, genai.url
+      pointing at a WireMock instance the probe controls, genai.request_timeout=2.
+  - kind: env
+    AUTH_TYPE: "LOGIN_FORM"
+    AUTH_LOGIN_FORM_CREDENTIALS: "admin:adminpw"
+    GENAI_ENABLED: "true"
+    GENAI_URL: "http://wiremock-genai:8080"
+    GENAI_REQUEST_TIMEOUT: "2"
+  - kind: wiremock-up
+    description: "WireMock standing in for the external AI service with two scenario stubs keyed by question text."
+    container_name: "wiremock-genai"
+    stubs:
+      - method: POST
+        path: /query_data
+        match_request_body: '.*PROBE-210-QUOTED.*'
+        response:
+          status: 200
+          content_type: application/json
+          # A bare JSON-quoted string (the shape the implementation assumes).
+          body: '"the answer is 42 datasets"'
+      - method: POST
+        path: /query_data
+        match_request_body: '.*PROBE-210-STRUCTURED.*'
+        response:
+          status: 200
+          content_type: application/json
+          # A structured JSON object (the shape the implementation does NOT handle).
+          body: '{"answer":"the answer is 42 datasets"}'
+
+act:
+  - kind: rest
+    description: "Quoted-string case — external returns a bare JSON-quoted string."
+    method: POST
+    path: /api/genai/ask
+    basic_auth:
+      username: admin
+      password: adminpw
+    headers:
+      Content-Type: "application/json"
+    body: |
+      {"body": "PROBE-210-QUOTED how many datasets"}
+    capture_as: quoted_response
+  - kind: rest
+    description: "Structured-object case — external returns a JSON object."
+    method: POST
+    path: /api/genai/ask
+    basic_auth:
+      username: admin
+      password: adminpw
+    headers:
+      Content-Type: "application/json"
+    body: |
+      {"body": "PROBE-210-STRUCTURED how many datasets"}
+    capture_as: structured_response
+
+observe:
+  - kind: response-body
+    capture_as: quoted_body
+    from: quoted_response
+  - kind: response-body
+    capture_as: structured_body
+    from: structured_response
+
+assert:
+  - "quoted_response.status == 200"
+  # The quoted-string case unwraps cleanly: quotes trimmed, no JSON artefacts.
+  - "quoted_response.body.body == 'the answer is 42 datasets'  # clean unwrap"
+  - "structured_response.status == 200  # NOT an error — that is the whole point"
+  # The structured-object case leaks the literal JSON object to the caller.
+  - "structured_response.body.body contains '{' AND structured_response.body.body contains 'answer'  # raw JSON leaked"
+  - "structured_response.body.body != 'the answer is 42 datasets'  # the caller did NOT get a clean answer"
+
+cleanup:
+  - kind: wiremock-reset
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  related_sidecars:
+    - odd-platform__java__GenAIController__controller-class__GenAIController
+  related_feature_flows:
+    - F-039
+  retrospectives: []
+
+realism_caveats: |
+  The probe pins the response-unwrap brittleness directly. The discriminating
+  assertion is the contrast between the two stubs: a bare-quoted-string response
+  unwraps to a clean answer, while a structured-object response surfaces raw JSON
+  to the caller with HTTP 200 (silently wrong, not an error). The exact text of
+  the leaked structured body depends on CharMatcher.is('"').trimFrom behaviour on
+  a `{...}` string — the boundary chars are not `"`, so nothing is trimmed at the
+  boundaries; any interior `\n`/`\t`/`\"` sequences are then unescaped. The
+  assertions are deliberately loose on the exact leaked string (contains '{' and
+  'answer') because the unescape pass can mutate interior escapes; the
+  load-bearing fact is that the caller does NOT receive the clean answer string.
+  This confirms the undocumented external-service response-shape contract: the
+  external service MUST return a bare JSON-quoted string.

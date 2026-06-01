@@ -1,0 +1,604 @@
+---
+feature_id: F-027
+pillar_anchored_id: P-08:F-005
+pillar: "P-08 Management & Administration"
+feature_name: "Attachment Lifecycle (Files + Links)"
+reflected_at: 2026-06-01T00:00:00Z
+reflected_at_commit: 43d13eb
+prompt_version: feature-reflector/0.1.0
+contributing_sidecars_read:
+  - odd-platform__java__DataEntityAttachmentController__controller-class__DataEntityAttachmentController.md
+  - odd-platform__java__DataEntityAttachmentController__controller-method__uploadFileChunk.md
+  - odd-platform__java__MinioConfig__config-class__MinioConfig.md
+  - odd-platform__java__AttachmentServiceImpl__config-key-consumer__attachment_max-file-size@L27.md  # referenced via uploadFileChunk + class sidecar cross-links; not separately re-read this pass
+docs_cross_referenced:
+  - url: "https://docs.opendatadiscovery.org/features/data-discovery/attachments"
+    last_verified_at: "2026-06-01T00:00:00Z"
+    last_verified_status: 200
+  - url: "https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform"
+    last_verified_at: "2026-06-01T00:00:00Z"
+    last_verified_status: 200
+  - url: "https://docs.opendatadiscovery.org/data-discovery/attachments"
+    last_verified_at: "2026-06-01T00:00:00Z"
+    last_verified_status: 404   # the top-level path the batch-V sidecar recorded as 200 on 2026-05-20 now 404s; the /features/... path is the live one
+hypothesis_summary:
+  total: 13
+  confirmed: 3
+  contradicted: 8
+  partial: 2
+  probe_needed: 0   # H-005 + H-007 are `contradicted` verdicts that ALSO emit runtime regression-pin probes (P-195 / P-196); see probes_emitted. No verdict is itself `probe-needed`.
+  highest_severity_contradiction:
+    hypothesis_id: H-005
+    severity: HIGH
+    one_line: "A user with DATA_ENTITY_ATTACHMENT_MANAGE on entity A can delete / update / download / complete files + links on ANY other entity B by spoofing the URL prefix — the controller discards the path's dataEntityId and the service acts on fileId/linkId alone, so the per-entity authorization grant is bypassed catalog-wide."
+related_feature_flows:
+  - F-001   # Data Discovery — the attachment list + uploader UI is rendered on the Data Entity detail page (the read/UX surface absent from THIS chain)
+  - F-004   # XSS family — link URL javascript: scheme + filename CRLF header-injection family-adjacent
+  - F-006   # RBAC — DATA_ENTITY_ATTACHMENT_MANAGE permission family + the cross-entity escalation shape (REFACTOR-024)
+  - F-019   # Owner Lifecycle — audit-silence pattern sibling (no @ActivityLog on any attachment mutation)
+  - F-021   # Activity Feed — the audit surface that does NOT record attachment mutations (audit-silence root)
+related_concepts:
+  - "Attachment (file + link operator-curated artefact)"
+  - "File (chunked upload — 3-step state machine)"
+  - "Link (URL-curated reference)"
+  - "Chunked Upload (initiate -> upload-part -> complete; server-owned UUID)"
+  - "LOCAL Storage (filesystem; default; ephemeral — LSN-001)"
+  - "REMOTE Storage (S3/MinIO; persistent; us-east-1 default — LSN-002)"
+  - "DATA_ENTITY_ATTACHMENT_MANAGE Permission"
+  - "F-004 XSS Family (link URL + filename family-adjacent)"
+related_drift_classes:
+  - attachment_mutation_dataentityid_discarded_cross_entity_jump
+  - attachment_read_endpoints_no_security_rule_three_of_ten
+  - attachment_filename_unsanitised_path_traversal_crlf_header_injection
+  - attachment_lsn_001_canonical_surface_chunk_staging_node_local_tmp
+  - attachment_lsn_002_minio_region_unset_us_east_1_default
+  - attachment_link_url_unvalidated_javascript_scheme_storable_xss_class
+  - attachment_no_mime_validation_no_quota_no_rate_limit
+  - attachment_3_step_chunked_upload_server_owned_uploadid
+  - attachment_duplicate_filename_rejected_at_initiate_logical_pk
+new_drift_classes_proposed:
+  - attachment_maxfilesize_ui_hint_not_enforced_server_side_chunk_path   # NEW from H-002 — the cap is a UI hint, never enforced on the chunk critical path (REFACTOR-013 framed as a user-promise contradiction)
+  - attachment_chunk_session_node_local_no_sticky_routing_multi_replica_fails   # NEW from H-010 — multi-replica chunk-staging failure framed as the user-visible "upload fails intermittently" symptom
+  - attachment_ui_surface_unenriched_reflection_api_only_F027   # NEW (process) — the feature's UI interaction layer (uploader, link form, action icons) has no sidecar in the chain; reflection is backend-only (Rule 9)
+related_probes:
+  - P-195   # cross-entity URL spoofing regression-pin (H-005)
+  - P-196   # filename path-traversal regression-pin (H-007)
+probe_verifications: []
+maintainer_curated: false
+---
+
+# Attachment Lifecycle (Files + Links) — product-owner reflection
+
+## reflection_scope_caveat
+
+**This reflection is BACKEND/API-ONLY. The feature's UI interaction layer is NOT in the chain (APPROACH.md section 0.3 + Rule 9 / LSN-023).** Attachment Lifecycle is a heavily UI-driven, user-facing capability — the user lives through a per-entity "Attachments" tab, a drag-and-drop file uploader, a progress indicator across the 3-step chunked upload, a link-add form, and per-attachment edit/delete action icons (the live feature page describes "drag-and-drop the file into the attachment window, or browse to select" and "per-attachment action icons" — WebFetch 2026-06-01). NONE of those React components is enriched as a sidecar in F-027's `contributing_nodes`: the chain is ten Java surfaces (controller, services, upload-strategy beans, MinioConfig, FileUtils). I checked: `Grep [Aa]ttachment` across `understanding/*ts*.md` returns only Search / DataEntityDetails / PopularStrip / Roles / DataEntityDescription / AppInfoMenu / SelectLanguage — there is NO attachments-uploader, link-form, or attachment-list component sidecar. Consequently the senior-product-owner UX questions (Rule 9: *does the user understand how to use this from the screen? is the interaction convenient/intuitive? can they customise it? how does it behave across device types?*) CANNOT be answered from this chain. The hypotheses below are confined to behaviours observable at the HTTP/storage boundary; they do NOT judge what the user experiences on screen. The UI gap is logged as a `validation_gap` (see cross_references) and a `new_drift_class` (`attachment_ui_surface_unenriched_reflection_api_only_F027`) so the substrate-coverage pass (APPROACH.md Rule 20 / Failure F) anchors the missing components and a follow-up reflection can cover the UX.
+
+## product_owner_narrative
+
+**What it is.** Attachment Lifecycle is the operator-and-user capability to staple supporting context onto any data entity in the catalog: uploaded **files** (runbook PDFs, sample CSVs, dashboard screenshots) and external **links** (wiki pages, ticket references) (per `DataEntityAttachmentController__controller-class` understanding + WebFetch `features/data-discovery/attachments` 2026-06-01 — "Users may attach files and links to data entities"). It is the canonical home for two of the project's most-cited incidents: LSN-001 (the attachment-storage default that silently wiped production data on container restart) and LSN-002 (the MinIO region pin that broke AWS S3 outside us-east-1). The audience is any authenticated platform user who has the `DATA_ENTITY_ATTACHMENT_MANAGE` permission for the entity they are annotating (per `DataEntityAttachmentController__controller-class` implicit_adrs[0] + WebFetch `features/data-discovery/attachments` 2026-06-01 — "Attachment management requires the DATA_ENTITY_ATTACHMENT_MANAGE permission"); the problem it solves is keeping operational context attached to the data it describes, inside the catalog, rather than scattered across wikis and chat.
+
+**How a user interacts with it.** The capability is exposed as ten HTTP endpoints on `DataEntityAttachmentController` under `/api/dataentities/{data_entity_id}/{attachments|files|links}*`, across three resource groups (per `DataEntityAttachmentController__controller-class` concepts.operations): the **attachments aggregate** (`GET .../attachments` list, `GET .../files/uploads` upload-options) — 2 read endpoints; **files** (`POST .../files` initiate, `POST .../files/uploads/{upload_id}/chunks` chunk, `POST .../files/uploads/{upload_id}/complete`, `GET .../files/{file_id}` download, `DELETE .../files/{file_id}`) — 5 endpoints; and **links** (`POST .../links` save-bulk, `PUT .../links/{link_id}` update, `DELETE .../links/{link_id}` delete) — 3 endpoints. A file upload is a deliberate 3-step state machine: the client calls `initiate` with a `fileName` and gets back a server-minted `uploadId` UUID, posts each chunk by integer `index` against that `uploadId`, then calls `complete` to assemble and persist (per `DataEntityAttachmentController__controller-class` concepts.operations[2] + `uploadFileChunk` understanding). The user provides a filename, the file bytes, and (for links) a URL and display name; on success they see the file/link appear in the entity's attachment list and can download or delete it.
+
+**The working parts.** Storage strategy is a boot-time switch: `attachment.storage=LOCAL` (the default, via `matchIfMissing=true`) writes to the container filesystem; `attachment.storage=REMOTE` writes to an S3/MinIO bucket (per `DataEntityAttachmentController__controller-class` implicit_adrs[1] + `MinioConfig` invariants — `@ConditionalOnProperty` selects exactly one upload-strategy bean at boot). Uploads larger than `attachment.max-file-size` (default 20 MB) are advertised as rejected (per WebFetch `features/data-discovery/attachments` 2026-06-01 — "Files larger than the cap are rejected by the upload API"). There is no file-type restriction (per same — "images, CSVs, PDFs, TXT files, and any other format are accepted"). A `(dataEntityId, fileName)` pair is treated as a logical primary key — a duplicate filename on the same entity is rejected at initiate time (per `DataEntityAttachmentController__controller-class` implicit_adrs[5] / FileServiceImpl.java:47-54). Authorization is wired declaratively at the Spring Security WebFilter layer by path-pattern matchers — six `SecurityRule` entries gate POST/PUT/DELETE on `/files/**` and `/links/**` with `DATA_ENTITY_ATTACHMENT_MANAGE`; the three GET (read) endpoints have NO rule (per `DataEntityAttachmentController__controller-class` security.authorization_assertions + bugs_limitations_corner_cases[0]).
+
+**The integration story.** Attachments are a read-side citizen of P-01 Data Discovery — the file/link list renders on the Data Entity detail page's Overview tab for any audience, so the read render path belongs to F-001/F-004 (per F-027 flow `cross_pillar_relationships` P-01 leg). The link-URL surface is family-adjacent to F-004's stored-XSS family (a `javascript:` link is storable; the UI rendering contract decides the attack surface — per `DataEntityAttachmentController__controller-class` bugs_limitations_corner_cases[7]). The `DATA_ENTITY_ATTACHMENT_MANAGE` permission lives on the `DATA_ENTITY` resource scope and is part of P-09's RBAC model (per F-027 flow `cross_pillar_relationships` P-09 leg). Uploaded files may carry DQ test report PDFs or sample CSVs, an informal feed into P-04 Data Quality (per F-027 flow `cross_pillar_relationships` P-04 leg). Critically, NO attachment mutation writes an Activity event — the feature shares the audit-silence pattern of F-019/F-021 (per F-027 `control_summary` cross-link to F-019).
+
+**Edge cases a product owner would demo.** Three are load-bearing. (a) **The LOCAL default is ephemeral** — files written to `/tmp/odd/attachments` vanish on any container/pod restart; the live operator page now warns about this verbatim (LSN-001 doc remediation is healthy — WebFetch `configuration-and-deployment/odd-platform` 2026-06-01). (b) **Even REMOTE persistence does not protect an in-flight upload** — the chunk staging path `/tmp/odd/chunks` is hard-coded regardless of storage mode (per `DataEntityAttachmentController__controller-class` bugs_limitations_corner_cases[5] / FileUtils.java:24); the live operator page now also warns about this ("Even in REMOTE mode, chunked uploads are assembled on the container's local filesystem... container restarts during upload lose staged chunks permanently" — WebFetch 2026-06-01). (c) **Storage and read access are catalog-wide, not entity-scoped** — any authenticated user can list and download any entity's files, and the write permission, once held on one entity, reaches every entity via URL spoofing; the live feature page now names the read caveat ("any authenticated user lists any data entity's attachments by id today") and the cross-entity mutation caveat ("users with this permission on one entity can reportedly mutate attachments on other entities by targeting file IDs" — WebFetch 2026-06-01).
+
+## hypotheses
+
+- id: H-001
+  hypothesis: "When a user uploads a file via POST /api/dataentities/{id}/files (initiate) with a fileName that already exists on that same data entity, the platform rejects the upload with a clear 'already exists' error rather than silently creating a second file or overwriting the first."
+  derivation: "Endpoint-shape + the (dataEntityId, fileName) logical-PK invariant — initiate takes a fileName; a catalog that treats filename as an identity key rejects duplicates predictably."
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      initiateUpload checks for an existing (dataEntityId, fileName) before minting the
+      uploadId: fileRepository.getFileByDataEntityAndName(...).handle((pojo, sink) -> { if
+      (pojo != null) sink.error(new BadUserRequestException("File with name %s already
+      exists for this data entity")); }). The rejection happens at initiate time (before any
+      chunk is accepted), so the user gets the error up front, not after uploading bytes.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityAttachmentController__controller-class__DataEntityAttachmentController
+        section: implicit_adrs[5]
+        cite: "FileServiceImpl.java:47-54"
+        note: "Duplicate (dataEntityId, fileName) rejected at initiate with BadUserRequestException."
+    confidence: HIGH
+    routes_to_finding: none
+
+- id: H-002
+  hypothesis: "When a user (or API client) tries to upload a file larger than attachment.max-file-size (default 20 MB), the platform rejects it — as the docs promise ('Files larger than the cap are rejected by the upload API')."
+  derivation: "Doc-claim seed + endpoint-shape — getUploadOptions advertises max-file-size; the docs state the cap is enforced by the upload API."
+  seed_source: doc-claim
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      attachment.max-file-size is surfaced by getUploadOptions as a UI HINT only (multiplied
+      to bytes and returned). The chunk endpoint enforces NO size limit on the request critical
+      path: uploadFileChunk reads no byte count, and FileServiceImpl.uploadFileChunk calls
+      FilePart.transferTo without checking the chunk or cumulative size. A client that ignores
+      getUploadOptions and streams chunks beyond 20 MB is accepted unconditionally. The promise
+      "the upload API rejects oversize files" is true at the UI layer (the React uploader
+      enforces it before upload) and FALSE at the API layer. The live operator config page now
+      states this accurately ("the UI enforces before upload ... the server does not re-validate
+      this on upload, and direct API callers can exceed it" — WebFetch 2026-06-01), but the live
+      FEATURE page still tells end users "Files larger than the cap are rejected by the upload
+      API" (WebFetch 2026-06-01) — a residual user-facing overstatement.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityAttachmentController__controller-method__uploadFileChunk
+        section: bugs_limitations_corner_cases[1]
+        cite: "DataEntityAttachmentController.java:54-62 + AttachmentServiceImpl.java:60-62 + FileServiceImpl.java:58-67"
+        note: "Cap surfaced via getUploadOptions but never enforced on the chunk path. Tracked as REFACTOR-013 (HIGH)."
+      - sidecar: odd-platform__java__DataEntityAttachmentController__controller-method__uploadFileChunk
+        section: docs_link_semantic.doc_drift_findings[1]
+        cite: "refactoring-scopes.md:107-115"
+        note: "Doc statement true at UI layer, false at API layer — already REFACTOR-013."
+    operator_visible_failure: |
+      (1) Storage-fill DoS: an authenticated user (or a buggy script) bypasses the advertised
+      20 MB ceiling and writes arbitrarily large objects, filling the LOCAL /tmp partition or the
+      REMOTE bucket — there is also no per-user/per-entity quota (H-008), so the only real limit
+      is disk/bucket capacity. (2) Heap pressure on REMOTE: completeFileUpload buffers the whole
+      reassembled file into one ByteBuffer before the PUT (RemoteFileUploadServiceImpl.java:67-77),
+      so an oversize file is an oversize heap allocation per concurrent upload. (3) Trust gap: an
+      operator who read "the upload API rejects oversize files" and sized their disk for 20 MB
+      files discovers the real ceiling only when the partition fills.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-003
+  hypothesis: "When a client posts file chunks, the server reassembles them in the order the chunks were created (by ascending index), so the downloaded file is byte-identical to the uploaded file even if chunks arrive out of order over the network."
+  derivation: "Endpoint-shape — the chunk endpoint takes an integer index; correct reassembly is the core promise of a chunked-upload protocol."
+  seed_source: endpoint-shape
+  validation:
+    verdict: partial
+    actual_behavior: |
+      Reassembly DOES sort by numeric index: FileUtils.listFilesInOrder sorts chunk files via
+      Comparator.comparing(p -> Integer.parseInt(p.getFileName())), so out-of-order network
+      arrival reassembles correctly. BUT two corner cases break the byte-identity promise: (a) a
+      same-index retry is a last-writer-wins file overwrite with no write-isolation — a client
+      retrying chunk index=3 while the prior write is still flushing can produce a partially-written
+      chunk that completeFileUpload concatenates silently (no checksum, no length verification); and
+      (b) any stray non-integer file in the chunk directory (a .DS_Store, an editor swap, an
+      interrupted-write .tmp) makes Integer.parseInt throw NumberFormatException, wrapped as
+      RuntimeException, aborting the whole upload.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityAttachmentController__controller-method__uploadFileChunk
+        section: tests_coverage_semantic.uncovered_behaviours + bugs_limitations_corner_cases[4]
+        cite: "FileUtils.java:43-49 + FileServiceImpl.java:62"
+        note: "Numeric sort is correct; same-index race is last-writer-wins with no isolation; corruption is silent."
+      - sidecar: odd-platform__java__DataEntityAttachmentController__controller-class__DataEntityAttachmentController
+        section: bugs_limitations_corner_cases[6]
+        cite: "FileUtils.java:43-49"
+        note: "Stray non-integer filename throws NumberFormatException and aborts the upload."
+    operator_visible_failure: |
+      (1) Silent corruption: a retried chunk under contention yields a downloaded file that differs
+      from the uploaded file with no error surfaced at upload or download — the worst kind of failure
+      for a file users trust to carry runbooks or sample data. (2) Spurious upload abort: an operator
+      whose container's /tmp is shared with anything that drops a dotfile (some k8s sidecars, some CSI
+      drivers) sees uploads fail mid-flight with an opaque 500 and no explanation.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-004
+  hypothesis: "When a low-privilege authenticated user (no DATA_ENTITY_ATTACHMENT_MANAGE on anything) calls GET /api/dataentities/{id}/files/{file_id} for a file on an entity they do not own, the platform denies the download (403) — attachments are protected by the same permission family that gates managing them."
+  derivation: "Pillar mission anchor (P-09 'RBAC gates every mutation/read') + endpoint-shape — a managed resource is not world-readable to any logged-in user."
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The three read endpoints (getAttachments list, getUploadOptions, downloadFile) have NO
+      SecurityRule entry in SecurityConstants.SECURITY_RULES — only POST/PUT/DELETE matchers exist
+      for /files/** and /links/**. The read endpoints fall through to the global authentication
+      filter, so ANY authenticated identity (including the lowest-privilege role, and under
+      auth.type=DISABLED, any anonymous caller) can LIST and DOWNLOAD the files attached to ANY data
+      entity in the catalog regardless of owner or role. The live feature page now names this
+      ("any authenticated user lists any data entity's attachments by id today" — WebFetch 2026-06-01).
+    evidence:
+      - sidecar: odd-platform__java__DataEntityAttachmentController__controller-class__DataEntityAttachmentController
+        section: security.known_security_gaps[0] + bugs_limitations_corner_cases[0]
+        cite: "SecurityConstants.java:247-276 + DataEntityAttachmentController.java:31-42,73-80"
+        note: "No GET matcher; read endpoints are authentication-only, not authorization-gated."
+    operator_visible_failure: |
+      (1) Cross-tenant data exposure: an operator who uploads a sensitive PDF (an incident postmortem,
+      a credentials runbook, a customer-data sample CSV) to one entity has, in effect, published it to
+      every authenticated user in the platform — they need only know or enumerate a file_id. (2)
+      Enumeration: file_id is a sequential long; a curious user can walk file_ids and pull every
+      attachment in the catalog. (3) Under auth.type=DISABLED (a supported mode), the files are
+      reachable with no login at all. The read-collaborative posture is a platform-wide implicit ADR
+      (per system-mission.md P-09 maintainer notes) — but for attachment CONTENTS specifically, "every
+      authenticated user can read every file" is a sharper exposure than catalog-metadata reads.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-005
+  hypothesis: "When a user holds DATA_ENTITY_ATTACHMENT_MANAGE on data entity A but NOT on data entity B, and they issue DELETE /api/dataentities/{A}/files/{file_id_of_B}, the platform rejects the request and B's file survives — the per-entity authorization grant confines mutations to the entity it was granted on."
+  derivation: "Pillar mission anchor (P-09 RBAC is per-data-entity) + cross-layer naming drift (path dataEntityId vs service fileId) — the URL hierarchy promises entity scoping; does the implementation honour it?"
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      The hierarchical URL (/api/dataentities/{data_entity_id}/files/{file_id}) is layout-only. The
+      controller binds dataEntityId from the path but DISCARDS it; deleteFile / updateLink / deleteLink
+      / completeFileUpload / downloadFile pass only fileId / linkId to the service
+      (AttachmentServiceImpl.java:71-88). The SecurityRule gate evaluates DATA_ENTITY_ATTACHMENT_MANAGE
+      in DATA_ENTITY context against the URL's dataEntityId (A — which the caller IS authorized on), so
+      the gate passes; but the mutation lands on file_id (B's file). No service-tier check verifies the
+      file/link belongs to the URL's data entity. A user authorized on ANY single entity can therefore
+      delete, update, download, or complete files+links on EVERY entity in the catalog by spoofing the
+      URL prefix. This is the LSN-020 / Category-F cross-layer drift shape (path-name promises entity
+      scope; implementation keys on a different identifier). The live feature page now names it
+      ("users with this permission on one entity can reportedly mutate attachments on other entities by
+      targeting file IDs" — WebFetch 2026-06-01).
+    evidence:
+      - sidecar: odd-platform__java__DataEntityAttachmentController__controller-class__DataEntityAttachmentController
+        section: security.known_security_gaps[1] + security.owner_scoping + implicit_adrs[6]
+        cite: "DataEntityAttachmentController.java:83-88,100-107,110-114 + AttachmentServiceImpl.java:71-88 + SecurityConstants.java:248"
+        note: "owner_scoping: BYPASSES — gate on path entity, mutation on fileId; cross-entity privilege escalation."
+      - sidecar: odd-platform__java__DataEntityAttachmentController__controller-method__uploadFileChunk
+        section: bugs_limitations_corner_cases[2]
+        cite: "FileServiceImpl.java:93-102 + SecurityConstants.java:247-251"
+        note: "Chunk-path sibling: checkProcessingUploadById resolves by uploadId only; gate evaluates path entity — same misalignment for the upload-in-progress case."
+    operator_visible_failure: |
+      (1) Cross-entity privilege escalation: any user with attachment-manage on a single low-value
+      entity can DELETE attachments on every other entity — a one-permission grant becomes
+      catalog-wide write access to the attachment surface. (2) Cross-entity tamper: updateLink lets the
+      same user repoint another entity's runbook link to an attacker-controlled URL. (3) Cross-entity
+      data theft: downloadFile (already world-readable per H-004) compounds — but even if the read gap
+      were fixed, the URL-spoof would still let a manage-on-A user pull B's files. (4) Silent: there is
+      no audit log on any of these mutations (H-013), so the escalation leaves no application-side
+      trace. This is the highest-severity finding in the feature.
+    severity: HIGH
+    confidence: HIGH
+    probe_id: P-195
+    routes_to_finding: bug-candidate
+
+- id: H-006
+  hypothesis: "When a user adds a link via POST /api/dataentities/{id}/links with a URL field, the platform validates that it is a real, safe web URL (http/https) — a javascript: or data: URI is rejected rather than stored and later rendered."
+  derivation: "Endpoint-shape (DataEntityLinkFormData.url) + cross-pillar promise (F-004 stored-XSS family) — a 'link' control promises a navigable URL, not arbitrary script."
+  seed_source: cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      saveLinks and updateLink accept DataEntityLinkFormData.url with NO validation — the OpenAPI schema
+      has no format/pattern (components.yaml:2482-2491), there is no @URL constraint, no scheme allowlist,
+      no length cap. LinkServiceImpl stores the raw value via the mapper (bulk-create and update both pass
+      formData straight through). A link with a javascript: or data: scheme is stored verbatim; whether it
+      executes is decided by the UI rendering contract (out of this chain — F-004), but the storage layer
+      offers no defence. This is the same stored-XSS class as F-004's description-field family, on the
+      dedicated link surface.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityAttachmentController__controller-class__DataEntityAttachmentController
+        section: bugs_limitations_corner_cases[7] + security.known_security_gaps[4]
+        cite: "components.yaml:2482-2491 + LinkServiceImpl.java:31-46 + DataEntityAttachmentController.java:91-114"
+        note: "Link URL stored raw; no scheme allowlist; javascript:/data: storable — cross-reference F-004."
+    operator_visible_failure: |
+      (1) Stored XSS: a user with attachment-manage (which, per H-005, is reachable across all entities)
+      saves a javascript: link on a widely-viewed entity; if the UI renders the link as a clickable
+      anchor with the raw href, any user who clicks it executes attacker script in their authenticated
+      session. (2) Phishing/redirect: a data: URI or a look-alike URL can be planted as a "runbook" link.
+      The verdict on whether the click actually executes belongs to the F-004 UI render path (absent from
+      this chain), but the STORAGE-side contract — "we store whatever string you send as a link" — is the
+      contradiction here, and it is independent of the renderer.
+    severity: HIGH
+    confidence: MEDIUM
+    routes_to_finding: bug-candidate
+
+- id: H-007
+  hypothesis: "When a user uploads a file whose fileName contains path-traversal characters (e.g. ../../../etc/odd-secret), the platform rejects or neutralises the filename, and the stored object stays inside attachment.local.path — it cannot be written outside the attachment directory."
+  derivation: "Negative-space + endpoint-shape (fileName flows into the storage path) — a filename is user input that becomes a filesystem path; a safe system sanitises it."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      fileName is propagated RAW from DataEntityUploadFormData.fileName into the storage path:
+      FileMapper.java:30-31 calls pathConstructor.getFilePath(fileName, dataEntityId);
+      LocalFilePathConstructor.java:31-33 returns getFileDirectory(dataEntityId).resolve(fileName).
+      Path.resolve("../../../etc/odd-secret") escapes the per-entity directory, so for LOCAL storage a
+      traversal filename writes (and on download, reads) OUTSIDE attachment.local.path. There is no
+      sanitization, no `..` rejection, no NUL-byte filter, no length cap anywhere in the upload path. The
+      same raw filename is also emitted into the Content-Disposition header on download without RFC-6266
+      quoting (a CRLF in the filename can inject headers). The live docs are silent on filename handling
+      (WebFetch `configuration-and-deployment/odd-platform` 2026-06-01 — "no explicit claims about
+      filename sanitization").
+    evidence:
+      - sidecar: odd-platform__java__DataEntityAttachmentController__controller-class__DataEntityAttachmentController
+        section: bugs_limitations_corner_cases[1] + security.known_security_gaps[2]
+        cite: "FileMapper.java:30-31 + LocalFilePathConstructor.java:31-33 + DataEntityAttachmentController.java:76-79"
+        note: "Raw fileName into storage path (path traversal for LOCAL) AND into Content-Disposition (CRLF header injection)."
+    operator_visible_failure: |
+      (1) Arbitrary filesystem write (LOCAL): a traversal filename writes the uploaded bytes to an
+      attacker-chosen location relative to the attachment base path — overwriting config, planting files
+      in directories the platform process can write. (2) Arbitrary read-back: download resolves the same
+      traversal, so a file written to an escaped path can be retrieved. (3) Header injection on download:
+      a CRLF-bearing filename can inject response headers (e.g. set a cookie, smuggle a second response)
+      because the Content-Disposition value is unquoted. (4) For REMOTE the raw filename becomes an S3
+      object key (key-injection / cross-key-overwrite is the analogue; lower severity than LOCAL's real
+      filesystem traversal).
+    severity: HIGH
+    confidence: HIGH
+    probe_id: P-196
+    routes_to_finding: bug-candidate
+
+- id: H-008
+  hypothesis: "When a single user uploads many files to a data entity, the platform applies a per-user or per-entity quota so one user cannot exhaust the storage backend — the count and total size are bounded."
+  derivation: "Negative-space + doc-claim — the docs say 'no platform-enforced count limit'; a product owner asks whether ANY ceiling protects shared storage."
+  seed_source: negative-space
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      The hypothesis predicted a quota EXISTS; the implementation confirms there is NONE, so the
+      hypothesis-as-stated (a protective bound exists) is contradicted in spirit — but the documented
+      contract is explicit and accurate, so I record this as a confirmed CAVEAT rather than a bug-vs-promise
+      contradiction. There is no per-user or per-entity attachment-count or cumulative-size quota anywhere;
+      the only ceiling is attachment.max-file-size PER FILE (and even that is not enforced on the API path
+      per H-002). The live feature page states the count is unbounded ("a single data entity can carry
+      multiple files and multiple links" with no platform-enforced count limit — WebFetch 2026-06-01). The
+      code matches the doc; the doc is honest about the absence; the operational risk (single-user
+      storage-fill DoS) is real but documented-as-designed.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityAttachmentController__controller-class__DataEntityAttachmentController
+        section: bugs_limitations_corner_cases[3]
+        cite: "FileServiceImpl.java:33-103 + AttachmentServiceImpl.java:59-62"
+        note: "No count/sum check anywhere; max-file-size is per-file only."
+    operator_visible_failure: |
+      Documented-as-designed, but the operator-visible consequence remains: any authenticated user with
+      attachment-manage (reachable catalog-wide per H-005) can fill the LOCAL /tmp partition or the REMOTE
+      bucket with no platform-side throttle — a storage-fill / cost-amplification DoS. The doc names the
+      absence; the operator should still treat it as a hardening gap for production. Combined with H-002
+      (no server-side size enforcement) and H-013 (no audit), the abuse is both unbounded and untraceable.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-009
+  hypothesis: "When an operator configures attachment.storage=REMOTE against an AWS S3 bucket in their own region (e.g. eu-west-1), file uploads and downloads work — the platform talks to the bucket they configured."
+  derivation: "Pillar mission anchor (P-08 'operators configure storage') + cross-layer drift (region absent from the SDK builder) — REMOTE promises persistence against the operator's bucket."
+  seed_source: pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      MinioConfig builds the MinioAsyncClient with exactly .endpoint(url).credentials(accessKey,
+      secretKey).build() — .region(...) is NEVER called (MinioConfig.java:21-24), so the SDK's default
+      region us-east-1 governs request signing. Against AWS S3 in any other region, the first putObject
+      returns opaque AuthorizationHeaderMalformed / PermanentRedirect errors. Self-hosted MinIO ignores
+      the region header and is unaffected. There is no attachment.remote.region config key anywhere (grep
+      returns zero), no @PostConstruct guard, no in-code comment. This is the canonical LSN-002 surface.
+      The doc-side remediation is HEALTHY (the live operator page warns "AWS S3 region pinned to us-east-1
+      ... only buckets in us-east-1 work" — WebFetch `configuration-and-deployment/odd-platform`
+      2026-06-01); the CODE-side residue is unmitigated.
+    evidence:
+      - sidecar: odd-platform__java__MinioConfig__config-class__MinioConfig
+        section: bugs_limitations_corner_cases[0] (region-unset) + unset_parameter_audit
+        cite: "MinioConfig.java:19-25"
+        note: ".region(...) never called; us-east-1 default; LSN-002 canonical anchor; REFACTOR-027."
+    operator_visible_failure: |
+      (1) An operator in eu-west-1 / ap-southeast-1 / us-west-2 etc. configures REMOTE correctly per the
+      key names, boots green (no fail-fast — H-011), and discovers at first upload that every putObject
+      fails with an opaque AWS signing error that does not name "region" as the cause. (2) Because the
+      doc carries the caveat but the code does not fail fast, the operator who skipped the doc has no
+      in-product signal. Mitigation today is doc-only; the code-side fix (add attachment.remote.region +
+      parameterise the builder) is REFACTOR-027.
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-010
+  hypothesis: "When the platform is deployed as multiple replicas (the standard Kubernetes posture) behind a normal load balancer, a user's chunked upload succeeds regardless of which replica handles each chunk."
+  derivation: "Negative-space + pillar mission (the platform is a horizontally-scalable Spring service) — a stateless-looking REST API implies replica-agnostic requests."
+  seed_source: negative-space
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      Chunk staging is NODE-LOCAL: chunks are written to /tmp/odd/chunks/{uploadId}/{index} on whichever
+      replica receives the chunk, and the chunk directory is created at initiate time on whichever replica
+      handled THAT request (FileUtils.java:24 hard-coded constant; createDirectories at initiate only). If
+      a non-sticky load balancer routes initiate and the chunk POSTs to different replicas without a shared
+      volume backing /tmp/odd/chunks, transferTo raises NoSuchFileException (directory absent), or chunks
+      scatter across replicas and completeFileUpload finds an incomplete set. This applies to BOTH LOCAL and
+      REMOTE (the chunk path is upstream of the storage-backend dispatch). Neither the controller nor the
+      docs surface a sticky-routing requirement; it is a latent constraint inherited from the LSN-001 class.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityAttachmentController__controller-method__uploadFileChunk
+        section: bugs_limitations_corner_cases[0] + performance.scaling_characteristics + known_performance_gaps[0]
+        cite: "FileUtils.java:24 + FileServiceImpl.java:58-67 + LocalFileUploadServiceImpl.java:37 + RemoteFileUploadServiceImpl.java:56"
+        note: "Chunk staging per-replica local fs; multi-replica without sticky routing fails uploads. Applies to REMOTE too."
+    operator_visible_failure: |
+      (1) Intermittent upload failures in the most common production deployment (HA replicas behind a
+      round-robin LB): uploads fail "sometimes" with opaque 500s, succeed on retry only if the retry happens
+      to hit the initiating replica — a maddening, non-deterministic user experience. (2) The failure is
+      invisible to operators who validated uploads on a single-replica dev stack. (3) REMOTE operators are
+      surprised: they paid for S3 persistence expecting it to remove local-disk dependence, but the chunk
+      window still pins them to one replica. The chunk-staging /tmp residue is the same LSN-001 class root;
+      the live operator page now mentions the chunk-staging /tmp dependency but does NOT name the
+      multi-replica/sticky-routing requirement (WebFetch 2026-06-01).
+    severity: HIGH
+    confidence: HIGH
+    routes_to_finding: bug-candidate
+
+- id: H-011
+  hypothesis: "When an operator misconfigures REMOTE storage (unreachable endpoint, wrong credentials, or a bucket that does not exist), the platform fails to start (or logs a clear startup error) so the operator catches the misconfiguration before users try to upload."
+  derivation: "Pillar mission anchor (P-08 operators configure storage; fail-fast is the operator-friendly contract) + negative-space — boot-time validation is the normal expectation for required external dependencies."
+  seed_source: pillar
+  validation:
+    verdict: partial
+    actual_behavior: |
+      Partial fail-fast exists, but it is shallow. The three @Value fields (url / access-key / secret-key)
+      fail bean wiring at boot ONLY if blank-and-no-default (Spring placeholder resolution throws
+      IllegalArgumentException). RemoteFileUploadServiceImpl has a @PostConstruct that checks
+      StringUtils.isEmpty(bucket) and nothing else. There is NO boot-time S3 reachability call, NO credential
+      validation, NO bucketExists check, and (per H-009) NO region pre-flight. The platform boots GREEN under
+      REMOTE mode with an unreachable endpoint, wrong credentials, a missing bucket, OR a wrong region; the
+      first putObject is the first time the configuration is exercised. So: present-but-blank config is caught
+      at boot; present-but-wrong config is a deferred runtime failure. The live operator page warns "the
+      bucket must already exist" (WebFetch 2026-06-01) but the platform does not enforce it.
+    evidence:
+      - sidecar: odd-platform__java__MinioConfig__config-class__MinioConfig
+        section: bugs_limitations_corner_cases[2] (no-boot-validation) + concepts.invariants[3] + security.known_security_gaps[2]
+        cite: "MinioConfig.java:9-25 + RemoteFileUploadServiceImpl.java:45-50"
+        note: "No @PostConstruct S3 call in MinioConfig; only bucket-non-empty check downstream; deferred-failure pattern."
+    operator_visible_failure: |
+      (1) Deferred failure with high operator confidence: the platform reports "up", health checks pass,
+      the operator moves on — and the first user to upload gets a failure that surfaces as a UI error, not a
+      deployment error, so it lands on the user and on support rather than on the deploy pipeline. (2)
+      "Bucket must exist" is doc-only: an operator who forgets to pre-create the bucket boots successfully
+      and discovers it at first upload. This is the same LSN-001-shape latent-silent-failure pattern.
+      REFACTOR-028 captures the bucket-existence sub-case.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+- id: H-012
+  hypothesis: "When a client cannot guess or inject an upload identifier — the uploadId is server-issued and an upload only accepts chunks while it is in PROCESSING state — the chunked-upload protocol is safe from clients fabricating their own upload sessions."
+  derivation: "Endpoint-shape + the server-owned-uploadId implicit ADR — the protocol mints the UUID server-side; this is a positive design claim worth verifying holds end to end."
+  seed_source: endpoint-shape
+  validation:
+    verdict: confirmed
+    actual_behavior: |
+      initiateUpload mints a random server-side UUID and persists a PROCESSING file row; uploadFileChunk
+      and completeFileUpload both route through checkProcessingUploadById, which rejects any uploadId whose
+      file row is not in PROCESSING state with BadUserRequestException. Clients cannot choose their own
+      uploadId, and a completed (COMPLETED-status) upload stops accepting chunks. The state machine is the
+      deliberate design and it holds. (Caveat for completeness: an attacker who LEARNS a valid in-flight
+      uploadId issued for another entity can still post chunks to it — that is the cross-entity uploadId
+      hijack, which is H-005's chunk-path sibling, a SEPARATE finding; it does not undermine the
+      server-owned-identity property asserted here.)
+    evidence:
+      - sidecar: odd-platform__java__DataEntityAttachmentController__controller-class__DataEntityAttachmentController
+        section: implicit_adrs[2]
+        cite: "FileServiceImpl.java:41-55,58-67,69-76,93-102"
+        note: "Server-issued UUID + PROCESSING-state gate on chunk and complete; clients cannot inject an uploadId."
+    confidence: HIGH
+    routes_to_finding: none
+
+- id: H-013
+  hypothesis: "When a user uploads, deletes, or modifies an attachment, the action appears in the platform's audit trail (the Activity Feed) so an operator can later reconstruct who attached or removed what context, and when."
+  derivation: "Pillar mission anchor (P-08 is a mutating operator surface; F-021 Activity Feed is the audit-trail surface) + cross-pillar promise — a governance platform audits content mutations."
+  seed_source: cross-pillar
+  validation:
+    verdict: contradicted
+    actual_behavior: |
+      No attachment mutation writes an Activity event. The controller methods carry no @ActivityLog, no
+      logging framework imports, and no log calls; the service chain (AttachmentServiceImpl / FileServiceImpl
+      / LinkServiceImpl) is silent on the principal, the file/link id, and the operation. F-027's flow notes
+      record the audit-silence pattern explicitly (cross-link to F-019 Owner Lifecycle and F-021 Activity
+      Feed — "Attachment Lifecycle has the same audit-silence pattern; no @ActivityLog on any mutation per
+      sidecar Grep"). The Activity Feed (F-021) cannot record these even if it wanted to: its schema roots
+      events on data_entity_id NOT NULL, but the deeper issue here is simply that the attachment write path
+      emits no event at all.
+    evidence:
+      - sidecar: odd-platform__java__DataEntityAttachmentController__controller-method__uploadFileChunk
+        section: security.known_security_gaps[2] (no audit log)
+        cite: "DataEntityAttachmentController.java:54-62 + AttachmentServiceImpl.java:71-73 + FileServiceImpl.java:58-67"
+        note: "No logging imports/calls anywhere in the chunk path; mutation leaves no application-side trace."
+      - sidecar: odd-platform__java__DataEntityAttachmentController__controller-class__DataEntityAttachmentController
+        section: (F-027 flow control_summary cross-link to F-019)
+        cite: "F-027.yaml control_summary (audit-silence cross-link)"
+        note: "No @ActivityLog on any attachment mutation — sidecar Grep."
+    operator_visible_failure: |
+      (1) No accountability: when a runbook link is repointed (H-006) or a file is deleted cross-entity
+      (H-005), there is no record of who did it or when — the reverse-proxy access log is the only forensic
+      surface and it cannot correlate a fileId to the entity it ultimately affected. (2) Compounds the
+      security findings: the cross-entity escalation (H-005) and the link-tamper (H-006) are not only
+      possible but UNTRACEABLE. (3) An auditor or compliance reviewer asking "who attached this PII sample
+      and who downloaded it" gets no answer from the platform.
+    severity: MEDIUM
+    confidence: HIGH
+    routes_to_finding: caveat-candidate
+
+## cross_references
+
+### bug_candidates
+- hypothesis_id: H-005
+  severity: HIGH
+  one_line: "Cross-entity privilege escalation — manage-on-A user can delete/update/download/complete files+links on any entity B via URL spoofing; controller discards path dataEntityId, service keys on fileId/linkId, no belongs-to check."
+  recommended_log_as: BUG-NNN (REFACTOR-024 family — the cross-owner/cross-entity enumeration class)
+  proposed_fix_anchor: "AttachmentServiceImpl mutation methods take dataEntityId + verify file/link belongs to it (BadUserRequestException on mismatch), OR the AuthorizationManagerType resolves to the file's/link's parent entity rather than the URL's. Pin with P-195."
+- hypothesis_id: H-004
+  severity: HIGH
+  one_line: "Read endpoints (getAttachments, getUploadOptions, downloadFile) have no SecurityRule — any authenticated (or DISABLED-mode anonymous) user lists+downloads any entity's files."
+  recommended_log_as: BUG-NNN (add DATA_ENTITY_ATTACHMENT_VIEW SecurityRule entries on the 3 GET endpoints)
+  proposed_fix_anchor: "SecurityConstants.SECURITY_RULES — add GET matchers for /attachments, /files/uploads, /files/{file_id} gated on a new DATA_ENTITY_ATTACHMENT_VIEW (or reuse MANAGE)."
+- hypothesis_id: H-007
+  severity: HIGH
+  one_line: "Filename propagated raw into the LOCAL storage path (path traversal) and into the Content-Disposition header (CRLF injection); no sanitization, no scheme/`..`/NUL/length checks."
+  recommended_log_as: BUG-NNN (filename sanitisation + RFC-6266 header quoting)
+  proposed_fix_anchor: "Sanitize fileName at initiateFileUpload (reject ../, /, \\, NUL, control chars, leading dot; cap length; consider hash-as-storage-name) + RFC-6266-quote the Content-Disposition value. Pin with P-196."
+- hypothesis_id: H-002
+  severity: HIGH
+  one_line: "attachment.max-file-size is a UI hint only — the chunk endpoint enforces no size limit; the feature doc still claims 'the upload API rejects oversize files'."
+  recommended_log_as: BUG-NNN (already tracked as REFACTOR-013 HIGH — enforce the cap on the chunk path) + DOC-NNN to correct the feature page wording
+  proposed_fix_anchor: "Enforce cumulative + per-chunk size against attachment.max-file-size in FileServiceImpl.uploadFileChunk / completeFileUpload; correct the feature-page sentence to 'the UI enforces; the API does not re-validate'."
+- hypothesis_id: H-006
+  severity: HIGH
+  one_line: "Link URL stored raw with no scheme allowlist — javascript:/data: URIs are storable (stored-XSS class, F-004 family)."
+  recommended_log_as: BUG-NNN (add @URL constraint + http/https/mailto scheme allowlist + length cap on DataEntityLinkFormData.url)
+  proposed_fix_anchor: "Validate url at the controller/service tier (scheme allowlist) AND ensure the F-004 UI render path encodes/sanitises hrefs — joint fix with F-004."
+- hypothesis_id: H-009
+  severity: HIGH
+  one_line: "REMOTE MinIO client never sets .region(...) — AWS S3 outside us-east-1 fails with opaque signing/redirect errors (LSN-002 code residue; doc-mitigated only)."
+  recommended_log_as: BUG-NNN (already REFACTOR-027 — add attachment.remote.region + parameterise the builder)
+  proposed_fix_anchor: "MinioConfig.minioClient() — add .region(region) from a new attachment.remote.region key (fail-fast on missing for REMOTE), or default-and-warn."
+- hypothesis_id: H-010
+  severity: HIGH
+  one_line: "Chunk staging at /tmp/odd/chunks is node-local for both LOCAL and REMOTE; multi-replica deployments without sticky routing or a shared volume fail uploads intermittently."
+  recommended_log_as: BUG-NNN (parameterise CHUNK_BASE_PATH / require shared volume / direct-stream REMOTE without chunk staging) + DOC-NNN for the sticky-routing requirement
+  proposed_fix_anchor: "Either bake chunk staging into the storage strategy (REMOTE = stream chunks to a multipart upload, no local staging) or parameterise attachment.chunk.path + document the shared-volume/sticky-session requirement (FileUtils.java:24)."
+- hypothesis_id: H-003
+  severity: MEDIUM
+  one_line: "Same-index chunk retry is last-writer-wins with no write isolation (silent corruption); a stray non-integer chunk filename aborts the upload via NumberFormatException."
+  recommended_log_as: BUG-NNN (write-then-rename for chunk persistence + filter non-integer filenames before parse; add a per-chunk length/checksum verify at complete)
+  proposed_fix_anchor: "FileServiceImpl.uploadFileChunk — write to a temp name then atomic-rename; FileUtils.listFilesInOrder — skip non-integer filenames with a warn log."
+
+### caveat_candidates
+- hypothesis_id: H-008
+  one_line: "No per-user/per-entity attachment count or cumulative-size quota — single-user storage-fill DoS; documented-as-designed but a production hardening gap."
+  recommended_log_as: caveat already present on the live feature page (count unbounded) + DOC-NNN to add the storage-fill-DoS operator note; optional REFACTOR for a quota knob.
+- hypothesis_id: H-011
+  one_line: "REMOTE mode has no boot-time validation beyond blank-field + non-empty-bucket — unreachable endpoint / wrong creds / missing bucket / wrong region all boot green and fail at first upload."
+  recommended_log_as: caveat in configuration-and-deployment/odd-platform (the page already warns 'bucket must already exist'; add the deferred-failure note) + REFACTOR-028 (boot-time bucketExists/reachability check).
+- hypothesis_id: H-013
+  one_line: "No attachment mutation is recorded in the Activity Feed (no @ActivityLog anywhere) — uploads/deletes/link edits are untraceable; compounds the cross-entity-escalation findings."
+  recommended_log_as: DOC-NNN (state the audit scope: 'attachment mutations are not audited') + a backlog item to add activity logging on the attachment write path (cross-link F-019 / F-021 audit-silence family).
+
+### probes_emitted
+- probe_id: P-195
+  hypothesis_id: H-005
+  probe_path: "lineage/odd-platform/probes/P-195.yaml"
+- probe_id: P-196
+  hypothesis_id: H-007
+  probe_path: "lineage/odd-platform/probes/P-196.yaml"
+
+### validation_gaps
+- sidecar: "(none in chain) — the attachments UI interaction layer is unenriched"
+  field_insufficient: "No React-component sidecar exists for the per-entity Attachments tab, the drag-and-drop file uploader, the upload-progress indicator, the link-add/edit form, or the per-attachment action icons. Grep [Aa]ttachment over understanding/*ts*.md returns only unrelated components (Search, DataEntityDetails, etc.)."
+  proposed_refresh: "Substrate-coverage pass (APPROACH.md Rule 20 / Failure F) must enumerate + enrich the attachment UI components so a follow-up reflection can answer the Rule-9 UX questions (is the uploader convenient/intuitive? does the 3-step chunk protocol surface progress + resumability to the user? how does drag-and-drop behave on mobile? is the cap (H-002) communicated before upload?). This reflection is API-only until then (Rule 9 / LSN-023)."
+- sidecar: odd-platform__java__AttachmentServiceImpl
+  field_insufficient: "AttachmentServiceImpl + FileServiceImpl + LinkServiceImpl + the upload-strategy beans (Local/RemoteFileUploadServiceImpl) + FilePathConstructor + FileMapper + FileUtils are listed as F-027 contributing_nodes but are NOT yet directly enriched as their own sidecars (the flow marks hops 2-5 'sidecar: not-yet-enriched'). All service-tier evidence in this reflection is sourced from the DataEntityAttachmentController CLASS sidecar's primary-source citations + the uploadFileChunk method sidecar."
+  proposed_refresh: "Enrich AttachmentServiceImpl / FileServiceImpl / LinkServiceImpl / LocalFileUploadServiceImpl / RemoteFileUploadServiceImpl / FileMapper / FilePathConstructor / FileUtils as first-class sidecars so the service-tier claims (duplicate-rejection, state machine, path construction, heap-buffer) are anchored at their own source rather than transitively via the controller class sidecar."
+
+### doc_drift_findings
+- hypothesis_id: H-002
+  doc_url: "https://docs.opendatadiscovery.org/features/data-discovery/attachments"
+  doc_says: "Files larger than the cap are rejected by the upload API."
+  code_does: "The cap is a UI hint; the chunk endpoint enforces no size limit — direct API callers exceed it freely (the live config page already states this correctly; the feature page does not)."
+  recommended_log_as: doc-gap-NNN (correct the feature-page sentence to distinguish UI enforcement from API non-enforcement; the config page is already accurate)
+- hypothesis_id: H-010
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform"
+  doc_says: "Chunked uploads are assembled on the container's local filesystem before they are sent to REMOTE storage (/tmp/odd/chunks); container restarts during upload lose staged chunks."
+  code_does: "Confirmed accurate for the restart case — but the doc does NOT name the multi-replica / sticky-routing consequence: with HA replicas behind a non-sticky LB, uploads fail intermittently regardless of restarts."
+  recommended_log_as: doc-gap-NNN (add the multi-replica / shared-volume / sticky-session requirement to the chunk-staging caveat)
+- hypothesis_id: H-007
+  doc_url: "https://docs.opendatadiscovery.org/configuration-and-deployment/odd-platform"
+  doc_says: "(silent) — no claims about filename sanitization."
+  code_does: "Raw filename -> LOCAL path traversal + Content-Disposition CRLF injection; the absence of a caveat is itself a gap given the severity."
+  recommended_log_as: doc-gap-NNN (until the sanitisation fix lands, document the filename-handling limitation as a known caveat)
+
+## maintainer_notes
+
+(Reserved for maintainer hand-edits — preserved verbatim across refreshes.)
+
+Cross-batch note for the maintainer: between the batch-V sidecar enrichment (2026-05-20) and this reflection (2026-06-01) the LIVE feature page evolved — it now carries three caveats the batch-V sidecar flagged as doc-silent: the read-side "any authenticated user lists attachments" gap (H-004), the cross-entity mutation gap (H-005), and the server-doesn't-re-validate-size gap (H-002, on the config page). This shifts those three from "code does X, doc silent" to "doc now warns" — the BUG verdicts stand (the code behaviour is unchanged and is the contradiction), but the doc-drift framing softens for H-004/H-005 (doc now honest about the security posture) while H-002's feature-page wording remains a residual overstatement. The live top-level path the batch-V sidecar recorded (`/data-discovery/attachments`, status 200 on 2026-05-20) now 404s; the live page is at `/features/data-discovery/attachments`.

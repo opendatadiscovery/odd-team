@@ -1,0 +1,117 @@
+---
+probe_id: P-221
+id: P-221
+status: pending-reflection-verification
+emitted_by: feature-reflector
+emitted_at: 2026-06-01T00:00:00Z
+emitted_in_batch: REFLECT-F-022
+emitted_from_sidecar: lineage/odd-platform/feature-reflections/detail/F-022.yaml
+feature_id: F-022
+hypothesis_id: H-007
+test_class: integration
+verified_against_commit: substrate-manifest-inherited
+maintainer_curated: false
+expected_outcome: |
+  Hypothesis H-007 (verbatim from the reflection):
+
+  "When an operator opens a test's detail panel to READ its current severity,
+  they can inspect the value without changing it (reading is non-destructive)."
+
+  Static trace (F-022 batch-UI-L note 3, citing
+  TestReportDetailsOverview.tsx:42-52): handleSeverityChange dispatches
+  setDataQATestSeverity({severity}) on every AppSelect onChange event — no
+  submit, no confirmation, no pending state. The backend upsert
+  (ReactiveDataQualityRepositoryImpl.java:90-101, idempotent) means the FINAL
+  value is correct, but every intermediate option scrolled-through fires a real
+  PUT. This probe confirms (a) that an onChange fires a real network PUT, and
+  (b) the race risk: rapid option changes issue multiple in-flight PUTs whose
+  completion order is not guaranteed, so the PERSISTED value can end on an
+  intermediate (non-final) severity.
+
+stress_category: F (UI control vs mutation semantics) + C (ordering/race)
+
+triggers:
+  - TestReportDetailsOverview.tsx:42-52 (handleSeverityChange dispatches on onChange)
+  - DataQualityController.java:51-61 (setDataQATestSeverity — single (test,dataset) per call)
+  - ReactiveDataQualityRepositoryImpl.java:90-101 (idempotent onDuplicateKeyUpdate)
+  - F-022 drift_class testreport_severity_dropdown_fires_mutation_on_change_no_confirmation_no_pending_state
+
+arrange:
+  - Build odd-platform from main against docker-compose Postgres.
+  - setDataQATestSeverity is gated by DATASET_TEST_RUN_SET_SEVERITY via the
+    DATA_ENTITY resource type. Use auth.type=LOGIN_FORM and seed an operator
+    account that is an owner of the test dataset with the required permission
+    (so the PUT is authorised) — OR run under DISABLED if the DISABLED-mode
+    bypass makes the gate moot (confirm via a 200 vs 403 on a manual PUT first).
+  - Seed a dataset (e.g. 6001) with at least one DQ test (e.g. test_id 7001)
+    currently at severity MINOR.
+  - Stand up a local Playwright headless browser pointed at the running UI.
+
+act:
+  - CALL 1 (network capture): in the browser, open
+    /dataentities/6001/test-reports, click test 7001 to open the detail pane,
+    open the severity AppSelect, and select MAJOR. Capture all outbound
+    network requests during the interaction.
+  - CALL 2 (rapid scroll race): reset severity to MINOR via the API directly;
+    then in the browser rapidly select MINOR -> MAJOR -> CRITICAL -> MAJOR in
+    quick succession (faster than the PUT round-trip). Capture all outbound
+    PUTs and their completion order.
+  - CALL 3 (ground truth): after CALL 2 settles, read the persisted severity:
+    SELECT severity FROM data_quality_test_severity
+    WHERE data_quality_test_id=7001 AND dataset_id=6001.
+
+observe:
+  - kind: network_capture
+    target: CALL 1
+    capture:
+      - put_count                # PUTs fired by the single MAJOR selection
+      - put_payloads             # the severity value(s) sent
+  - kind: network_capture
+    target: CALL 2
+    capture:
+      - put_count                # expected: one PUT per intermediate option
+      - put_request_order
+      - put_response_order       # the race surface
+  - kind: sql_table_state
+    target: CALL 3
+    capture:
+      - persisted_severity       # the final value in the table
+
+oracle:
+  pass_if:
+    - CALL 1.put_count == 0 (selecting a value fires NO mutation until an
+      explicit submit — the hypothesis holds).
+  fail_if_fires_on_change:
+    - CALL 1.put_count >= 1 (the static-trace prediction — onChange fires a real
+      PUT with no submit/confirm).
+  fail_if_intermediate_persisted:
+    - CALL 3.persisted_severity is an intermediate option (not the last one the
+      operator selected) because PUT responses returned out-of-order.
+
+routes_to_finding_on_fail:
+  - fail_if_fires_on_change: bug-candidate (move the mutation behind an explicit
+    save/confirm action, align with F-198 NotificationSettings submit pattern) —
+    MEDIUM; pair with the H-005 audit-emission fix.
+  - fail_if_intermediate_persisted: bug-candidate (the dropdown can persist a
+    value the operator did not finally choose; silently flips the SLA colour) —
+    MEDIUM/HIGH.
+
+local_execution_only:
+  enforced: true
+  mechanism: docker-compose Postgres + local odd-platform build + local
+             Playwright headless browser; no remote infrastructure.
+  approach_md_anchor: APPROACH.md section 9 rule 12 (local-only verification)
+  local_execution_blocked: false
+
+cleanup:
+  - DELETE FROM data_quality_test_severity WHERE dataset_id=6001.
+  - DELETE the seeded dataset 6001, test 7001, and the operator account.
+  - Stop the docker-compose stack.
+
+confidence_required: HIGH (flips H-007 from contradicted-by-static-prose to a
+  measured fires-on-change + a measured race verdict).
+
+cross_references:
+  - reflection: lineage/odd-platform/feature-reflections/detail/F-022.yaml H-007 + H-005
+  - feature_flow: F-022 drift_class testreport_severity_dropdown_fires_mutation_on_change_no_confirmation_no_pending_state
+  - sidecar: DataQualityController.md performance.throughput_characteristics + bugs_limitations_corner_cases[4]

@@ -1,0 +1,119 @@
+---
+probe_id: P-220
+id: P-220
+status: pending-reflection-verification
+emitted_by: feature-reflector
+emitted_at: 2026-06-01T00:00:00Z
+emitted_in_batch: REFLECT-F-022
+emitted_from_sidecar: lineage/odd-platform/feature-reflections/detail/F-022.yaml
+feature_id: F-022
+hypothesis_id: H-003
+test_class: integration
+verified_against_commit: substrate-manifest-inherited
+maintainer_curated: false
+expected_outcome: |
+  Hypothesis H-003 (verbatim from the reflection):
+
+  "When an operator opens the 'Test reports' tab for a dataset that EXISTS but
+  has zero defined DQ tests, they see an empty-state ('no tests for this
+  dataset') rather than an error."
+
+  Static trace (DataQualityController sidecar bugs_limitations_corner_cases[2],
+  citing DataQualityServiceImpl.java:38-42 through the controller sidecar):
+  getDataEntityDataQATests throws NotFoundException (HTTP 404) when the dataset
+  exists but its DQ-test ODDRN stream is empty — i.e. an empty collection
+  returns 404, not 200+[]. The 404 message ("Data quality tests for dataset
+  with id %d not found") differs from the dataset-not-found 404 message, but a
+  status-code-only client cannot distinguish the two. What the TestReport React
+  component renders in the 404 case is NOT determinable from the substrate (no
+  enriched TestReport sidecar; batch-UI-L notes silent on the empty/404 UI
+  state). The probe resolves BOTH the API shape AND the UI rendering.
+
+stress_category: F (response-shape boundary — empty-collection case)
+
+triggers:
+  - DataQualityServiceImpl.java:38-42 (empty-stream NotFoundException on the test list)
+  - DataQualityServiceImpl.java:54-60 (dataset-existence 404 — the OTHER 404 source)
+  - openapi.yaml:1932-1947 (getDataEntityDataQATests — no page/size, response shape)
+  - F-022 chain hop 2 (DataQualityServiceImpl, unresolved:true)
+  - F-022 drift_class 404_on_empty_dq_test_list_unusual_rest_shape
+
+arrange:
+  - Build odd-platform from main against docker-compose Postgres
+    (auth.type=DISABLED — the 404-on-empty behaviour is auth-mode-agnostic).
+  - Seed exactly one dataset Data Entity (entity_class DATA_SET) with a known
+    data_entity_id (e.g. 5001) and ZERO rows in any data_quality_test /
+    data_entity_task_last_run table for that dataset.
+  - Seed a SECOND dataset (e.g. 5002) with at least one DQ test + one last-run
+    row, as the positive control.
+  - Confirm no data_quality_test rows reference data_entity_id=5001.
+
+act:
+  - CALL A (zero-test dataset): GET /api/datasets/5001/dataqatests
+  - CALL B (nonexistent dataset): GET /api/datasets/9999999/dataqatests
+  - CALL C (positive control): GET /api/datasets/5002/dataqatests
+  - CALL D (UI): with a local Playwright headless browser, navigate to
+    /dataentities/5001/test-reports and capture the rendered DOM + any visible
+    error/empty text after network-idle.
+
+observe:
+  - kind: rest_response
+    target: CALL A
+    capture:
+      - status_code              # hypothesis predicts 200; static trace predicts 404
+      - body                     # the error JSON or the (expected-but-absent) []
+      - body.message             # to compare against CALL B's message
+  - kind: rest_response
+    target: CALL B
+    capture:
+      - status_code              # expected 404 (dataset absent)
+      - body.message
+  - kind: rest_response
+    target: CALL C
+    capture:
+      - status_code              # expected 200 with a non-empty list
+      - body
+  - kind: dom_state
+    target: CALL D
+    capture:
+      - visible_text             # empty-state, error, or blank/spinner?
+      - console_errors
+
+oracle:
+  pass_if:
+    - CALL A.status_code == 200 AND CALL A.body is an empty list ([])
+  fail_if_404_on_empty:
+    - CALL A.status_code == 404 (the static-trace prediction)
+  fail_if_indistinguishable_404:
+    - CALL A.status_code == 404 AND CALL B.status_code == 404
+      (two distinct 404 sources share a status code)
+  ui_finding:
+    - record whether CALL D renders a real empty-state, a generic error, or a
+      dead spinner/blank for the zero-test dataset.
+
+routes_to_finding_on_fail:
+  - fail_if_404_on_empty: bug-candidate (return 200+[]) OR caveat-candidate
+    (document the 404-on-empty REST shape) — maintainer triage.
+  - fail_if_indistinguishable_404: bug-candidate (distinguish the two 404
+    sources) — MEDIUM.
+  - ui_finding (error or dead spinner on a healthy test-less dataset):
+    bug-candidate (render an empty-state) — MEDIUM.
+
+local_execution_only:
+  enforced: true
+  mechanism: docker-compose Postgres + local odd-platform build + local
+             Playwright headless browser; no remote infrastructure.
+  approach_md_anchor: APPROACH.md section 9 rule 12 (local-only verification)
+  local_execution_blocked: false
+
+cleanup:
+  - DELETE the seeded data_entity rows 5001, 5002 and any DQ rows for 5002.
+  - Stop the docker-compose stack.
+
+confidence_required: HIGH (flips H-003 from contradicted-with-unverified-UI to a
+  pinned API-shape + a pinned UI-rendering verdict).
+
+cross_references:
+  - sidecar: DataQualityController.md bugs_limitations_corner_cases[2]
+  - reflection: lineage/odd-platform/feature-reflections/detail/F-022.yaml H-003
+  - feature_flow: F-022 drift_class 404_on_empty_dq_test_list_unusual_rest_shape

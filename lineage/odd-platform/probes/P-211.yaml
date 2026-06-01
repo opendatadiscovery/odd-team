@@ -1,0 +1,146 @@
+---
+probe_id: P-211
+emitted_by: feature-reflector
+emitted_in_feature_reflection: F-039
+emitted_at: 2026-06-01T00:00:00Z
+status: pending-reflection-verification
+feature_id: F-039
+hypothesis_id: H-010
+test_class: integration
+verified_against_commit: 4ec2b20
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Reflection hypothesis H-010 (response-size ceiling, seed: doc-claim +
+  negative-space): "When the external AI service returns a long-form answer (a
+  multi-paragraph summary larger than 256KB, but within the 20MB ceiling the live
+  feature page names), the user receives the full answer."
+
+  Traced behaviour (WebClientConfiguration.java:26-29): the genAiWebClient builder
+  does NOT call `.codecs(c -> c.defaultCodecs().maxInMemorySize(...))`, so it uses
+  the Spring WebFlux default OUTBOUND-response in-memory ceiling of 256KB. The
+  application-wide `spring.codec.max-in-memory-size: 20MB` (application.yml:14-15)
+  is NOT inherited onto this dedicated client. An external response larger than
+  256KB throws DataBufferLimitException mid-stream, which collapses through
+  `.onErrorResume` (GenAIServiceImpl.java:48-51 — only ReadTimeoutException gets
+  the friendly branch) into a generic GenAIException -> HTTP 500. The live feature
+  page (WebFetch 2026-06-01) frames the size ceiling as "governed only by global
+  WebFlux limit, default 20MB" which describes the INBOUND request body, not the
+  OUTBOUND response. The hypothesis is expected to be CONTRADICTED at the 256KB
+  boundary; the doc-vs-code partial is that the doc's "20MB" framing does not
+  apply to the response direction.
+
+  This probe pins the boundary: a sub-256KB response returns HTTP 200; a
+  ~512KB response returns HTTP 500.
+---
+arrange:
+  - kind: docker-compose-up
+    note: |
+      odd-minimal stack with auth.type=LOGIN_FORM, genai.enabled=true, genai.url
+      pointing at a WireMock instance the probe controls, genai.request_timeout=5.
+  - kind: env
+    AUTH_TYPE: "LOGIN_FORM"
+    AUTH_LOGIN_FORM_CREDENTIALS: "admin:adminpw"
+    GENAI_ENABLED: "true"
+    GENAI_URL: "http://wiremock-genai:8080"
+    GENAI_REQUEST_TIMEOUT: "5"
+  - kind: wiremock-up
+    description: "WireMock returning two response sizes keyed by question text — one under the 256KB default codec ceiling, one well over it (but under 20MB)."
+    container_name: "wiremock-genai"
+    stubs:
+      - method: POST
+        path: /query_data
+        match_request_body: '.*PROBE-211-SMALL.*'
+        response:
+          status: 200
+          content_type: application/json
+          # ~1KB JSON-quoted string — well under 256KB.
+          body_file: "genai-small-quoted-string.json"
+      - method: POST
+        path: /query_data
+        match_request_body: '.*PROBE-211-LARGE.*'
+        response:
+          status: 200
+          content_type: application/json
+          # ~512KB JSON-quoted string — over the 256KB WebFlux default, under 20MB.
+          body_file: "genai-large-512kb-quoted-string.json"
+  - kind: fixture-file
+    description: "Generate the two WireMock body files: a quoted string of ~1KB and a quoted string of ~512KB (single long quoted string, JSON-escaped)."
+    files:
+      - path: "genai-small-quoted-string.json"
+        generator: "quoted-string of length 1024"
+      - path: "genai-large-512kb-quoted-string.json"
+        generator: "quoted-string of length 524288"
+
+act:
+  - kind: rest
+    description: "Small response — under the 256KB ceiling."
+    method: POST
+    path: /api/genai/ask
+    basic_auth:
+      username: admin
+      password: adminpw
+    headers:
+      Content-Type: "application/json"
+    body: |
+      {"body": "PROBE-211-SMALL summarise"}
+    capture_as: small_response
+  - kind: rest
+    description: "Large response — ~512KB, over the 256KB default codec ceiling."
+    method: POST
+    path: /api/genai/ask
+    basic_auth:
+      username: admin
+      password: adminpw
+    headers:
+      Content-Type: "application/json"
+    body: |
+      {"body": "PROBE-211-LARGE summarise everything"}
+    capture_as: large_response
+
+observe:
+  - kind: response-body
+    capture_as: small_body
+    from: small_response
+  - kind: response-body
+    capture_as: large_body
+    from: large_response
+  - kind: container-logs
+    container_name: "odd-platform"
+    grep: "DataBufferLimitException"
+    capture_as: platform_logs_grep
+    description: "Did the large response trip DataBufferLimitException on the genAiWebClient codec?"
+
+assert:
+  - "small_response.status == 200  # sub-256KB response returns cleanly"
+  - "large_response.status == 500  # ~512KB response trips the 256KB default codec ceiling"
+  # The large failure is NOT the friendly timeout message — it falls into the generic branch.
+  - "large_response.body.message does_not_contain 'Gen AI request take longer'  # generic GenAIException branch, not the ReadTimeout branch"
+  - "platform_logs_grep.match_count >= 1  # DataBufferLimitException observed for the large response"
+
+cleanup:
+  - kind: wiremock-reset
+  - kind: docker-compose-down
+    destroy_volumes: true
+
+cross_references:
+  related_sidecars:
+    - odd-platform__java__GenAIController__controller-class__GenAIController
+    - odd-platform__java__config_properties__config-properties-class__GenAIProperties
+  related_feature_flows:
+    - F-039
+  retrospectives: []
+
+realism_caveats: |
+  The 256KB boundary is the Spring WebFlux default for a WebClient whose builder
+  chain does NOT configure `.codecs(...)`. The exact failure boundary may differ
+  by a small margin depending on the Reactor Netty buffer-accumulation behaviour
+  (the limit is on a single in-memory buffer aggregate); 512KB is comfortably over
+  256KB so the assertion is robust to small-margin variance. The doc-vs-code angle
+  (the feature page's "20MB" framing applies to the inbound request codec, not the
+  outbound response codec) is the partial-verdict half: the probe does NOT need to
+  test the 20MB inbound limit to establish that the OUTBOUND ceiling is 256KB and
+  the doc's framing would mislead an operator expecting long-form answers up to
+  20MB to succeed. If a future code change adds `.codecs(...maxInMemorySize(20MB))`
+  to the genAiWebClient builder, this probe flips to all-200 and the hypothesis
+  becomes confirmed.

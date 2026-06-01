@@ -1,0 +1,141 @@
+---
+probe_id: P-202
+emitted_by: feature-reflector
+emitted_in_sidecar: odd-platform__java__notification__class__NotificationSubscriber.md
+emitted_at: 2026-06-01T00:00:00Z
+status: pending-reflection-verification
+feature_id: F-009
+test_class: integration
+verified_against_commit: substrate-manifest-inherited
+maintainer_curated: false
+stack_profile: odd-minimal
+expected_outcome: |
+  Hypothesis under test (F-009 reflection H-007, verbatim):
+  "When one alert row is malformed in a way the translator rejects (e.g. it references a
+   data-entity oddrn that no longer exists), the platform skips that one alert and
+   continues delivering subsequent alerts."
+
+  Predicted code behaviour (CONTRADICTS the hypothesis): the malformed alert becomes a
+  POISON MESSAGE that stalls the ENTIRE WAL stream cluster-wide. The translator throws
+  IllegalStateException on a missing alerted-entity row (AlertNotificationMessageTranslator.java:94-101);
+  this is uncaught in the dispatcher (AlertNotificationMessageProcessor.java:23-24), propagates
+  to NotificationSubscriber's outer catch (NotificationSubscriber.java:90), the lock is
+  released, a 10s sleep fires, the lock is re-acquired, and the SAME un-advanced LSN
+  re-delivers (NotificationSubscriber.java:77-91 — process() is NOT wrapped in try/catch and
+  setAppliedLSN/setFlushedLSN advance only AFTER process() returns successfully). The
+  translator throws again -> infinite 10s-cadence replay. Every alert inserted AFTER the
+  poison row is deferred forever. Postgres retains all WAL since confirmed_flush_lsn on the
+  slot -> disk grows on the primary. The only operator remediations are (a) delete the bad
+  alert row, or (b) pg_drop_replication_slot (loses all in-flight undelivered alerts).
+
+  This probe pins the load-bearing F-009 fragility: a single bad row halts ALL alerting +
+  exhausts WAL. A future fix (skip-and-advance on processor failure, OR a poison-quarantine
+  that advances past a known-bad LSN) flips the assertion from "subsequent alert NOT
+  delivered + LSN pinned" to "poison skipped + subsequent alert delivered + LSN advanced".
+---
+arrange:
+  - kind: docker-compose-up
+    notes: |
+      odd-minimal stack + Postgres logical replication (as P-201). notifications.enabled=true.
+      Configure ONE channel only (webhook -> WireMock 200 OK) to make delivery observation
+      simple. Let the subscriber boot, acquire the advisory lock, and create the slot +
+      publication.
+  - kind: sql
+    query: |
+      INSERT INTO data_entity (id, oddrn, external_name, data_source_id, type_id, status)
+      VALUES (9202, '//probe-source/p-202/de-good', 'p_202_good_entity', 1, 1, 0)
+      ON CONFLICT (id) DO NOTHING;
+  - kind: sql
+    query: |
+      -- POISON: an alert whose data_entity_oddrn references an entity that does NOT exist.
+      -- The translator's fetchAlertedDataEntity raises IllegalStateException (missing row)
+      -- "despite the foreign key constraint" per AlertNotificationMessageTranslator.java:95.
+      INSERT INTO alert (id, data_entity_oddrn, type, status, last_created_at, status_updated_at, status_updated_by)
+      VALUES (9202, '//probe-source/p-202/de-MISSING-no-such-entity', 1, 0, NOW(), NOW(), NULL)
+      ON CONFLICT (id) DO NOTHING;
+    notes: |
+      If the FK constraint blocks this INSERT, the probe-runner instead inserts an alert
+      with a valid oddrn then hard-deletes the data_entity row (leaving the alert orphaned),
+      reproducing the exact "FK said it should exist but the row is gone" path the translator
+      comment at line 95 admits. Either route reaches IllegalStateException.
+  - kind: sql
+    query: |
+      INSERT INTO alert_chunk (alert_id, description, created_at)
+      VALUES (9202, 'probe P-202 poison alert chunk', NOW());
+act:
+  - kind: wait
+    notes: "Allow ~25s — long enough to observe at least two 10s replay cycles in the logs."
+  - kind: sql
+    query: |
+      -- A GOOD alert inserted AFTER the poison row. If the stream is healthy it delivers;
+      -- if the poison stalls the stream it never reaches the webhook.
+      INSERT INTO alert (id, data_entity_oddrn, type, status, last_created_at, status_updated_at, status_updated_by)
+      VALUES (9203, '//probe-source/p-202/de-good', 1, 0, NOW(), NOW(), NULL)
+      ON CONFLICT (id) DO NOTHING;
+  - kind: sql
+    query: |
+      INSERT INTO alert_chunk (alert_id, description, created_at)
+      VALUES (9203, 'probe P-202 good alert chunk', NOW());
+  - kind: wait
+    notes: "Allow another ~25s for the good alert to deliver IF the stream were healthy."
+observe:
+  - kind: http-stub-journal
+    target: webhook_stub
+    capture_as: webhook_requests
+  - kind: sql
+    query: |
+      SELECT slot_name, confirmed_flush_lsn,
+             pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn) AS retained_bytes
+      FROM pg_replication_slots
+      WHERE slot_name = 'odd_platform_replication_slot';
+    capture_as: slot_state_1
+  - kind: wait
+    notes: "Wait ~12s (one more replay cycle) and re-read the slot state to prove the LSN is PINNED, not advancing."
+  - kind: sql
+    query: |
+      SELECT slot_name, confirmed_flush_lsn,
+             pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn) AS retained_bytes
+      FROM pg_replication_slots
+      WHERE slot_name = 'odd_platform_replication_slot';
+    capture_as: slot_state_2
+assert:
+  # The GOOD alert (9203) inserted after the poison row NEVER reaches the webhook
+  - "webhook_requests.length == 0    # subsequent alert stalled behind the poison message"
+  # confirmed_flush_lsn is PINNED at the poison LSN across two reads (does not advance)
+  - "slot_state_2[0].confirmed_flush_lsn == slot_state_1[0].confirmed_flush_lsn    # LSN pinned -> replay loop"
+  # WAL is being retained and growing (the disk-exhaustion mechanism)
+  - "slot_state_2[0].retained_bytes >= slot_state_1[0].retained_bytes"
+  # Log evidence of the 10s replay cadence (probe-runner greps platform logs)
+  - "log_contains('Error occurred while subscribing') AND log_count('Released a lock, waiting 10 seconds') >= 2"
+cleanup:
+  - kind: sql
+    query: |
+      DELETE FROM alert_chunk WHERE alert_id IN (9202, 9203);
+      DELETE FROM alert WHERE id IN (9202, 9203);
+      DELETE FROM data_entity WHERE id = 9202;
+  - kind: docker-compose-down
+    destroy_volumes: true
+cross_references:
+  related_sidecars:
+    - odd-platform__java__notification__class__NotificationSubscriber
+    - odd-platform__java__notification__processor__class__PostgresWALMessageProcessor
+    - odd-platform__java__service__service__NotificationsDispatcher
+  retrospectives:
+    - LSN-017
+    - LSN-020
+  doc_gaps:
+    - DOC-GAP-230            # doc-side mirror of the WAL poison-replay-loop
+realism_caveats: |
+  - The probe depends on reproducing the translator IllegalStateException. The most reliable
+    route is the orphaned-alert path (insert alert with valid oddrn, then delete the
+    data_entity) — the translator comment at line 95 explicitly admits this can happen
+    "despite the foreign key constraint" (alerts key on oddrn string, not a hard FK to the
+    entity's surrogate id in all code paths). The probe-runner must confirm which route the
+    schema permits at verify-time.
+  - The disk-exhaustion assertion is SHAPE-based (retained_bytes does not shrink). A full
+    disk-exhaustion demonstration would require generating GBs of WAL and is out of scope for
+    a local probe; the pinned-LSN + non-shrinking-retention pair is sufficient to prove the
+    mechanism.
+  - The probe does NOT exercise the thread-death pathology (H-008) — that is a distinct
+    failure mode (InterruptedException during the 10s sleep kills the single executor thread
+    with no detection); a separate probe should drive a graceful-shutdown interrupt.

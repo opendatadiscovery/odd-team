@@ -191,6 +191,44 @@ def adrs_ingest_cmd(repo: str, dry_run: bool, workspace: Path | None) -> None:
         click.echo("--- dry-run: artifacts NOT written ---")
 
 
+@main.command("tests-ingest")
+@click.argument("repo")
+@click.option("--dry-run", is_flag=True, help="Emit summary without writing artifacts.")
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Workspace root (default: parent of lineage/).",
+)
+def tests_ingest_cmd(repo: str, dry_run: bool, workspace: Path | None) -> None:
+    """Ingest REPO's existing test suite as ground-truth Test nodes (Phase 4).
+
+    Walks the repo's test files (Java `src/test/**/*.java`, TS `*.spec.ts`/
+    `*.test.ts`), emits one Test node per class/spec with a mechanically-inferred
+    COVERS descriptor + any declared `@enforces`/`@validates`/`@regresses`/
+    `@covers` gates, and writes `lineage/{repo}/test-nodes.jsonl`. The projector
+    wires COVERS/ENFORCES/VALIDATES/REGRESSES edges. Mechanical, no LLM, no
+    network. See adrs/drafts/ground-truth-lineage.md (Phase 4) and the Test-
+    Traceability Ledger in `/align`.
+    """
+    from lineage_extractor.extractors.tests import ingest_tests
+
+    workspace_root = workspace or _default_workspace_root()
+    repo_path = resolve_repo_path(workspace_root, repo)
+    if not repo_path.is_dir():
+        raise click.ClickException(f"repo path not found: {repo_path}")
+    lineage_dir = workspace_root / "lineage" / repo
+    lineage_dir.mkdir(parents=True, exist_ok=True)
+
+    result = ingest_tests(repo_path, lineage_dir, repo, dry_run=dry_run)
+    if not result.ok:
+        click.echo(f"tests-ingest failed: {result.error}", err=True)
+        sys.exit(1)
+    click.echo(result.summary)
+    if dry_run:
+        click.echo("--- dry-run: artifacts NOT written ---")
+
+
 @main.command("docs-verify")
 @click.argument("repo")
 @click.option("--json", "as_json", is_flag=True, help="Emit JSON for machine consumers.")

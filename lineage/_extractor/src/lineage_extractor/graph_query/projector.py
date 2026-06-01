@@ -210,6 +210,10 @@ def _adr_key(adr_id: str) -> str:
     return f"adr::{adr_id}"
 
 
+def _test_key(test_id: str) -> str:
+    return f"test::{test_id}"
+
+
 # --------------------------------------------------------------------------
 # Projection
 
@@ -417,6 +421,7 @@ def project(substrate: Substrate) -> OntologyGraph:
     #       nodes (so the ImplicitADR a PROMOTED_TO points back from exists) and
     #       after the code nodes (so a REALISES resolves to a real CodeNode).
     _project_adr_nodes(g, substrate)
+    _project_test_nodes(g, substrate)
 
     # 7 — Structural edges from edges.jsonl (uppercased type), stub missing ends.
     for edge in substrate.edges:
@@ -673,6 +678,82 @@ def _project_adr_nodes(g: OntologyGraph, substrate: Substrate) -> None:
                     f"{adr.adr_id}: SUPERSEDED_BY target {adr.superseded_by} "
                     f"not in graph (edge skipped)",
                 ))
+
+
+def _project_test_nodes(g: OntologyGraph, substrate: Substrate) -> None:
+    """Project existing Test nodes (ground-truth-lineage Phase 4) + their edges.
+
+    - ``Test`` node (``L_TEST``), id = ``{path}::{class}``.
+    - ``COVERS`` — Test → CodeNode. Mechanical: the inferred ``covers`` descriptor
+      resolved against the ``(repo, lang, descriptor)`` index (unique match only);
+      plus any explicit ``@covers`` ref via the forgiving ``_resolve_code_ref``.
+    - ``ENFORCES`` — Test → ADR (declared ``@enforces ADR-NNNN``).
+    - ``VALIDATES`` — Test → Feature (declared ``@validates F-NNN``).
+    - ``REGRESSES`` — Test → RefactoringScope / ImplicitADR (declared
+      ``@regresses <id>``, exact id match).
+
+    A gate ref to a node not in the graph is recorded on ``g.skipped`` (the
+    blind-spot signal), never crashed and never stubbed. A test with zero edges
+    is an ``orphan`` — the alignment scorecard, not the projector, scores that."""
+    code_ids = {cn.node_id for cn in substrate.code_nodes}
+    desc_index = _build_code_descriptor_index(substrate)
+
+    for t in substrate.test_nodes:
+        g.add_node(
+            GraphNode(
+                label=config.L_TEST,
+                key=_test_key(t.test_id),
+                node_id=t.test_id,
+                title=t.class_name or t.test_id,
+                source_file=t.source_file,
+                source_line=t.source_line,
+                props={
+                    "framework": t.framework, "test_class": t.test_class,
+                    "path": t.path, "lang": t.lang, "covers": t.covers,
+                    "method_count": t.method_count,
+                    "gates_total": len(t.enforces) + len(t.validates) + len(t.regresses) + len(t.covers_refs),
+                    "content_hash": t.content_hash,
+                },
+                embed_units=[("test", t.class_name)] if t.class_name else [],
+            )
+        )
+
+    for t in substrate.test_nodes:
+        key = _test_key(t.test_id)
+        # COVERS — mechanical descriptor + explicit @covers refs.
+        covered: set[str] = set()
+        if t.covers:
+            cands = desc_index.get((t.repo, t.lang, t.covers), [])
+            if len(cands) == 1:
+                covered.add(cands[0])
+        for ref in t.covers_refs:
+            resolved = _resolve_code_ref(ref, code_ids, desc_index)
+            if resolved is not None:
+                covered.add(resolved)
+        for cid in sorted(covered):
+            g.add_edge(key, _code_key(cid),
+                       GraphEdge(config.E_COVERS, t.source_file, t.source_line))
+        # ENFORCES — Test → ADR.
+        for adr_id in t.enforces:
+            ak = _adr_key(adr_id)
+            if g.has(ak):
+                g.add_edge(key, ak, GraphEdge(config.E_ENFORCES, t.source_file, t.source_line))
+            else:
+                g.skipped.append((t.source_file, f"{t.test_id}: ENFORCES target {adr_id} not in graph"))
+        # VALIDATES — Test → Feature.
+        for fid in t.validates:
+            fk = _reducer_key(config.L_FEATURE, fid)
+            if g.has(fk):
+                g.add_edge(key, fk, GraphEdge(config.E_VALIDATES, t.source_file, t.source_line))
+            else:
+                g.skipped.append((t.source_file, f"{t.test_id}: VALIDATES target {fid} not in graph"))
+        # REGRESSES — Test → RefactoringScope / ImplicitADR (exact id).
+        for rid in t.regresses:
+            for label in (config.L_REFACTOR_SCOPE, config.L_IMPLICIT_ADR):
+                rk = _reducer_key(label, rid)
+                if g.has(rk):
+                    g.add_edge(key, rk, GraphEdge(config.E_REGRESSES, t.source_file, t.source_line))
+                    break
 
 
 def _build_code_descriptor_index(substrate: Substrate) -> dict[tuple[str, str, str], list[str]]:

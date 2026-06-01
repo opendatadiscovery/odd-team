@@ -28,6 +28,7 @@ from lineage_extractor.graph_query.records import (
     Section,
     SidecarRecord,
     Substrate,
+    TestNodeRecord,
 )
 
 _yaml = YAML(typ="safe")
@@ -56,6 +57,7 @@ def load_substrate(lineage_dir: Path) -> Substrate:
     _load_doc_nodes(lineage_dir, sub)
     _load_doc_understanding(lineage_dir, sub)
     _load_adr_nodes(lineage_dir, sub)
+    _load_test_nodes(lineage_dir, sub)
     _load_test_map(lineage_dir, sub)
     _load_feature_flows(lineage_dir, sub)
     _load_feature_reflections(lineage_dir, sub)
@@ -397,6 +399,47 @@ def _documentation_dir(lineage_dir: Path) -> Path | None:
 
 # --------------------------------------------------------------------------
 # YAML reducers — test-map, feature-flows, feature-reflections
+
+
+def _load_test_nodes(lineage_dir: Path, sub: Substrate) -> None:
+    """Parse `test-nodes.jsonl` (ground-truth Phase-4 Test nodes) into the
+    substrate. Absent file = no test layer ingested yet (not an error)."""
+    path = lineage_dir / "test-nodes.jsonl"
+    if not path.is_file():
+        return
+    for lineno, line in enumerate(path.read_text().splitlines(), start=1):
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError as exc:
+            sub.skipped.append((f"test-nodes.jsonl:{lineno}", f"bad JSON: {exc}"))
+            continue
+        tid = row.get("test_id")
+        if not tid:
+            sub.skipped.append((f"test-nodes.jsonl:{lineno}", "row has no test_id"))
+            continue
+        sub.test_nodes.append(
+            TestNodeRecord(
+                test_id=tid,
+                repo=row.get("repo", ""),
+                lang=row.get("lang", ""),
+                framework=row.get("framework", ""),
+                test_class=row.get("test_class", ""),
+                path=row.get("path", ""),
+                class_name=row.get("class_name", ""),
+                covers=row.get("covers", ""),
+                method_count=int(row.get("method_count", 0) or 0),
+                enforces=[str(x) for x in (row.get("enforces") or [])],
+                validates=[str(x) for x in (row.get("validates") or [])],
+                regresses=[str(x) for x in (row.get("regresses") or [])],
+                covers_refs=[str(x) for x in (row.get("covers_refs") or [])],
+                content_hash=row.get("content_hash", ""),
+                source_file="test-nodes.jsonl",
+                source_line=lineno,
+            )
+        )
 
 
 def _load_test_map(lineage_dir: Path, sub: Substrate) -> None:

@@ -425,24 +425,51 @@ def compute(lineage_dir: Path, workspace_root: Path, repo: str, repo_path: Path)
         guarded_scopes.update(gates.get("guards", []))
     tg_total = len(testgap_texts)
     landmine_gaps = [eid for eid, text in testgap_texts if _LANDMINE_RE.search(text)]
+
+    # Real Test nodes (Phase-4 ingest) + their ground-truth edges. The "no orphan
+    # tests" rule applies to EXISTING tests first — a test in the suite with no
+    # typed gate cannot tell you what breaks when it goes red.
+    test_keys = g.keys_by_label(config.L_TEST)
+    test_count = len(test_keys)
+    covers_edges = len(_edges_of_type(g, config.E_COVERS))
+    enforced_adrs_real = {g.get(dk).node_id for _s, dk in _edges_of_type(g, config.E_ENFORCES) if g.get(dk)}
+    validated_feats_real = {g.get(dk).node_id for _s, dk in _edges_of_type(g, config.E_VALIDATES) if g.get(dk)}
+    regresses_edges = len(_edges_of_type(g, config.E_REGRESSES))
+    orphan_tests_real = sum(1 for k in test_keys if not (g.get(k).props.get("gates_total") or 0))
+    enforced_all = enforced_adrs | enforced_adrs_real
+    validated_all = validated_features | validated_feats_real
+
     d.metrics.append(Metric(
-        "D1.no_orphans", "TestGaps carrying a typed gate (why)",
-        gated, tg_total, tg_total,
-        _grade_ratio(gated / tg_total if tg_total else 1.0),
-        f"{tg_total - gated} orphan gaps have no gate keyword+target (each is a finding); "
-        f"lenient match — a strict typed `gates:` block is the target schema",
+        "D0.test_layer", "Test nodes ingested (+ COVERS to code)",
+        covers_edges, test_count, test_count,
+        GREEN if covers_edges else (AMBER if test_count else RED),
+        f"{test_count} existing tests ingested · {covers_edges} COVERS edges resolved to substrate code"
+        + ("" if test_count else " — Phase-4 Test layer NOT built (run tests-ingest)")
+        + (" — 0 resolve: substrate is axis-selective (services/repos aren't code nodes) "
+           "and test names don't all map to a descriptor" if test_count and not covers_edges else ""),
+    ))
+    total_units = test_count + tg_total
+    gated_units = (test_count - orphan_tests_real) + gated
+    d.metrics.append(Metric(
+        "D1.no_orphans", "tests/gaps carrying a typed gate (why)",
+        gated_units, total_units, total_units,
+        _grade_ratio(gated_units / total_units if total_units else 1.0),
+        f"{orphan_tests_real}/{test_count} EXISTING tests are ORPHAN (no typed gate → add "
+        f"@enforces/@validates/@regresses); {tg_total - gated}/{tg_total} gaps orphan (lenient match)",
     ))
     d.metrics.append(Metric(
         "D2.adr_alignment", "ADRs with an enforcing test/gap",
-        len(enforced_adrs), len(enforced_adrs), len(published) or 1,
-        RED if not enforced_adrs else AMBER,
-        f"are we checking ADR ALIGNMENT? {len(enforced_adrs)}/{len(published)} ADRs gated (enforces→ADR)",
+        len(enforced_all), len(enforced_all), len(published) or 1,
+        RED if not enforced_all else AMBER,
+        f"are we checking ADR ALIGNMENT? {len(enforced_all)}/{len(published)} ADRs gated "
+        f"({len(enforced_adrs_real)} via real ENFORCES edge, rest via gated gaps)",
     ))
     d.metrics.append(Metric(
         "D3.functionality", "features with a validating test/gap",
-        len(validated_features), len(validated_features), feature_count,
-        RED if not validated_features else AMBER,
-        f"are we checking FUNCTIONALITY? {len(validated_features)}/{feature_count} features gated (validates→Feature)",
+        len(validated_all), len(validated_all), feature_count,
+        RED if not validated_all else AMBER,
+        f"are we checking FUNCTIONALITY? {len(validated_all)}/{feature_count} features gated "
+        f"({len(validated_feats_real)} via real VALIDATES edge)",
     ))
     finding_total = labels.get(config.L_FINDING, 0) + labels.get(config.L_REFACTOR_SCOPE, 0)
     d.metrics.append(Metric(
@@ -450,7 +477,7 @@ def compute(lineage_dir: Path, workspace_root: Path, repo: str, repo_path: Path)
         len(regressed_subjects) + len(guarded_scopes), len(regressed_subjects) + len(guarded_scopes), finding_total,
         RED if not (regressed_subjects or guarded_scopes) else AMBER,
         f"are we checking REGRESSION? {len(regressed_subjects) + len(guarded_scopes)}/{finding_total} findings/scopes gated"
-        + (f" · LSN-001/002 landmines captured as gated TestGaps ({len(landmine_gaps)}) but NO test yet (Test layer unbuilt)"
+        + (f" · LSN-001/002 landmines captured as {len(landmine_gaps)} gated TestGaps but NO regression test authored yet"
            if landmine_gated else " · LSN-001/LSN-002 landmines UNGATED (critical)"),
     ))
     # Probe execution + named integrations
@@ -465,15 +492,15 @@ def compute(lineage_dir: Path, workspace_root: Path, repo: str, repo_path: Path)
         f"{probe_runs}/{probes_defined} run · {stack_count} probe-stack(s) · named-integration keyword hits "
         f"{integ_covered}/4 ({integ_detail}) — KEYWORD scan, NOT verified e2e",
     ))
-    test_layer_built = (
-        len(_edges_of_type(g, config.E_ENFORCES)) > 0
-        or len(_edges_of_type(g, config.E_VALIDATES)) > 0
-        or labels.get(config.L_TEST, 0) > 0
-    )
+    test_layer_built = test_count > 0
     flat["test_layer_built"] = test_layer_built
+    flat["test_nodes"] = test_count
+    flat["covers_edges"] = covers_edges
+    flat["orphan_tests"] = f"{orphan_tests_real}/{test_count}"
     flat["testgaps_gated"] = f"{gated}/{tg_total}"
-    flat["adr_enforced"] = f"{len(enforced_adrs)}/{len(published)}"
-    flat["features_validated"] = f"{len(validated_features)}/{feature_count}"
+    flat["adr_enforced"] = f"{len(enforced_all)}/{len(published)}"
+    flat["adr_enforced_real_edges"] = len(enforced_adrs_real)
+    flat["features_validated"] = f"{len(validated_all)}/{feature_count}"
     flat["landmine_gated"] = landmine_gated
     flat["landmine_gaps"] = len(landmine_gaps)
     flat["probes"] = f"{probe_runs}/{probes_defined}"
@@ -490,7 +517,9 @@ def compute(lineage_dir: Path, workspace_root: Path, repo: str, repo_path: Path)
     ]
     blockers = []
     if not test_layer_built:
-        blockers.append("[D] Phase-4 Test layer unbuilt (0 Test nodes / 0 enforces+validates edges)")
+        blockers.append("[D] Phase-4 Test layer unbuilt (0 Test nodes — run tests-ingest)")
+    elif orphan_tests_real == test_count and not enforced_all:
+        blockers.append(f"[D] Test layer built ({test_count} nodes) but every test is ORPHAN + 0 ADRs enforced — gates not yet authored")
     if reflection_cov < REFLECTION_TRUST_FLOOR:
         blockers.append(f"[E] reflection {reflection_count}/{feature_count} → alignment unverified at scale")
     if not substrate_current:
@@ -506,8 +535,9 @@ def compute(lineage_dir: Path, workspace_root: Path, repo: str, repo_path: Path)
         readiness = "READY"
 
     actions = _actions(
-        test_layer_built, landmine_gaps, len(published), ingested, emb,
-        reflection_count, feature_count, stack_count, gated, tg_total,
+        test_layer_built, orphan_tests_real, test_count, landmine_gaps,
+        len(published), ingested, emb, reflection_count, feature_count,
+        stack_count, gated, tg_total,
     )
 
     return Scorecard(
@@ -517,14 +547,16 @@ def compute(lineage_dir: Path, workspace_root: Path, repo: str, repo_path: Path)
     )
 
 
-def _actions(test_built, landmine_gaps, published, ingested, emb,
+def _actions(test_built, orphan_tests, test_count, landmine_gaps, published, ingested, emb,
              refl, feats, stack_count, gated, tg_total) -> list[str]:
     out: list[str] = []
     if not test_built:
-        out.append("Build Phase-4 Test layer (Test node + enforces/validates/regresses/guards) — unblocks dimension D entirely")
-        if landmine_gaps:
-            tail = "…" if len(landmine_gaps) > 5 else ""
-            out.append(f"Convert the landmine gated-gaps to tests FIRST ({', '.join(landmine_gaps[:5])}{tail}) — LSN-001/002 regression pins [CRITICAL]")
+        out.append("Build Phase-4 Test layer — run tests-ingest to project existing tests as Test nodes + enable the gate edges")
+    elif orphan_tests:
+        out.append(f"Annotate the {orphan_tests}/{test_count} ORPHAN existing tests with @enforces/@validates/@regresses gates — the Test layer is built but no test is yet wired to a decision/feature/bug")
+    if landmine_gaps:
+        tail = "…" if len(landmine_gaps) > 5 else ""
+        out.append(f"Author the landmine regression tests WITH @regresses gates ({', '.join(landmine_gaps[:5])}{tail}) — LSN-001/002 pins, project as REGRESSES edges [CRITICAL]")
     if published and ingested < published:
         out.append(f"Re-run adrs-ingest + graph-build — {published - ingested} published ADRs are not yet graph nodes (unblocks C2 enforcement)")
     if not feats or refl / feats < REFLECTION_TRUST_FLOOR:

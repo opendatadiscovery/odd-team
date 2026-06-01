@@ -85,6 +85,34 @@ class ADRNodeRecord:
 
 
 @dataclass
+class TestNodeRecord:
+    """An existing test parsed from `test-nodes.jsonl` (ground-truth-lineage
+    Phase 4). Identity is `test_id` = `{path}::{class}`. `covers` is the
+    mechanically-inferred production descriptor; the gate lists carry the
+    declared `@enforces`/`@validates`/`@regresses`/`@covers` refs the projector
+    turns into COVERS / ENFORCES / VALIDATES / REGRESSES edges."""
+
+    __test__ = False  # domain record, not a pytest test class (name starts with "Test")
+
+    test_id: str
+    repo: str
+    lang: str
+    framework: str
+    test_class: str
+    path: str
+    class_name: str
+    covers: str
+    method_count: int
+    enforces: list[str] = field(default_factory=list)
+    validates: list[str] = field(default_factory=list)
+    regresses: list[str] = field(default_factory=list)
+    covers_refs: list[str] = field(default_factory=list)
+    content_hash: str = ""
+    source_file: str = "test-nodes.jsonl"
+    source_line: int = 0
+
+
+@dataclass
 class ReducerNodeRecord:
     """A reducer-derived node — ImplicitADR / RefactoringScope / DocGap / TestGap /
     Feature / FeatureReflection. One per reducer `detail/` entry."""
@@ -176,5 +204,6 @@ class Substrate:
     doc_nodes: list[DocNodeRecord] = field(default_factory=list)
     doc_understanding: list[DocUnderstandingRecord] = field(default_factory=list)
     adr_nodes: list[ADRNodeRecord] = field(default_factory=list)
+    test_nodes: list[TestNodeRecord] = field(default_factory=list)
     # Files that could not be parsed — surfaced, never silently dropped.
     skipped: list[tuple[str, str]] = field(default_factory=list)   # (path, reason)

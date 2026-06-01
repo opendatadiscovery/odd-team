@@ -75,7 +75,7 @@ in a later ground-truth-lineage phase. Live counts: `graph/build-info.yaml`.
 | **`ADR`** | GT decisions | `adrs/ADR-NNN-*.md` frontmatter (+ published log page) | `ADR-NNN` | planned (P2) |
 | **`Issue`** | GT issues | `lineage/{repo}/github-issues.json` (offline snapshot) | `{repo}#{number}` | planned (P3) |
 | **`IssueDraft`** | GT issues | `issues/{repo}/{PREFIX}-NNN.md` | `{PREFIX}-NNN` | planned (P3) |
-| **`Test`** | GT tests | the test file (via a `test_axis` extractor) | `{test-file}::{class}::{method}` | planned (P4) |
+| **`Test`** | GT tests | `test-nodes.jsonl` (via `tests-ingest`); the test file | `{test-file}::{class}` | active |
 
 The `Doc` label was **upgraded** by the ground-truth-lineage layer from a
 bare-URL stub (a URL a sidecar mentioned, no body, no vector) to a
@@ -123,10 +123,10 @@ straight from the substrate. Join-fabric + ground-truth edges are projected.
 | `FILED_AS` | IssueDraft → Issue | on-disk draft → real filed issue | planned (P3) |
 | `TRACKS` | Finding/RefactoringScope → Issue | OSLC `trackedBy` | planned (P3) |
 | `CLOSED_BY` | Issue → CodeNode | the PR/commit that closed it | planned (P3) |
-| `COVERS` | Test → CodeNode | SPDX `TEST_OF` | planned (P4) |
-| `VALIDATES` | Test → Feature | OSLC `validatedBy` | planned (P4) |
-| `REGRESSES` | Test → Issue/Finding | regression test for a known bug | planned (P4) |
-| `ENFORCES` | Test → ADR | test pins an architectural decision | planned (P4) |
+| `COVERS` | Test → CodeNode | SPDX `TEST_OF` (mechanical descriptor + `@covers`) | active |
+| `VALIDATES` | Test → Feature | OSLC `validatedBy` (`@validates F-NNN`) | active |
+| `REGRESSES` | Test → RefactoringScope/ImplicitADR | regression test for a known bug (`@regresses`; Finding/Issue targets: future) | active |
+| `ENFORCES` | Test → ADR | test pins an architectural decision (`@enforces ADR-NNNN`) | active |
 
 Edges are traversed both directions, so the audit-critical inverses
 (`ADR ←REALISES←`, `Feature ←VALIDATES←`, `Doc ←DESCRIBES→ code`) come for free.
@@ -227,3 +227,15 @@ The `ADR` node + `PROMOTED_TO` / `REALISES` edges are now projected (pilot: ADR-
 - **`SUPERSEDED_BY`** — `ADR` → `ADR`, from `superseded_by`.
 
 Verified clean `graph-build`: `ADR`=1, `PROMOTED_TO`=1 (ADR-CANDIDATE-001→ADR-0001), `REALISES`=1 (AlertController→ADR-0001), `SUPERSEDED_BY`=0; `adrs-ingest` deterministic; pytest 43 passed. Pillar: `pillars/adr/`. Process mirrors documentation: implicit-adrs → `/triage` → `backlog/adr` → `/implement` (published page) → `/review` → ontology.
+
+## Test layer — ACTIVE (2026-06-01, ground-truth Phase 4)
+
+The `Test` node + `COVERS` / `ENFORCES` / `VALIDATES` / `REGRESSES` edges are now projected. As-built source of truth:
+
+- **`Test` node** — identity `{repo_rel_path}::{class}` (class-level slice; the ADR's eventual `::{method}` granularity is a documented refinement). Sourced from the repo's test files (Java `src/test/**/*.java`, TS `*.spec.ts`/`*.test.ts`), materialised by `extractors/tests.py` (`tests-ingest`) into `lineage/{repo}/test-nodes.jsonl` (generated mirror; `content_hash` for drift). The bare-noun asymmetry holds: `Test` (exists) vs `TestGap` (to write).
+- **`COVERS`** — `Test` → `CodeNode`, from the mechanically-inferred `covers` descriptor (test-class minus the `Test` suffix) resolved via the forgiving `(repo, lang, descriptor)` index, plus any explicit `@covers` ref.
+- **`ENFORCES`** — `Test` → `ADR`, from a `@enforces ADR-NNNN` tag in the test file.
+- **`VALIDATES`** — `Test` → `Feature`, from `@validates F-NNN`.
+- **`REGRESSES`** — `Test` → `RefactoringScope`/`ImplicitADR`, from `@regresses <id>`.
+
+The `@enforces`/`@validates`/`@regresses`/`@covers` convention mirrors the existing `@docs` tag — a test declares **why it exists** (`feedback_tests_as_deterministic_gates`: no orphan tests). A `Test` with zero gate edges is an `orphan`; the `/align` scorecard's Test-Traceability Ledger scores both orphan tests and the bidirectional coverage (which ADRs/features/bugs have an enforcing/validating/regressing test). First ingest (odd-platform): `Test`=66, all orphan (the gate convention is new) — the rails are built; authoring the gates is the next move.

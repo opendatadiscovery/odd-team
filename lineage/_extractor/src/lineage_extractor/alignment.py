@@ -380,11 +380,16 @@ def compute(lineage_dir: Path, workspace_root: Path, repo: str, repo_path: Path)
     ))
     adr_keys = g.keys_by_label(config.L_ADR)
     realised = sum(1 for ak in adr_keys if _has_in_edge(g, ak, config.E_REALISES))
+    rj_adrs, rj_nodeid, rj_prose = _realises_join_health(workspace_root)
+    rj_note = (
+        f"; join broken: {rj_prose}/{rj_nodeid + rj_prose} backlog realises entries are prose "
+        f"citations not substrate node-ids → not projected as edges"
+    ) if rj_prose and rj_prose > rj_nodeid else ""
     c.metrics.append(Metric(
         "C2.realises", "ADRs with a REALISES code link",
         realised, ingested, len(published) or ingested,
         RED if (len(published) and realised / len(published) < 0.4) else AMBER,
-        f"{realised} of {ingested} ingested have REALISES; effective {realised}/{len(published)} vs published",
+        f"{realised} of {ingested} ingested have REALISES; effective {realised}/{len(published)} vs published{rj_note}",
     ))
     implicit = labels.get(config.L_IMPLICIT_ADR, 0)
     promoted = len(_edges_of_type(g, config.E_PROMOTED_TO))
@@ -395,6 +400,7 @@ def compute(lineage_dir: Path, workspace_root: Path, repo: str, repo_path: Path)
     ))
     flat["adr_ingested"] = f"{ingested}/{len(published)}"
     flat["adr_realises"] = realised
+    flat["realises_prose_vs_nodeid"] = f"{rj_prose}:{rj_nodeid}"
     dims.append(c)
 
     # --- D — TEST-TRACEABILITY LEDGER (the centrepiece) -----------------
@@ -530,6 +536,44 @@ def _actions(test_built, landmine_gaps, published, ingested, emb,
     if not emb:
         out.append("Rebuild graph WITH embeddings (currently off) — restores semantic retrieval for /retrieve + deep mode")
     return out
+
+
+_NODEID_SHAPE = re.compile(r"^\S+ (?:java|ts|py|python|yaml|go|sql)\b")
+
+
+def _frontmatter(text: str) -> dict:
+    if not text.startswith("---"):
+        return {}
+    end = text.find("\n---", 3)
+    if end < 0:
+        return {}
+    try:
+        from ruamel.yaml import YAML
+        return YAML(typ="safe").load(text[3:end]) or {}
+    except Exception:
+        return {}
+
+
+def _realises_join_health(workspace_root: Path) -> tuple[int, int, int]:
+    """Classify backlog ADR `realises:` entries as node-id-shaped (→ projectable
+    as a REALISES edge) vs prose citation (→ filed as realises_external text,
+    never an edge). Returns (adrs_with_realises, node_id_entries, prose_entries).
+    This is WHY a REALISES count can be ~0 despite every ADR citing code."""
+    base = workspace_root / "backlog" / "adr"
+    if not base.is_dir():
+        return (0, 0, 0)
+    adrs_with = node_shaped = prose = 0
+    for p in base.glob("ADR-*.md"):
+        entries = _frontmatter(p.read_text(errors="ignore")).get("realises") or []
+        entries = [str(e) for e in entries] if isinstance(entries, list) else []
+        if entries:
+            adrs_with += 1
+        for e in entries:
+            if _NODEID_SHAPE.match(e.strip()):
+                node_shaped += 1
+            else:
+                prose += 1
+    return adrs_with, node_shaped, prose
 
 
 def _published_adr_ids(workspace_root: Path) -> set[str]:

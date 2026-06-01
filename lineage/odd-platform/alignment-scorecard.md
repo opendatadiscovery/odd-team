@@ -7,7 +7,6 @@ _generated 2026-06-01 · `lineage-extractor alignment odd-platform` · determini
 **Blockers:**
 - [D] Phase-4 Test layer unbuilt (0 Test nodes / 0 enforces+validates edges)
 - [E] reflection 1/112 → alignment unverified at scale
-- [C] 26 published ADRs not ingested
 
 **Ready-now subset** (contract-testable today — reflected + bridged): F-021
 
@@ -16,7 +15,7 @@ _generated 2026-06-01 · `lineage-extractor alignment odd-platform` · determini
 > Is this scorecard itself trustworthy? Every alignment metric below is discounted by reflection coverage.
 
 - `GREEN` substrate scan == code HEAD — scan ede5d277 @ 2026-05-26 · HEAD ede5d277 @ 2026-04-03
-- `AMBER` graph embeddings present — built 2026-05-30 · vectors 0 — semantic queries degraded; rebuild without --no-embeddings
+- `GREEN` graph embeddings present — built 2026-06-01 · vectors 7555
 - `AMBER` latest /panel verdict — changes-needed
 - `RED` reflection coverage (alignment discount) — 1/112 features reflected → alignment UNKNOWN over 99% of features
 
@@ -43,9 +42,9 @@ _generated 2026-06-01 · `lineage-extractor alignment odd-platform` · determini
 
 ### C — Ontology ↔ ADR  (RED)
 
-- `RED` **published ADRs ingested as nodes** — 1/27 · 1 ADR nodes vs 27 published pages — re-run adrs-ingest + graph-build
-- `RED` **ADRs with a REALISES code link** — 1/27 · 1 of 1 ingested have REALISES; effective 1/27 vs published
-- `AMBER` **ImplicitADR candidates (disposition)** — 223 · 223 candidates · 1 promoted (1:1 promotion NOT required — wisdom test governs)
+- `GREEN` **published ADRs ingested as nodes** — 27/27 · 27 ADR nodes vs 27 published pages — re-run adrs-ingest + graph-build
+- `RED` **ADRs with a REALISES code link** — 1/27 · 1 of 27 ingested have REALISES; effective 1/27 vs published; join broken: 73/74 backlog realises entries are prose citations not substrate node-ids → not projected as edges
+- `AMBER` **ImplicitADR candidates (disposition)** — 223 · 223 candidates · 21 promoted (1:1 promotion NOT required — wisdom test governs)
 
 ### D — Test-Traceability Ledger  (RED)
 
@@ -59,11 +58,9 @@ _generated 2026-06-01 · `lineage-extractor alignment odd-platform` · determini
 
 1. Build Phase-4 Test layer (Test node + enforces/validates/regresses/guards) — unblocks dimension D entirely
 2. Convert the landmine gated-gaps to tests FIRST (TEST-GAP-024, TEST-GAP-047, TEST-GAP-049, TEST-GAP-051, TEST-GAP-052…) — LSN-001/002 regression pins [CRITICAL]
-3. Re-run adrs-ingest + graph-build — 26 published ADRs are not yet graph nodes (unblocks C2 enforcement)
-4. Raise reflection coverage on ADR-bearing features (1/112) — the layer that proves alignment
-5. GE / Airflow / Postgres-ingestion / webhooks have no dedicated probe stack (only odd-minimal: postgres+platform) → add multi-service stacks + regresses/validates-gated TestGaps
-6. Backfill typed gates on 582 orphan TestGaps (the test-coverage-mapper should emit a `gates:` block)
-7. Rebuild graph WITH embeddings (currently off) — restores semantic retrieval for /retrieve + deep mode
+3. Raise reflection coverage on ADR-bearing features (1/112) — the layer that proves alignment
+4. GE / Airflow / Postgres-ingestion / webhooks have no dedicated probe stack (only odd-minimal: postgres+platform) → add multi-service stacks + regresses/validates-gated TestGaps
+5. Backfill typed gates on 582 orphan TestGaps (the test-coverage-mapper should emit a `gates:` block)
 
 ---
 _Machine metrics + trend: `alignment-scorecard.yaml`. Deep contract audit (sampled, agentic): `lineage-extractor alignment odd-platform --deep` (phase 2)._

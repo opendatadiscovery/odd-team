@@ -358,6 +358,49 @@ def graph_build_cmd(repo: str, no_embeddings: bool, workspace: Path | None) -> N
         click.echo(f"  skipped_files={s['skipped_files']} (see graph/build-info.yaml)")
 
 
+@main.command("alignment")
+@click.argument("repo")
+@click.option(
+    "--workspace",
+    type=click.Path(file_okay=False, path_type=Path),
+    default=None,
+    help="Workspace root (default: parent of lineage/).",
+)
+@click.option("--json", "as_json", is_flag=True, help="Print the written machine payload (YAML) to stdout.")
+def alignment_cmd(repo: str, workspace: Path | None, as_json: bool) -> None:
+    """Compute the cross-corpus ALIGNMENT scorecard for REPO.
+
+    A deterministic roll-up (no LLM) over the derived ontology + ground-truth
+    anchors: scores CODE <-> DOC <-> ADR <-> TEST alignment bi-directionally and
+    surfaces the Test-Traceability Ledger (no orphan tests; every test gates an
+    ontology relationship). Writes lineage/{repo}/alignment-scorecard.{md,yaml}
+    (the .yaml appends a trend row each run). The deep agentic audit is `--deep`
+    (phase 2). See lineage/_extractor/.../alignment.py.
+    """
+    from lineage_extractor import alignment as al
+
+    workspace_root = workspace or _default_workspace_root()
+    repo_path = resolve_repo_path(workspace_root, repo)
+    lineage_dir = _resolve_lineage_dir(repo, workspace)
+    if not lineage_dir.is_dir():
+        raise click.ClickException(f"Lineage dir not found: {lineage_dir}")
+    sc = al.compute(lineage_dir, workspace_root, repo, repo_path)
+    md_path, yaml_path = al.write_scorecard(lineage_dir, sc)
+    if as_json:
+        click.echo(yaml_path.read_text())
+        return
+    icon = {"NOT-READY": "⛔", "PILOT-READY": "🟡", "READY": "✅"}.get(sc.readiness, "❔")
+    click.echo(f"alignment scorecard — {sc.repo}")
+    click.echo(f"  readiness: {icon} {sc.readiness}")
+    for blk in sc.blockers:
+        click.echo(f"    blocker: {blk}")
+    for dim in sc.dimensions:
+        click.echo(f"  [{dim.key}] {dim.grade:5}  {dim.title}")
+    click.echo(f"  ready-now: {', '.join(sc.ready_now) or '(none)'}")
+    click.echo(f"  top action: {sc.actions[0] if sc.actions else '(none)'}")
+    click.echo(f"  written: {md_path.name} + {yaml_path.name}")
+
+
 @main.command("query")
 @click.argument("repo")
 @click.argument("text")

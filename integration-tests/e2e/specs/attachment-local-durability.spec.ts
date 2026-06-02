@@ -1,6 +1,7 @@
-import { test, expect, type APIRequestContext } from '@playwright/test';
+import { test, expect } from '@playwright/test';
 import { seedAttachmentEntity } from '../helpers/db';
 import { recreatePlatformContainer } from '../helpers/docker';
+import { uploadAttachment } from '../helpers/attachments';
 
 /**
  * IT-007 — attachment LOCAL-storage durability (the LSN-001 landmine).
@@ -30,34 +31,6 @@ import { recreatePlatformContainer } from '../helpers/docker';
  * REMOTE backend is the shipped default).
  */
 
-// Replicates the UI's upload calls (DataEntityAttachmentApi): initiate (JSON {fileName})
-// → upload one chunk (multipart {file,index}) → complete (PUT). Returns the new file's
-// id (DataEntityFile.id). NB: `fileName` is one of the contract's ~8 camelCase outliers
-// (ADR-0072 serialization-naming) — NOT snake_case `file_name`; the server validates it
-// as `fileName` (a live confirmation of why that ADR-0072 caveat exists).
-async function uploadFile(
-  request: APIRequestContext,
-  entityId: number,
-  fileName: string,
-  content: Buffer,
-): Promise<number> {
-  const init = await request.post(`/api/dataentities/${entityId}/files/uploads`, {
-    data: { fileName },
-  });
-  expect(init.ok(), `initiate upload failed: ${init.status()} ${await init.text()}`).toBeTruthy();
-  const uploadId = (await init.json()).id;
-
-  const chunk = await request.post(
-    `/api/dataentities/${entityId}/files/uploads/${uploadId}/chunks`,
-    { multipart: { file: { name: fileName, mimeType: 'text/plain', buffer: content }, index: '0' } },
-  );
-  expect(chunk.ok(), `chunk upload failed: ${chunk.status()} ${await chunk.text()}`).toBeTruthy();
-
-  const done = await request.put(`/api/dataentities/${entityId}/files/uploads/${uploadId}`);
-  expect(done.ok(), `complete upload failed: ${done.status()} ${await done.text()}`).toBeTruthy();
-  return (await done.json()).id;
-}
-
 test.describe('IT-007 attachment durability — an uploaded file must survive a platform restart', () => {
   test('a file uploaded under LOCAL storage is silently lost on container recreate (LSN-001 / PLT-086)', async ({
     request,
@@ -72,7 +45,7 @@ test.describe('IT-007 attachment durability — an uploaded file must survive a 
     );
 
     // ---- act 1: a user uploads a file (the UI's exact initiate→chunk→complete flow) ----
-    const fileId = await uploadFile(request, entityId, fileName, content);
+    const fileId = await uploadAttachment(request, '', entityId, fileName, content);
 
     // precondition: the platform has the file and serves the exact bytes back
     const before = await request.get(`/api/dataentities/${entityId}/files/${fileId}`);

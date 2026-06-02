@@ -62,6 +62,8 @@ e2e/
   helpers/db.ts           seed + read ground truth in Postgres (view_count, search_facets, tags, attachment entity)
   helpers/net.ts          intercept/mutate the dashboard JSON response (UI-resilience tests)
   helpers/docker.ts       recreate the platform container (durability tests — the redeploy event)
+  helpers/attachments.ts  the shared 3-step attachment upload flow (IT-007 + IT-008)
+  helpers/minio-stack.ts  bring up/tear down the self-contained REMOTE/MinIO stack (IT-008)
   specs/
     view-count-overview.spec.ts          IT-002 — opening the Overview page must register +1 (pins the +2 bug)
     search-tsquery-poisoning.spec.ts     IT-003 — a search metacharacter must not 500/poison the session (PLT-090/127)
@@ -69,11 +71,14 @@ e2e/
     top-tags-ordering.spec.ts            IT-005 — Top Tags must show most-popular, not oldest-by-id (PLT-026)
     error-boundary-containment.spec.ts   IT-006 — a render throw must be contained, not white-screen the app (TEST-GAP-1013)
     attachment-local-durability.spec.ts  IT-007 — an uploaded file must survive a container recreate; LOCAL loses it (LSN-001/PLT-086)
+    attachment-remote-roundtrip.spec.ts  IT-008 — REMOTE/S3 (MinIO) attachment storage round-trips (F-027 REMOTE; GREEN)
 ```
 
-Note: most specs drive the real browser; **IT-007 is integration-class** — it drives the REST
-upload/download + a real container recreate (`helpers/docker.ts`), no browser, because the
-LSN-001 bug is storage durability with no UI-only facet.
+Note: most specs drive the real browser; **IT-007 + IT-008 are integration-class** — they drive
+the REST upload/download + a real container lifecycle (`helpers/docker.ts` recreate /
+`helpers/minio-stack.ts` bring-up), no browser, because attachment storage durability/backend
+has no UI-only facet. IT-008 brings up its own REMOTE/MinIO stack (distinct ports from
+odd-minimal); run it focused with `ODD_STACK_EXTERNAL=1` to skip the unused odd-minimal bring-up.
 
 ## Adding an e2e test
 

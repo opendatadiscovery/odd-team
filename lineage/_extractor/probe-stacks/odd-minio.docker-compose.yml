@@ -1,0 +1,92 @@
+# Probe-stack: ODD platform with REMOTE (S3/MinIO) attachment storage, pointed at a
+# MinIO server whose region is NON-us-east-1 (eu-west-1). Used to test the LSN-002
+# landmine: MinioConfig builds the client without .region(...), and there is no
+# attachment.remote.region config key — so REMOTE only works against us-east-1.
+#
+# Distinct container names + ports + project (-p oddminio) from odd-minimal so both can
+# coexist (the e2e global-setup brings up odd-minimal on 18080/15432; this stack uses
+# 18081/15433/19000). Ephemeral, local-only (APPROACH.md section 5 rule 12).
+version: "3.3"
+
+services:
+  probe-database-minio:
+    image: postgres:13.2-alpine
+    container_name: probe-database-minio
+    restart: "no"
+    environment:
+      POSTGRES_USER: odd-platform
+      POSTGRES_PASSWORD: odd-platform-password
+      POSTGRES_DB: odd-platform
+    ports:
+      - "15433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U odd-platform -d odd-platform"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  probe-minio:
+    image: minio/minio:RELEASE.2024-06-13T22-53-53Z
+    container_name: probe-minio
+    restart: "no"
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: minioadmin
+      MINIO_ROOT_PASSWORD: minioadmin
+      # The crux: the store's region is NOT us-east-1.
+      MINIO_SITE_REGION: eu-west-1
+    ports:
+      - "19000:9000"
+      - "19001:9001"
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 5s
+
+  # One-shot: create the `odd` bucket (the platform does NOT makeBucket — it must pre-exist).
+  probe-minio-init:
+    image: minio/mc:RELEASE.2024-06-12T14-34-03Z
+    container_name: probe-minio-init
+    depends_on:
+      probe-minio:
+        condition: service_started
+    entrypoint: >
+      /bin/sh -c "
+      until mc alias set local http://probe-minio:9000 minioadmin minioadmin; do sleep 1; done;
+      mc mb --ignore-existing local/odd;
+      mc anonymous set none local/odd || true;
+      echo 'bucket odd ready (region eu-west-1)';
+      "
+
+  probe-odd-platform-minio:
+    image: ghcr.io/opendatadiscovery/odd-platform:latest
+    container_name: probe-odd-platform-minio
+    restart: "no"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://probe-database-minio:5432/odd-platform
+      SPRING_DATASOURCE_USERNAME: odd-platform
+      SPRING_DATASOURCE_PASSWORD: odd-platform-password
+      AUTH_TYPE: DISABLED
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info
+      # REMOTE attachment storage → the eu-west-1 MinIO. No region knob exists (LSN-002).
+      ATTACHMENT_STORAGE: REMOTE
+      ATTACHMENT_REMOTE_URL: http://probe-minio:9000
+      ATTACHMENT_REMOTE_ACCESS_KEY: minioadmin
+      ATTACHMENT_REMOTE_SECRET_KEY: minioadmin
+      ATTACHMENT_REMOTE_BUCKET: odd
+    depends_on:
+      probe-database-minio:
+        condition: service_healthy
+      probe-minio:
+        condition: service_started
+    ports:
+      - "18081:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 24
+      start_period: 30s

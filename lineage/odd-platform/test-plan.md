@@ -388,6 +388,9 @@ Tracks batches moved from **define** → **implemented** (test authored + gated 
 | batch | status | test artefact | gates | idiom / notes |
 |---|---|---|---|---|
 | **U1** ADR feature-gating defaults | **authored** — awaiting CI run | `odd-platform-api/.../config/FeatureGatingDefaultsTest.java` (4 `@Test`) | `@enforces` ADR-0075 / 0004 / 0040 / 0046 | YAML-pin + GenAIProperties POJO defaults (see idiom note). Covers the *defaults* half of 0004/0040; bean-topology half → U5. |
+| **U2** dependency posture | **authored** — awaiting CI run | `odd-platform-api/.../config/DependencyPostureTest.java` (3 `@Test`) | `@enforces` ADR-0071 / 0072 | `Class.forName` absence (forbidden messaging/coordination/search + servlet) + reactive-present guard. Merges test-plan U2(0072)+U3(0071); verified green against `libs.versions.toml`. |
+
+Branch (odd-platform): `test/adr-enforcement-units` — U1 + U2 atop `2febc791` (merged landmine pins). Awaiting the maintainer's `gradle` run (the unit-side validation gate; once green it de-risks the idiom for U5/U6).
 
 ### Idiom correction (applies to all unit batches — read before U2/U5)
 
@@ -397,3 +400,8 @@ Tracks batches moved from **define** → **implemented** (test authored + gated 
 - **(C) POJO defaults** — instantiate a `@ConfigurationProperties` POJO, assert its Java field defaults.
 
 **Consequence for U5:** the *bean-topology* halves — ADR-0040 (3 notification beans absent when unset), ADR-0041 (per-channel `@ConditionalOnProperty` toggling), ADR-0004 (service-guard throws when disabled) — genuinely need a booted/sliced context. Fold them into **U5** (the bean-graph batch) and introduce `ApplicationContextRunner` there **once**, verifying it compiles+evaluates against the real condition classes before fanning out. U1 deliberately covers only the defaults half — honest scoping, not the full ADR-0040/0041 behaviour.
+
+### Discovered findings (logged here, on disk, per follow-up-on-disk)
+
+- **ADR-0003 is integration, not unit (reclassify the P0 row).** `SecurityConstants.SECURITY_RULES` is `public static final` and iterable, but each rule's HTTP method is encapsulated inside Spring's `PathPatternParserServerWebExchangeMatcher` with no public getter — so the "every rule guards a mutation; single GET exception" invariant cannot be cleanly unit-introspected (only via brittle reflection into Spring internals). Assert it in **I1** by booting the app and probing each path's method. The P0 ADR-0003 row's `test_type` moves unit → integration.
+- **Duplicate `SECURITY_RULES` row.** `SecurityConstants.java:99-102` registers `/api/namespaces POST → NAMESPACE_CREATE` twice (byte-identical). Harmless (idempotent matching) but redundant — a one-line dedup. Trivial-fold candidate for a future odd-platform housekeeping commit; not worth its own PR or upstream issue.

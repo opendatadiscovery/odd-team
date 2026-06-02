@@ -101,6 +101,10 @@ ADRs with an enforcing test: 22/27 (remaining 5 are integration). Full suite GRE
 
 - 2026-06-03 — iter 5 (ADR depth + dup-event): ADR-0002 (AdrAuthorizationWiringScanTest, central authz wiring) + PLT-054 (DataCollabEventDedupKnownBugTest, no message_provider_event dedup) — 2 methods, GREEN. odd-platform 2808938d. Loop total: 13 new methods / 9 classes. Clean source-scan supply now mostly exhausted (remaining: a few P1 source-scan findings, then ADR-depth, then integration/Docker tail).
 
+- 2026-06-03 — iter 6 (P1, LSN-020): ActivityActorFilterKnownBugTest (@pins LSN-020, userIds binds to OWNER_ID not actor) — 1 method, GREEN. odd-platform edfd6c7d. Loop total: 14 methods / 10 classes. Clean trackable-id candidates nearly dry; next iter assesses wind-down per the CRITICAL guardrail (remaining = untracked bugs / fragile absence pins / integration-Docker tail).
+
 ## Skipped (candidate + why it can't be faithfully pinned at the unit level — for the morning report)
 - PLT-131 (owner getDto soft-deleted) — method-scoped; needs to diff getDto vs list filter, and OWNER
   hard-deletes muddy the invariant. Revisit as integration.
+- PLT-054 Slack signature-verification (F-038 H-002) — 3rd aspect of an already-pinned bug + absence pin (verification could live in parser/filter); fragile, skipped.
+- F-021 H-011 audit-survives-hard-delete (INNER join drops rows) — genuine bug but no tracker id for a clean @pins; revisit when filed, or as integration.

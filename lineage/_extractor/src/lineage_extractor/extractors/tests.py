@@ -53,7 +53,11 @@ _REGRESSES_RE = re.compile(r"@regresses\s+([A-Za-z0-9_.#-]+)", re.I)
 _COVERS_RE = re.compile(r"@covers\s+(\S+)", re.I)
 
 _JAVA_CLASS_RE = re.compile(r"\b(?:public\s+|final\s+|abstract\s+)*class\s+(\w+)")
-_TEST_METHOD_RE = re.compile(r"@Test\b")
+# All JUnit5 test-method annotations — not just @Test. Missing the others
+# under-counts methods for parameterised/repeated tests and (with the
+# 0-method=base-class rule) would wrongly drop real tests like a
+# @ParameterizedTest-only MetadataParserTest.
+_TEST_METHOD_RE = re.compile(r"@(?:Test|ParameterizedTest|RepeatedTest|TestFactory|TestTemplate)\b")
 _TEST_SUFFIX_RE = re.compile(r"(ITCase|IT|Tests|Test)$")
 
 # test_class heuristics — Java integration markers (Spring slices / Testcontainers).
@@ -128,11 +132,13 @@ def ingest_tests(repo_path: Path, lineage_dir: Path, repo: str, *, dry_run: bool
                 nodes.append(node)
 
     nodes.sort(key=lambda n: n.test_id)
+    merged = _merge_gate_map(lineage_dir, nodes)
     gated = sum(1 for n in nodes if n.gates_total > 0)
     upstream = _safe_short_sha(repo_path)
     summary = "\n".join([
         f"test-lineage ingest — repo={repo} upstream={upstream}",
-        f"test nodes: {len(nodes)}  gated (>=1 typed gate): {gated}  orphan: {len(nodes) - gated}",
+        f"test nodes: {len(nodes)}  gated (>=1 typed gate): {gated}  orphan: {len(nodes) - gated}"
+        + (f"  ({merged} gated via test-gates.yaml retrofit map)" if merged else ""),
     ])
     if not dry_run:
         _write_test_nodes(lineage_dir / "test-nodes.jsonl", nodes)
@@ -140,6 +146,42 @@ def ingest_tests(repo_path: Path, lineage_dir: Path, repo: str, *, dry_run: bool
         ok=True, upstream_commit=upstream, test_count=len(nodes),
         gated_count=gated, orphan_count=len(nodes) - gated, summary=summary,
     )
+
+
+def _merge_gate_map(lineage_dir: Path, nodes: list[TestNode]) -> int:
+    """Merge an ontology-side gate-map (`lineage/{repo}/test-gates.yaml`) onto the
+    parsed Test nodes. The map carries RETROFIT gates for legacy tests whose
+    authors did not declare in-source @enforces/@validates/@regresses/@covers —
+    these are the ontology maintainer's INFERRED mapping (what each existing test
+    covers), kept in the workspace rather than churned into the target repo as
+    comments. New deliberate contract tests still declare gates in-source; the two
+    sources are unioned. Keyed by `test_id`. Returns the count of nodes the map
+    moved from orphan → gated."""
+    path = lineage_dir / "test-gates.yaml"
+    if not path.is_file():
+        return 0
+    try:
+        from ruamel.yaml import YAML
+        data = YAML(typ="safe").load(path.read_text()) or {}
+    except Exception:
+        return 0
+    gate_map = data.get("gates") if isinstance(data, dict) else None
+    if not isinstance(gate_map, dict):
+        return 0
+    by_id = {n.test_id: n for n in nodes}
+    moved = 0
+    for test_id, gates in gate_map.items():
+        node = by_id.get(test_id)
+        if node is None or not isinstance(gates, dict):
+            continue
+        before = node.gates_total
+        node.enforces = sorted(set(node.enforces) | {str(x) for x in (gates.get("enforces") or [])})
+        node.validates = sorted(set(node.validates) | {str(x) for x in (gates.get("validates") or [])})
+        node.regresses = sorted(set(node.regresses) | {str(x) for x in (gates.get("regresses") or [])})
+        node.covers_refs = sorted(set(node.covers_refs) | {str(x) for x in (gates.get("covers") or [])})
+        if before == 0 and node.gates_total > 0:
+            moved += 1
+    return moved
 
 
 def _parse_java_test(path: Path, repo_path: Path, repo: str) -> TestNode | None:
@@ -150,8 +192,10 @@ def _parse_java_test(path: Path, repo_path: Path, repo: str) -> TestNode | None:
     methods = len(_TEST_METHOD_RE.findall(text))
     class_m = _JAVA_CLASS_RE.search(text)
     class_name = class_m.group(1) if class_m else path.stem
-    # Only treat it as a test if it has @Test methods or a Test-suffixed class.
-    if methods == 0 and not _TEST_SUFFIX_RE.search(class_name):
+    # A real test has >=1 @Test method. A 0-method *Test class is a base/abstract/
+    # util class (BaseIntegrationTest, BaseIngestionTest, ...) — infrastructure,
+    # not a runnable test — so it is not a Test node (and not an "orphan").
+    if methods == 0:
         return None
     rel = path.relative_to(repo_path).as_posix()
     covers = _covers_descriptor(class_name)

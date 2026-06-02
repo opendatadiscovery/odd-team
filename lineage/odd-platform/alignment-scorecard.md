@@ -1,6 +1,6 @@
 # Alignment scorecard — odd-platform
 
-_generated 2026-06-01 · `lineage-extractor alignment odd-platform` · deterministic roll-up, no LLM_
+_generated 2026-06-02 · `lineage-extractor alignment odd-platform` · deterministic roll-up, no LLM_
 
 ## Contract-test readiness: 🟡 PILOT-READY
 
@@ -14,7 +14,7 @@ _generated 2026-06-01 · `lineage-extractor alignment odd-platform` · determini
 
 > Is this scorecard itself trustworthy? Every alignment metric below is discounted by reflection coverage.
 
-- `RED` substrate scan == code HEAD — scan ede5d277 @ 2026-05-26 · HEAD b5ae7a00 @ 2026-06-01
+- `RED` substrate scan == code HEAD — scan ede5d277 @ 2026-05-26 · HEAD 2febc791 @ 2026-06-01
 - `GREEN` graph embeddings present — built 2026-06-01 · vectors 7623
 - `AMBER` latest /panel verdict — changes-needed
 - `AMBER` reflection coverage (alignment discount) — 23/112 features reflected → alignment UNKNOWN over 79% of features
@@ -49,20 +49,19 @@ _generated 2026-06-01 · `lineage-extractor alignment odd-platform` · determini
 
 ### D — Test-Traceability Ledger  (RED)
 
-- `AMBER` **Test nodes ingested (+ COVERS to code)** — 0/68 · 68 existing tests ingested · 0 COVERS edges resolved to substrate code — 0 resolve: substrate is axis-selective (services/repos aren't code nodes) and test names don't all map to a descriptor
-- `AMBER` **tests/gaps carrying a typed gate (why)** — 458/1106 · 66/68 EXISTING tests are ORPHAN (no typed gate → add @enforces/@validates/@regresses); 582/1038 gaps orphan (lenient match)
-- `AMBER` **ADRs with an enforcing test/gap** — 1/27 · are we checking ADR ALIGNMENT? 1/27 ADRs gated (1 via real ENFORCES edge, rest via gated gaps)
-- `AMBER` **features with a validating test/gap** — 23/112 · are we checking FUNCTIONALITY? 23/112 features gated (0 via real VALIDATES edge)
+- `GREEN` **Test nodes ingested (+ COVERS to code)** — 4/66 · 66 existing tests ingested · 4 COVERS edges resolved to substrate code
+- `AMBER` **tests/gaps carrying a typed gate (why)** — 522/1104 · 0/66 EXISTING tests are ORPHAN (no typed gate → add @enforces/@validates/@regresses); 582/1038 gaps orphan (lenient match)
+- `AMBER` **ADRs with an enforcing test/gap** — 2/27 · are we checking ADR ALIGNMENT? 2/27 ADRs gated (2 via real ENFORCES edge, rest via gated gaps)
+- `AMBER` **features with a validating test/gap** — 38/112 · are we checking FUNCTIONALITY? 38/112 features gated (27 via real VALIDATES edge)
 - `AMBER` **bugs/scopes with a regress/guard test** — 41/1355 · are we checking REGRESSION? 41/1355 findings/scopes gated · LSN-001/002 landmines captured as 24 gated TestGaps but NO regression test authored yet
 - `RED` **probes executed / defined** — 9/186 · 9/186 run · 1 probe-stack(s) · named-integration keyword hits 2/4 (great-expectations, ✗airflow-lineage, ✗postgres-ingestion, webhook-notifications) — KEYWORD scan, NOT verified e2e
 
 ## Top actionable items
 
-1. Annotate the 66/68 ORPHAN existing tests with @enforces/@validates/@regresses gates — the Test layer is built but no test is yet wired to a decision/feature/bug
-2. Author the landmine regression tests WITH @regresses gates (TEST-GAP-024, TEST-GAP-047, TEST-GAP-049, TEST-GAP-051, TEST-GAP-052…) — LSN-001/002 pins, project as REGRESSES edges [CRITICAL]
-3. Raise reflection coverage on ADR-bearing features (23/112) — the layer that proves alignment
-4. GE / Airflow / Postgres-ingestion / webhooks have no dedicated probe stack (only odd-minimal: postgres+platform) → add multi-service stacks + regresses/validates-gated TestGaps
-5. Backfill typed gates on 582 orphan TestGaps (the test-coverage-mapper should emit a `gates:` block)
+1. Author the landmine regression tests WITH @regresses gates (TEST-GAP-024, TEST-GAP-047, TEST-GAP-049, TEST-GAP-051, TEST-GAP-052…) — LSN-001/002 pins, project as REGRESSES edges [CRITICAL]
+2. Raise reflection coverage on ADR-bearing features (23/112) — the layer that proves alignment
+3. GE / Airflow / Postgres-ingestion / webhooks have no dedicated probe stack (only odd-minimal: postgres+platform) → add multi-service stacks + regresses/validates-gated TestGaps
+4. Backfill typed gates on 582 orphan TestGaps (the test-coverage-mapper should emit a `gates:` block)
 
 ---
 _Machine metrics + trend: `alignment-scorecard.yaml`. Deep contract audit (sampled, agentic): `lineage-extractor alignment odd-platform --deep` (phase 2)._

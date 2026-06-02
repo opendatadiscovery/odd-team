@@ -109,6 +109,30 @@ def test_projection_wires_test_edges():
     assert et.get(config.E_VALIDATES) == 1   # → F-001
 
 
+def test_merge_gate_map_unions_retrofit_gates(tmp_path):
+    from lineage_extractor.extractors.tests import TestNode, _merge_gate_map
+    n = TestNode(test_id="t.java::FooTest", repo="demo", lang="java", framework="junit",
+                 test_class="unit", path="t.java", class_name="FooTest", covers="Foo", method_count=2)
+    (tmp_path / "test-gates.yaml").write_text(
+        'gates:\n'
+        '  "t.java::FooTest":\n'
+        '    validates: [F-001]\n'
+        '    enforces: [ADR-0040]\n'
+    )
+    moved = _merge_gate_map(tmp_path, [n])
+    assert moved == 1
+    assert n.validates == ["F-001"]
+    assert n.enforces == ["ADR-0040"]
+    assert n.gates_total >= 2
+
+
+def test_merge_gate_map_absent_is_noop(tmp_path):
+    from lineage_extractor.extractors.tests import TestNode, _merge_gate_map
+    n = TestNode(test_id="x::Y", repo="d", lang="java", framework="junit",
+                 test_class="unit", path="x", class_name="Y", covers="", method_count=1)
+    assert _merge_gate_map(tmp_path, [n]) == 0  # no test-gates.yaml present
+
+
 def test_orphan_test_projects_node_but_no_gate_edges():
     test = TestNodeRecord(
         test_id="t.java::OrphanTest", repo="demo", lang="java", framework="junit",

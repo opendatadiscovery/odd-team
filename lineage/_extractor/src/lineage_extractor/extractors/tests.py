@@ -14,10 +14,20 @@ Two tiers of linkage, mirroring the `@docs` convention the substrate already use
    `(repo, lang, descriptor)` index (the same forgiving identity REALISES uses).
    No annotation required; gives a coverage baseline from the existing suite.
 2. **Declared gates** — `@enforces ADR-NNNN` / `@validates F-NNN` /
-   `@regresses <id>` / `@covers <ref>` tags in test-file comments, parsed here and
-   projected as edges by `graph_query/projector.py`. This is the rail that makes
-   `feedback_tests_as_deterministic_gates` real: a test with NO gate is an orphan;
-   a gated test declares WHY it exists (which ADR / feature / bug it protects).
+   `@regresses <id>` / `@pins <bug-id>` / `@covers <ref>` tags in test-file comments,
+   parsed here and projected as edges by `graph_query/projector.py`. This is the rail
+   that makes `feedback_tests_as_deterministic_gates` real: a test with NO gate is an
+   orphan; a gated test declares WHY it exists (which ADR / feature / bug it protects).
+
+   `@regresses` vs `@pins` is the fixed-vs-open distinction: `@regresses <id>` guards a
+   FIXED bug against re-introduction (the test is GREEN by asserting the *correct*
+   behaviour); `@pins <bug-id>` is a CHARACTERIZATION pin of an OPEN, deliberately-unfixed
+   bug — it asserts the documented-INCORRECT behaviour, so it is GREEN while the bug
+   exists and goes RED the instant the behaviour changes (a live tripwire on an unplanned
+   fix OR a deepening regression — never a dead `@Disabled`). A `@pins` test carries
+   `status: pins-known-bug` so the known-bug register is navigable. On the intentional,
+   planned fix the test is inverted to `@regresses` + correct-behaviour asserts. The
+   general rule + lifecycle: retrospectives/LSN-029.
 
 Deterministic + mechanical (no LLM, no network): files iterate in sorted path
 order; rows sorted by `test_id`; only repo-relative paths are emitted (CLAUDE.md
@@ -50,6 +60,9 @@ _TS_TEST_GLOBS = ("**/*.spec.ts", "**/*.test.ts")
 _ENFORCES_RE = re.compile(r"@enforces\s+(ADR-\d{2,4})", re.I)
 _VALIDATES_RE = re.compile(r"@validates\s+(F-[A-Za-z0-9-]+)", re.I)
 _REGRESSES_RE = re.compile(r"@regresses\s+([A-Za-z0-9_.#-]+)", re.I)
+# @pins — characterization pin of an OPEN, deliberately-unfixed bug (asserts the
+# documented-incorrect behaviour). Distinct from @regresses (guards a FIXED bug).
+_PINS_RE = re.compile(r"@pins\s+([A-Za-z0-9_.#-]+)", re.I)
 _COVERS_RE = re.compile(r"@covers\s+(\S+)", re.I)
 
 _JAVA_CLASS_RE = re.compile(r"\b(?:public\s+|final\s+|abstract\s+)*class\s+(\w+)")
@@ -90,13 +103,16 @@ class TestNode:
     method_count: int
     enforces: list[str] = field(default_factory=list)   # ADR-NNNN ids
     validates: list[str] = field(default_factory=list)   # F-NNN ids
-    regresses: list[str] = field(default_factory=list)   # finding / refactor / bug refs
+    regresses: list[str] = field(default_factory=list)   # guards a FIXED finding/bug from re-introduction
+    pins: list[str] = field(default_factory=list)        # characterizes an OPEN bug (→ status pins-known-bug)
     covers_refs: list[str] = field(default_factory=list)  # explicit @covers refs
     content_hash: str = ""
+    status: str = "active"                                # active | pins-known-bug (derived from `pins`)
 
     @property
     def gates_total(self) -> int:
-        return len(self.enforces) + len(self.validates) + len(self.regresses) + len(self.covers_refs)
+        return (len(self.enforces) + len(self.validates) + len(self.regresses)
+                + len(self.pins) + len(self.covers_refs))
 
 
 @dataclass
@@ -138,12 +154,17 @@ def ingest_tests(repo_path: Path, lineage_dir: Path, repo: str, *, dry_run: bool
 
     nodes.sort(key=lambda n: n.test_id)
     merged = _merge_gate_map(lineage_dir, nodes)
+    # Derive the navigable status AFTER the gate-map merge (which may add @pins refs).
+    for n in nodes:
+        n.status = "pins-known-bug" if n.pins else "active"
     gated = sum(1 for n in nodes if n.gates_total > 0)
+    pinned = sum(1 for n in nodes if n.pins)
     upstream = _safe_short_sha(repo_path)
     summary = "\n".join([
         f"test-lineage ingest — repo={repo} upstream={upstream}",
         f"test nodes: {len(nodes)}  gated (>=1 typed gate): {gated}  orphan: {len(nodes) - gated}"
         + (f"  ({merged} gated via test-gates.yaml retrofit map)" if merged else ""),
+        f"known-bug pins (status=pins-known-bug, characterization tripwires): {pinned}",
     ])
     if not dry_run:
         _write_test_nodes(lineage_dir / "test-nodes.jsonl", nodes)
@@ -183,6 +204,7 @@ def _merge_gate_map(lineage_dir: Path, nodes: list[TestNode]) -> int:
         node.enforces = sorted(set(node.enforces) | {str(x) for x in (gates.get("enforces") or [])})
         node.validates = sorted(set(node.validates) | {str(x) for x in (gates.get("validates") or [])})
         node.regresses = sorted(set(node.regresses) | {str(x) for x in (gates.get("regresses") or [])})
+        node.pins = sorted(set(node.pins) | {str(x) for x in (gates.get("pins") or [])})
         node.covers_refs = sorted(set(node.covers_refs) | {str(x) for x in (gates.get("covers") or [])})
         if before == 0 and node.gates_total > 0:
             moved += 1
@@ -245,6 +267,7 @@ def _ingest_integration_protocols(lineage_dir: Path, repo: str) -> list[TestNode
             enforces=_uniq([str(x) for x in (gates.get("enforces") or [])]),
             validates=_uniq([str(x) for x in (gates.get("validates") or [])]),
             regresses=_uniq([str(x) for x in (gates.get("regresses") or [])]),
+            pins=_uniq([str(x) for x in (gates.get("pins") or [])]),
             covers_refs=[],
             content_hash=section_content_hash(text),
         ))
@@ -274,6 +297,7 @@ def _parse_java_test(path: Path, repo_path: Path, repo: str) -> TestNode | None:
         enforces=_uniq(_ENFORCES_RE.findall(text)),
         validates=_uniq(_VALIDATES_RE.findall(text)),
         regresses=_uniq(_REGRESSES_RE.findall(text)),
+        pins=_uniq(_PINS_RE.findall(text)),
         covers_refs=_uniq(_COVERS_RE.findall(text)),
         content_hash=section_content_hash(text),
     )
@@ -296,6 +320,7 @@ def _parse_ts_test(path: Path, repo_path: Path, repo: str) -> TestNode | None:
         enforces=_uniq(_ENFORCES_RE.findall(text)),
         validates=_uniq(_VALIDATES_RE.findall(text)),
         regresses=_uniq(_REGRESSES_RE.findall(text)),
+        pins=_uniq(_PINS_RE.findall(text)),
         covers_refs=_uniq(_COVERS_RE.findall(text)),
         content_hash=section_content_hash(text),
     )

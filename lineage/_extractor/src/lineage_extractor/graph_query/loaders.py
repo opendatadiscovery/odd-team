@@ -434,8 +434,10 @@ def _load_test_nodes(lineage_dir: Path, sub: Substrate) -> None:
                 enforces=[str(x) for x in (row.get("enforces") or [])],
                 validates=[str(x) for x in (row.get("validates") or [])],
                 regresses=[str(x) for x in (row.get("regresses") or [])],
+                pins=[str(x) for x in (row.get("pins") or [])],
                 covers_refs=[str(x) for x in (row.get("covers_refs") or [])],
                 content_hash=row.get("content_hash", ""),
+                status=row.get("status", "active"),
                 source_file="test-nodes.jsonl",
                 source_line=lineno,
             )

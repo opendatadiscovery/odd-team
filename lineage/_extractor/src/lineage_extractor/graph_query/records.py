@@ -89,8 +89,12 @@ class TestNodeRecord:
     """An existing test parsed from `test-nodes.jsonl` (ground-truth-lineage
     Phase 4). Identity is `test_id` = `{path}::{class}`. `covers` is the
     mechanically-inferred production descriptor; the gate lists carry the
-    declared `@enforces`/`@validates`/`@regresses`/`@covers` refs the projector
-    turns into COVERS / ENFORCES / VALIDATES / REGRESSES edges."""
+    declared `@enforces`/`@validates`/`@regresses`/`@pins`/`@covers` refs the
+    projector turns into COVERS / ENFORCES / VALIDATES / REGRESSES edges.
+
+    `pins` is the characterization-pin relationship (an OPEN, deliberately-unfixed
+    bug the test asserts the *incorrect* behaviour of); `status` is the navigable
+    derived label — `pins-known-bug` when `pins` is non-empty, else `active`."""
 
     __test__ = False  # domain record, not a pytest test class (name starts with "Test")
 
@@ -106,8 +110,10 @@ class TestNodeRecord:
     enforces: list[str] = field(default_factory=list)
     validates: list[str] = field(default_factory=list)
     regresses: list[str] = field(default_factory=list)
+    pins: list[str] = field(default_factory=list)
     covers_refs: list[str] = field(default_factory=list)
     content_hash: str = ""
+    status: str = "active"
     source_file: str = "test-nodes.jsonl"
     source_line: int = 0
 

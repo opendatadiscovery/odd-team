@@ -459,6 +459,21 @@ def compute(lineage_dir: Path, workspace_root: Path, repo: str, repo_path: Path)
         + (" — 0 resolve: substrate is axis-selective (services/repos aren't code nodes) "
            "and test names don't all map to a descriptor" if test_count and not covers_edges else ""),
     ))
+    # Known-bug pins — the navigable register of characterization tripwires (@pins /
+    # status=pins-known-bug). A census line, not a graded gate: having them is HEALTHY
+    # (a deliberately-unfixed bug that is pinned, not disabled). LSN-029.
+    known_bug_pins = sorted(
+        g.get(k).node_id for k in test_keys
+        if g.get(k).props.get("status") == "pins-known-bug"
+    )
+    d.metrics.append(Metric(
+        "D0b.known_bug_pins", "known-bug pins (characterization tripwires)",
+        None, len(known_bug_pins), len(known_bug_pins), GREEN,
+        "GREEN while the documented bug exists, RED the instant behaviour changes "
+        "(unplanned fix or deeper regression) — never a dead @Disabled; navigate via "
+        "status=pins-known-bug. "
+        + ("; ".join(known_bug_pins) if known_bug_pins else "none yet") + " (LSN-029)",
+    ))
     total_units = test_count + tg_total
     gated_units = (test_count - orphan_tests_real) + gated
     d.metrics.append(Metric(

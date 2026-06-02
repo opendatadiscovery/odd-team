@@ -691,6 +691,12 @@ def _project_test_nodes(g: OntologyGraph, substrate: Substrate) -> None:
     - ``VALIDATES`` — Test → Feature (declared ``@validates F-NNN``).
     - ``REGRESSES`` — Test → RefactoringScope / ImplicitADR (declared
       ``@regresses <id>``, exact id match).
+    - ``status`` / ``pins`` node props — a ``@pins <bug-id>`` test (a characterization
+      pin of an OPEN, deliberately-unfixed bug; GREEN while the bug exists, RED when the
+      behaviour changes) carries ``status: pins-known-bug`` so the known-bug register is
+      navigable (filter Test nodes by ``status``). No PINS *edge* is projected yet —
+      bug-ids (PLT-NNN) are not graph nodes; the status prop is the navigation surface
+      until bugs are modelled as Finding nodes. See retrospectives/LSN-029.
 
     A gate ref to a node not in the graph is recorded on ``g.skipped`` (the
     blind-spot signal), never crashed and never stubbed. A test with zero edges
@@ -711,7 +717,9 @@ def _project_test_nodes(g: OntologyGraph, substrate: Substrate) -> None:
                     "framework": t.framework, "test_class": t.test_class,
                     "path": t.path, "lang": t.lang, "covers": t.covers,
                     "method_count": t.method_count,
-                    "gates_total": len(t.enforces) + len(t.validates) + len(t.regresses) + len(t.covers_refs),
+                    "gates_total": (len(t.enforces) + len(t.validates) + len(t.regresses)
+                                    + len(t.pins) + len(t.covers_refs)),
+                    "pins": list(t.pins), "status": t.status,
                     "content_hash": t.content_hash,
                 },
                 embed_units=[("test", t.class_name)] if t.class_name else [],

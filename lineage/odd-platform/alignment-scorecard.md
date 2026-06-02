@@ -14,7 +14,7 @@ _generated 2026-06-02 · `lineage-extractor alignment odd-platform` · determini
 
 > Is this scorecard itself trustworthy? Every alignment metric below is discounted by reflection coverage.
 
-- `RED` substrate scan == code HEAD — scan ede5d277 @ 2026-05-26 · HEAD b1fc1825 @ 2026-06-02
+- `RED` substrate scan == code HEAD — scan ede5d277 @ 2026-05-26 · HEAD f66510c7 @ 2026-06-02
 - `GREEN` graph embeddings present — built 2026-06-02 · vectors 7659
 - `AMBER` latest /panel verdict — changes-needed
 - `AMBER` reflection coverage (alignment discount) — 23/112 features reflected → alignment UNKNOWN over 79% of features
@@ -50,6 +50,7 @@ _generated 2026-06-02 · `lineage-extractor alignment odd-platform` · determini
 ### D — Test-Traceability Ledger  (RED)
 
 - `GREEN` **Test nodes ingested (+ COVERS to code)** — 4/82 · 82 existing tests ingested · 4 COVERS edges resolved to substrate code
+- `GREEN` **known-bug pins (characterization tripwires)** — 1 · GREEN while the documented bug exists, RED the instant behaviour changes (unplanned fix or deeper regression) — never a dead @Disabled; navigate via status=pins-known-bug. odd-platform-api/src/test/java/org/opendatadiscovery/oddplatform/config/MinioConfigRegionTest.java::MinioConfigRegionTest (LSN-029)
 - `AMBER` **tests/gaps carrying a typed gate (why)** — 538/1120 · 0/82 EXISTING tests are ORPHAN (no typed gate → add @enforces/@validates/@regresses); 582/1038 gaps orphan (lenient match)
 - `AMBER` **ADRs with an enforcing test/gap** — 14/27 · are we checking ADR ALIGNMENT? 14/27 ADRs gated (14 via real ENFORCES edge, rest via gated gaps)
 - `AMBER` **features with a validating test/gap** — 41/112 · are we checking FUNCTIONALITY? 41/112 features gated (32 via real VALIDATES edge)

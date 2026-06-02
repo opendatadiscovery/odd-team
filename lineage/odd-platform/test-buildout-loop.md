@@ -93,6 +93,8 @@ ADRs with an enforcing test: 22/27 (remaining 5 are integration). Full suite GRE
   odd-platform 8b939232. ADRs with an enforcing test 22 → 24. Next: F-032 PLT-052 (P1 unit) + more
   ADR sub-invariants / P3 feature-validation.
 
+- 2026-06-03 — iter 2 (P1 security, SECURITY_RULES source-scans): PLT-054 (/api/slack/events whitelisted) + PLT-020 (genai no authz) + PLT-012 (data-entity term gate singular vs spec plural) — SecurityRulesAuthzGapsKnownBugsTest, 3 @pins methods, GREEN. odd-platform 4d6d3e46. Next: PLT-052 DQ count + more.
+
 ## Skipped (candidate + why it can't be faithfully pinned at the unit level — for the morning report)
 - PLT-131 (owner getDto soft-deleted) — method-scoped; needs to diff getDto vs list filter, and OWNER
   hard-deletes muddy the invariant. Revisit as integration.

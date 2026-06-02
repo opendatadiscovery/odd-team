@@ -68,6 +68,7 @@ e2e/
   helpers/loginform-stack.ts  LOGIN_FORM (enforcing) stack wrapper (IT-009)
   helpers/ldap-stack.ts   LDAP (enforcing, non-admin user) stack wrapper (IT-010)
   helpers/notifications-stack.ts  notifications/WAL (logical-replication) stack wrapper (IT-011)
+  helpers/ha-stack.ts     2-replica notifications stack + leader/failover orchestration (IT-012)
   specs/
     view-count-overview.spec.ts          IT-002 — opening the Overview page must register +1 (pins the +2 bug)
     search-tsquery-poisoning.spec.ts     IT-003 — a search metacharacter must not 500/poison the session (PLT-090/127)
@@ -79,6 +80,7 @@ e2e/
     auth-mode-boundary.spec.ts           IT-009 — DISABLED open vs LOGIN_FORM authenticated (ADR-0074; GREEN)
     ldap-rbac-enforcement.spec.ts        IT-010 — a non-admin LDAP USER is denied a gated admin mutation (ADR-0002/0003; GREEN)
     notifications-wal-lifecycle.spec.ts  IT-011 — WAL slot+publication exist only when notifications enabled (ADR-0040/0044; GREEN)
+    notifications-wal-failover.spec.ts   IT-012 — one replica leads via advisory lock; kill it → standby takes over (ADR-0043; GREEN)
 ```
 
 Note: most specs drive the real browser; **IT-007 + IT-008 are integration-class** — they drive

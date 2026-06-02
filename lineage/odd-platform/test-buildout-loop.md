@@ -85,6 +85,42 @@ NotificationFailSoftContractTest (PLT-016 + @enforces ADR-0042), HousekeepingTtl
 OwnerRoleStripKnownBugTest (PLT-066), AttachmentLinkSchemeKnownBugTest (PLT-086 link-scheme).
 ADRs with an enforcing test: 22/27 (remaining 5 are integration). Full suite GREEN.
 
+## ✅ FINAL SUMMARY (loop stopped 2026-06-03, iter 7 — genuine unit-level supply exhausted)
+
+**Loop delivered: 17 run-verified test methods / 13 new classes over 7 iterations**, all GREEN, all
+committed to odd-platform `test/adr-enforcement-units` (per-iteration commits 8b939232 → 186ba614) with
+odd-team ontology re-ingests. Combined with this session's pre-loop batch, the **session total is ~48
+new test methods / ~24 new classes**.
+
+**Coverage now (measured, `/align`):**
+- **ADRs with an enforcing test: 22 → 26/27** — every ADR is gated EXCEPT **ADR-0019** (datacollab
+  disabled→404), which is genuinely integration-only (needs a running stack to assert routing).
+- **known-bug pins: 7 → 12** navigable characterization tripwires (`status=pins-known-bug`, LSN-029) —
+  the documented security + data-loss class: PLT-005/012/016/020/027/054/066/072/083/085/086/126 + LSN-020.
+- **Test nodes 82 → 107, 0 orphan; ENFORCES edges 18 → 35; embeddings 7684.**
+- **Full suite: 338 tests, 0 failures, 0 skipped — GREEN.** Branch is mergeable; nothing pushed.
+
+**Why it stopped at ~48 and not 150 (honest, per the maintainer's "a real 90 beats a padded 150" bar):**
+the genuine UNIT / source-scan candidate supply is exhausted. All ADRs are gated bar the integration-only
+ADR-0019; every documented known-bug that has a trackable id AND a source-scannable fact is now pinned.
+The remaining backlog toward 150 is **integration / Docker** (backlog E + the ~59 integration P1 findings
++ P2/P3 stack-bound gaps) — the deferred, slow, flaky tail that the mandate (and the maintainer's quality
+values) say NOT to run unsupervised overnight (a Docker stall would waste hours; flakiness yields false
+reds). Continuing at the unit level would have meant padding with trivia or fragile absence pins, which
+the guardrail forbids.
+
+**Recommended next step (supervised): the integration-stack batch.** Reuse the existing
+`integration-tests/probe-stacks/*` (odd-minimal/loginform/ldap/minio/notifications/ha) to author IT-NNN
+e2e specs for: ADR-0019 (datacollab 404 — completes ADRs to 27/27), ADR-0070/0073 runtime round-trips,
+and the integration-class P1 findings (cross-entity authz, attachment traversal/size, WAL delivery,
+GenAI authz, Slack scope). These are minutes-each Docker runs — best with the maintainer present.
+
+**Skipped at the unit level (see Skipped section): PLT-131, PLT-052, F-038-signature, F-021-H011** —
+each genuinely not faithfully pinnable as a unit/source-scan (method-scoped, count-logic, fragile-absence,
+or untracked-id); all are integration candidates.
+
+---
+
 ## Progress log (append one line per committed sub-batch)
 - 2026-06-02 — loop bootstrapped. Baseline: unit ADR set complete (22/27), 7 known-bug pins, full
   suite 321 green. Next: backlog A (remaining P1 unit findings).
@@ -102,6 +138,8 @@ ADRs with an enforcing test: 22/27 (remaining 5 are integration). Full suite GRE
 - 2026-06-03 — iter 5 (ADR depth + dup-event): ADR-0002 (AdrAuthorizationWiringScanTest, central authz wiring) + PLT-054 (DataCollabEventDedupKnownBugTest, no message_provider_event dedup) — 2 methods, GREEN. odd-platform 2808938d. Loop total: 13 new methods / 9 classes. Clean source-scan supply now mostly exhausted (remaining: a few P1 source-scan findings, then ADR-depth, then integration/Docker tail).
 
 - 2026-06-03 — iter 6 (P1, LSN-020): ActivityActorFilterKnownBugTest (@pins LSN-020, userIds binds to OWNER_ID not actor) — 1 method, GREEN. odd-platform edfd6c7d. Loop total: 14 methods / 10 classes. Clean trackable-id candidates nearly dry; next iter assesses wind-down per the CRITICAL guardrail (remaining = untracked bugs / fragile absence pins / integration-Docker tail).
+
+- 2026-06-03 — iter 7 (FINAL, ADR depth + re-ingest): ADR-0007 (ControllerAdviceMapping) + ADR-0072 (ReactiveTransactional) + ADR-0046 (HousekeepingOptOut) — 3 methods, GREEN. odd-platform 186ba614. Re-ingested: ADRs 26/27, ENFORCES 35, 107 test nodes, 12 known-bug pins, FULL SUITE 338 GREEN. LOOP STOPPED — genuine unit supply exhausted; see FINAL SUMMARY at top.
 
 ## Skipped (candidate + why it can't be faithfully pinned at the unit level — for the morning report)
 - PLT-131 (owner getDto soft-deleted) — method-scoped; needs to diff getDto vs list filter, and OWNER

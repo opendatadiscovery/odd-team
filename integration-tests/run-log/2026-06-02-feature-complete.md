@@ -13,3 +13,11 @@ The original Tier-2b intent was a RED "MinIO non-us-east-1" pin for LSN-002 (Min
 ### spec defects this session surfaced + fixed
 - The attachment initiate field is `fileName` (camelCase) — one of the ~8 camelCase contract outliers (ADR-0072); a live re-confirmation (also hit in IT-007).
 - IT-007/IT-008 share the 3-step upload via `helpers/attachments.uploadAttachment` (extracted to avoid duplication).
+
+## 2026-06-02 — IT-009 auth-mode boundary (Tier-3 foundation)
+- runner: AI-assisted (Claude Opus 4.8) — `npm test -- auth-mode-boundary`, Node v24.13.0; shared odd-minimal (DISABLED :18080, from global-setup) + self-managed `odd-loginform` stack (LOGIN_FORM :18082, project oddlf).
+- protocol: IT-009 (test_class integration — REST; no browser). enforces ADR-0074 · TEST-GAP-778.
+- outcome: **GREEN (1 passed, 51s).** `/api/dataentities/classes` → 200 under DISABLED (permitAll), 401/302 under LOGIN_FORM (authenticated required). The auth-mode switch enforces authentication. `feature-complete` + `I1-auth-mode-authz`.
+- spec defect fixed mid-run: first probe `/api/owners` returned 500 under DISABLED (needs page/size query params — the UI always sends them; bare it 500s). Switched to `/api/dataentities/classes` (static reference, no params, 200 under DISABLED, not whitelisted).
+- helper refactor verified: extracted the generic stack lifecycle to `helpers/stack.ts`; `minio-stack.ts` now delegates to it (IT-008 re-ran GREEN, confirming the refactor). `loginform-stack.ts` is the new thin wrapper.
+- scope note: LOGIN_FORM proves only the AUTHENTICATION boundary (every credential = ADMIN, AuthorizationCustomizer inert). The RBAC/cross-owner authz bugs need DISTINCT-permission users → an LDAP tier (group→role mapping; the only locally-reproducible enforcing mode with per-user distinction). That is the next Tier-3 sub-batch — assessment pending.

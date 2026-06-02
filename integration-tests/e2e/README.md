@@ -63,7 +63,9 @@ e2e/
   helpers/net.ts          intercept/mutate the dashboard JSON response (UI-resilience tests)
   helpers/docker.ts       recreate the platform container (durability tests — the redeploy event)
   helpers/attachments.ts  the shared 3-step attachment upload flow (IT-007 + IT-008)
-  helpers/minio-stack.ts  bring up/tear down the self-contained REMOTE/MinIO stack (IT-008)
+  helpers/stack.ts        generic self-managed docker-compose stack lifecycle (up/down + health)
+  helpers/minio-stack.ts  REMOTE/MinIO stack wrapper (IT-008)
+  helpers/loginform-stack.ts  LOGIN_FORM (enforcing) stack wrapper (IT-009)
   specs/
     view-count-overview.spec.ts          IT-002 — opening the Overview page must register +1 (pins the +2 bug)
     search-tsquery-poisoning.spec.ts     IT-003 — a search metacharacter must not 500/poison the session (PLT-090/127)
@@ -72,6 +74,7 @@ e2e/
     error-boundary-containment.spec.ts   IT-006 — a render throw must be contained, not white-screen the app (TEST-GAP-1013)
     attachment-local-durability.spec.ts  IT-007 — an uploaded file must survive a container recreate; LOCAL loses it (LSN-001/PLT-086)
     attachment-remote-roundtrip.spec.ts  IT-008 — REMOTE/S3 (MinIO) attachment storage round-trips (F-027 REMOTE; GREEN)
+    auth-mode-boundary.spec.ts           IT-009 — DISABLED open vs LOGIN_FORM authenticated (ADR-0074; GREEN)
 ```
 
 Note: most specs drive the real browser; **IT-007 + IT-008 are integration-class** — they drive

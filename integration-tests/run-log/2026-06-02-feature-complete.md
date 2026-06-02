@@ -32,3 +32,12 @@ The original Tier-2b intent was a RED "MinIO non-us-east-1" pin for LSN-002 (Min
   - **dn-pattern is RELATIVE to the base**: `cn={0},ou=users` (NOT absolute) — Spring `BindAuthenticator` + `contextSource.setBase` append the base; an absolute pattern doubled it → silent `/login?error`. Confirmed by reading LDAPSecurityConfiguration + direct `ldapwhoami`.
   - **docker-compose --force-recreate needs --renew-anon-volumes** (compose v1 `KeyError: ContainerConfig` bug on newer images) — already the pattern IT-007's recreate helper uses.
 - confirmed-but-not-pinned authz gaps (documented postures / need 2 users): attachment read-openness (F-027 H-004), genai no-authz (F-039 H-001, disabled by default), cross-entity mutation escalation (F-027 H-005 / PLT-086).
+
+## 2026-06-02 — IT-011 notifications WAL lifecycle (Tier-3, I3) + a filed bug (PLT-139)
+- runner: AI-assisted (Claude Opus 4.8) — `npm test -- notifications-wal-lifecycle`, Node v24.13.0; OFF = shared odd-minimal (:15432), ON = self-managed `odd-notifications` stack (postgres wal_level=logical + NOTIFICATIONS_ENABLED + webhook stub, :18084/:15436).
+- protocol: IT-011 (test_class integration — DB-state assertions; no browser). enforces ADR-0040 + ADR-0044.
+- outcome: **GREEN.** OFF (default) → 0 `odd_platform_replication_slot` slots (ADR-0040); ON → slot + publication `odd_platform_publication_alert` on the alert table created lazily (ADR-0044). `feature-complete` + `I3-notifications-wal`.
+- run-to-resolve — the planned DELIVERY happy-path was reframed by a real finding:
+  - The full chain DOES work: with notifications on, a raw `INSERT INTO alert` → logical replication → WAL subscriber (advisory-lock leader) → webhook stub received the AlertNotificationMessage in ~4s (snake_case payload — consistent with ADR-0072). Verified manually multiple times.
+  - BUT it is **flaky on fresh boot**: ADR-0044's slot-BEFORE-publication create-order can wedge the subscriber PERMANENTLY with `ERROR: publication "odd_platform_publication_alert" does not exist` when a WAL change lands between slot- and publication-creation; no recovery (no DROP path — a restart did NOT fix it). Filed as **PLT-139** (high; sibling of PLT-016 WAL fragility). So a delivery gate would be flaky → IT-011 pins the deterministic slot/publication LIFECYCLE instead, and the wedge is the (more valuable) filed finding.
+- infra: webhook stub = mendhak/http-https-echo:31 (returns 200, logs requests). postgres needs `wal_level=logical` for the slot; the initial POSTGRES_USER is superuser → has REPLICATION.

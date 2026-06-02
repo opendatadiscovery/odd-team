@@ -1,0 +1,65 @@
+# Probe-stack: ODD platform with the WAL-driven notification subsystem ENABLED, against a
+# Postgres configured for logical replication, delivering to a webhook stub. Exercises the
+# I3 chain: alert row → logical-replication publication → WAL subscriber (advisory-lock
+# leader, ADR-0043) → AlertNotificationMessageProcessor → WebhookNotificationSender → stub.
+# ADR-0040 (off-by-default) / ADR-0044 (lazy slot+publication, no-drop) / F-009 delivery.
+#
+# Distinct names + ports + project (-p oddnotif) from the other stacks. Ephemeral, local-only.
+version: "3.3"
+
+services:
+  probe-database-notif:
+    image: postgres:13.2-alpine
+    container_name: probe-database-notif
+    restart: "no"
+    command: ["postgres", "-c", "wal_level=logical"] # required for the logical-replication slot (ADR-0044)
+    environment:
+      POSTGRES_USER: odd-platform # the initial (superuser) role → has REPLICATION for slot creation
+      POSTGRES_PASSWORD: odd-platform-password
+      POSTGRES_DB: odd-platform
+    ports:
+      - "15436:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U odd-platform -d odd-platform"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  # Webhook receiver stub: returns HTTP 200 (the sender requires 200) and logs each request
+  # to stdout as JSON — the test reads `docker logs` to confirm the notification arrived.
+  probe-webhook-stub:
+    image: mendhak/http-https-echo:31
+    container_name: probe-webhook-stub
+    restart: "no"
+    environment:
+      HTTP_PORT: "8080"
+    ports:
+      - "18090:8080"
+
+  probe-odd-platform-notif:
+    image: ghcr.io/opendatadiscovery/odd-platform:latest
+    container_name: probe-odd-platform-notif
+    restart: "no"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://probe-database-notif:5432/odd-platform
+      SPRING_DATASOURCE_USERNAME: odd-platform
+      SPRING_DATASOURCE_PASSWORD: odd-platform-password
+      AUTH_TYPE: DISABLED
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info
+      # Turn the notification subsystem ON + activate the webhook sender (presence-based, ADR-0041).
+      NOTIFICATIONS_ENABLED: "true"
+      NOTIFICATIONS_RECEIVERS_WEBHOOK_URL: http://probe-webhook-stub:8080
+    depends_on:
+      probe-database-notif:
+        condition: service_healthy
+      probe-webhook-stub:
+        condition: service_started
+    ports:
+      - "18084:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s

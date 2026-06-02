@@ -64,6 +64,17 @@ PROBE_STACK_DIR_DEFAULT = WORKSPACE_ROOT_DEFAULT / "lineage" / "_extractor" / "p
 PROBES_DIR_TEMPLATE = "lineage/{repo}/probes"
 PROBE_RUNS_DIR_TEMPLATE = "lineage/{repo}/probe-runs"
 
+
+def _rel_to_workspace(p: Path | str) -> str:
+    """Workspace-relative path for trace artefacts. Run traces are committed (the
+    reproducible evidence trail) and the workspace is public OSS — never leak an
+    absolute home-directory path into one. Falls back to the basename if p is outside
+    the workspace."""
+    try:
+        return str(Path(p).resolve().relative_to(WORKSPACE_ROOT_DEFAULT))
+    except (ValueError, OSError):
+        return Path(p).name
+
 # Stack profile → docker-compose file mapping. Add new profiles as new
 # entries; never accept arbitrary file paths from probe definitions.
 STACK_PROFILES = {
@@ -212,7 +223,7 @@ def stack_up(compose_file: Path, *, verbose: bool = False) -> StepOutcome:
         started_at=started_at,
         duration_ms=dur_ms,
         success=(rc == 0),
-        detail={"stdout_tail": stdout[-1000:], "stderr_tail": stderr[-1000:], "compose_file": str(compose_file)},
+        detail={"stdout_tail": stdout[-1000:], "stderr_tail": stderr[-1000:], "compose_file": _rel_to_workspace(compose_file)},
         error=None if rc == 0 else f"rc={rc}",
     )
 

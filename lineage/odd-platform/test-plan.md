@@ -414,3 +414,24 @@ Corrections applied this session:
 - **IT-002** (`integration-tests/e2e/specs/view-count-overview.spec.ts`) — the real integration test: open the entity Overview page once → `view_count` must be +1 (**RED today at +2**; pins PLT-104). IT-001 reframed as the backend sub-check it sits on.
 - **Self-contained Playwright harness** added at `integration-tests/e2e/` (own stack via odd-minimal, own deps; not coupled to `odd-platform/tests/`). `run-suite.sh` gained an `e2e:` automation rail alongside the API-probe rail.
 - **I1–I10 need re-derivation as user scenarios.** The "build the Playwright harness first (TEST-GAP-454, I9)" deferral was fictional — a mature harness already exists at `odd-platform/tests/` (which informed this build). Each I-batch should lead with the documented user flow + a UI-e2e protocol, with API probes as backend sub-checks. **To action when authoring I1+.**
+
+### E2e integration build-out plan (chosen 2026-06-02 — build out I1+ as user scenarios)
+
+Pattern proven by IT-002: a UI-e2e spec drives the real browser through a documented user flow and reads ground truth from Postgres, catching user-observable bugs the API probes can't. Now applied to the I-batches — each becomes one or more `IT-NNN` protocol + e2e spec. **Sequenced by feasibility, not by label order** (a Principal doesn't start with the hardest):
+
+**Tier 1 — DISABLED stack, single-user, clean UI flow (author next; ground selectors in `odd-platform/tests/ui/`):**
+- Dictionary/search `tsquery` poisoning — F-024 H-009 / PLT-127, F-017 H-007 / PLT-090: type `(` in the search box → persistent 500 (availability/injection). `known-bugs`.
+- Quality Dashboard unknown-status crash — F-032 H-004 / PLT-052: out-of-enum run status blanks the dashboard (seed a DQ run). `known-bugs`.
+- Tag ordering — F-018 H-001 / PLT-026: Top Tags returns oldest-by-id, not most-popular (seed > 1 page of tags). `known-bugs`.
+- SPA error boundary — F-042 / TEST-GAP-1013: any render throw blanks the app.
+
+**Tier 2 — needs a container restart / storage infra:**
+- Attachment LSN-001 durability (I2, F-027) — upload via UI → restart the platform container → file gone under LOCAL (data loss). Needs a docker-restart step in the spec.
+- Attachment LSN-002 region (TEST-GAP-052) — REMOTE/MinIO non-`us-east-1`; needs a MinIO stack profile.
+
+**Tier 3 — needs auth-mode stacks + an IdP (the biggest lift — a dedicated infra batch, NOT a quick spec):**
+- **I1 authz** (ADR-0002/0003/0074; F-027 H-004 read-openness; F-039 H-001 genai authz). Honest caveat: the authz **bugs are masked** under DISABLED (`permitAll`) and under LOGIN_FORM (every credential is ADMIN — ADR-0074), so catching them e2e needs an **OAUTH2/LDAP stack + an OIDC/LDAP stub + seeded policies**. Real infra.
+- **I3 notifications WAL** — 2-replica + advisory-lock failover; e2e-observable via delivery to a webhook stub. Multi-replica stack.
+
+**Quarantine:** known-open-bug pins → `known-bugs` suite (expected RED); `feature-complete` stays green (passing pins only). A fix flips the pin → move it to `feature-complete` = measurable closure.
+**Selector grounding:** UI-interaction specs mirror the proven selectors/page-objects in `odd-platform/tests/ui/` (read to learn; author self-contained in `integration-tests/e2e/`).

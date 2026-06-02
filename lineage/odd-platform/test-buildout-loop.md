@@ -99,6 +99,8 @@ ADRs with an enforcing test: 22/27 (remaining 5 are integration). Full suite GRE
 
 - 2026-06-03 — iter 4 (P1 security + RE-INGEST): PLT-072 (S2sPrincipalKnownBugTest, static ADMIN) + PLT-085 (CollectorTokenStorageKnownBugTest, plaintext token lookup) — 2 @pins, GREEN. odd-platform 6b835b9f. Re-ingested: ADRs 24→26/27, ENFORCES 31, 101 test nodes, 10 known-bug pins, FULL SUITE 332 GREEN. Loop total so far: 11 new methods / 7 classes. Next: P2 test-gaps / more P1 source-scan findings (F-038 dup-event schema, getOrCreate side-doors) — clean unit candidates thinning; integration is the tail.
 
+- 2026-06-03 — iter 5 (ADR depth + dup-event): ADR-0002 (AdrAuthorizationWiringScanTest, central authz wiring) + PLT-054 (DataCollabEventDedupKnownBugTest, no message_provider_event dedup) — 2 methods, GREEN. odd-platform 2808938d. Loop total: 13 new methods / 9 classes. Clean source-scan supply now mostly exhausted (remaining: a few P1 source-scan findings, then ADR-depth, then integration/Docker tail).
+
 ## Skipped (candidate + why it can't be faithfully pinned at the unit level — for the morning report)
 - PLT-131 (owner getDto soft-deleted) — method-scoped; needs to diff getDto vs list filter, and OWNER
   hard-deletes muddy the invariant. Revisit as integration.

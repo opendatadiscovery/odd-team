@@ -87,6 +87,33 @@ export async function latestSearchFacetQuery(): Promise<string | null> {
 }
 
 // ---------------------------------------------------------------------------
+// IT-007 — attachment LOCAL-storage durability (LSN-001 / F-027 / PLT-086).
+// A data entity to attach a file to (distinct id so it never collides with the
+// other specs' seeds). Mirrors IT-002's proven minimal renderable-entity shape.
+// ---------------------------------------------------------------------------
+export const ATTACH_ENTITY_ID = 2007;
+const ATTACH_SOURCE_ID = 2007;
+
+export async function seedAttachmentEntity(): Promise<number> {
+  await withClient(async c => {
+    await c.query(
+      `INSERT INTO data_source (id, oddrn, name)
+       VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING`,
+      [ATTACH_SOURCE_ID, '//e2e-source-IT-007/db', 'e2e-source-IT-007'],
+    );
+    await c.query(
+      `INSERT INTO data_entity
+         (id, oddrn, external_name, data_source_id, type_id, view_count,
+          source_created_at, source_updated_at)
+       VALUES ($1, $2, $3, $4, 1, 0, NOW(), NOW())
+       ON CONFLICT (id) DO NOTHING`,
+      [ATTACH_ENTITY_ID, '//e2e-source-IT-007/db/tables/it007_table', 'it007_table', ATTACH_SOURCE_ID],
+    );
+  });
+  return ATTACH_ENTITY_ID;
+}
+
+// ---------------------------------------------------------------------------
 // IT-005 — Top Tags ordering (PLT-026 / F-018 H-001, LSN-019).
 //
 // `ReactiveTagRepositoryImpl.listMostPopular` paginates by `TAG.ID ASC` BEFORE it

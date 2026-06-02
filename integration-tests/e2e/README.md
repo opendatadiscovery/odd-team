@@ -59,15 +59,21 @@ e2e/
   playwright.config.ts    baseURL :18080, single-worker, no-retry (a pin must not be masked)
   global-setup.ts         docker-compose up odd-minimal + wait for /actuator/health
   global-teardown.ts      docker-compose down -v
-  helpers/db.ts           seed + read ground truth in Postgres (view_count, search_facets, tags)
+  helpers/db.ts           seed + read ground truth in Postgres (view_count, search_facets, tags, attachment entity)
   helpers/net.ts          intercept/mutate the dashboard JSON response (UI-resilience tests)
+  helpers/docker.ts       recreate the platform container (durability tests — the redeploy event)
   specs/
     view-count-overview.spec.ts          IT-002 — opening the Overview page must register +1 (pins the +2 bug)
     search-tsquery-poisoning.spec.ts     IT-003 — a search metacharacter must not 500/poison the session (PLT-090/127)
     quality-dashboard-unknown-status.spec.ts  IT-004 — an unknown run status must degrade, not blank the dashboard (PLT-052)
     top-tags-ordering.spec.ts            IT-005 — Top Tags must show most-popular, not oldest-by-id (PLT-026)
     error-boundary-containment.spec.ts   IT-006 — a render throw must be contained, not white-screen the app (TEST-GAP-1013)
+    attachment-local-durability.spec.ts  IT-007 — an uploaded file must survive a container recreate; LOCAL loses it (LSN-001/PLT-086)
 ```
+
+Note: most specs drive the real browser; **IT-007 is integration-class** — it drives the REST
+upload/download + a real container recreate (`helpers/docker.ts`), no browser, because the
+LSN-001 bug is storage durability with no UI-only facet.
 
 ## Adding an e2e test
 

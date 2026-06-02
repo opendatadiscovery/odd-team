@@ -19,6 +19,12 @@ PROTODIR="$HERE/protocols"
 SUITES="$HERE/suites.yaml"
 LOGDIR="$HERE/run-log"
 
+# Auto-detect a user-space Node (mirrors run-platform-tests.sh's JDK detection) so the
+# UI-e2e rail works after a `~/.local/node` install without a manual PATH export.
+for _nb in "$HOME/.local/node/bin" "$HOME"/.local/node-*/bin; do
+  [ -x "$_nb/node" ] && case ":$PATH:" in *":$_nb:"*) ;; *) PATH="$_nb:$PATH"; export PATH ;; esac
+done
+
 arg="${1:-}"; dry=""
 [ "${2:-}" = "--dry-run" ] && dry="--dry-run"
 [ -z "$arg" ] && { echo "usage: run-suite.sh <suite> | IT-NNN | --list [--dry-run]"; exit 1; }

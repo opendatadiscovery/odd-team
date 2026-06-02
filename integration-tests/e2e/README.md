@@ -23,9 +23,17 @@ useful backend sub-check, not the integration test.
 ## Prerequisites
 
 - **Docker** running (the stack is brought up automatically).
-- **Node 18+** — run `nvm use` in this dir first (pinned to **v24.13.0** via `.nvmrc`,
-  matching odd-platform `tests/`). An older node fails at `npm run browser` with
-  `SyntaxError: Unexpected token '?'` (Playwright's code uses `??`, which pre-14 node can't parse).
+- **Node 18+**. The system node is often too old (Ubuntu ships v12 → Playwright fails
+  with `SyntaxError: Unexpected token '?'`, because its code uses `??`). If `node --version`
+  is < 18 and you have no `nvm`/`fnm`, install user-space (no sudo, mirrors the JDK-in-`~/.local`
+  pattern):
+  ```bash
+  cd /tmp && curl -fsSLO https://nodejs.org/dist/v24.13.0/node-v24.13.0-linux-x64.tar.xz \
+    && mkdir -p ~/.local/node \
+    && tar -xf node-v24.13.0-linux-x64.tar.xz -C ~/.local/node --strip-components=1
+  export PATH="$HOME/.local/node/bin:$PATH"   # add to ~/.bashrc to persist
+  ```
+  `run-suite.sh` auto-detects `~/.local/node`; `.nvmrc` (v24.13.0) is for `nvm`/`fnm` users.
 
 ## Run
 

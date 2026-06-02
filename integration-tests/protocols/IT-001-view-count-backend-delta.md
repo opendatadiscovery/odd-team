@@ -14,10 +14,13 @@ status: ready
 
 # IT-001 — view_count backend per-call delta
 
-> **Canary protocol.** Proves the integration-test framework end-to-end against the
-> known-good `P-001` probe (prepare → readiness → run → check → log). Also the backend
-> half of the F-001 Popular-Entities regression; the UI `+2` doubling (LSN-017) is a
-> separate browser-stack test (batch I9).
+> **Backend sub-check — not the full integration test.** Proves the framework's API
+> rail end-to-end against the known-good `P-001` probe (prepare → readiness → run →
+> check → log) and pins the backend `+1` per `GET /api/dataentities/{id}`. The **real**
+> integration test for view_count is **IT-002** (UI e2e), which catches the user-facing
+> `+2` double-count (LSN-017 / PLT-104) that this API-only check structurally cannot see —
+> the bug is in a React `useEffect`, not the backend. Keep both: IT-002 sits on top of
+> this contract.
 
 ## 1. What this checks
 Five sequential `GET /api/dataentities/{id}` calls increment `data_entity.view_count`

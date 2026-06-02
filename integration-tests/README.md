@@ -15,9 +15,16 @@ the unit suite and get **measurable regression coverage**.
 2. **Human-carryable.** A person can execute every step from the protocol alone, with
    no tooling. AI assistance runs it first, but the methodology is the human's to repeat.
 3. **Automation lives inside the protocol.** A protocol's run + check steps may be
-   automated by a probe (`lineage/odd-platform/probes/P-NNN.yaml`, executed by the
-   probe runtime) — that's the convenience rail, never a replacement for the documented
-   steps. Same preparation + same run ⇒ same verdict.
+   automated by one of two rails — never a replacement for the documented steps, just a
+   convenience (same preparation + same run ⇒ same verdict):
+   - **API probe** (`automation: P-NNN`) → `lineage/odd-platform/probes/P-NNN.yaml`, run
+     by the probe runtime. For backend/DB-level checks.
+   - **UI e2e** (`automation: e2e:specs/{slug}.spec.ts`) → a Playwright spec in
+     `integration-tests/e2e/`, driving the **real browser**. For end-to-end **user
+     scenarios** — the user-observable behaviour, including UI-only bugs (e.g. a React
+     `useEffect` double-count) that an API probe structurally cannot see.
+   An integration test for a user-facing feature is the e2e user scenario; the API probe
+   is a backend sub-check it sits on top of.
 4. **Local-only.** Stacks are ephemeral docker-compose mirrors (`lineage/_extractor/probe-stacks/`).
    No remote infrastructure, no daemon (APPROACH.md Rule 12).
 5. **Logged + reproducible.** Every run appends a dated entry to `run-log/` recording
@@ -31,9 +38,11 @@ integration-tests/
   README.md          this file
   TEMPLATE.md        the protocol template (copy to author a new IT-NNN)
   suites.yaml        named suites — which protocols run together (maps to test-plan I-batches)
-  run-suite.sh       run a suite locally: prepare → readiness → run (probe) → log
+  run-suite.sh       run a suite locally: resolve protocols → run their rail (probe | e2e) → log
   protocols/
     IT-NNN-{slug}.md one protocol per integration test
+  e2e/               self-contained Playwright UI-e2e harness (own stack, own package.json)
+    specs/           the browser specs (the `e2e:` automation rail)
   run-log/
     {date}-{suite}.md appended run records (the reproducible evidence trail)
 ```

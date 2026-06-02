@@ -405,3 +405,12 @@ Branch (odd-platform): `test/adr-enforcement-units` — U1 + U2 atop `2febc791` 
 
 - **ADR-0003 is integration, not unit (reclassify the P0 row).** `SecurityConstants.SECURITY_RULES` is `public static final` and iterable, but each rule's HTTP method is encapsulated inside Spring's `PathPatternParserServerWebExchangeMatcher` with no public getter — so the "every rule guards a mutation; single GET exception" invariant cannot be cleanly unit-introspected (only via brittle reflection into Spring internals). Assert it in **I1** by booting the app and probing each path's method. The P0 ADR-0003 row's `test_type` moves unit → integration.
 - **Duplicate `SECURITY_RULES` row.** `SecurityConstants.java:99-102` registers `/api/namespaces POST → NAMESPACE_CREATE` twice (byte-identical). Harmless (idempotent matching) but redundant — a one-line dedup. Trivial-fold candidate for a future odd-platform housekeeping commit; not worth its own PR or upstream issue.
+
+### Integration-test approach correction (2026-06-02) — e2e user scenarios, not API probes
+
+Integration tests must be **end-to-end user scenarios** (UI → backend → DB), anchored on documented + intended behaviour — not API-endpoint probes. The view_count canary exposed the gap: IT-001/P-001 checked only `GET /api/dataentities/{id}` (+1/call) and **missed the user-facing +2 double-count** (LSN-017 / PLT-104) — that bug lives in a React `useEffect` and is invisible to an HTTP probe. Only a real-browser e2e catches it. (Recorded: `memory/feedback_integration_tests_are_e2e_user_scenarios.md`.)
+
+Corrections applied this session:
+- **IT-002** (`integration-tests/e2e/specs/view-count-overview.spec.ts`) — the real integration test: open the entity Overview page once → `view_count` must be +1 (**RED today at +2**; pins PLT-104). IT-001 reframed as the backend sub-check it sits on.
+- **Self-contained Playwright harness** added at `integration-tests/e2e/` (own stack via odd-minimal, own deps; not coupled to `odd-platform/tests/`). `run-suite.sh` gained an `e2e:` automation rail alongside the API-probe rail.
+- **I1–I10 need re-derivation as user scenarios.** The "build the Playwright harness first (TEST-GAP-454, I9)" deferral was fictional — a mature harness already exists at `odd-platform/tests/` (which informed this build). Each I-batch should lead with the documented user flow + a UI-e2e protocol, with API probes as backend sub-checks. **To action when authoring I1+.**

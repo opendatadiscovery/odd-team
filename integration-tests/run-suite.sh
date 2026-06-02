@@ -49,34 +49,66 @@ PY
 )
 [ "${#PROTO_IDS[@]}" -eq 0 ] && { echo "no protocols for '$arg' (try --list)"; exit 1; }
 
-# For each protocol: locate its doc + read the automation probe from frontmatter.
-PROBES=(); MANUAL=()
+# For each protocol: locate its doc + read its automation rail from frontmatter.
+# Rails: P-NNN (API probe → probe-runtime) | e2e:<spec> (UI Playwright → e2e/) | manual.
+PROBES=(); E2E=(); MANUAL=()
 for it in "${PROTO_IDS[@]}"; do
   f=$(ls "$PROTODIR/$it"-*.md 2>/dev/null | head -1 || true)
   if [ -z "$f" ]; then echo "WARN: protocol $it has no doc in protocols/ — skipping"; continue; fi
-  probe=$(python3 - "$f" <<'PY'
+  autom=$(python3 - "$f" <<'PY'
 import sys, re
 t = open(sys.argv[1]).read()
 m = re.search(r'^automation:\s*"?([^"\n]+)"?', t, re.M)
-v = (m.group(1).strip() if m else '')
-print('' if v.lower() in ('', 'manual', 'none') else v)
+print((m.group(1).strip() if m else ''))
 PY
 )
-  if [ -n "$probe" ]; then PROBES+=("$probe"); else MANUAL+=("$it"); fi
+  low=$(printf '%s' "$autom" | tr '[:upper:]' '[:lower:]')
+  case "$low" in
+    ''|manual|none) MANUAL+=("$it") ;;
+    e2e:*)          E2E+=("${autom#[eE]2[eE]:}") ;;
+    *)              PROBES+=("$autom") ;;
+  esac
 done
 
 echo "suite/protocol: $arg"
 echo "  protocols : ${PROTO_IDS[*]}"
-echo "  automated : ${PROBES[*]:-none}"
+echo "  api probes: ${PROBES[*]:-none}"
+echo "  ui e2e    : ${E2E[*]:-none}"
 echo "  manual    : ${MANUAL[*]:-none}"
 for m in "${MANUAL[@]:-}"; do [ -n "$m" ] && echo "  → MANUAL $m: open protocols/$m-*.md and execute sections 2-5 by hand, then log to run-log/."; done
 
-outcome="n/a"
+# --- API-probe rail (probe-runtime) ---
+api_outcome="n/a"
 if [ "${#PROBES[@]}" -gt 0 ]; then
   batch=""; [ "${#PROBES[@]}" -gt 1 ] && batch="--batch"
   echo "+ (cd $RUNTIME && uv run python probe-runtime/runner.py ${PROBES[*]} $batch $dry)"
-  if ( cd "$RUNTIME" && uv run python probe-runtime/runner.py "${PROBES[@]}" $batch $dry ); then outcome="PASS"; else outcome="FAIL"; fi
+  if ( cd "$RUNTIME" && uv run python probe-runtime/runner.py "${PROBES[@]}" $batch $dry ); then api_outcome="PASS"; else api_outcome="FAIL"; fi
 fi
+
+# --- UI-e2e rail (Playwright; integration-tests/e2e — self-contained, brings its own stack) ---
+e2e_outcome="n/a"
+if [ "${#E2E[@]}" -gt 0 ]; then
+  if [ -n "$dry" ]; then
+    echo "+ (cd $HERE/e2e && npx playwright test ${E2E[*]})   [dry-run]"
+    e2e_outcome="DRY-RUN-OK"
+  elif ! command -v npx >/dev/null 2>&1; then
+    echo "  → SKIP ui-e2e: Node/npx not found. One-time: (cd integration-tests/e2e && npm install && npm run browser)"
+    e2e_outcome="SKIPPED(no-node)"
+  elif [ ! -d "$HERE/e2e/node_modules" ]; then
+    echo "  → SKIP ui-e2e: deps not installed. One-time: (cd integration-tests/e2e && npm install && npm run browser)"
+    e2e_outcome="SKIPPED(no-deps)"
+  else
+    echo "+ (cd $HERE/e2e && npx playwright test ${E2E[*]})"
+    if ( cd "$HERE/e2e" && npx playwright test "${E2E[@]}" ); then e2e_outcome="PASS"; else e2e_outcome="FAIL"; fi
+  fi
+fi
+
+# --- combined verdict ---
+parts=()
+[ "$api_outcome" != "n/a" ] && parts+=("api:$api_outcome")
+[ "$e2e_outcome" != "n/a" ] && parts+=("e2e:$e2e_outcome")
+[ "${#MANUAL[@]}" -gt 0 ] && parts+=("manual:${#MANUAL[@]}-pending")
+outcome="${parts[*]:-n/a}"
 
 [ -n "$dry" ] && { echo "dry-run: no run-log entry written."; exit 0; }
 
@@ -90,10 +122,10 @@ log="$LOGDIR/${day}-${arg}.md"
   echo "- runner: (fill: AI-assisted <model> | human <name>)"
   echo "- stack_commit (odd-platform): ${stack_sha}"
   echo "- protocols: ${PROTO_IDS[*]}"
-  echo "- automation probes: ${PROBES[*]:-none}; manual: ${MANUAL[*]:-none}"
+  echo "- api probes: ${PROBES[*]:-none}; ui e2e: ${E2E[*]:-none}; manual: ${MANUAL[*]:-none}"
   echo "- outcome: ${outcome}"
-  echo "- machine traces: lineage/odd-platform/probe-runs/ (per automated probe)"
-  echo "- evidence/notes: <captured values from the probe-run yaml; or the manual observation>"
+  echo "- machine traces: lineage/odd-platform/probe-runs/ (api) · integration-tests/e2e/test-results/ (e2e, on failure)"
+  echo "- evidence/notes: <captured values from the probe-run yaml / Playwright report; or the manual observation>"
   echo ""
 } >> "$log"
 echo "logged → ${log#$ROOT/}  (outcome: $outcome)"

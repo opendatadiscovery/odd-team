@@ -389,8 +389,9 @@ Tracks batches moved from **define** → **implemented** (test authored + gated 
 |---|---|---|---|---|
 | **U1** ADR feature-gating defaults | **authored** — awaiting CI run | `odd-platform-api/.../config/FeatureGatingDefaultsTest.java` (4 `@Test`) | `@enforces` ADR-0075 / 0004 / 0040 / 0046 | YAML-pin + GenAIProperties POJO defaults (see idiom note). Covers the *defaults* half of 0004/0040; bean-topology half → U5. |
 | **U2** dependency posture | **authored** — awaiting CI run | `odd-platform-api/.../config/DependencyPostureTest.java` (3 `@Test`) | `@enforces` ADR-0071 / 0072 | `Class.forName` absence (forbidden messaging/coordination/search + servlet) + reactive-present guard. Merges test-plan U2(0072)+U3(0071); verified green against `libs.versions.toml`. |
+| **e2e Tier-1** (I7+I9 UI scenarios) | **authored** — awaiting maintainer's local docker run | `integration-tests/protocols/IT-003…IT-006-*.md` + `integration-tests/e2e/specs/{search-tsquery-poisoning,quality-dashboard-unknown-status,top-tags-ordering,error-boundary-containment}.spec.ts` | regresses PLT-090/127/052/026 · validates F-017/024/032/042 | Playwright UI e2e. **All expected RED** (quarantined in the `known-bugs` suite). Compile-verified via `playwright test --list` (6 tests / 5 files); RED/GREEN confirmation needs the maintainer's local docker stack (the e2e analogue of the gradle gate — the agent cannot run docker here). Triggers: IT-003 types `foo )(` into catalog+dictionary search (no-seed); IT-004/IT-006 inject an unknown-status / malformed dashboard response (UI render contract); IT-005 seeds 35 tags (youngest 5 most-used) via `helpers/db.seedPopularYoungTags`. |
 
-Branch (odd-platform): `test/adr-enforcement-units` — U1 + U2 atop `2febc791` (merged landmine pins). Awaiting the maintainer's `gradle` run (the unit-side validation gate; once green it de-risks the idiom for U5/U6).
+Branch (odd-platform): `test/adr-enforcement-units` — U1 + U2 atop `2febc791` (merged landmine pins). Awaiting the maintainer's `gradle` run (the unit-side validation gate; once green it de-risks the idiom for U5/U6). The e2e Tier-1 batch lives in `integration-tests/e2e/` (odd-team workspace; no odd-platform branch) — run `integration-tests/run-suite.sh known-bugs`.
 
 ### Idiom correction (applies to all unit batches — read before U2/U5)
 
@@ -419,11 +420,11 @@ Corrections applied this session:
 
 Pattern proven by IT-002: a UI-e2e spec drives the real browser through a documented user flow and reads ground truth from Postgres, catching user-observable bugs the API probes can't. Now applied to the I-batches — each becomes one or more `IT-NNN` protocol + e2e spec. **Sequenced by feasibility, not by label order** (a Principal doesn't start with the hardest):
 
-**Tier 1 — DISABLED stack, single-user, clean UI flow (author next; ground selectors in `odd-platform/tests/ui/`):**
-- Dictionary/search `tsquery` poisoning — F-024 H-009 / PLT-127, F-017 H-007 / PLT-090: type `(` in the search box → persistent 500 (availability/injection). `known-bugs`.
-- Quality Dashboard unknown-status crash — F-032 H-004 / PLT-052: out-of-enum run status blanks the dashboard (seed a DQ run). `known-bugs`.
-- Tag ordering — F-018 H-001 / PLT-026: Top Tags returns oldest-by-id, not most-popular (seed > 1 page of tags). `known-bugs`.
-- SPA error boundary — F-042 / TEST-GAP-1013: any render throw blanks the app.
+**Tier 1 — DISABLED stack, single-user, clean UI flow (✅ ALL AUTHORED 2026-06-02 → `known-bugs` suite, expected RED; selectors grounded in `odd-platform-ui/` + `odd-platform/tests/ui/`):**
+- ✅ **IT-003** Dictionary/search `tsquery` poisoning — F-024 H-009 / PLT-127, F-017 H-007 / PLT-090: type `foo )(` in the catalog (`[data-qa=search_string]`) + dictionary (`/termsearch`) box → assert no `/api/` 5xx + session not persistently poisoned. `known-bugs` + I7.
+- ✅ **IT-004** Quality Dashboard unknown-status crash — F-032 H-004 / PLT-052: inject an out-of-enum run status into the `/data-quality` dashboard response (`status` is VARCHAR(64), not a DB enum; injection = "a backend enum addition") → assert graceful degrade, not a render TypeError. `known-bugs` + I9.
+- ✅ **IT-005** Tag ordering — F-018 H-001 / PLT-026: seed 35 tags (youngest 5 most-used) → assert the most-used (youngest) tag surfaces on the Overview "Top Tags" strip; buggy `listMostPopular` paginates oldest-by-id first. `known-bugs` + I7.
+- ✅ **IT-006** SPA error boundary — F-042 / TEST-GAP-1013: inject a malformed dashboard payload (fix-independent render throw) → assert `#root` (app shell/nav) survives = containment; today the whole app white-screens. `known-bugs` + I9.
 
 **Tier 2 — needs a container restart / storage infra:**
 - Attachment LSN-001 durability (I2, F-027) — upload via UI → restart the platform container → file gone under LOCAL (data loss). Needs a docker-restart step in the spec.

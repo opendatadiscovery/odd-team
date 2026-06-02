@@ -1,0 +1,90 @@
+# Probe-stack: ODD platform with AUTH_TYPE=LDAP, against a local OpenLDAP seeded with one
+# NON-admin user (alice). LDAP is the only locally-reproducible ENFORCING mode that wires
+# the AuthorizationCustomizer (SECURITY_RULES active) AND gives a real per-user role — so a
+# USER-role principal with no policies is correctly DENIED a gated admin mutation (403),
+# proving the RBAC backbone enforces (unlike LOGIN_FORM, where rules are inert + every
+# credential is ADMIN). No admin-groups configured → the LDAP user maps to USER.
+#
+# Distinct names + ports + project (-p oddldap) from the other stacks. Ephemeral, local-only.
+version: "3.3"
+
+services:
+  probe-database-ldap:
+    image: postgres:13.2-alpine
+    container_name: probe-database-ldap
+    restart: "no"
+    environment:
+      POSTGRES_USER: odd-platform
+      POSTGRES_PASSWORD: odd-platform-password
+      POSTGRES_DB: odd-platform
+    ports:
+      - "15435:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U odd-platform -d odd-platform"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+      start_period: 5s
+
+  probe-openldap:
+    image: osixia/openldap:1.5.0
+    container_name: probe-openldap
+    restart: "no"
+    environment:
+      LDAP_ORGANISATION: "Example"
+      LDAP_DOMAIN: "example.org" # → base dc=example,dc=org; admin cn=admin,dc=example,dc=org
+      LDAP_ADMIN_PASSWORD: "adminpassword"
+    command: ["--copy-service"]
+    ports:
+      - "1389:389"
+
+  # One-shot: add an `ou=users` + a NON-admin user `cn=alice` (the platform does not seed
+  # LDAP). printf|ldapadd avoids YAML-heredoc + volume-path footguns (mirrors minio-init).
+  probe-openldap-init:
+    image: osixia/openldap:1.5.0
+    container_name: probe-openldap-init
+    depends_on:
+      probe-openldap:
+        condition: service_started
+    entrypoint:
+      - bash
+      - -c
+      - >
+        for i in $$(seq 1 30); do
+        ldapsearch -x -H ldap://probe-openldap:389 -b dc=example,dc=org -D cn=admin,dc=example,dc=org -w adminpassword > /dev/null 2>&1 && break;
+        sleep 2; done;
+        printf 'dn: ou=users,dc=example,dc=org\nobjectClass: organizationalUnit\nou: users\n\ndn: cn=alice,ou=users,dc=example,dc=org\nobjectClass: inetOrgPerson\ncn: alice\nsn: Alice\nuid: alice\nuserPassword: alicepassword\n'
+        | ldapadd -x -H ldap://probe-openldap:389 -D cn=admin,dc=example,dc=org -w adminpassword;
+        echo 'ldap seed done (cn=alice,ou=users,dc=example,dc=org)';
+
+  probe-odd-platform-ldap:
+    image: ghcr.io/opendatadiscovery/odd-platform:latest
+    container_name: probe-odd-platform-ldap
+    restart: "no"
+    environment:
+      SPRING_DATASOURCE_URL: jdbc:postgresql://probe-database-ldap:5432/odd-platform
+      SPRING_DATASOURCE_USERNAME: odd-platform
+      SPRING_DATASOURCE_PASSWORD: odd-platform-password
+      MANAGEMENT_ENDPOINTS_WEB_EXPOSURE_INCLUDE: health,info
+      AUTH_TYPE: LDAP
+      AUTH_LDAP_URL: ldap://probe-openldap:389
+      AUTH_LDAP_USERNAME: cn=admin,dc=example,dc=org
+      AUTH_LDAP_PASSWORD: adminpassword
+      # dn-pattern is RELATIVE to AUTH_LDAP_BASE (BindAuthenticator + contextSource.setBase),
+      # so it must NOT repeat the base, or the bind DN doubles the base and auth fails.
+      AUTH_LDAP_DN_PATTERN: cn={0},ou=users
+      AUTH_LDAP_BASE: dc=example,dc=org
+      # No admin-groups → every authenticated LDAP user maps to USER (non-admin) role.
+    depends_on:
+      probe-database-ldap:
+        condition: service_healthy
+      probe-openldap:
+        condition: service_started
+    ports:
+      - "18083:8080"
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/actuator/health"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 30s

@@ -21,3 +21,14 @@ The original Tier-2b intent was a RED "MinIO non-us-east-1" pin for LSN-002 (Min
 - spec defect fixed mid-run: first probe `/api/owners` returned 500 under DISABLED (needs page/size query params — the UI always sends them; bare it 500s). Switched to `/api/dataentities/classes` (static reference, no params, 200 under DISABLED, not whitelisted).
 - helper refactor verified: extracted the generic stack lifecycle to `helpers/stack.ts`; `minio-stack.ts` now delegates to it (IT-008 re-ran GREEN, confirming the refactor). `loginform-stack.ts` is the new thin wrapper.
 - scope note: LOGIN_FORM proves only the AUTHENTICATION boundary (every credential = ADMIN, AuthorizationCustomizer inert). The RBAC/cross-owner authz bugs need DISTINCT-permission users → an LDAP tier (group→role mapping; the only locally-reproducible enforcing mode with per-user distinction). That is the next Tier-3 sub-batch — assessment pending.
+
+## 2026-06-02 — IT-010 LDAP RBAC enforcement (Tier-3b)
+- runner: AI-assisted (Claude Opus 4.8) — `ODD_STACK_EXTERNAL=1 npm test -- ldap-rbac`, Node v24.13.0; self-managed `odd-ldap` stack (osixia/openldap + init-seeded `cn=alice` + AUTH_TYPE=LDAP platform :18083).
+- protocol: IT-010 (test_class integration — REST + LDAP form-login; no browser). enforces ADR-0002 + ADR-0003.
+- outcome: **GREEN.** Login as alice (LDAP) → 302→/ + SESSION cookie; authenticated non-admin USER → `DELETE /api/owners/999999` → **403** (SECURITY_RULES enforced by the AuthorizationCustomizer; USER has no OWNER_DELETE; 404 would mean bypassed). `feature-complete` + `I1`.
+- run-to-resolve findings (the run earned its keep):
+  - **No ADMIN bypass** (grounded): authorization always resolves permissions from policies, so a fresh USER (no policies) is denied every gated mutation — the clean, reliable enforcement signal. Most "auth bugs" (LOGIN_FORM everyone-admin, read-collaborative reads) are documented ADR-0074/0003 postures, not clean RED bugs.
+  - **bitnami/openldap:2.6 image is gone** → switched to osixia/openldap:1.5.0 + an init container that `printf|ldapadd`s alice (no LDAP_USERS env on osixia).
+  - **dn-pattern is RELATIVE to the base**: `cn={0},ou=users` (NOT absolute) — Spring `BindAuthenticator` + `contextSource.setBase` append the base; an absolute pattern doubled it → silent `/login?error`. Confirmed by reading LDAPSecurityConfiguration + direct `ldapwhoami`.
+  - **docker-compose --force-recreate needs --renew-anon-volumes** (compose v1 `KeyError: ContainerConfig` bug on newer images) — already the pattern IT-007's recreate helper uses.
+- confirmed-but-not-pinned authz gaps (documented postures / need 2 users): attachment read-openness (F-027 H-004), genai no-authz (F-039 H-001, disabled by default), cross-entity mutation escalation (F-027 H-005 / PLT-086).

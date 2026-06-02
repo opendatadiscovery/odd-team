@@ -450,3 +450,17 @@ Pattern proven by IT-002: a UI-e2e spec drives the real browser through a docume
 
 **Quarantine:** known-open-bug pins → `known-bugs` suite (expected RED); `feature-complete` stays green (passing pins only). A fix flips the pin → move it to `feature-complete` = measurable closure.
 **Selector grounding:** UI-interaction specs mirror the proven selectors/page-objects in `odd-platform/tests/ui/` (read to learn; author self-contained in `integration-tests/e2e/`).
+
+---
+
+## Alignment-ingestion status (2026-06-02) — what makes this work COUNT in `/align`
+
+The tests above are BUILT, but the `/align` scorecard (Dimension D RED) does not yet credit most of them. Three gates between "authored" and "counted":
+
+1. **Substrate behind code HEAD** (scorecard blocker [A]): scan `ede5d277` @ 2026-05-26 vs odd-platform HEAD `2febc791`. The unit gate-map merges onto Test NODES, which only exist after a re-scan. → **re-run the substrate scan** to refresh tests + code to HEAD.
+2. **Unit pins are on an unmerged branch** `test/adr-enforcement-units` (odd-platform): U1 `FeatureGatingDefaultsTest` (ADR-0075/0004/0040/0046), U2 `DependencyPostureTest` (ADR-0071/0072), `MinioConfigRegionTest` (PLT-086/LSN-002), `AdrContractScanTest` (ADR-0002/0007). Forward-declared in `test-gates.yaml` (this session). → **gradle-verify + merge the branch**, then re-scan → "ADRs with an enforcing test" 2/27 → ~8/27.
+3. **Integration tests (IT-001..012) are not ingested** (methodology gap): the extractor's test-node scan + gate-map cover odd-platform's `src/test` + `tests/`, NOT odd-team's `integration-tests/protocols/`. The IT-NNN gates (validates/enforces/regresses) live in the protocol frontmatter + are GREEN/RED-confirmed in run-logs, but `/align` counts the integration side via the **probe corpus** (`probes/P-NNN.yaml`) + named-integration keywords — and the IT-NNN use `automation: e2e:` specs, not probes. → **methodology task:** teach the extractor to ingest `integration-tests/protocols/*.md` gates (or back them with P-NNN probes) so the 12 ITs project as ENFORCES/VALIDATES/REGRESSES edges. This is the biggest single Dimension-D lift (12 GREEN/RED-confirmed contract tests, incl. top-action-#1 landmines IT-007/LSN-001).
+
+**Deepest blocker is NOT test count — it is [E] reflection coverage (23/112 features reflected → alignment UNKNOWN over 79%).** The `/align` trust gate discounts every metric by reflection coverage; raising it (more `/reflect-feature` runs on ADR-bearing features) is what proves alignment "enough to proceed", alongside the substrate re-scan. Tests are necessary but not sufficient.
+
+**Built so far (this session):** 12 integration protocols (IT-001..012; 7 RED known-bugs + 5 GREEN feature-complete, all run-verified) + 4 unit pins + 1 filed bug (PLT-139) + 1 ADR consequence (ADR-0072). Sequenced path to "aligned enough": (a) merge+re-scan the unit branch, (b) ingest the integration protocols, (c) raise reflection coverage on ADR-bearing features, (d) re-run `/align`.

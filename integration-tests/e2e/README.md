@@ -23,7 +23,9 @@ useful backend sub-check, not the integration test.
 ## Prerequisites
 
 - **Docker** running (the stack is brought up automatically).
-- **Node 20+** (the workspace pins 24 — see odd-platform `tests/.nvmrc`).
+- **Node 18+** — run `nvm use` in this dir first (pinned to **v24.13.0** via `.nvmrc`,
+  matching odd-platform `tests/`). An older node fails at `npm run browser` with
+  `SyntaxError: Unexpected token '?'` (Playwright's code uses `??`, which pre-14 node can't parse).
 
 ## Run
 

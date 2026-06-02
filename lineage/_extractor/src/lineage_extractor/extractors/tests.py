@@ -62,7 +62,10 @@ _VALIDATES_RE = re.compile(r"@validates\s+(F-[A-Za-z0-9-]+)", re.I)
 _REGRESSES_RE = re.compile(r"@regresses\s+([A-Za-z0-9_.#-]+)", re.I)
 # @pins — characterization pin of an OPEN, deliberately-unfixed bug (asserts the
 # documented-incorrect behaviour). Distinct from @regresses (guards a FIXED bug).
-_PINS_RE = re.compile(r"@pins\s+([A-Za-z0-9_.#-]+)", re.I)
+# The id must be id-SHAPED (a `<PREFIX>-<digit…>` like PLT-016 / LSN-029, or #139) so a
+# PROSE mention of the tag ("delete this @pins pin") is not mis-parsed as a bug id — the
+# same id-shape discipline @enforces (ADR-\d) / @validates (F-\d) already rely on.
+_PINS_RE = re.compile(r"@pins\s+([A-Za-z]+-\d[A-Za-z0-9_.#-]*|#\d+)", re.I)
 _COVERS_RE = re.compile(r"@covers\s+(\S+)", re.I)
 
 _JAVA_CLASS_RE = re.compile(r"\b(?:public\s+|final\s+|abstract\s+)*class\s+(\w+)")

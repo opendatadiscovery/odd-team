@@ -66,18 +66,24 @@ export async function readViewCount(): Promise<number> {
 
 // The most-recently-touched search session row's stored query (the thing that, when
 // it contains a tsquery metacharacter, poisons every subsequent read). Returns null
-// if no session has been created yet. `search_facets` has no owner column (PLT-090
-// defect 1), so "most recent" is the right key for a single-user e2e run.
+// if no session has been created yet. `search_facets` columns are id/query_string/
+// filters/last_accessed_at — no owner (PLT-090 defect 1), no soft-delete — so
+// "most recent by last_accessed_at" is the right key for a single-user e2e run.
+// Best-effort: this is EVIDENCE, never the gate, so a schema surprise returns null
+// rather than crashing the test (lesson from the deleted_at miss).
 export async function latestSearchFacetQuery(): Promise<string | null> {
-  return withClient(async (c) => {
-    const r = await c.query(
-      `SELECT query_string FROM search_facets
-       WHERE deleted_at IS NULL
-       ORDER BY last_accessed_at DESC NULLS LAST
-       LIMIT 1`,
-    );
-    return r.rows[0]?.query_string ?? null;
-  });
+  try {
+    return await withClient(async c => {
+      const r = await c.query(
+        `SELECT query_string FROM search_facets
+         ORDER BY last_accessed_at DESC NULLS LAST
+         LIMIT 1`,
+      );
+      return r.rows[0]?.query_string ?? null;
+    });
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------------------

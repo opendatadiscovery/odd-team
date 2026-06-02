@@ -37,14 +37,28 @@ test.describe('IT-006 error boundary — a render throw must be contained, not w
 
     // ---- arrange: a malformed dashboard payload that throws during render regardless
     //      of any palette fix (null where an object is dereferenced) ----
-    await interceptDashboard(page, body => {
-      body.tablesDashboard = null; // DataQualityContent.tsx:55 dereferences .tablesHealth
+    const intercept = await interceptDashboard(page, body => {
+      // wire format is snake_case; the client passes null straight through, so the
+      // component gets tablesDashboard=null → DataQualityContent.tsx:55 dereferences
+      // .tablesHealth and throws during render (independent of any palette fix).
+      body.tables_dashboard = null;
     });
 
-    // ---- act: navigate to the dashboard so the throw fires ----
+    // ---- act: navigate to the dashboard; WAIT for the malformed response to land +
+    //      re-render (react-query renders valid initialData first, which would false-pass) ----
+    const dashResp = page
+      .waitForResponse(r => /dataqatests\/runs/i.test(r.url()), { timeout: 15_000 })
+      .catch(() => null);
     await page.goto('/data-quality');
-    await page.waitForLoadState('networkidle');
-    await page.waitForTimeout(1000);
+    await dashResp;
+    await page.waitForTimeout(1500);
+
+    // guard: prove the malformed payload actually reached the UI — else this false-passes
+    expect(
+      intercept.injected,
+      `the dashboard response was never intercepted+mutated (injected=0) — the test would ` +
+        `false-pass. Check interceptDashboard's match against /api/dataqatests/runs.`,
+    ).toBeGreaterThan(0);
 
     // ---- assert: the app must NOT have white-screened. With an error boundary, the
     //      throw is contained — the shell (nav) + a contained error UI remain, so #root

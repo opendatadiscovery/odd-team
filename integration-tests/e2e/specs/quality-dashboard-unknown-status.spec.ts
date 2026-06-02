@@ -34,22 +34,35 @@ test.describe('IT-004 Quality Dashboard — an unknown run status must degrade, 
     page,
   }) => {
     // ---- arrange: make the dashboard receive a status its palette does not know ----
-    await interceptDashboard(page, body => {
+    const intercept = await interceptDashboard(page, body => {
+      // wire format is snake_case: test_results[].results[].{status,count}
       const poison = { status: FUTURE_STATUS, count: 1 };
-      if (Array.isArray(body.testResults) && body.testResults.length > 0) {
-        body.testResults[0].results = [...(body.testResults[0].results ?? []), poison];
+      if (Array.isArray(body.test_results) && body.test_results.length > 0) {
+        body.test_results[0].results = [...(body.test_results[0].results ?? []), poison];
       } else {
-        body.testResults = [{ category: 'EXPECTATION', results: [poison] }];
+        body.test_results = [{ category: 'EXPECTATION', results: [poison] }];
       }
     });
 
     const renderErrors: string[] = [];
     page.on('pageerror', e => renderErrors.push(String(e)));
 
-    // ---- act: open the catalog-wide Data Quality dashboard ----
+    // ---- act: open the dashboard; WAIT for the mutated response to land + re-render.
+    //      react-query renders valid `initialData` (all-zero, known statuses) FIRST, so
+    //      asserting too early would false-pass before the poisoned fetch resolves. ----
+    const dashResp = page
+      .waitForResponse(r => /dataqatests\/runs/i.test(r.url()), { timeout: 15_000 })
+      .catch(() => null);
     await page.goto('/data-quality');
-    await page.waitForLoadState('networkidle');
-    await page.waitForTimeout(1000);
+    await dashResp;
+    await page.waitForTimeout(1500);
+
+    // guard: prove the poison actually reached the UI — else the rest false-passes
+    expect(
+      intercept.injected,
+      `the dashboard response was never intercepted+mutated (injected=0) — the test would ` +
+        `false-pass. Check interceptDashboard's match against /api/dataqatests/runs.`,
+    ).toBeGreaterThan(0);
 
     // ---- assert: the dashboard rendered its own content (graceful degrade), i.e. the
     //      component did NOT throw during render. "Test Results Breakdown" lives in the

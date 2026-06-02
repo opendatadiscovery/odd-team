@@ -14,8 +14,8 @@ _generated 2026-06-02 · `lineage-extractor alignment odd-platform` · determini
 
 > Is this scorecard itself trustworthy? Every alignment metric below is discounted by reflection coverage.
 
-- `RED` substrate scan == code HEAD — scan ede5d277 @ 2026-05-26 · HEAD 2febc791 @ 2026-06-01
-- `GREEN` graph embeddings present — built 2026-06-01 · vectors 7623
+- `RED` substrate scan == code HEAD — scan ede5d277 @ 2026-05-26 · HEAD b1fc1825 @ 2026-06-02
+- `GREEN` graph embeddings present — built 2026-06-02 · vectors 7659
 - `AMBER` latest /panel verdict — changes-needed
 - `AMBER` reflection coverage (alignment discount) — 23/112 features reflected → alignment UNKNOWN over 79% of features
 - `AMBER` intent↔impl contradictions surfaced — 176 contradictions across 23 reflected features — the deepest alignment-drift findings; triage feature-reflections/detail/ (HIGH → bug-fix or operator caveat)
@@ -49,19 +49,18 @@ _generated 2026-06-02 · `lineage-extractor alignment odd-platform` · determini
 
 ### D — Test-Traceability Ledger  (RED)
 
-- `GREEN` **Test nodes ingested (+ COVERS to code)** — 4/66 · 66 existing tests ingested · 4 COVERS edges resolved to substrate code
-- `AMBER` **tests/gaps carrying a typed gate (why)** — 522/1104 · 0/66 EXISTING tests are ORPHAN (no typed gate → add @enforces/@validates/@regresses); 582/1038 gaps orphan (lenient match)
-- `AMBER` **ADRs with an enforcing test/gap** — 2/27 · are we checking ADR ALIGNMENT? 2/27 ADRs gated (2 via real ENFORCES edge, rest via gated gaps)
-- `AMBER` **features with a validating test/gap** — 38/112 · are we checking FUNCTIONALITY? 38/112 features gated (27 via real VALIDATES edge)
+- `GREEN` **Test nodes ingested (+ COVERS to code)** — 4/82 · 82 existing tests ingested · 4 COVERS edges resolved to substrate code
+- `AMBER` **tests/gaps carrying a typed gate (why)** — 538/1120 · 0/82 EXISTING tests are ORPHAN (no typed gate → add @enforces/@validates/@regresses); 582/1038 gaps orphan (lenient match)
+- `AMBER` **ADRs with an enforcing test/gap** — 14/27 · are we checking ADR ALIGNMENT? 14/27 ADRs gated (14 via real ENFORCES edge, rest via gated gaps)
+- `AMBER` **features with a validating test/gap** — 41/112 · are we checking FUNCTIONALITY? 41/112 features gated (32 via real VALIDATES edge)
 - `AMBER` **bugs/scopes with a regress/guard test** — 41/1355 · are we checking REGRESSION? 41/1355 findings/scopes gated · LSN-001/002 landmines captured as 24 gated TestGaps but NO regression test authored yet
-- `RED` **probes executed / defined** — 9/186 · 9/186 run · 1 probe-stack(s) · named-integration keyword hits 2/4 (great-expectations, ✗airflow-lineage, ✗postgres-ingestion, webhook-notifications) — KEYWORD scan, NOT verified e2e
+- `RED` **probes executed / defined** — 9/186 · 9/186 run · 6 probe-stack(s) · named-integration keyword hits 2/4 (great-expectations, ✗airflow-lineage, ✗postgres-ingestion, webhook-notifications) — KEYWORD scan, NOT verified e2e
 
 ## Top actionable items
 
 1. Author the landmine regression tests WITH @regresses gates (TEST-GAP-024, TEST-GAP-047, TEST-GAP-049, TEST-GAP-051, TEST-GAP-052…) — LSN-001/002 pins, project as REGRESSES edges [CRITICAL]
 2. Raise reflection coverage on ADR-bearing features (23/112) — the layer that proves alignment
-3. GE / Airflow / Postgres-ingestion / webhooks have no dedicated probe stack (only odd-minimal: postgres+platform) → add multi-service stacks + regresses/validates-gated TestGaps
-4. Backfill typed gates on 582 orphan TestGaps (the test-coverage-mapper should emit a `gates:` block)
+3. Backfill typed gates on 582 orphan TestGaps (the test-coverage-mapper should emit a `gates:` block)
 
 ---
 _Machine metrics + trend: `alignment-scorecard.yaml`. Deep contract audit (sampled, agentic): `lineage-extractor alignment odd-platform --deep` (phase 2)._

@@ -131,6 +131,11 @@ def ingest_tests(repo_path: Path, lineage_dir: Path, repo: str, *, dry_run: bool
             if node is not None:
                 nodes.append(node)
 
+    # odd-team integration-test protocols (integration-tests/protocols/*.md) — the
+    # source-of-truth for the local integration suite; their frontmatter `gates:` block
+    # is the contract (the e2e spec / probe is the automation rail).
+    nodes.extend(_ingest_integration_protocols(lineage_dir, repo))
+
     nodes.sort(key=lambda n: n.test_id)
     merged = _merge_gate_map(lineage_dir, nodes)
     gated = sum(1 for n in nodes if n.gates_total > 0)
@@ -182,6 +187,68 @@ def _merge_gate_map(lineage_dir: Path, nodes: list[TestNode]) -> int:
         if before == 0 and node.gates_total > 0:
             moved += 1
     return moved
+
+
+_IT_FRONTMATTER_RE = re.compile(r"^---\n(.*?)\n---", re.S)
+
+
+def _ingest_integration_protocols(lineage_dir: Path, repo: str) -> list[TestNode]:
+    """Ingest the odd-team integration-test protocols
+    (`integration-tests/protocols/*.md`) as Test nodes, reading their frontmatter
+    `gates:` block (validates/enforces/regresses). The protocol is the integration
+    test's source-of-truth; its e2e spec (`automation: e2e:…`) or probe (`P-NNN`) is the
+    automation rail. Workspace-relative: `lineage_dir` is `<workspace>/lineage/{repo}`,
+    so the protocols live at `<workspace>/integration-tests/protocols/`. Mechanical, no
+    LLM — same deterministic transcription as the repo test scan."""
+    proto_dir = lineage_dir.parent.parent / "integration-tests" / "protocols"
+    if not proto_dir.is_dir():
+        return []
+    try:
+        from ruamel.yaml import YAML
+        yaml = YAML(typ="safe")
+    except Exception:
+        return []
+    nodes: list[TestNode] = []
+    for mpath in sorted(proto_dir.glob("*.md")):
+        try:
+            text = mpath.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        fm_match = _IT_FRONTMATTER_RE.match(text)
+        if not fm_match:
+            continue
+        try:
+            fm = yaml.load(fm_match.group(1))
+        except Exception:
+            continue
+        if not isinstance(fm, dict):
+            continue
+        it_id = str(fm.get("id") or mpath.stem)
+        gates = fm.get("gates") if isinstance(fm.get("gates"), dict) else {}
+        automation = str(fm.get("automation") or "").strip().lower()
+        framework = (
+            "playwright" if automation.startswith("e2e:")
+            else "probe" if automation.startswith("p-")
+            else "manual"
+        )
+        rel = f"integration-tests/protocols/{mpath.name}"
+        nodes.append(TestNode(
+            test_id=f"{rel}::{it_id}",
+            repo=repo,
+            lang="protocol",
+            framework=framework,
+            test_class=str(fm.get("test_class") or "integration"),
+            path=rel,
+            class_name=it_id,
+            covers="",
+            method_count=1,
+            enforces=_uniq([str(x) for x in (gates.get("enforces") or [])]),
+            validates=_uniq([str(x) for x in (gates.get("validates") or [])]),
+            regresses=_uniq([str(x) for x in (gates.get("regresses") or [])]),
+            covers_refs=[],
+            content_hash=section_content_hash(text),
+        ))
+    return nodes
 
 
 def _parse_java_test(path: Path, repo_path: Path, repo: str) -> TestNode | None:

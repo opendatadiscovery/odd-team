@@ -378,3 +378,22 @@ Small/medium **themed** batches for `/implement`, **unit (CI) and integration (L
 
 ## Provenance / dedup statement
 Every row cites a real id read from the live ontology this session: 27 ADR decisions (`../documentation/.../ADR-*.md`) + `realises:` loci (`backlog/adr/ADR-*.md`); 133 bug_candidates across 23 `feature-reflections/detail/F-*.yaml` (HIGH + `dedup_status` + `tracked_as`/`filed_as`); 1038 `test-map/detail/TEST-GAP-*.yaml` (criticality + category + behaviour); filed `issues/odd-platform/PLT-*.md` (incl. landmine PLT-119…138). Excluded as already-covered: the 66 tests in `test-gates.yaml`, ADR-0058 (3 enforcing tests), the 28 validated features. **No id was invented.** `⚠ TARGET UNCLEAR` markers: none required — every pin resolved to a concrete code locus or TestGap.
+
+---
+
+## Step-3 implementation log (authored batches)
+
+Tracks batches moved from **define** → **implemented** (test authored + gated in-source). Run state is logged separately — unit batches in CI (gradle), integration batches in `integration-tests/run-log/`.
+
+| batch | status | test artefact | gates | idiom / notes |
+|---|---|---|---|---|
+| **U1** ADR feature-gating defaults | **authored** — awaiting CI run | `odd-platform-api/.../config/FeatureGatingDefaultsTest.java` (4 `@Test`) | `@enforces` ADR-0075 / 0004 / 0040 / 0046 | YAML-pin + GenAIProperties POJO defaults (see idiom note). Covers the *defaults* half of 0004/0040; bean-topology half → U5. |
+
+### Idiom correction (applies to all unit batches — read before U2/U5)
+
+`ApplicationContextRunner` has **zero precedent** in odd-platform's test tree (0 hits; only 1 `@SpringBootTest`, 0 `@WebFluxTest`). The test-plan rows above that say "via `ApplicationContextRunner`" should instead use the **proven config-test idioms** from the LSN-001/002 pins:
+- **(A) YAML-pin** — `YamlPropertiesFactoryBean` + `ClassPathResource("application.yml")` → assert shipped property values. For the *defaults posture* (which flags ship true/false). No context boot; CI-safe.
+- **(B) reflection structural pin** — reflect over a class's declared fields/methods → assert structure (e.g. MinioConfig field set; controller-annotation absence).
+- **(C) POJO defaults** — instantiate a `@ConfigurationProperties` POJO, assert its Java field defaults.
+
+**Consequence for U5:** the *bean-topology* halves — ADR-0040 (3 notification beans absent when unset), ADR-0041 (per-channel `@ConditionalOnProperty` toggling), ADR-0004 (service-guard throws when disabled) — genuinely need a booted/sliced context. Fold them into **U5** (the bean-graph batch) and introduce `ApplicationContextRunner` there **once**, verifying it compiles+evaluates against the real condition classes before fanning out. U1 deliberately covers only the defaults half — honest scoping, not the full ADR-0040/0041 behaviour.

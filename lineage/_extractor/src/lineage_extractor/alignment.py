@@ -493,7 +493,17 @@ def compute(lineage_dir: Path, workspace_root: Path, repo: str, repo_path: Path)
     ))
     # Probe execution + named integrations
     probes_defined = len(list((lineage_dir / "probes").glob("*.yaml"))) if (lineage_dir / "probes").is_dir() else 0
-    probe_runs = len(list((lineage_dir / "probe-runs").glob("*.yaml"))) if (lineage_dir / "probe-runs").is_dir() else 0
+    # Count DISTINCT probe-ids that have a run artefact — NOT the number of run
+    # files. Counting files lets a re-run of the same probe inflate the metric;
+    # the honest signal is "how many distinct probes have ever executed".
+    _run_ids: set[str] = set()
+    _prd = lineage_dir / "probe-runs"
+    if _prd.is_dir():
+        for _f in _prd.glob("*.yaml"):
+            _m = re.search(r"\bP-\d+\b", _f.name)
+            if _m:
+                _run_ids.add(_m.group(0))
+    probe_runs = len(_run_ids)
     stacks_dir = workspace_root / "lineage" / "_extractor" / "probe-stacks"
     stack_count = len(list(stacks_dir.glob("*.docker-compose.yml"))) if stacks_dir.is_dir() else 0
     integ_covered, integ_detail = _named_integration_coverage(lineage_dir)

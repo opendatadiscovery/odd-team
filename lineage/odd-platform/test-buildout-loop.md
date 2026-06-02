@@ -88,6 +88,10 @@ ADRs with an enforcing test: 22/27 (remaining 5 are integration). Full suite GRE
 ## Progress log (append one line per committed sub-batch)
 - 2026-06-02 — loop bootstrapped. Baseline: unit ADR set complete (22/27), 7 known-bug pins, full
   suite 321 green. Next: backlog A (remaining P1 unit findings).
+- 2026-06-03 — iter 1 (backlog D): ADR-0070 (AdrIngestionWireContractScanTest) + ADR-0073
+  (AdrOddrnIdentityScanTest) — structural/schema halves of two integration ADRs, 2 methods, GREEN.
+  odd-platform 8b939232. ADRs with an enforcing test 22 → 24. Next: F-032 PLT-052 (P1 unit) + more
+  ADR sub-invariants / P3 feature-validation.
 
 ## Skipped (candidate + why it can't be faithfully pinned at the unit level — for the morning report)
 - PLT-131 (owner getDto soft-deleted) — method-scoped; needs to diff getDto vs list filter, and OWNER

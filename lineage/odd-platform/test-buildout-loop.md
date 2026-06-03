@@ -16,9 +16,9 @@ reviewable branch wherever it lands.
 ## Quality guardrails (NON-NEGOTIABLE — the bar, not the floor)
 1. **Run-verified AND style-verified.** Every sub-batch is gradle-verified via
    `scripts/run-platform-tests.sh --tests "<pat>"` (the agent CAN run it; ~20s for source-scan classes).
-   That gate now mirrors CI exactly — `--tests` mode runs `:odd-platform-api:check`, which runs the
-   tests **and `checkstyleMain` + `checkstyleTest`**. So "verified" means **green tests AND zero
-   Checkstyle violations**: a created/modified test that trips a style rule (most commonly a line
+   That gate now mirrors CI exactly — `--tests` mode runs the filtered `test` **plus `checkstyleMain` +
+   `checkstyleTest`** (a no-arg run runs the full `:odd-platform-api:build`, exactly as the GitHub
+   run_tests job does). So "verified" means **green tests AND zero Checkstyle violations**: a created/modified test that trips a style rule (most commonly a line
    `>120` chars — `config/checkstyle/checkstyle.xml`) REDs this gate exactly as it REDs CI, even though
    every test passes (Checkstyle emits no JUnit XML — a green test run can still fail the build).
    NEVER commit a sub-batch until the script exits 0 (tests + checkstyle). NEVER commit an unverified
@@ -57,8 +57,9 @@ idiom (fast, safe, no Docker). Use integration only where an existing stack
    so a line with an em-dash `—` (3 UTF-8 bytes, 1 char) over-counts — the gate (step 4) is authoritative.
 4. gradle-verify the sub-batch via `scripts/run-platform-tests.sh --tests "<pat>"`; iterate on real
    failures (run-to-resolve). Confirm the script **exits 0** = per-class `tests=N failures=0` **AND
-   `:odd-platform-api:checkstyleTest`/`checkstyleMain` reported no violations** (the script runs `check`,
-   so a style violation fails this step — fix it before committing, never commit around it).
+   `:odd-platform-api:checkstyleTest`/`checkstyleMain` reported no violations** (the script runs both
+   checkstyle tasks alongside the filtered test, so a style violation fails this step — fix it before
+   committing, never commit around it).
 5. Commit the sub-batch to `test/adr-enforcement-units` (one commit, ID-tagged message).
 6. Append a one-line entry to the progress log (date, classes, methods, gates, commit sha).
 7. Every ~20–30 new methods OR every ~5 iterations: re-ingest the ontology
@@ -218,9 +219,12 @@ or untracked-id); all are integration candidates.
   every test but RED on `:odd-platform-api:checkstyleTest` — 4 loop-authored test lines >120 chars.
   Cause: the local gate ran only `:odd-platform-api:test`; CI runs `odd-platform-api:build` (= the full
   `check` lifecycle incl. checkstyleMain/Test). Fixed the gate to MIRROR CI: `scripts/run-platform-tests.sh`
-  now runs `:odd-platform-api:build -PbundleUI=false` (no-arg) / `:odd-platform-api:check` (`--tests`),
-  both running Checkstyle over both source sets. Wrapped the 4 lines (odd-platform d64df9b9, no behavioral
-  change). Guardrail 1 + iter-procedure steps 3-4 updated above to make style-verify non-negotiable.
+  now runs `:odd-platform-api:build -PbundleUI=false` (no-arg) / `checkstyleMain + checkstyleTest + the
+  filtered test` (`--tests` mode — `check`/`build` reject `--tests`, and `test` must be LAST so the option
+  binds to it), both running Checkstyle over both source sets. VERIFIED: `run-platform-tests.sh --tests
+  "*AlertHaltConfigServiceImplTest*"` → BUILD SUCCESSFUL, all 3 tasks ran, checkstyle GREEN (also confirms
+  the d64df9b9 wrap fix is clean). Wrapped the 4 lines (odd-platform d64df9b9, no behavioral change).
+  Guardrail 1 + iter-procedure steps 3-4 updated above to make style-verify non-negotiable.
   Memory: project_local_test_env (the local-gate-omits-checkstyle gap).
 
 ## Skipped (candidate + why it can't be faithfully pinned at the unit level — for the morning report)

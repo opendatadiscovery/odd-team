@@ -227,7 +227,55 @@ or untracked-id); all are integration candidates.
   Guardrail 1 + iter-procedure steps 3-4 updated above to make style-verify non-negotiable.
   Memory: project_local_test_env (the local-gate-omits-checkstyle gap).
 
+- 2026-06-03 — PHASE 2 iter 13 (behavioral services; lint-gate now via the hardened script): 3 services /
+  5 methods, all GREEN + checkstyle-clean. AlertServiceImplTest (3, per-entity alert list+counts NotFound
+  on a non-existent/soft-deleted entity via the shared checkDataEntityExistence guard + empty-external-batch
+  no-op via verifyNoInteractions; validates F-014 + F-007) + OwnerAssociationRequestServiceImplTest (1,
+  approve/decline a non-existent request → NotFound; getCurrentUser chain head assembled-not-subscribed;
+  validates F-171) [5c8dce77]; DatasetFieldServiceImplTest (1, updateInternalName on a non-existent field
+  → NotFound, eager .then(updateDatasetFieldSearchVectors) tail poisoned; validates F-178) [73c2c3f0].
+  All verified via `run-platform-tests.sh --tests` (test + checkstyleMain + checkstyleTest in one shot).
+  Phase-2 total: 61 behavioral methods / 19 services + validators. RE-INGEST due at ~76. Next: DatasetField
+  (more guards: updateDescription/createOrUpdate)/DataSourceIngestion-or-Lineage (extend existing tests) /
+  mappers/parsers. Deferred: DataEntityLookupTableServiceImpl (create/update pipelines are mapping-heavy,
+  no clean unit guard → integration, logged in Skipped).
+- 2026-06-03 — PHASE 2 iter 14 (small clean services; service-guard supply now THINNING). Scanned ALL
+  remaining untested services for `new NotFoundException`/`new BadUserRequestException` signatures — the
+  big-guard services are now covered; only small ones remain. MetricServiceImplTest (2, latest-metrics for
+  a non-existent data entity / dataset field → NotFound; validates F-030) + DatasetFieldInternalInformation-
+  ServiceImplTest (1, updateDescription on a non-existent field → NotFound, lazy flatMaps; validates F-047)
+  [b24336a4]. Phase-2 total: 64 behavioral methods / 21 services + validators. RE-INGEST due at ~76.
+  **Pivot signal:** the clean service-guard supply is nearly exhausted (remaining untested services are
+  transform/aggregation/pipeline-heavy or have 0-1 guards). NEXT ITERS should shift to MAPPERS / parsers /
+  enums (pure JUnit+AssertJ, no mocks) + extending existing service test classes with more guard methods —
+  that is the larger remaining unit scope. Logged Relationships as an ONTOLOGY-GAP skip (see Skipped).
+- 2026-06-03 — PHASE 2 iter 15 (MAPPER pivot — pure logic, no mocks): CollectorMapperImplTest (2,
+  mapForm sets namespace/token FK ids null-safely; validates F-020) + DataSourceMapperImplTest (3, mapForm
+  TRIMS the oddrn + null-safe FK ids; validates F-031) [37d120bc]. Instantiated against the REAL generated
+  impls: `new XMapperImpl(new NamespaceMapperImpl(), new TokenMapperImpl(new DateTimeMapperImpl()))` (the
+  mapper test lives in package `mapper`, so the *Impl classes need no import). Both gate cleanly to the
+  feature their service already validates (no gate-hunting). Phase-2 total: 69 behavioral methods / 21
+  services + 2 mappers. RE-INGEST due at ~76 (≈7 methods away — likely next iter). Next: more hand-written
+  mappers gating to known features (PolicyMapper→F-006, OwnershipMapper, RoleMapper→F-006, DataEntityRun-
+  Mapper→F-040) + parsers. KEY new lesson: a MapStruct mapper's generated `XMapperImpl` constructor takes
+  its `uses` mappers; chain the no-arg/leaf impls (NamespaceMapperImpl no-arg, TokenMapperImpl(DateTimeMapperImpl)).
+- 2026-06-03 — PHASE 2 iter 16 + RE-INGEST (crossed ~76): 4 mapper tests / 6 methods, all GREEN +
+  checkstyle-clean. TokenMapperImplTest (2, mapValue MASKS hidden token to ******+last-6 vs full when
+  showToken; the security invariant behind one-shot reveal; validates F-163) + OwnershipMapperImplTest (2,
+  mapDtos/mapTermDtos return NULL not empty-list on empty input; validates F-019) + RoleMapperImplTest (1,
+  mapToRoleList page total/hasNext→PageInfo; validates F-006) + DataEntityRunMapperImplTest (1, validates
+  F-040) [2ad6e020]. Re-ingest: test nodes 123→134 (0 orphan), VALIDATES 88→100, 12 known-bug pins,
+  embeddings preserved (vectors=7711). FULL SUITE 394→413 GREEN (113 classes, 0 fail/0 skip). Phase-2
+  total: 75 behavioral methods / 21 services + 6 mappers. Next: more hand-written mappers/parsers gating to
+  confirmed features (PolicyMapper mapToDto JSON-deser→F-006, TermMapper→F-024, NamespaceMapper, etc.) +
+  extending existing service test classes. Halfway to 150; clean unit candidates still plentiful (mappers).
+
 ## Skipped (candidate + why it can't be faithfully pinned at the unit level — for the morning report)
+- DateTimeUtil (service/ingestion/util — UTC/epoch conversion, UNtested, pure + high-value: mapUTCDateTime
+  both directions + mapEpochSeconds, all null-safe). Genuinely worth pinning (timezone correctness is a
+  classic silent-bug class) BUT it is cross-cutting infrastructure with NO feature gate and NO UTC-norm ADR
+  (ADR-0058 is soft-deletion, not UTC). Deferred under "confirmed gates only" — author once a UTC/timestamp-
+  normalization ADR exists to @enforces (or if the no-orphan rule is relaxed for pure-util correctness pins).
 - PLT-131 (owner getDto soft-deleted) — method-scoped; needs to diff getDto vs list filter, and OWNER
   hard-deletes muddy the invariant. Revisit as integration.
 - PLT-054 Slack signature-verification (F-038 H-002) — 3rd aspect of an already-pinned bug + absence pin (verification could live in parser/filter); fragile, skipped.
@@ -235,3 +283,5 @@ or untracked-id); all are integration candidates.
 - EnumValueServiceImpl — DEDUP: already covered by an existing `EnumValueServiceTest.java` (not `*ImplTest`); not re-authored.
 - DatasetStructureServiceImpl / DataEntityFilledServiceImpl / DataEntityInternalStateServiceImpl — guards=0 pure-delegation services (no error/branch logic); a unit test would only re-assert the mock (test-theatre). Deferred — these are exercised by their callers' tests + integration.
 - DirectoryServiceImpl (F-? directory tree) — REAL untested gap (existing `DirectoryTest.java` does NOT reference the impl). 10 guards / 4 deps — good behavioral candidate; queued for a later iter (not skipped permanently).
+- DataEntityLookupTableServiceImpl (F-026 lookup-table data-entity linkage) — create/update methods are mapping-heavy reactive PIPELINES (mapCreatedLookupTablePojo → create → generateOddrn → updateSearchVectors → update → createVersion; createOrUpdateLookupDatasetField builds JSONB type maps + version-with-fields), not clean NotFound/branch guards. A faithful unit test would stub the entire create chain = test-theatre; better covered by integration. Deferred. (LineageServiceImpl + DataSourceIngestionServiceImpl already have existing tests — dedup, not re-authored.)
+- RelationshipsServiceImpl (ERD/GRAPH dataset relationships) — has 2 genuinely clean pins (getERDRelationshipById / getGraphRelationshipById on a missing id → NotFound via switchIfEmpty), BUT there is **no feature gate** for it: the ERD/GRAPH "Relationships" surface is NOT in `feature-flows/detail` (searched name/contributing-nodes for relation/erd/diagram → no dedicated F-NNN). This is an ONTOLOGY GAP (a real, navigable UI feature with no extracted Feature node), not a test gap. Per the loop's "confirmed gates only / no orphans" rule, NOT authored with a fabricated gate. Action: model the Relationships feature (assign an F-NNN) in feature-flows, THEN author these pins with @validates that id. Same applies to any other unmodeled-feature service surfaced later.

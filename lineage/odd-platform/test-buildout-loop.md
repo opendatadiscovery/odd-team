@@ -183,6 +183,8 @@ or untracked-id); all are integration candidates.
 
 - 2026-06-03 — PHASE 2 iter 5 (pure-logic + bug fix): extended LookupTypesValidatorTest +3 methods (Integer/Char/Timestamp validators, previously uncovered) AND fixed a real copy-paste bug (line 69 UUID invalid-case asserted jsonbValidator). 8/8 GREEN. odd-platform 38243c94. Phase-2 total: 25 methods. Dedup note: the 5 other lookup validators were already covered — extended, not duplicated. Next: more untested services (DataQuality/Term/Tag/Policy/DataEntityGroup) + re-ingest due ~iter 6.
 
+- 2026-06-03 — PHASE 2 iter 6 (behavioral service): AlertHaltConfigServiceImplTest (4, read/save halt-config + NotFound + empty-default, validates F-007) GREEN. odd-platform dbd3a906. Phase-2 total: 29 methods. Next: DataEntityStatistics/DataEntityGroup/Tag/Policy services; re-ingest due ~38-40.
+
 ## Skipped (candidate + why it can't be faithfully pinned at the unit level — for the morning report)
 - PLT-131 (owner getDto soft-deleted) — method-scoped; needs to diff getDto vs list filter, and OWNER
   hard-deletes muddy the invariant. Revisit as integration.

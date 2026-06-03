@@ -89,8 +89,11 @@ matching the wrong (untransformed) string.
   the wire returns `metadata_field_values` snake_case correctly) + a live-browser DOM dump. Added helpers
   seedEntityMetadata/clearEntityMetadata (metadata_field INTERNAL origin + metadata_field_value, verified
   schema; getOrCreate field by (name,origin), DELETE-then-INSERT value). feature-complete + ui-e2e.
-  Count: **17 ITs total (5 new this session: IT-013..017)**. RE-INGEST DUE NOW (next iter = IT-018).
-  Next: F-177 type badge, F-024 term search.
+  Count: **17 ITs total (5 new this session: IT-013..017)**. Next: F-177 type badge, F-024 term search.
+- 2026-06-03 — RE-INGEST done at the 5-IT boundary (commit 96a8ab1): tests-ingest 143 test nodes (all
+  gated, 0 orphan, 12 known-bug pins); graph-build w/ embeddings 6769 nodes / 8961 edges / 7720 vectors;
+  alignment 🟡 PILOT-READY, ledger [D] still RED, ready-now lists F-024. **Next re-ingest at ~IT-022.**
+  Next IT target: F-177 type/class badge or F-024 term search (dictionary route).
 
 ## Stack-blocked (needs a docker stack that doesn't exist yet — maintainer's call to build)
 - (none logged yet — collector-integration features GE/Airflow/webhook will land here when reached)

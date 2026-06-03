@@ -60,6 +60,39 @@ export async function seedEntityDescription(description: string | null): Promise
   });
 }
 
+// IT-015 — F-019 owners: seed entity 2001 with an owner (name) bound via a role.
+// The odd-minimal IMAGE schema can lag source migrations (no owner.is_deleted, and the
+// UNIQUE constraints ON CONFLICT needs may be absent), so use constraint-independent
+// SELECT-then-INSERT + DELETE-then-INSERT. Idempotent for sequential test seeding.
+// NB image schema (verified by inspecting odd-minimal): ownership(id, data_entity_id, owner_id,
+// title_id) — the owner's role is a TITLE (title_id), NOT role_id; owner/title use deleted_at
+// (no is_deleted) and their name UNIQUE constraints are unreliable → SELECT-then-INSERT.
+async function getOrCreateNamed(c: Client, table: 'owner' | 'title', name: string): Promise<number> {
+  const sel = await c.query(`SELECT id FROM ${table} WHERE name = $1 LIMIT 1`, [name]);
+  if (sel.rows[0]) return Number(sel.rows[0].id);
+  const ins = await c.query(`INSERT INTO ${table} (name) VALUES ($1) RETURNING id`, [name]);
+  return Number(ins.rows[0].id);
+}
+
+export async function seedEntityOwner(ownerName: string, titleName = 'IT015-title'): Promise<void> {
+  await seedEntity();
+  await withClient(async (c) => {
+    const ownerId = await getOrCreateNamed(c, 'owner', ownerName);
+    const titleId = await getOrCreateNamed(c, 'title', titleName);
+    await c.query('DELETE FROM ownership WHERE data_entity_id = $1 AND owner_id = $2', [ENTITY_ID, ownerId]);
+    await c.query('INSERT INTO ownership (data_entity_id, owner_id, title_id) VALUES ($1, $2, $3)',
+      [ENTITY_ID, ownerId, titleId]);
+  });
+}
+
+// Negative-path helper: entity 2001 exists but has NO ownership rows.
+export async function clearEntityOwners(): Promise<void> {
+  await seedEntity();
+  await withClient(async (c) => {
+    await c.query('DELETE FROM ownership WHERE data_entity_id = $1', [ENTITY_ID]);
+  });
+}
+
 // ---------------------------------------------------------------------------
 // IT-003 — search tsquery poisoning (PLT-090 catalog / PLT-127 dictionary).
 //

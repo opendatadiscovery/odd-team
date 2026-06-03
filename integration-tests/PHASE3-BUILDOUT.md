@@ -25,6 +25,21 @@ IT-001 F-001 view_count probe (smoke) · IT-002 F-001 view_count UI (pins PLT-10
 5. Register in suites.yaml + run-log/; commit (heredoc, IT-NNN id); mark the test-gap covered.
 6. Every ~5 ITs: re-ingest the ontology + record the count here.
 
+## ⚠ KEY LESSON — the odd-minimal IMAGE schema lags the source migrations (verify, don't guess)
+The stack runs a RELEASE odd-platform image whose Flyway schema differs from
+`odd-platform/.../db/migration/*.sql`. Seeding against the source DDL cost IT-015 four failed
+runs (no `owner.is_deleted`; `ownership.role_id` doesn't exist; missing UNIQUE constraints). RULE:
+**inspect the running image's `information_schema.columns` before writing a relation seed**, and use
+constraint-independent SELECT-then-INSERT / DELETE-then-INSERT (don't rely on ON CONFLICT unique
+targets). Verified image schema (odd-minimal, 2026-06-03) for the common seed tables:
+- `data_entity`(id, oddrn, external_name, internal_name, internal_description, data_source_id, type_id, view_count, …) · `data_source`(id, oddrn, name, …)
+- `owner`(id, name, created_at, updated_at, **deleted_at**) · `title`(id, name, …, deleted_at) · `role`(id, name, …, deleted_at)
+- `ownership`(id, data_entity_id, owner_id, **title_id**)  ← the owner's role is a TITLE (title_id), NOT role_id
+- `tag`(id, name, important?) · `tag_to_data_entity`(tag_id, data_entity_id, external)
+- `term`(id, name, definition, namespace_id, …, deleted_at) · `namespace`(id, name, …, deleted_at) · `data_entity_to_term`(data_entity_id, term_id, is_description_link)
+- `metadata_field`(id, type, name, origin, deleted_at) · `metadata_field_value`(data_entity_id, metadata_field_id, value, active)
+To re-inspect: `docker-compose -p probe-stacks -f lineage/_extractor/probe-stacks/odd-minimal.docker-compose.yml up -d`, wait for `/actuator/health`, `docker exec probe-database psql -U odd-platform -d odd-platform -c "\d <table>"`, then `down -v`.
+
 ## Progress log (one line per new IT)
 - 2026-06-03 — PHASE 3 kickoff + pipeline VALIDATED (smoke green; harness operational; 6 stacks; Docker 29.5.2). Existing baseline: 12 ITs (IT-001..012). Next: author the first NEW IT for a high-criticality uncovered core-platform feature on odd-minimal (success + negative).
 - 2026-06-03 — IT-013 (F-176 Data Entity Overview composition) — first AUTHORED Phase-3 IT, e2e:data-entity-overview.spec.ts. Success (seeded entity composes + renders its name, waits on the GET /api/dataentities/{id} detail fetch) + negative (absent id 999999 → entity name count 0). **GREEN (e2e:PASS, 2 passed in 52.6s)**. Added to feature-complete + ui-e2e suites; run-log/2026-06-03-IT-013.md. Reused seedEntity (no new helper). **Per-IT cost measured: ~52s** (stack-up ~15s + 2 tests ~26s + teardown) — ~200 ITs ≈ 3-4h run-time, feasible. Pattern established: seed→navigate→assert-rendered (generalises to term/owner/description/metadata display on the overview). Count: **13 ITs total (1 new), 13 features touched**. Next: more uncovered core-platform features (F-002 term display, F-004 description, F-019 owners, F-013 metadata, F-024 term search…), success + negative each.
@@ -35,6 +50,14 @@ IT-001 F-001 view_count probe (smoke) · IT-002 F-001 view_count UI (pins PLT-10
   seedEntityDescription(text|null). feature-complete + ui-e2e; run-log/2026-06-03-IT-014.md. Count: **14 ITs
   total (2 new this session: IT-013/014)**. Next: F-002 term display / F-019 owners / F-013 metadata / F-024
   term search. RE-INGEST due after ~3 more new ITs.
+
+- 2026-06-03 — IT-015 (F-019 Owners display) — e2e:entity-owners-display.spec.ts. Success (seeded owner
+  renders on the Overview) + negative (no ownership → owner absent). **GREEN (2 passed 30.9s)** after 4 failed
+  runs from IMAGE-vs-source schema drift → inspected the real schema (see KEY LESSON above) + added helpers
+  seedEntityOwner/clearEntityOwners/getOrCreateNamed (ownership.title_id; SELECT/DELETE-then-INSERT).
+  feature-complete + ui-e2e. Count: **15 ITs total (3 new this session: IT-013/014/015)**. The verified
+  schema now makes term/metadata/tag relation seeds first-try. Next: F-002 term display, F-013 metadata,
+  F-024 term search. RE-INGEST due at IT-018.
 
 ## Stack-blocked (needs a docker stack that doesn't exist yet — maintainer's call to build)
 - (none logged yet — collector-integration features GE/Airflow/webhook will land here when reached)

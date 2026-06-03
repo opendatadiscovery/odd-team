@@ -175,6 +175,8 @@ or untracked-id); all are integration candidates.
 
 - 2026-06-03 — PHASE 2 iter 1 (behavioral services): ActivityServiceImplTest (4, dispatch; fc851571) + OwnerServiceImplTest (5, cascade-delete safety + NotFound; 89d8b148) = 9 behavioral methods, GREEN. Both services had NO prior unit test. validates F-019/F-021. Gap-curation note: the finer OwnerService gaps (622 UX-confirm, 625 FTS-delete-asymmetry, 626 owner_association_request orphan) are integration/finer and remain OPEN — not false-marked; re-ingest auto-credits the new tests via COVERS + @validates. Run-to-resolve: delete() uses eager .then(arg) → cascade tests use a poison Mono.error (subscribe-only). Next: more untested services (Tag/Alert/DataSource/Collector) + mappers/validators, gap-node-driven.
 
+- 2026-06-03 — PHASE 2 iter 2 (behavioral service): CollectorServiceImplTest (5, cascade-delete + not-found, validates F-020) GREEN, no run-to-resolve. odd-platform 444df13e. Phase-2 total: 14 behavioral methods. Next: DataSource/DataQuality/Term/Tag/Role services + mappers/validators.
+
 ## Skipped (candidate + why it can't be faithfully pinned at the unit level — for the morning report)
 - PLT-131 (owner getDto soft-deleted) — method-scoped; needs to diff getDto vs list filter, and OWNER
   hard-deletes muddy the invariant. Revisit as integration.

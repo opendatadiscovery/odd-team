@@ -191,6 +191,8 @@ or untracked-id); all are integration candidates.
 
 - 2026-06-03 — PHASE 2 iter 9 (behavioral service): TagServiceImplTest (4, external-tag protection + not-found, validates F-018) GREEN. odd-platform d8c13367. Phase-2 total: 40 behavioral methods / 9 services + validators. Next: Directory/DatasetField/Lineage/DataQuality/DataEntityRun services; re-ingest ~56.
 
+- 2026-06-03 — PHASE 2 iter 10 (behavioral service): DataEntityRunServiceImplTest (2, runs only for runs-capable classes + NotFound, validates F-040) GREEN. odd-platform 52c2d910. Phase-2 total: 42 methods / 10 services + validators. Dedup-skipped DataEntityStatistics (existing ingestion test + murky gate). Next: Lineage/Reference/DatasetVersion/DatasetField services; re-ingest ~56.
+
 ## Skipped (candidate + why it can't be faithfully pinned at the unit level — for the morning report)
 - PLT-131 (owner getDto soft-deleted) — method-scoped; needs to diff getDto vs list filter, and OWNER
   hard-deletes muddy the invariant. Revisit as integration.

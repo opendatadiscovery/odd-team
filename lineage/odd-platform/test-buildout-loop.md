@@ -189,6 +189,8 @@ or untracked-id); all are integration candidates.
 
 - 2026-06-03 — PHASE 2 iter 8 + RE-INGEST: PolicyServiceImplTest (5, Administrator-policy protection + cascade + not-found, validates F-006; c32f8e9c) GREEN. Re-ingest: 115 test nodes, VALIDATES 76→80, FULL SUITE 374 GREEN. Phase-2 total: 36 behavioral methods / 8 services + validators. Next: DataEntityStatistics/Tag/Directory/DatasetField/Lineage/DataQuality services + mappers.
 
+- 2026-06-03 — PHASE 2 iter 9 (behavioral service): TagServiceImplTest (4, external-tag protection + not-found, validates F-018) GREEN. odd-platform d8c13367. Phase-2 total: 40 behavioral methods / 9 services + validators. Next: Directory/DatasetField/Lineage/DataQuality/DataEntityRun services; re-ingest ~56.
+
 ## Skipped (candidate + why it can't be faithfully pinned at the unit level — for the morning report)
 - PLT-131 (owner getDto soft-deleted) — method-scoped; needs to diff getDto vs list filter, and OWNER
   hard-deletes muddy the invariant. Revisit as integration.

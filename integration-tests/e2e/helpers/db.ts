@@ -209,6 +209,48 @@ export async function seedEntityStatus(statusCode: number): Promise<void> {
   });
 }
 
+// IT-023 — dataset structure/columns: seed a column on entity 2001 (a DATASET) so the Structure
+// tab (/dataentities/{id}/structure → GET /api/datasets/{id}/structure) renders the column name.
+// Verified schema: dataset_version(version, version_hash, dataset_oddrn) + dataset_field(name, oddrn,
+// type jsonb, stats jsonb, field_order, is_*) + dataset_structure(dataset_version_id, dataset_field_id)
+// link. ⚠ dataset_field.stats MUST be non-null ('{}') — DatasetFieldApiMapper.deserializeStats NPEs
+// (HTTP 500) on null stats (latent platform bug; collectors always send stats). Constraint-independent
+// DELETE-then-INSERT; idempotent. The entity must be class DATA_SET (entity_class_ids={1}).
+const DATASET_ODDRN = '//e2e-source-IT-002/db/tables/it002_table';
+export async function seedDatasetColumn(columnName: string): Promise<void> {
+  await seedEntity();
+  await withClient(async (c) => {
+    await c.query(`UPDATE data_entity SET entity_class_ids = '{1}' WHERE id = $1`, [ENTITY_ID]);
+    await c.query(
+      `DELETE FROM dataset_structure ds USING dataset_version dv
+       WHERE ds.dataset_version_id = dv.id AND dv.dataset_oddrn = $1`,
+      [DATASET_ODDRN],
+    );
+    await c.query('DELETE FROM dataset_version WHERE dataset_oddrn = $1', [DATASET_ODDRN]);
+    await c.query('DELETE FROM dataset_field WHERE oddrn = $1', [`${DATASET_ODDRN}/columns/${columnName}`]);
+    const vid = Number(
+      (
+        await c.query(
+          `INSERT INTO dataset_version (version, version_hash, created_at, dataset_oddrn)
+           VALUES (1, $1, NOW(), $2) RETURNING id`,
+          [`it023-${columnName}`, DATASET_ODDRN],
+        )
+      ).rows[0].id,
+    );
+    const fid = Number(
+      (
+        await c.query(
+          `INSERT INTO dataset_field (name, oddrn, field_order, type, stats, is_primary_key, is_sort_key, is_key, is_value)
+           VALUES ($1, $2, 0, $3::jsonb, '{}'::jsonb, false, false, false, false) RETURNING id`,
+          [columnName, `${DATASET_ODDRN}/columns/${columnName}`,
+            JSON.stringify({ type: 'TYPE_STRING', logical_type: 'varchar', is_nullable: true })],
+        )
+      ).rows[0].id,
+    );
+    await c.query('INSERT INTO dataset_structure (dataset_version_id, dataset_field_id) VALUES ($1, $2)', [vid, fid]);
+  });
+}
+
 // IT-020 — F-018 entity tag display: seed entity 2001 with a tag chip on the Overview.
 // Verified image schema: tag(id, name, important) · tag_to_data_entity(tag_id, data_entity_id,
 // external). The tag NAME renders verbatim on the Overview (no transform — verified live).

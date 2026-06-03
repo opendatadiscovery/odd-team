@@ -171,5 +171,23 @@ namespace, any enum picker).
   total (10 new this session: IT-013..022)**. Search family now: catalog (F-017) + term (F-024). Next:
   structure/columns (dataset_field), linked URLs, data-quality/SLA, DEG (F-012), metrics, or ready-now.
 
+- 2026-06-03 — IT-023 (F-045 Dataset structure/columns) — e2e:dataset-structure-display.spec.ts. Success
+  (seed a dataset_version+dataset_field+structure link → Structure tab renders the column name verbatim)
+  + negative (a never-seeded ghost column absent, visible-scoped). **GREEN (2 passed 9.2s)** after
+  resolving the seed shape (most complex yet — versioned structure). Discovered a LATENT PLATFORM BUG
+  (see Discovered findings below). Helper seedDatasetColumn (dataset_version/dataset_field/dataset_structure;
+  stats MUST be non-null). feature-complete + ui-e2e. Count: **23 ITs total (11 new this session:
+  IT-013..023)**. Surface variety now: overview annotations + header badges/status + 2 searches + dataset
+  schema. Next: linked URLs, DEG (F-012), data-quality happy-path, metrics, namespaces. MILESTONE PING at IT-025.
+
+## Discovered findings (latent platform bugs surfaced while building ITs — for maintainer triage)
+- **deserializeStats NPE → HTTP 500 on null dataset_field.stats** (found IT-023). `GET /api/datasets/{id}/structure`
+  500s with `NullPointerException: Cannot invoke "org.jooq.JSONB.data()" because "stats" is null` at
+  `DatasetFieldApiMapper.deserializeStats` (DatasetVersionMapperImpl.mapDatasetStructure). `dataset_field.stats`
+  is nullable in the DDL (is_nullable=YES), so a field ingested without column stats makes the ENTIRE
+  Structure tab unrenderable (500). Collectors normally send stats, so latent — but a single statless field
+  takes down the whole dataset's schema view. Missing null-guard in the mapper. Candidate PLT-NNN / upstream
+  issue + a future known-bug pin IT (seed a field with NULL stats → assert 500). Not pinned yet.
+
 ## Stack-blocked (needs a docker stack that doesn't exist yet — maintainer's call to build)
 - (none logged yet — collector-integration features GE/Airflow/webhook will land here when reached)

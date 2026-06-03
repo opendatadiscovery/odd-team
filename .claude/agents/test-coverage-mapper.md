@@ -48,7 +48,13 @@ Test-gap criticality = max(security_aggregate severity, performance_aggregate se
 Format per test-gap entry:
 ```
 - gap_id: TEST-GAP-NNN
-  category: missing-unit | missing-integration | missing-edge-case | missing-security | missing-performance | sidecar-stale
+  category: missing-functional | missing-unit | missing-integration | missing-edge-case | missing-security | missing-performance | sidecar-stale
+  # missing-functional (LSN-030): the feature's user-facing PROMISE (a `use_cases` entry in
+  # feature-flows) has no test. Distinct from missing-unit/integration (test-LAYER) and from
+  # missing-edge-case/security (which HARDEN a presumed-working feature). Sourced from the
+  # feature-flow `use_cases` promise layer (Step 2b), NOT from per-node method scanning — a
+  # per-node sidecar structurally cannot see an emergent cross-file feature promise.
+  use_case_id: <F-NNN-UC-N>   # REQUIRED for missing-functional: the promise this gap verifies
   criticality: CRITICAL | HIGH | MEDIUM | LOW
   node_ids:
     - "<node-id>"
@@ -105,6 +111,22 @@ For each sidecar:
 - For each `test_files` entry: verify (Glob + Grep). If hallucinated, flag in `sidecar_quality_findings`.
 - For each `uncovered_behaviour`: this is a TEST-GAP-NNN candidate. Anchor its criticality via concepts.yaml.
 
+### 2b. Walk every feature-flow's `use_cases` promise layer (LSN-030)
+
+Sidecars (Step 2) yield method-shaped gaps and structurally cannot see an emergent, cross-file feature
+promise. So ALSO read `lineage/{repo}/feature-flows/detail/*.yaml`:
+- For each `use_cases` entry with `coverage: unverified`: this is a **`missing-functional`** TEST-GAP
+  candidate. Carry its `use_case_id`, `kind`, `promise`, and `trace` into the gap.
+- `kind: happy-path | resolve-later | teardown` rank ABOVE `missing-edge-case`/`missing-performance`
+  for the same node — verifying the promise precedes hardening its edges.
+- A feature whose `use_cases` is absent or whose `coverage_summary.verified == 0` is itself a finding:
+  the feature's promise is wholly unverified. (If `use_cases` is absent entirely, the upstream
+  feature-reflector has not yet emitted the promise layer — note it; do not invent the promises here.)
+
+This is the consumer half of the LSN-030 fix. The producer half (the feature-reflector emitting the
+`use_cases` block from its product-owner read, including on CONFIRMED hypotheses) is specified in
+`.claude/agents/feature-reflector.md` + `retrospectives/LSN-030-*.md`.
+
 ### 3. Cluster across sidecars
 
 Group test-gap candidates:
@@ -131,7 +153,8 @@ test_files_indexed: <count>
 prompt_version: "test-coverage-mapper/0.1.0"
 total_test_gaps: <N>
 gaps_by_criticality: { CRITICAL: n, HIGH: n, MEDIUM: n, LOW: n }
-gaps_by_category: { missing-unit: n, missing-integration: n, missing-edge-case: n, missing-security: n, missing-performance: n, sidecar-stale: n }
+gaps_by_category: { missing-functional: n, missing-unit: n, missing-integration: n, missing-edge-case: n, missing-security: n, missing-performance: n, sidecar-stale: n }
+use_case_coverage: { features_with_use_cases: n, use_cases_total: n, use_cases_verified: n }   # LSN-030 SECOND FRONTIER — distinct from line/method coverage
 ---
 
 # test-map — {repo} — {date}

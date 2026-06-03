@@ -220,6 +220,98 @@ observed_vs_expected:
         - 'TermServiceImpl sidecar operations[3]'
         - 'TermServiceImpl.java:67 (regex with [^:]*? + [^\\]]*? capture groups — no sanitisation)'
       ui_unverified: false
+use_cases:
+  # PROMISE LAYER — LSN-030 pilot (2026-06-03). What this feature DOES for a user, as falsifiable
+  # acceptance scenarios derived from the implementation (code = source of truth), NOT from a finding.
+  # The drift catalogue (observed_vs_expected) above says what is WRONG; this says what the feature
+  # PROMISES. This `use_cases` list — not the test-type cells below — is the unit of "covered".
+  # coverage joined against real tests 2026-06-03.
+  - uc_id: F-056-UC-1
+    kind: happy-path
+    promise: "Typing [[ns:name]] for an EXISTING term into a data-entity description creates a managed link to that term."
+    actor: user with DATA_ENTITY_DESCRIPTION_UPDATE
+    given_when_then:
+      given: term (ns,name) exists
+      when: user saves a data-entity description containing [[ns:name]]
+      then: a data_entity_to_term row is created with is_description_link=TRUE; data_entity_filled.TERMS is set
+    trace: "TermServiceImpl.handleDataEntityDescriptionTerms:201 -> updateDataEntityDescriptionTermsState:362 (INSERT is_description_link=TRUE)"
+    coverage: unverified
+    test_demand: TEST-GAP-1040
+  - uc_id: F-056-UC-2
+    kind: empty/no-match
+    promise: "Mentioning a term that does NOT exist stages the mention and shows it as plain text — no link, no blocking error — so the author can keep writing."
+    actor: user with DATA_ENTITY_DESCRIPTION_UPDATE
+    given_when_then:
+      given: no term (ns,name) exists
+      when: user saves a description containing [[ns:name]]
+      then: a *_description_unhandled_term row is created (lowercased); NO data_entity_to_term row; the mention renders as literal [[ns:name]] text
+    trace: "findTermsInDescription:337 unknownTerms -> buildDataEntityUnknownTerms:513; UI useTermWiki unsuccessfulTerms:88-90 (non-blocking save)"
+    coverage: unverified
+    test_demand: TEST-GAP-1041
+  - uc_id: F-056-UC-3
+    kind: resolve-later
+    promise: "Creating a term LATER retroactively turns every already-written mention of it into a live link — the author does not re-edit old descriptions."
+    actor: user with TERM_CREATE
+    given_when_then:
+      given: descriptions exist with [[ns:name]] staged as unhandled (term absent)
+      when: a user creates term (ns,name)
+      then: resolveUnhandledDescriptionMentions drains the staging rows and materialises data_entity_to_term + dataset_field_to_term rows with is_description_link=TRUE
+    trace: "TermServiceImpl.createTerm:116 -> resolveUnhandledDescriptionMentions:421-442"
+    coverage: unverified
+    test_demand: TEST-GAP-1042
+  - uc_id: F-056-UC-4
+    kind: edit-reconcile/teardown
+    promise: "Removing the [[ns:name]] mention from a description retracts the link — the term stops being associated with the entity."
+    actor: user with DATA_ENTITY_DESCRIPTION_UPDATE
+    given_when_then:
+      given: a description-link row exists for (entity, term)
+      when: user saves the description with the [[ns:name]] mention removed
+      then: the is_description_link=TRUE row for that term is deleted (reconciliation)
+    trace: "updateDataEntityDescriptionTermsState:367-375 relationsToDelete -> deleteTermDataEntityRelations:382"
+    coverage: unverified
+    test_demand: TEST-GAP-1043
+  - uc_id: F-056-UC-5
+    kind: render/deeplink
+    promise: "A resolved mention renders as a clickable deeplink to the term's detail page with the term definition as hover text; an unresolved mention stays plain text."
+    actor: any viewer of the description
+    given_when_then:
+      given: a description contains [[ns:name]] and term (ns,name) exists
+      when: the description is rendered
+      then: 'the mention renders as a markdown link [name](termDetailsPath(id) "definition"); unresolved mentions render literally'
+    trace: "useTermWiki.transformDescriptionToMarkdown:186-199 (makeTermLink:27)"
+    coverage: unverified
+    test_demand: TEST-GAP-1044
+  - uc_id: F-056-UC-6
+    kind: grammar
+    promise: "The mention grammar is [[namespace:name]]; malformed forms ([[:x]], [[x:]], [[x]]) are ignored, not half-linked."
+    actor: author
+    given_when_then:
+      given: a description with mixed valid and malformed mention syntax
+      when: the description is parsed
+      then: "[[ns:name]] (both groups non-empty) links; [[:x]]/[[x:]]/[[x]]/unclosed produce no row and no link"
+    trace: "PATTERN:67 (\\[\\[([^:]*?):([^\\]]*?)\\]\\]) + findTermsInDescription:346 (StringUtils.isNotEmpty both groups)"
+    coverage: unverified
+    test_demand: TEST-GAP-1045
+  - uc_id: F-056-UC-7
+    kind: teardown-constraint
+    promise: "A term mentioned in any active description cannot be deleted or renamed out from under that mention (the link can't silently break)."
+    actor: user with TERM_DELETE / TERM_UPDATE
+    given_when_then:
+      given: term (ns,name) is mentioned in an active description
+      when: user attempts to delete or rename the term
+      then: 400 BadUserRequestException; the term and its mentions are preserved
+    trace: "TermServiceImpl.delete:155-160 / updateTerm:128-135 (hasDescriptionRelations guard)"
+    coverage: verified
+    test_ref: "TermServiceImplTest.delete_termMentionedInDescription_errorsBadRequest (DELETE half only; rename half = TEST-GAP-479, unverified)"
+use_case_coverage:
+  verified: 1
+  total: 7
+  note: |-
+    SECOND FRONTIER (LSN-030): 1/7 use-cases verified vs test_matrix's 0/4 test-type cells.
+    The one verified use-case is a teardown CONSTRAINT (a guard); all six PROMISES
+    (happy-path link, no-match staging, cross-time resolve, edit-retract, render-deeplink,
+    grammar) are unverified. The drift catalogue (observed_vs_expected) above could never
+    surface these — they are what the feature DOES, not what is wrong with it.
 test_matrix:
   unit:
     state: GAP
@@ -253,7 +345,15 @@ test_matrix:
     or documented-design path).
 related_refactoring_scopes:
   - REFACTOR-227
-related_test_gaps: []
+related_test_gaps:
+  # LSN-030 pilot: functional gaps generated from the use_cases promise layer (was [] — the
+  # drift-shaped pipeline produced ZERO gaps for this feature's actual promises).
+  - TEST-GAP-1040  # UC-1 happy-path link
+  - TEST-GAP-1041  # UC-2 no-match staging
+  - TEST-GAP-1042  # UC-3 cross-time resolve
+  - TEST-GAP-1043  # UC-4 edit-retract
+  - TEST-GAP-1044  # UC-5 render deeplink
+  - TEST-GAP-1045  # UC-6 grammar accept/reject
 related_doc_gaps: []
 related_features:
   - F-002

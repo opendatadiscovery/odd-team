@@ -106,6 +106,7 @@ Do *not* add an LSN for:
 | `LSN-027-meta-description-truncation-not-caught-by-webfetch.md` | populated | added 2026-05-28 (Gate 8 raw-HTML head + visible-subtitle inspection extension; 25 docs pages affected) |
 | `LSN-028-yaml-frontmatter-parse-error-stalled-gitbook-sync.md` | populated | added 2026-05-28 (Gate 8 + /implement step 6.5 PyYAML parse-check extension; DOC-281 hotfix; GitBook sync was halted entirely until fixed) |
 | `LSN-029-disabled-test-is-blind-pin-known-bugs.md` | populated | added 2026-06-02 (tests axis — characterization pins for known bugs: `@pins`/`status=pins-known-bug`, never `@Disabled`; MinioConfigRegionTest) |
+| `LSN-030-test-demand-method-shaped-not-use-case-shaped.md` | populated | added 2026-06-03 (tests axis — test demand minted only by method-shaped per-node layer; feature use-cases never become test obligations; F-056 wiki-link never reflected) |
 
 ## Index by gate / playbook informed
 
@@ -132,6 +133,7 @@ When looking up "which retrospectives justify this rule?", grep this section.
 | Documentation authoring rule — fetch origin/main first | LSN-008 |
 | Implementer cannot self-mark `done` | LSN-002 |
 | Tests axis — pin known bugs (characterization `@pins`/`status=pins-known-bug`, never `@Disabled`) | LSN-029 |
+| Tests axis — test demand must be use-case-shaped (feature layer emits the matrix; reflection emits on confirmed hypotheses; second coverage frontier) | LSN-030 (sequel to LSN-017, LSN-020, LSN-023, LSN-025) |
 | Gate 8 — Publishing standards (live-site verification) | LSN-004, LSN-027, LSN-028 |
 | Gate 11 — Audience isolation (mechanical banned-term grep) | LSN-026 |
 | Playbook — `live-site-verification.md` raw-HTML head inspection | LSN-027 |

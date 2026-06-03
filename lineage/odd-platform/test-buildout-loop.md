@@ -14,10 +14,18 @@ maintainer is asleep — do NOT pause-and-ask; commit incrementally so they wake
 reviewable branch wherever it lands.
 
 ## Quality guardrails (NON-NEGOTIABLE — the bar, not the floor)
-1. **Run-verified only.** Every sub-batch is gradle-verified via `scripts/run-platform-tests.sh
-   --tests "<pat>"` (the agent CAN run it; ~20s for source-scan classes). NEVER commit an unverified
+1. **Run-verified AND style-verified.** Every sub-batch is gradle-verified via
+   `scripts/run-platform-tests.sh --tests "<pat>"` (the agent CAN run it; ~20s for source-scan classes).
+   That gate now mirrors CI exactly — `--tests` mode runs `:odd-platform-api:check`, which runs the
+   tests **and `checkstyleMain` + `checkstyleTest`**. So "verified" means **green tests AND zero
+   Checkstyle violations**: a created/modified test that trips a style rule (most commonly a line
+   `>120` chars — `config/checkstyle/checkstyle.xml`) REDs this gate exactly as it REDs CI, even though
+   every test passes (Checkstyle emits no JUnit XML — a green test run can still fail the build).
+   NEVER commit a sub-batch until the script exits 0 (tests + checkstyle). NEVER commit an unverified
    or RED-by-accident test. A genuinely-RED characterization pin must be GREEN-by-asserting-the-bug
-   (LSN-029), never `@Disabled`.
+   (LSN-029), never `@Disabled`. Root cause this guard exists: 2026-06-03 PR #1743 went green on every
+   test but RED on `:odd-platform-api:checkstyleTest` (4 test lines >120) because the old gate ran only
+   `:odd-platform-api:test` and never saw Checkstyle.
 2. **Gate-4 consumer-read.** Read the ACTUAL odd-platform source before asserting anything. No claim
    without a `file:line`. Verify the invariant holds (grep/parse) before an `isEmpty()/isEqualTo`.
 3. **Typed gates, no orphans** (`feedback_tests_as_deterministic_gates`): every test declares
@@ -43,8 +51,14 @@ idiom (fast, safe, no Docker). Use integration only where an existing stack
 1. Read this file's progress log + `git -C ../odd-platform log --oneline -15` to see where we are.
 2. Pick the next **3–6** candidates from the priority backlog below.
 3. Gate-4 read the real source; verify the invariant; author faithful pins (1–3 methods each).
-4. gradle-verify the sub-batch; iterate on real failures (run-to-resolve). Confirm per-class
-   `tests=N failures=0`.
+   **Author within the Checkstyle rules** — keep every line **≤120 chars** (the rule that bit PR #1743;
+   wrap per `config/checkstyle/checkstyle.xml`: dot/operator lead the wrapped line, comma trails, +4
+   indent), no unused imports/star-imports, no trailing whitespace. Caveat: `awk length` counts BYTES,
+   so a line with an em-dash `—` (3 UTF-8 bytes, 1 char) over-counts — the gate (step 4) is authoritative.
+4. gradle-verify the sub-batch via `scripts/run-platform-tests.sh --tests "<pat>"`; iterate on real
+   failures (run-to-resolve). Confirm the script **exits 0** = per-class `tests=N failures=0` **AND
+   `:odd-platform-api:checkstyleTest`/`checkstyleMain` reported no violations** (the script runs `check`,
+   so a style violation fails this step — fix it before committing, never commit around it).
 5. Commit the sub-batch to `test/adr-enforcement-units` (one commit, ID-tagged message).
 6. Append a one-line entry to the progress log (date, classes, methods, gates, commit sha).
 7. Every ~20–30 new methods OR every ~5 iterations: re-ingest the ontology
@@ -110,9 +124,13 @@ behavioral tests that EXERCISE the code, not string-scans:
 (3) decide: unit-able now / integration (defer) / rescope / remove-if-stale-or-not-applicable; (4) if
 unit: author a faithful behavioral test pinning the expected behaviour with a typed gate
 (`@validates F-NNN` for feature behaviour, `@enforces ADR-NNNN` where it pins an ADR, `@pins <id>` for a
-known bug); (5) gradle-verify (never commit unverified / accidental-RED); (6) commit; (7) **update the
-TEST-GAP node** — mark covered (point `test_files_existing` at the new test) or rescope/remove, and note
-it; (8) re-ingest the ontology every ~20-30 methods + full suite.
+known bug); (5) gradle-verify (never commit unverified / accidental-RED) **AND run the lint gate
+`JAVA_HOME=<jdk17> ./gradlew :odd-platform-api:checkstyleTest --no-daemon` — `run-platform-tests.sh`
+does NOT lint, but CI does; both `LineLength`>120 (CHARS not bytes — em-dash/arrow = 1 char, so `awk
+length` false-positives) and `CustomImportOrder` (sort within the `o.o.oddplatform.*` group) fail CI
+silently-green. Do NOT pass `--tests` to checkstyleTest; `./gradlew --stop` if a stale daemon errors`;
+(6) commit; (7) **update the TEST-GAP node** — mark covered (point `test_files_existing` at the new test)
+or rescope/remove, and note it; (8) re-ingest the ontology every ~20-30 methods + full suite.
 
 **Triage rule:** SKIP (and log in Skipped) gaps that genuinely need a running stack/DB/Docker
 (`category: missing-integration` that truly needs Testcontainers) — those are the integration batch. But
@@ -194,9 +212,22 @@ or untracked-id); all are integration candidates.
 - 2026-06-03 — PHASE 2 iter 10 (behavioral service): DataEntityRunServiceImplTest (2, runs only for runs-capable classes + NotFound, validates F-040) GREEN. odd-platform 52c2d910. Phase-2 total: 42 methods / 10 services + validators. Dedup-skipped DataEntityStatistics (existing ingestion test + murky gate). Next: Lineage/Reference/DatasetVersion/DatasetField services; re-ingest ~56.
 
 - 2026-06-03 — PHASE 2 iter 11 (behavioral service): ReferenceDataServiceImplTest (4, lookup-table not-found + column-belongs-to-table invariant, validates F-026) GREEN. odd-platform 7bffe688. Phase-2 total: 46 methods / 11 services + validators. Next: Lineage/DatasetVersion/DatasetStructure/DataEntityFilled services + mappers; RE-INGEST due (crossing ~56 next iter).
+- 2026-06-03 — PHASE 2 iter 12 + RE-INGEST (crossed ~56) + LINT-GATE CATCH: 5 services / 10 behavioral methods, all GREEN — DatasetVersionServiceImplTest (3, version-read NotFound + identical-diff BadRequest, validates F-045; d53eca6c); DataQualityServiceImplTest (2, no-tests + missing-dataset NotFound, F-022) + MessageServiceImplTest (1, non-existent parent NotFound, F-038) + MetadataFieldServiceImplTest (2, missing-field NotFound + get-or-create dedup invariant via ArgumentCaptor, F-046) [5debb00d]; QueryExampleServiceImplTest (2, update NotFound + duplicate-assign BadRequest — eager `.then`+`.zipWith` double-poison, F-025; a6306e4e). Re-ingest: 123 test nodes (0 orphan), VALIDATES 80→88, 12 known-bug pins, embeddings preserved (vectors=7700). FULL SUITE 384→394 GREEN (102 classes, 0 fail/0 skip). ready-now now credits F-022/F-038. **Lint-gate catch:** maintainer hand-wrapped 4 earlier test lines >120 (odd-platform d64df9b9) → ran the real `:odd-platform-api:checkstyleTest` (ground truth, agent CAN run it) → only real violation was MessageServiceImplTest import order (CustomImportOrder; datacollab.service sorts before exception/mapper/repo), fixed in e087464a; confirmed whole branch checkstyle-clean. Lesson folded into per-gap step 5 + memory project_local_test_env (checkstyle counts CHARS not bytes; the 3 byte>120 dash-lines were NON-issues). Phase-2 total: 56 behavioral methods / 16 services + validators. Next: Lineage(F-005)/OwnerAssociationRequest/DataSourceIngestion/DatasetField/DataEntityLookupTable services + mappers.
+
+- 2026-06-03 — GATE HARDENING (post-merge CI failure → close the class). PR #1743 CI went green on
+  every test but RED on `:odd-platform-api:checkstyleTest` — 4 loop-authored test lines >120 chars.
+  Cause: the local gate ran only `:odd-platform-api:test`; CI runs `odd-platform-api:build` (= the full
+  `check` lifecycle incl. checkstyleMain/Test). Fixed the gate to MIRROR CI: `scripts/run-platform-tests.sh`
+  now runs `:odd-platform-api:build -PbundleUI=false` (no-arg) / `:odd-platform-api:check` (`--tests`),
+  both running Checkstyle over both source sets. Wrapped the 4 lines (odd-platform d64df9b9, no behavioral
+  change). Guardrail 1 + iter-procedure steps 3-4 updated above to make style-verify non-negotiable.
+  Memory: project_local_test_env (the local-gate-omits-checkstyle gap).
 
 ## Skipped (candidate + why it can't be faithfully pinned at the unit level — for the morning report)
 - PLT-131 (owner getDto soft-deleted) — method-scoped; needs to diff getDto vs list filter, and OWNER
   hard-deletes muddy the invariant. Revisit as integration.
 - PLT-054 Slack signature-verification (F-038 H-002) — 3rd aspect of an already-pinned bug + absence pin (verification could live in parser/filter); fragile, skipped.
 - F-021 H-011 audit-survives-hard-delete (INNER join drops rows) — genuine bug but no tracker id for a clean @pins; revisit when filed, or as integration.
+- EnumValueServiceImpl — DEDUP: already covered by an existing `EnumValueServiceTest.java` (not `*ImplTest`); not re-authored.
+- DatasetStructureServiceImpl / DataEntityFilledServiceImpl / DataEntityInternalStateServiceImpl — guards=0 pure-delegation services (no error/branch logic); a unit test would only re-assert the mock (test-theatre). Deferred — these are exercised by their callers' tests + integration.
+- DirectoryServiceImpl (F-? directory tree) — REAL untested gap (existing `DirectoryTest.java` does NOT reference the impl). 10 guards / 4 deps — good behavioral candidate; queued for a later iter (not skipped permanently).

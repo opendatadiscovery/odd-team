@@ -261,6 +261,17 @@ graph/canvas labels.
   filtering (F-017 behaviour), search suggestions, tags-management list, a few entity-detail nuances. If
   these run out before 50 → ping maintainer with built-vs-blocked (per loop). RE-INGEST at IT-032 (next).
 
+- 2026-06-03 — RE-INGEST at IT-032 (commit 3fa8fe7): 157 test nodes, VALIDATES=126, PILOT-READY.
+- 2026-06-03 — IT-032 (F-151 Term Detail Page Composition) — e2e:term-detail-page.spec.ts. Success (seed a
+  term + definition → /terms/{id}/overview renders name + definition verbatim) + negative (a 2nd term's
+  definition absent on the 1st term's page — term-specific). **GREEN (2 passed 8.4s)**. NEW clean surface
+  (plateau NOT yet hit) — distinct from IT-019 term search + IT-016 term-to-entity. This iter ALSO surveyed
+  search FACET filtering (F-017): facet UI interaction is complex (results+facet controls not cleanly
+  findable via ad-hoc probe) — DEFERRED (needs careful facet-control ground-truth; not blocked, just fiddly).
+  Helper seedTermWithDefinition (returns the term id for the dynamic route). feature-complete + ui-e2e.
+  Count: **32 ITs total (20 new this session)**. Next clean veins: search suggestions, term linked-entities
+  (F-153), external_description, more term/entity detail nuances. RE-INGEST ~IT-037.
+
 ## Discovered findings (latent platform bugs surfaced while building ITs — for maintainer triage)
 - **deserializeStats NPE → HTTP 500 on null dataset_field.stats** (found IT-023). `GET /api/datasets/{id}/structure`
   500s with `NullPointerException: Cannot invoke "org.jooq.JSONB.data()" because "stats" is null` at

@@ -362,6 +362,38 @@ export async function seedEntityBusinessName(name: string | null): Promise<void>
   });
 }
 
+// IT-032 — F-151 term detail page: seed a term with a definition and RETURN its id (the term detail
+// route is /terms/{id}/overview). The detail page renders the term name + definition verbatim (verified
+// live). Idempotent: updates the definition if the term exists. Verified schema: term(id, name,
+// definition, namespace_id).
+export async function seedTermWithDefinition(
+  name: string,
+  definition: string,
+  namespaceName = 'IT032-ns',
+): Promise<number> {
+  return withClient(async (c) => {
+    const nsSel = await c.query('SELECT id FROM namespace WHERE name = $1 LIMIT 1', [namespaceName]);
+    const nsId = nsSel.rows[0]
+      ? Number(nsSel.rows[0].id)
+      : Number((await c.query('INSERT INTO namespace (name) VALUES ($1) RETURNING id', [namespaceName])).rows[0].id);
+    const tSel = await c.query('SELECT id FROM term WHERE name = $1 AND namespace_id = $2 LIMIT 1', [name, nsId]);
+    if (tSel.rows[0]) {
+      const id = Number(tSel.rows[0].id);
+      await c.query('UPDATE term SET definition = $2 WHERE id = $1', [id, definition]);
+      return id;
+    }
+    return Number(
+      (
+        await c.query('INSERT INTO term (name, definition, namespace_id) VALUES ($1, $2, $3) RETURNING id', [
+          name,
+          definition,
+          nsId,
+        ])
+      ).rows[0].id,
+    );
+  });
+}
+
 // IT-026 — F-031 data source management: seed a named data source so the management list
 // (/management/datasources → GET /api/datasources) renders it. The list shows the source name
 // verbatim (verified live). Distinct id so it never collides with the entity-seed source 2001.

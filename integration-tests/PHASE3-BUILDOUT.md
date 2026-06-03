@@ -29,5 +29,12 @@ IT-001 F-001 view_count probe (smoke) · IT-002 F-001 view_count UI (pins PLT-10
 - 2026-06-03 — PHASE 3 kickoff + pipeline VALIDATED (smoke green; harness operational; 6 stacks; Docker 29.5.2). Existing baseline: 12 ITs (IT-001..012). Next: author the first NEW IT for a high-criticality uncovered core-platform feature on odd-minimal (success + negative).
 - 2026-06-03 — IT-013 (F-176 Data Entity Overview composition) — first AUTHORED Phase-3 IT, e2e:data-entity-overview.spec.ts. Success (seeded entity composes + renders its name, waits on the GET /api/dataentities/{id} detail fetch) + negative (absent id 999999 → entity name count 0). **GREEN (e2e:PASS, 2 passed in 52.6s)**. Added to feature-complete + ui-e2e suites; run-log/2026-06-03-IT-013.md. Reused seedEntity (no new helper). **Per-IT cost measured: ~52s** (stack-up ~15s + 2 tests ~26s + teardown) — ~200 ITs ≈ 3-4h run-time, feasible. Pattern established: seed→navigate→assert-rendered (generalises to term/owner/description/metadata display on the overview). Count: **13 ITs total (1 new), 13 features touched**. Next: more uncovered core-platform features (F-002 term display, F-004 description, F-019 owners, F-013 metadata, F-024 term search…), success + negative each.
 
+- 2026-06-03 — IT-014 (F-004 Entity Description) — e2e:entity-description-display.spec.ts. Success (seeded
+  internal_description renders on the Overview, waits on the detail GET) + negative (cleared description →
+  marker absent, no stale/placeholder). GREEN (e2e:PASS, 2 passed 30.2s). Added db helper
+  seedEntityDescription(text|null). feature-complete + ui-e2e; run-log/2026-06-03-IT-014.md. Count: **14 ITs
+  total (2 new this session: IT-013/014)**. Next: F-002 term display / F-019 owners / F-013 metadata / F-024
+  term search. RE-INGEST due after ~3 more new ITs.
+
 ## Stack-blocked (needs a docker stack that doesn't exist yet — maintainer's call to build)
 - (none logged yet — collector-integration features GE/Airflow/webhook will land here when reached)

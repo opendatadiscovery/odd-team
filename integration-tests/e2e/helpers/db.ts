@@ -51,6 +51,15 @@ export async function readViewCount(): Promise<number> {
   });
 }
 
+// IT-014 — F-004 entity description: seed entity 2001 then set (or clear) its internal
+// description. internal_description is the user-edited description the Overview renders.
+export async function seedEntityDescription(description: string | null): Promise<void> {
+  await seedEntity();
+  await withClient(async (c) => {
+    await c.query('UPDATE data_entity SET internal_description = $2 WHERE id = $1', [ENTITY_ID, description]);
+  });
+}
+
 // ---------------------------------------------------------------------------
 // IT-003 — search tsquery poisoning (PLT-090 catalog / PLT-127 dictionary).
 //

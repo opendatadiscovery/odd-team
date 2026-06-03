@@ -321,6 +321,17 @@ or untracked-id); all are integration candidates.
   path to 70%]; (2) trim repository.* from the gate denominator → 70% measures business logic (then current
   base 45.6%, reachable by continued unit work); (3) lower the overall gate (e.g. 50-55%) + keep the 98%
   changed-files ratchet doing the real forward-looking work. Loop will RESUME on the maintainer's choice.
+- 2026-06-03 — ✅ MAINTAINER CHOSE LEVER (2): TRIM repository.* FROM THE GATE. build.gradle now excludes
+  `**/repository/**` from the jacoco denominator (commit fe816b85). New BUSINESS-LOGIC base = **46.01%**
+  (23817/51766), repos confirmed absent from the report, ceiling now 100% → 70% is REACHABLE. Gap to 70% =
+  +12,419 covered instr. NOTE: trimming only nudged 44.57%→46.01% (repos were ~42% covered) — the climb to
+  70% is REAL happy-path work, NOT guard pins (guard pins yielded only +0.27%/8-tests). LOOP RE-ORIENTED:
+  target the FAT non-repo classes and cover their HAPPY/MAIN bodies (where the missed instructions are), not
+  just guard branches — HighlightConverter (1036, build a DataEntityDetailsDto), notification translators/
+  generators (Slack/Alert, pure-ish formatting), facet/term/genai/attachment services (happy paths), thin
+  controllers via @WebFluxTest. PLATEAU-PING re-armed: if even the happy-path business-logic climb stalls
+  (<~0.5%/iter over ~3 re-measures) short of 70%, STOP + PushNotification WITH THE FULL ANALYSIS (maintainer
+  wants the analysis delivered in the ping, not a headline — memory feedback_ping_at_plateaus_with_analysis).
 
 ## Skipped (candidate + why it can't be faithfully pinned at the unit level — for the morning report)
 - DateTimeUtil (service/ingestion/util — UTC/epoch conversion, UNtested, pure + high-value: mapUTCDateTime

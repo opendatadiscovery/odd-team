@@ -177,6 +177,8 @@ or untracked-id); all are integration candidates.
 
 - 2026-06-03 — PHASE 2 iter 2 (behavioral service): CollectorServiceImplTest (5, cascade-delete + not-found, validates F-020) GREEN, no run-to-resolve. odd-platform 444df13e. Phase-2 total: 14 behavioral methods. Next: DataSource/DataQuality/Term/Tag/Role services + mappers/validators.
 
+- 2026-06-03 — PHASE 2 iter 3 + RE-INGEST: DataSourceServiceImplTest (4, cascade-delete + not-found, validates F-031; a26e47f6) GREEN. Re-ingest: 111 test nodes, VALIDATES 72→76, full suite 356 GREEN. Phase-2 total: 18 behavioral methods / 4 service classes. Next: DataQuality/Term/Tag/Role/Policy services + mappers/validators.
+
 ## Skipped (candidate + why it can't be faithfully pinned at the unit level — for the morning report)
 - PLT-131 (owner getDto soft-deleted) — method-scoped; needs to diff getDto vs list filter, and OWNER
   hard-deletes muddy the invariant. Revisit as integration.

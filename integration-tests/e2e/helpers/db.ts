@@ -352,6 +352,16 @@ export async function clearEntityLineage(): Promise<void> {
   });
 }
 
+// IT-031 — F-178 business name (internal name): set the entity's internal_name; the detail header
+// shows internalName || externalName, so a set business name becomes the heading (verbatim — verified
+// live), and clearing it falls back to external_name. Verified schema: data_entity.internal_name.
+export async function seedEntityBusinessName(name: string | null): Promise<void> {
+  await seedEntity();
+  await withClient(async (c) => {
+    await c.query('UPDATE data_entity SET internal_name = $2 WHERE id = $1', [ENTITY_ID, name]);
+  });
+}
+
 // IT-026 — F-031 data source management: seed a named data source so the management list
 // (/management/datasources → GET /api/datasources) renders it. The list shows the source name
 // verbatim (verified live). Distinct id so it never collides with the entity-seed source 2001.

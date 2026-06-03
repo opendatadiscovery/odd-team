@@ -251,6 +251,16 @@ graph/canvas labels.
   JSON, reverse-engineering needed; likely ingestion-only-reachable like deserializeStats — see Discovered
   findings). RE-INGEST at IT-032 (next). Next: metrics, facets, roles/policies/collectors config, activity.
 
+- 2026-06-03 — IT-031 (F-178 business name / internal_name header display) — e2e:entity-business-name-display.spec.ts.
+  Success (set internal_name → header heading shows it verbatim) + negative (clear → header falls back to
+  external_name, business name absent). **GREEN (2 passed 9.2s)** after 3 dead-ends this iter (entity runs =
+  no clean feature id [F-040 is DQ-only]; roles + policies management lists return [] for raw inserts — see
+  Discovered findings). Helper seedEntityBusinessName. feature-complete + ui-e2e. Count: **31 ITs total (19
+  new this session)**. ⚠ PLATEAU WATCH: clean raw-seedable surfaces thinning (RBAC lists, DQ, metrics,
+  collectors need ingestion-shaped/create-API seeding or stacks). Remaining clean veins: search FACET
+  filtering (F-017 behaviour), search suggestions, tags-management list, a few entity-detail nuances. If
+  these run out before 50 → ping maintainer with built-vs-blocked (per loop). RE-INGEST at IT-032 (next).
+
 ## Discovered findings (latent platform bugs surfaced while building ITs — for maintainer triage)
 - **deserializeStats NPE → HTTP 500 on null dataset_field.stats** (found IT-023). `GET /api/datasets/{id}/structure`
   500s with `NullPointerException: Cannot invoke "org.jooq.JSONB.data()" because "stats" is null` at
@@ -268,6 +278,12 @@ graph/canvas labels.
   ingestion always supplies these, so likely NOT operator-reachable via a real ingest — a defensive-hardening
   gap. NOT pinned. Blocks a raw-seed DQ e2e (F-022 per-dataset DQ test reports) — that IT needs the QT entity's
   specific_attributes DQ JSON reverse-engineered, OR an ingestion-API-driven seed. Deferred.
+- **RBAC management lists (roles/policies) return [] for raw inserts** (found IT-031). `GET /api/roles` and
+  `GET /api/policies` return `items:[] total:0` even with a raw-inserted row (deleted_at NULL). The list
+  query filters/joins beyond a bare row (likely a default-data join or a name/system filter). F-006 RBAC
+  management lists are NOT raw-seedable as-is → an RBAC-config IT needs the create-API or the missing join
+  reverse-engineered. Deferred (not a bug — a seeding-shape gap). Also: generic entity "runs" tab has no
+  clean dedicated feature id (F-040 is DQ-specific) → skip.
 
 ## Stack-blocked (needs a docker stack that doesn't exist yet — maintainer's call to build)
 - (none logged yet — collector-integration features GE/Airflow/webhook will land here when reached)

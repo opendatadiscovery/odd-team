@@ -198,6 +198,17 @@ export async function seedEntityClassType(typeId: number, classIds: number[]): P
   });
 }
 
+// IT-021 — F-044 entity status display: set the entity's lifecycle status; the header renders the
+// status name as a badge (verbatim uppercase — verified live: STABLE / DEPRECATED). Verified image
+// schema: data_entity.status smallint per DataEntityStatusDto — UNASSIGNED=1, DRAFT=2, STABLE=3,
+// DEPRECATED=4, DELETED=5 (avoid 5; it soft-deletes/hides the entity).
+export async function seedEntityStatus(statusCode: number): Promise<void> {
+  await seedEntity();
+  await withClient(async (c) => {
+    await c.query('UPDATE data_entity SET status = $2 WHERE id = $1', [ENTITY_ID, statusCode]);
+  });
+}
+
 // IT-020 — F-018 entity tag display: seed entity 2001 with a tag chip on the Overview.
 // Verified image schema: tag(id, name, important) · tag_to_data_entity(tag_id, data_entity_id,
 // external). The tag NAME renders verbatim on the Overview (no transform — verified live).

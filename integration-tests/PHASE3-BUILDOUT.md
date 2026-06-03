@@ -68,6 +68,17 @@ searches, and because the Dictionary lists ALL terms on load, a fill-only assert
 PASS. Always `.press('Enter')` (or the surface's real submit) AND prove filtering with a second
 seeded item that must be EXCLUDED, not just the presence of the match.
 
+## ⚠ KEY LESSON 4 — getByText matches HIDDEN DOM; scope "not shown" negatives to visible only
+Playwright `getByText`/`:text` match by `textContent`, which INCLUDES hidden elements (a closed
+MUI Select / dropdown renders all its options in the DOM, hidden). So a `toHaveCount(0)` negative
+on a value that ALSO appears as a hidden edit-dropdown option FALSE-FAILS (IT-021: status=STABLE
+but `getByText('DEPRECATED')` resolved to 1 hidden option). `document.body.innerText` (used in the
+ground-truth probes) EXCLUDES hidden text, so the probe and the locator disagree — trust the
+locator. FIX: scope visible-only — `page.getByText(X,{exact:true}).filter({ visible: true })`
+(Playwright ≥1.51). Use it for BOTH the present-badge assertion and the absent-badge negative
+whenever the surface has an edit dropdown/select listing the same vocabulary (status, type, role,
+namespace, any enum picker).
+
 ## Progress log (one line per new IT)
 - 2026-06-03 — PHASE 3 kickoff + pipeline VALIDATED (smoke green; harness operational; 6 stacks; Docker 29.5.2). Existing baseline: 12 ITs (IT-001..012). Next: author the first NEW IT for a high-criticality uncovered core-platform feature on odd-minimal (success + negative).
 - 2026-06-03 — IT-013 (F-176 Data Entity Overview composition) — first AUTHORED Phase-3 IT, e2e:data-entity-overview.spec.ts. Success (seeded entity composes + renders its name, waits on the GET /api/dataentities/{id} detail fetch) + negative (absent id 999999 → entity name count 0). **GREEN (e2e:PASS, 2 passed in 52.6s)**. Added to feature-complete + ui-e2e suites; run-log/2026-06-03-IT-013.md. Reused seedEntity (no new helper). **Per-IT cost measured: ~52s** (stack-up ~15s + 2 tests ~26s + teardown) — ~200 ITs ≈ 3-4h run-time, feasible. Pattern established: seed→navigate→assert-rendered (generalises to term/owner/description/metadata display on the overview). Count: **13 ITs total (1 new), 13 features touched**. Next: more uncovered core-platform features (F-002 term display, F-004 description, F-019 owners, F-013 metadata, F-024 term search…), success + negative each.
@@ -137,6 +148,15 @@ seeded item that must be EXCLUDED, not just the presence of the match.
   + ui-e2e. Count: **20 ITs total (8 new this session: IT-013..020)**. RE-INGEST due next (IT-021/022 —
   5-IT boundary since IT-017). The entity annotation-display family is now COMPLETE: desc/owners/terms/
   metadata/tags/badges. Next: status (F-044), metrics/data-quality/structure panels, or catalog search (F-017).
+
+- 2026-06-03 — IT-021 (F-044 entity Status badge) — e2e:entity-status-display.spec.ts. Success
+  (status=DEPRECATED → header badge "DEPRECATED") + negative (status=STABLE → "STABLE" shown,
+  "DEPRECATED" NOT shown as a badge). **GREEN (2 passed 30.4s)** after ONE fix → KEY LESSON 4: the
+  status edit-dropdown renders all status names as HIDDEN options, so getByText('DEPRECATED') matched a
+  hidden option (false-fail on the negative); scoped to `.filter({visible:true})`. Verified schema:
+  data_entity.status smallint (DataEntityStatusDto 1-5). Helper seedEntityStatus. feature-complete +
+  ui-e2e. Count: **21 ITs total (9 new this session: IT-013..021)**. **RE-INGEST DUE at IT-022 (next).**
+  Note: F-044's status_updated_at/30-day-TTL write-side drift is a SEPARATE pin candidate (not yet done).
 
 ## Stack-blocked (needs a docker stack that doesn't exist yet — maintainer's call to build)
 - (none logged yet — collector-integration features GE/Airflow/webhook will land here when reached)

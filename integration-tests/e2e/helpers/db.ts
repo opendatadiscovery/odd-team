@@ -272,6 +272,34 @@ export async function seedSearchableTerm(
   });
 }
 
+// IT-022 — F-017 catalog search (/search): seed a data entity FINDABLE by the catalog-wide search.
+// Catalog search matches `search_entrypoint.data_entity_vector` (FTS tsvector), NOT data_entity
+// directly — a raw entity INSERT is INVISIBLE to search (KEY LESSON 3). So we also seed the
+// entrypoint vector = to_tsvector('english', name). Verified live: POST /api/search {query,filters:{}}
+// → GET /results returns the seeded entity. Uses IT-022-specific ids (2022/2023) so it never clobbers
+// the shared entity 2001. type_id=1 (TABLE) + entity_class_ids={1} (DATA_SET) so it is discoverable.
+export async function seedSearchableEntity(id: number, name: string): Promise<void> {
+  await withClient(async (c) => {
+    await c.query(
+      `INSERT INTO data_source (id, oddrn, name) VALUES ($1, $2, $3) ON CONFLICT (id) DO NOTHING`,
+      [SOURCE_ID, '//e2e-source-IT-002/db', 'e2e-source-IT-002'],
+    );
+    await c.query(
+      `INSERT INTO data_entity
+         (id, oddrn, external_name, data_source_id, type_id, entity_class_ids, view_count,
+          source_created_at, source_updated_at)
+       VALUES ($1, $2, $3, $4, 1, '{1}', 0, NOW(), NOW())
+       ON CONFLICT (id) DO UPDATE SET external_name = EXCLUDED.external_name, entity_class_ids = '{1}'`,
+      [id, `//e2e-source-IT-022/db/tables/${id}`, name, SOURCE_ID],
+    );
+    await c.query('DELETE FROM search_entrypoint WHERE data_entity_id = $1', [id]);
+    await c.query(
+      `INSERT INTO search_entrypoint (data_entity_id, data_entity_vector) VALUES ($1, to_tsvector('english', $2))`,
+      [id, name],
+    );
+  });
+}
+
 // ---------------------------------------------------------------------------
 // IT-003 — search tsquery poisoning (PLT-090 catalog / PLT-127 dictionary).
 //

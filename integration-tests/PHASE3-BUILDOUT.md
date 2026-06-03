@@ -158,5 +158,18 @@ namespace, any enum picker).
   ui-e2e. Count: **21 ITs total (9 new this session: IT-013..021)**. **RE-INGEST DUE at IT-022 (next).**
   Note: F-044's status_updated_at/30-day-TTL write-side drift is a SEPARATE pin candidate (not yet done).
 
+- 2026-06-03 — RE-INGEST at IT-022 boundary (commit e27936a): tests-ingest 147 test nodes (all gated,
+  0 orphan, 12 known-bug pins); graph-build 6773 nodes/8965 edges/7724 vectors; VALIDATES=116; alignment
+  🟡 PILOT-READY, ledger [D] still RED. Next re-ingest ~IT-027.
+- 2026-06-03 — IT-022 (F-017 Catalog search, /search — the platform's PRIMARY discovery surface) —
+  e2e:catalog-search.spec.ts. Success (seed 2 searchable entities; search one + Enter → match shown,
+  other FILTERED OUT) + negative (gibberish → neither). **GREEN first-try (2 passed 8.9s)** — reused the
+  KEY-LESSON-3 FTS pattern + ground-truth-first: search matches search_entrypoint.data_entity_vector;
+  main query box is placeholder "Search" exactly (sidebar facets are "Search by name") + searches on
+  Enter; scoped exclusions to .filter({visible:true}) per KEY LESSON 4. Helper seedSearchableEntity
+  (ids 2022/2023 to avoid clobbering shared entity 2001). feature-complete + ui-e2e. Count: **22 ITs
+  total (10 new this session: IT-013..022)**. Search family now: catalog (F-017) + term (F-024). Next:
+  structure/columns (dataset_field), linked URLs, data-quality/SLA, DEG (F-012), metrics, or ready-now.
+
 ## Stack-blocked (needs a docker stack that doesn't exist yet — maintainer's call to build)
 - (none logged yet — collector-integration features GE/Airflow/webhook will land here when reached)

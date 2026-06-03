@@ -185,6 +185,8 @@ or untracked-id); all are integration candidates.
 
 - 2026-06-03 — PHASE 2 iter 6 (behavioral service): AlertHaltConfigServiceImplTest (4, read/save halt-config + NotFound + empty-default, validates F-007) GREEN. odd-platform dbd3a906. Phase-2 total: 29 methods. Next: DataEntityStatistics/DataEntityGroup/Tag/Policy services; re-ingest due ~38-40.
 
+- 2026-06-03 — PHASE 2 iter 7 (behavioral service): DataEntityGroupServiceImplTest (2, only-manually-created-groups-editable + NotFound, validates F-012) GREEN. odd-platform 23794cfb. Phase-2 total: 31 methods / 7 services. Re-ingest due ~38-40. Next: DataEntityStatistics/Tag/Policy/Directory services + mappers.
+
 ## Skipped (candidate + why it can't be faithfully pinned at the unit level — for the morning report)
 - PLT-131 (owner getDto soft-deleted) — method-scoped; needs to diff getDto vs list filter, and OWNER
   hard-deletes muddy the invariant. Revisit as integration.

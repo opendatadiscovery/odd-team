@@ -198,6 +198,16 @@ namespace, any enum picker).
   Next re-ingest ~IT-027. Next surfaces: data-quality happy-path, metrics, alerts, linked-URLs (DQ-test),
   or ready-now features; collector-integration features remain stack-blocked.
 
+### Target raised to ~50 ITs (maintainer, 2026-06-03 post-25-milestone). Continue authoring; re-ingest every ~5; milestone ping at IT-050.
+- 2026-06-03 — IT-026 (F-031 Data Source management list) — e2e:datasource-management-list.spec.ts. First
+  CONFIGURATION-AUDIENCE surface (/management/datasources, not entity detail). Success (seeded data source
+  renders in the management list) + negative (a name belonging to no source absent, visible-scoped).
+  **GREEN (2 passed 8.3s)** — ground-truth-first. Helper seedDataSource(id,name). feature-complete + ui-e2e.
+  Count: **26 ITs total (14 new this session)**. NOTE: activity-feed + alerts surfaces probed but DEFERRED
+  (activity /api/activity param shape finicky; alert needs status/type smallint enum ids + alert_chunk) —
+  revisit with dedicated ground-truth. RE-INGEST DUE at IT-027 (next). Next: more management lists
+  (namespaces/owners/collectors/tags), data-quality, metrics, or ready-now.
+
 ## Discovered findings (latent platform bugs surfaced while building ITs — for maintainer triage)
 - **deserializeStats NPE → HTTP 500 on null dataset_field.stats** (found IT-023). `GET /api/datasets/{id}/structure`
   500s with `NullPointerException: Cannot invoke "org.jooq.JSONB.data()" because "stats" is null` at

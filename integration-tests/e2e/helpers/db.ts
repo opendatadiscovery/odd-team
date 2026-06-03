@@ -309,6 +309,19 @@ export async function clearEntityNamespace(): Promise<void> {
   });
 }
 
+// IT-026 — F-031 data source management: seed a named data source so the management list
+// (/management/datasources → GET /api/datasources) renders it. The list shows the source name
+// verbatim (verified live). Distinct id so it never collides with the entity-seed source 2001.
+export async function seedDataSource(id: number, name: string): Promise<void> {
+  await withClient(async (c) => {
+    await c.query(
+      `INSERT INTO data_source (id, oddrn, name) VALUES ($1, $2, $3)
+       ON CONFLICT (id) DO UPDATE SET name = EXCLUDED.name`,
+      [id, `//e2e-source-${id}/db`, name],
+    );
+  });
+}
+
 // IT-020 — F-018 entity tag display: seed entity 2001 with a tag chip on the Overview.
 // Verified image schema: tag(id, name, important) · tag_to_data_entity(tag_id, data_entity_id,
 // external). The tag NAME renders verbatim on the Overview (no transform — verified live).

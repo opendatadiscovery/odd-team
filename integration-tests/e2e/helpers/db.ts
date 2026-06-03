@@ -67,7 +67,7 @@ export async function seedEntityDescription(description: string | null): Promise
 // NB image schema (verified by inspecting odd-minimal): ownership(id, data_entity_id, owner_id,
 // title_id) — the owner's role is a TITLE (title_id), NOT role_id; owner/title use deleted_at
 // (no is_deleted) and their name UNIQUE constraints are unreliable → SELECT-then-INSERT.
-async function getOrCreateNamed(c: Client, table: 'owner' | 'title', name: string): Promise<number> {
+async function getOrCreateNamed(c: Client, table: 'owner' | 'title' | 'namespace', name: string): Promise<number> {
   const sel = await c.query(`SELECT id FROM ${table} WHERE name = $1 LIMIT 1`, [name]);
   if (sel.rows[0]) return Number(sel.rows[0].id);
   const ins = await c.query(`INSERT INTO ${table} (name) VALUES ($1) RETURNING id`, [name]);
@@ -90,6 +90,44 @@ export async function clearEntityOwners(): Promise<void> {
   await seedEntity();
   await withClient(async (c) => {
     await c.query('DELETE FROM ownership WHERE data_entity_id = $1', [ENTITY_ID]);
+  });
+}
+
+// IT-016 — F-002 term-to-entity: seed entity 2001 linked to a term (in a namespace).
+// Verified image schema: term(id, name, definition, namespace_id, …) ·
+// data_entity_to_term(data_entity_id, term_id, is_description_link). Constraint-independent.
+export async function seedEntityTerm(
+  termName: string,
+  definition = 'IT016 term definition',
+  namespaceName = 'IT016-ns',
+): Promise<void> {
+  await seedEntity();
+  await withClient(async (c) => {
+    const nsId = await getOrCreateNamed(c, 'namespace', namespaceName);
+    const sel = await c.query('SELECT id FROM term WHERE name = $1 AND namespace_id = $2 LIMIT 1', [termName, nsId]);
+    const termId = sel.rows[0]
+      ? Number(sel.rows[0].id)
+      : Number(
+          (
+            await c.query(
+              'INSERT INTO term (name, definition, namespace_id) VALUES ($1, $2, $3) RETURNING id',
+              [termName, definition, nsId],
+            )
+          ).rows[0].id,
+        );
+    await c.query('DELETE FROM data_entity_to_term WHERE data_entity_id = $1 AND term_id = $2', [ENTITY_ID, termId]);
+    await c.query(
+      'INSERT INTO data_entity_to_term (data_entity_id, term_id, is_description_link) VALUES ($1, $2, false)',
+      [ENTITY_ID, termId],
+    );
+  });
+}
+
+// Negative-path helper: entity 2001 exists but has NO linked terms.
+export async function clearEntityTerms(): Promise<void> {
+  await seedEntity();
+  await withClient(async (c) => {
+    await c.query('DELETE FROM data_entity_to_term WHERE data_entity_id = $1', [ENTITY_ID]);
   });
 }
 

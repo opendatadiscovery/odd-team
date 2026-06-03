@@ -59,5 +59,12 @@ To re-inspect: `docker-compose -p probe-stacks -f lineage/_extractor/probe-stack
   schema now makes term/metadata/tag relation seeds first-try. Next: F-002 term display, F-013 metadata,
   F-024 term search. RE-INGEST due at IT-018.
 
+- 2026-06-03 — IT-016 (F-002 Term-to-Entity display) — e2e:entity-terms-display.spec.ts. Success (seeded
+  linked term renders on the Overview) + negative (no link → term absent). **GREEN first-try (2 passed 30.5s)
+  — the verified schema paid off** (no schema debugging). Added helpers seedEntityTerm/clearEntityTerms
+  (term + namespace + data_entity_to_term) + widened getOrCreateNamed to namespace. feature-complete +
+  ui-e2e. Count: **16 ITs total (4 new this session: IT-013/014/015/016)**. Next: F-013 metadata display,
+  F-177 type badge, F-024 term search. RE-INGEST at IT-018 (next).
+
 ## Stack-blocked (needs a docker stack that doesn't exist yet — maintainer's call to build)
 - (none logged yet — collector-integration features GE/Airflow/webhook will land here when reached)

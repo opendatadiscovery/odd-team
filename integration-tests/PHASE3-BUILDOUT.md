@@ -55,6 +55,19 @@ dump (`@playwright/test chromium.launch()` from inside `e2e/`, with `PATH=$HOME/
 Cost of NOT doing this: IT-017 first run looked like a missing-feature failure; it was a spec assertion
 matching the wrong (untransformed) string.
 
+## ⚠ KEY LESSON 3 — FTS search surfaces need the ENTRYPOINT vector seeded + the right trigger
+Catalog/term search does NOT query the base table — it matches a separate `*_search_entrypoint`
+tsvector populated by the service on write. A raw `term`/`data_entity` INSERT is INVISIBLE to
+search. To make seeded content findable: also insert `term_search_entrypoint(term_id, term_vector
+= to_tsvector('english', name))` (verified: the platform's term search matches this; catalog
+search uses `search_entrypoint` analogously). The term-search API is **POST `/api/terms/search`
+with body `{query, filters:{}}`** (filters is REQUIRED — 400 without it) → returns `search_id` →
+**GET `/api/terms/search/{search_id}/results?page&size`**. UI trigger: `TermSearchInput` fires the
+search on **Enter ONLY** (`onChange` just tracks local text) — a Playwright `.fill()` alone never
+searches, and because the Dictionary lists ALL terms on load, a fill-only assertion is a FALSE
+PASS. Always `.press('Enter')` (or the surface's real submit) AND prove filtering with a second
+seeded item that must be EXCLUDED, not just the presence of the match.
+
 ## Progress log (one line per new IT)
 - 2026-06-03 — PHASE 3 kickoff + pipeline VALIDATED (smoke green; harness operational; 6 stacks; Docker 29.5.2). Existing baseline: 12 ITs (IT-001..012). Next: author the first NEW IT for a high-criticality uncovered core-platform feature on odd-minimal (success + negative).
 - 2026-06-03 — IT-013 (F-176 Data Entity Overview composition) — first AUTHORED Phase-3 IT, e2e:data-entity-overview.spec.ts. Success (seeded entity composes + renders its name, waits on the GET /api/dataentities/{id} detail fetch) + negative (absent id 999999 → entity name count 0). **GREEN (e2e:PASS, 2 passed in 52.6s)**. Added to feature-complete + ui-e2e suites; run-log/2026-06-03-IT-013.md. Reused seedEntity (no new helper). **Per-IT cost measured: ~52s** (stack-up ~15s + 2 tests ~26s + teardown) — ~200 ITs ≈ 3-4h run-time, feasible. Pattern established: seed→navigate→assert-rendered (generalises to term/owner/description/metadata display on the overview). Count: **13 ITs total (1 new), 13 features touched**. Next: more uncovered core-platform features (F-002 term display, F-004 description, F-019 owners, F-013 metadata, F-024 term search…), success + negative each.
@@ -105,6 +118,16 @@ matching the wrong (untransformed) string.
   seedEntityClassType(typeId, classIds) (verified schema; class ids DataEntityClassDto DATA_SET=1…, type
   ids DataEntityTypeDto TABLE=1/JOB=5…). feature-complete + ui-e2e. Count: **18 ITs total (6 new this
   session: IT-013..018)**. Next: F-024 term search (dictionary route), F-005/F-008/other ready-now surfaces.
+
+- 2026-06-03 — IT-019 (F-024 Term search, Dictionary /termsearch) — e2e:term-search.spec.ts. First SEARCH
+  (non-overview) surface. Success (seed 2 searchable terms; type a term + Enter → match shown, other term
+  FILTERED OUT — proves search filters, not just the initial all-terms list) + negative (gibberish + Enter
+  → neither term). **GREEN (2 passed 8.1s)** after ONE fix: the first run's negative failed because
+  TermSearchInput searches on **Enter ONLY** (onChange just tracks local text) — my .fill() never searched,
+  so the SUCCESS was a FALSE PASS off the initial all-terms list. Diagnosed by reading TermSearchInput.tsx
+  + a live UI probe (term stayed visible after a gibberish .fill()). Added helper seedSearchableTerm + KEY
+  LESSON 3 (FTS surfaces). feature-complete + ui-e2e. Count: **19 ITs total (7 new this session:
+  IT-013..019)**. Next re-ingest at ~IT-022 (IT-017 was the last). Next: more ready-now surfaces.
 
 ## Stack-blocked (needs a docker stack that doesn't exist yet — maintainer's call to build)
 - (none logged yet — collector-integration features GE/Airflow/webhook will land here when reached)

@@ -198,6 +198,45 @@ export async function seedEntityClassType(typeId: number, classIds: number[]): P
   });
 }
 
+// IT-019 — F-024 term search (Dictionary /termsearch): seed a term that is FINDABLE by the
+// catalog-wide term search. Term search matches `term_search_entrypoint.term_vector` (an FTS
+// tsvector), NOT the `term` table directly — a raw term INSERT is INVISIBLE to search. So we
+// also seed the entrypoint vector = `to_tsvector('english', name)`. Verified live (2026-06-03):
+// POST /api/terms/search {query,filters:{}} → GET /results returns the seeded term (total:1).
+// Constraint-independent (SELECT-then-INSERT term + namespace; DELETE-then-INSERT entrypoint).
+export async function seedSearchableTerm(
+  termName: string,
+  namespaceName = 'IT019-ns',
+  definition = 'IT019 searchable term',
+): Promise<void> {
+  await withClient(async (c) => {
+    const nsSel = await c.query('SELECT id FROM namespace WHERE name = $1 LIMIT 1', [namespaceName]);
+    const nsId = nsSel.rows[0]
+      ? Number(nsSel.rows[0].id)
+      : Number((await c.query('INSERT INTO namespace (name) VALUES ($1) RETURNING id', [namespaceName])).rows[0].id);
+
+    const tSel = await c.query('SELECT id FROM term WHERE name = $1 AND namespace_id = $2 LIMIT 1', [termName, nsId]);
+    const termId = tSel.rows[0]
+      ? Number(tSel.rows[0].id)
+      : Number(
+          (
+            await c.query('INSERT INTO term (name, definition, namespace_id) VALUES ($1, $2, $3) RETURNING id', [
+              termName,
+              definition,
+              nsId,
+            ])
+          ).rows[0].id,
+        );
+
+    // FTS entrypoint vector — the surface term search actually queries.
+    await c.query('DELETE FROM term_search_entrypoint WHERE term_id = $1', [termId]);
+    await c.query(
+      `INSERT INTO term_search_entrypoint (term_id, term_vector) VALUES ($1, to_tsvector('english', $2))`,
+      [termId, termName],
+    );
+  });
+}
+
 // ---------------------------------------------------------------------------
 // IT-003 — search tsquery poisoning (PLT-090 catalog / PLT-127 dictionary).
 //

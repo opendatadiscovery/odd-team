@@ -309,6 +309,16 @@ export async function clearEntityNamespace(): Promise<void> {
   });
 }
 
+// IT-028 — F-019 owner management: seed a named owner so the owners management list
+// (/management/owners → GET /api/owners) renders it. The list has a "Search owner" box that filters
+// server-side on type (debounced onChange). SELECT-then-INSERT; idempotent.
+export async function seedOwner(name: string): Promise<void> {
+  await withClient(async (c) => {
+    const sel = await c.query('SELECT 1 FROM owner WHERE name = $1 LIMIT 1', [name]);
+    if (!sel.rows[0]) await c.query('INSERT INTO owner (name) VALUES ($1)', [name]);
+  });
+}
+
 // IT-026 — F-031 data source management: seed a named data source so the management list
 // (/management/datasources → GET /api/datasources) renders it. The list shows the source name
 // verbatim (verified live). Distinct id so it never collides with the entity-seed source 2001.

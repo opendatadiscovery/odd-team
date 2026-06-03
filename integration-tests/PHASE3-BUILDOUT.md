@@ -219,6 +219,16 @@ namespace, any enum picker).
   total (15 new this session)**. Observability surface now covered. Next: management lists, data-quality,
   metrics. Re-ingest ~IT-032.
 
+- 2026-06-03 — IT-028 (F-019 Owner management list search) — e2e:owners-management-search.spec.ts. Success
+  (seed 2 owners, "Search owner" → match shown, other FILTERED OUT) + negative (gibberish → neither).
+  **GREEN (2 passed 32.2s)** after ONE fix: seedOwner SQL `SELECT $1 WHERE NOT EXISTS(... name=$1)` →
+  Postgres "inconsistent types deduced for parameter $1" (untyped SELECT $1 vs text name=$1); fixed to
+  two-query SELECT-then-INSERT (the robust idempotent pattern — note for future seeds: don't reuse one
+  param in an untyped SELECT + a typed WHERE). Owners list filters server-side on type (debounced).
+  Distinct surface from IT-015 (entity-owner display) under F-019. Helper seedOwner. feature-complete +
+  ui-e2e. Count: **28 ITs total (16 new this session)**. Next: data-quality, lineage, metrics, global
+  alerts (F-126), or more config lists. Re-ingest ~IT-032.
+
 ## Discovered findings (latent platform bugs surfaced while building ITs — for maintainer triage)
 - **deserializeStats NPE → HTTP 500 on null dataset_field.stats** (found IT-023). `GET /api/datasets/{id}/structure`
   500s with `NullPointerException: Cannot invoke "org.jooq.JSONB.data()" because "stats" is null` at

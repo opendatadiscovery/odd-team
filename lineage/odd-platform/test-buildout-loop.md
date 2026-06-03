@@ -110,6 +110,30 @@ unit scope is the ~1038 TEST-GAP backlog worked with BEHAVIORAL tests — see PH
 "loop stopped, supply exhausted" call was wrong: it conflated the source-scan slice with the whole unit
 scope. Memory: feedback_unit_test_scope_is_the_testgap_backlog.)
 
+## ⚡ COVERAGE-DRIVEN RE-ORIENTATION (2026-06-03, maintainer directive)
+
+A deterministic JaCoCo coverage GATE is now live on `test/adr-enforcement-units` (odd-platform
+`build.gradle` + `run-pr-tests.yaml`, commit f4561f23): **Madrapps/jacoco-report**, `min-coverage-overall: 70`,
+`min-coverage-changed-files: 98`, generated code excluded. **Current report-level instruction coverage = 44.3%
+(37818/85367).** The PR coverage check is RED until 70% — the build-out must close that gap **before the next
+merge** (maintainer's words). SonarCloud is permanently gone (no budget/access — see memory).
+
+**New primary objective: drive instruction coverage 44.3% → 70%**, not raw test count. Maintainer chose
+"re-point the loop at high-impact gaps" (pure UNIT; defer the `repository.reactive` integration lever).
+- **Target selection = biggest MISSED-instruction hand-written classes** (parse
+  `odd-platform-api/build/reports/jacoco/test/jacocoTestReport.csv`, sort by INSTRUCTION_MISSED desc, skip
+  generated + `repository.*` + already-covered). Mappers are tiny % — STOP defaulting to them; go where the
+  missed instructions are.
+- **Controllers (13%, big + easy):** `@WebFluxTest(XController.class)` + `@MockBean` the service(s) +
+  `WebTestClient` — sliced web context, NO Docker. Assert status codes + response shape per endpoint.
+- **Low-coverage services (term 1% / search 13% / policy.comparer / genai / attachment):** Mockito +
+  StepVerifier over their real method bodies (happy + guard paths), covering the FAT methods.
+- Still: confirmed gate (@validates F-NNN / @enforces ADR / @pins) only; ≤120-char lines + sorted imports;
+  verify via `scripts/run-platform-tests.sh --tests`; re-run jacocoTestReport every few iters to track the %.
+- `repository.reactive` (42%, 33.6k instr — a THIRD of the base) is the dominant remaining gap but needs
+  Testcontainers integration; it's DEFERRED by the maintainer's choice, so 70%-with-repos-in will require a
+  later integration pass (flag it when unit gains plateau).
+
 ## 🔄 PHASE 2 — gap-driven BEHAVIORAL unit tests (the real +150 scope; ACTIVE)
 
 **Mandate:** work the ~1038 `TEST-GAP-NNN` backlog (`lineage/odd-platform/test-map/detail/*.yaml`)
@@ -269,6 +293,34 @@ or untracked-id); all are integration candidates.
   total: 75 behavioral methods / 21 services + 6 mappers. Next: more hand-written mappers/parsers gating to
   confirmed features (PolicyMapper mapToDto JSON-deser→F-006, TermMapper→F-024, NamespaceMapper, etc.) +
   extending existing service test classes. Halfway to 150; clean unit candidates still plentiful (mappers).
+- 2026-06-03 — PHASE 2 iter 17 (COVERAGE-DRIVEN, first): targeted the BIGGEST uncovered non-repo class from
+  the jacoco XML — service.term.TermServiceImpl (1306 missed instr, 2%). TermServiceImplTest (5 guard pins,
+  validates F-024 + F-154 + F-002): getTermByNamespaceAndName unknown→NotFound; createTerm duplicate-in-
+  namespace→BadRequest (duplicate guard before the Mono.defer create chain); updateTerm non-existent→NotFound;
+  delete term-mentioned-in-description→BadRequest (eager .thenMany/.then deletion tails poison-stubbed);
+  linkTermWithDataEntity already-assigned→BadRequest. GREEN + checkstyle-clean. odd-platform 32cc3ef3.
+  Phase-2 total: 80 methods. NOTE (coverage reality): guard-only pins cover the GUARD branches, not the fat
+  happy bodies (create/update/delete/link success) where most of the 1306 instr live — so the % bump is
+  modest (~+0.2-0.3%). Re-measure pending (every few iters). Next biggest uncovered unit-able: service.search
+  DataEntityHighlightConverter (1036, 1% — pure converter?), notification translators/generators (Slack/Alert,
+  0%, pure-ish), controller.DataEntityController (349, 26%, @WebFluxTest). SecurityConstants (1094, 0%) is a
+  constants holder — SKIP (test-theatre). repository.* deferred (integration).
+- 2026-06-03 — PHASE 2 iter 18 (COVERAGE-DRIVEN): TermSearchServiceImplTest (3, fetchFacetState unknown-
+  searchId→NotFound across getFacets/getSearchResults/getFilterOptions, validates F-024). GREEN. odd-platform
+  66f78a78. Phase-2 total: 83 methods.
+- 2026-06-03 — ⛔ PLATEAU REACHED (unit-only path short of 70%) — PINGED MAINTAINER, LOOP STOPPED.
+  RE-MEASURE after iters 17-18 (8 tests): overall instruction coverage 44.30% → **44.57%** (+0.27 pts /
+  8 tests). At ~0.034 pts/test, 70% (gap 25.4 pts / +21,706 covered instr) is ~180 iterations away —
+  infeasible via the chosen unit-only path. ROOT CAUSE: the uncovered instruction mass is NOT unit-reachable
+  cheaply — (a) repository.reactive (33.6k instr, 42%) is DEFERRED (integration/Testcontainers, maintainer's
+  choice); (b) the remaining big non-repo classes are fat happy-bodies (HighlightConverter 1036, facet
+  services, notification translators, GenAI/attachment) needing heavy DTO/facet SCAFFOLDING for modest
+  per-test yield. Math: covering 100% of non-repo business logic tops out ~77% overall (repos cap);
+  realistically ~60-65%. So 70%-with-repos-in is only reachable with the repository.reactive integration
+  pass. LEVERS handed back to maintainer: (1) repository.reactive Testcontainers integration pass [efficient
+  path to 70%]; (2) trim repository.* from the gate denominator → 70% measures business logic (then current
+  base 45.6%, reachable by continued unit work); (3) lower the overall gate (e.g. 50-55%) + keep the 98%
+  changed-files ratchet doing the real forward-looking work. Loop will RESUME on the maintainer's choice.
 
 ## Skipped (candidate + why it can't be faithfully pinned at the unit level — for the morning report)
 - DateTimeUtil (service/ingestion/util — UTC/epoch conversion, UNtested, pure + high-value: mapUTCDateTime

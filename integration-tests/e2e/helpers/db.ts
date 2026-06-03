@@ -131,6 +131,55 @@ export async function clearEntityTerms(): Promise<void> {
   });
 }
 
+// IT-017 — F-013 custom metadata: seed entity 2001 with an INTERNAL (operator-curated)
+// custom metadata field + a value, so the Overview's Metadata panel renders the key/value.
+// Verified image schema: metadata_field(id, type, name, origin, deleted_at) ·
+// metadata_field_value(data_entity_id, metadata_field_id, value, active). The custom
+// surface is origin=INTERNAL (EXTERNAL is collector-ingested "predefined"). getOrCreate
+// the field by (name, origin) to respect the partial unique index IX_UNIQUE_INTERNAL_NAME,
+// then DELETE-then-INSERT the value (composite PK (data_entity_id, metadata_field_id)) so
+// the seed is idempotent without relying on ON CONFLICT targets.
+export async function seedEntityMetadata(
+  fieldName: string,
+  value: string,
+  type = 'STRING',
+): Promise<void> {
+  await seedEntity();
+  await withClient(async (c) => {
+    const sel = await c.query(
+      `SELECT id FROM metadata_field WHERE name = $1 AND origin = 'INTERNAL' LIMIT 1`,
+      [fieldName],
+    );
+    const fieldId = sel.rows[0]
+      ? Number(sel.rows[0].id)
+      : Number(
+          (
+            await c.query(
+              `INSERT INTO metadata_field (name, type, origin) VALUES ($1, $2, 'INTERNAL') RETURNING id`,
+              [fieldName, type],
+            )
+          ).rows[0].id,
+        );
+    await c.query(
+      'DELETE FROM metadata_field_value WHERE data_entity_id = $1 AND metadata_field_id = $2',
+      [ENTITY_ID, fieldId],
+    );
+    await c.query(
+      `INSERT INTO metadata_field_value (data_entity_id, metadata_field_id, value, active)
+       VALUES ($1, $2, $3, true)`,
+      [ENTITY_ID, fieldId, value],
+    );
+  });
+}
+
+// Negative-path helper: entity 2001 exists but has NO custom metadata values.
+export async function clearEntityMetadata(): Promise<void> {
+  await seedEntity();
+  await withClient(async (c) => {
+    await c.query('DELETE FROM metadata_field_value WHERE data_entity_id = $1', [ENTITY_ID]);
+  });
+}
+
 // ---------------------------------------------------------------------------
 // IT-003 — search tsquery poisoning (PLT-090 catalog / PLT-127 dictionary).
 //

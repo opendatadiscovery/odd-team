@@ -40,6 +40,21 @@ targets). Verified image schema (odd-minimal, 2026-06-03) for the common seed ta
 - `metadata_field`(id, type, name, origin, deleted_at) · `metadata_field_value`(data_entity_id, metadata_field_id, value, active)
 To re-inspect: `docker-compose -p probe-stacks -f lineage/_extractor/probe-stacks/odd-minimal.docker-compose.yml up -d`, wait for `/actuator/health`, `docker exec probe-database psql -U odd-platform -d odd-platform -c "\d <table>"`, then `down -v`.
 
+## ⚠ KEY LESSON 2 — the UI transforms displayed text; assert on the VALUE, not the field name
+The odd-platform UI does not render seeded identifiers verbatim. `MetadataItem` renders a custom
+metadata field NAME through `TextFormatted` / `stringFormatted(name, '_', 'firstLetterOfString')`,
+which lower-cases the name and turns `_` into a space: `IT017_cost_centre` → **`It017 cost centre`**.
+Labels generally (field names, enum keys) are display-formatted; user DATA values (descriptions,
+metadata values, owner names, term names) render verbatim. RULE for display ITs: assert on the
+**verbatim data value** as the primary signal (it proves the datum reached the read surface), and if
+you must assert a transformed label, use a **case-insensitive, whitespace-tolerant regex**
+(`/it017\s+cost\s+centre/i`). When a display assertion fails, get ground truth before assuming a
+product bug: `curl http://localhost:18080/api/dataentities/<id>` (the wire is **snake_case** —
+`metadata_field_values`, not `metadataFieldValues`) + a quick live-browser `document.body.innerText`
+dump (`@playwright/test chromium.launch()` from inside `e2e/`, with `PATH=$HOME/.local/node/bin:$PATH`).
+Cost of NOT doing this: IT-017 first run looked like a missing-feature failure; it was a spec assertion
+matching the wrong (untransformed) string.
+
 ## Progress log (one line per new IT)
 - 2026-06-03 — PHASE 3 kickoff + pipeline VALIDATED (smoke green; harness operational; 6 stacks; Docker 29.5.2). Existing baseline: 12 ITs (IT-001..012). Next: author the first NEW IT for a high-criticality uncovered core-platform feature on odd-minimal (success + negative).
 - 2026-06-03 — IT-013 (F-176 Data Entity Overview composition) — first AUTHORED Phase-3 IT, e2e:data-entity-overview.spec.ts. Success (seeded entity composes + renders its name, waits on the GET /api/dataentities/{id} detail fetch) + negative (absent id 999999 → entity name count 0). **GREEN (e2e:PASS, 2 passed in 52.6s)**. Added to feature-complete + ui-e2e suites; run-log/2026-06-03-IT-013.md. Reused seedEntity (no new helper). **Per-IT cost measured: ~52s** (stack-up ~15s + 2 tests ~26s + teardown) — ~200 ITs ≈ 3-4h run-time, feasible. Pattern established: seed→navigate→assert-rendered (generalises to term/owner/description/metadata display on the overview). Count: **13 ITs total (1 new), 13 features touched**. Next: more uncovered core-platform features (F-002 term display, F-004 description, F-019 owners, F-013 metadata, F-024 term search…), success + negative each.
@@ -65,6 +80,17 @@ To re-inspect: `docker-compose -p probe-stacks -f lineage/_extractor/probe-stack
   (term + namespace + data_entity_to_term) + widened getOrCreateNamed to namespace. feature-complete +
   ui-e2e. Count: **16 ITs total (4 new this session: IT-013/014/015/016)**. Next: F-013 metadata display,
   F-177 type badge, F-024 term search. RE-INGEST at IT-018 (next).
+
+- 2026-06-03 — IT-017 (F-013 Custom Metadata display) — e2e:entity-metadata-display.spec.ts. Success
+  (seeded INTERNAL metadata_field + metadata_field_value → the **value** renders verbatim + the field
+  **label** renders) + negative (cleared value → value absent). GREEN (2 passed 9.2s on a warm stack)
+  after ONE fix: the first run failed because the field NAME is rendered through TextFormatted (see KEY
+  LESSON 2 below) — NOT a product bug. Diagnosed by API ground-truth (`curl /api/dataentities/2001` →
+  the wire returns `metadata_field_values` snake_case correctly) + a live-browser DOM dump. Added helpers
+  seedEntityMetadata/clearEntityMetadata (metadata_field INTERNAL origin + metadata_field_value, verified
+  schema; getOrCreate field by (name,origin), DELETE-then-INSERT value). feature-complete + ui-e2e.
+  Count: **17 ITs total (5 new this session: IT-013..017)**. RE-INGEST DUE NOW (next iter = IT-018).
+  Next: F-177 type badge, F-024 term search.
 
 ## Stack-blocked (needs a docker stack that doesn't exist yet — maintainer's call to build)
 - (none logged yet — collector-integration features GE/Airflow/webhook will land here when reached)

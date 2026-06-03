@@ -129,5 +129,14 @@ seeded item that must be EXCLUDED, not just the presence of the match.
   LESSON 3 (FTS surfaces). feature-complete + ui-e2e. Count: **19 ITs total (7 new this session:
   IT-013..019)**. Next re-ingest at ~IT-022 (IT-017 was the last). Next: more ready-now surfaces.
 
+- 2026-06-03 — IT-020 (F-018 entity Tags display) — e2e:entity-tags-display.spec.ts. Success (seeded
+  tag chip renders verbatim on the Overview) + negative (no link → tag absent). **GREEN first-try (2
+  passed 9.1s)** — ground-truth-first (API tags[] + overview DOM chip = verbatim 'IT020GoldTag').
+  Distinct from IT-005 (F-018 catalog Top-Tags ordering bug) — this is the per-entity tag-chip display.
+  Added helpers seedEntityTag/clearEntityTags (verified tag + tag_to_data_entity schema). feature-complete
+  + ui-e2e. Count: **20 ITs total (8 new this session: IT-013..020)**. RE-INGEST due next (IT-021/022 —
+  5-IT boundary since IT-017). The entity annotation-display family is now COMPLETE: desc/owners/terms/
+  metadata/tags/badges. Next: status (F-044), metrics/data-quality/structure panels, or catalog search (F-017).
+
 ## Stack-blocked (needs a docker stack that doesn't exist yet — maintainer's call to build)
 - (none logged yet — collector-integration features GE/Airflow/webhook will land here when reached)

@@ -198,6 +198,30 @@ export async function seedEntityClassType(typeId: number, classIds: number[]): P
   });
 }
 
+// IT-020 — F-018 entity tag display: seed entity 2001 with a tag chip on the Overview.
+// Verified image schema: tag(id, name, important) · tag_to_data_entity(tag_id, data_entity_id,
+// external). The tag NAME renders verbatim on the Overview (no transform — verified live).
+// getOrCreate the tag (SELECT-then-INSERT by name), DELETE-then-INSERT the link. Idempotent.
+export async function seedEntityTag(tagName: string): Promise<void> {
+  await seedEntity();
+  await withClient(async (c) => {
+    const sel = await c.query('SELECT id FROM tag WHERE name = $1 LIMIT 1', [tagName]);
+    const tagId = sel.rows[0]
+      ? Number(sel.rows[0].id)
+      : Number((await c.query('INSERT INTO tag (name, important) VALUES ($1, false) RETURNING id', [tagName])).rows[0].id);
+    await c.query('DELETE FROM tag_to_data_entity WHERE data_entity_id = $1 AND tag_id = $2', [ENTITY_ID, tagId]);
+    await c.query('INSERT INTO tag_to_data_entity (tag_id, data_entity_id, external) VALUES ($1, $2, false)', [tagId, ENTITY_ID]);
+  });
+}
+
+// Negative-path helper: entity 2001 exists but has NO tag links.
+export async function clearEntityTags(): Promise<void> {
+  await seedEntity();
+  await withClient(async (c) => {
+    await c.query('DELETE FROM tag_to_data_entity WHERE data_entity_id = $1', [ENTITY_ID]);
+  });
+}
+
 // IT-019 — F-024 term search (Dictionary /termsearch): seed a term that is FINDABLE by the
 // catalog-wide term search. Term search matches `term_search_entrypoint.term_vector` (an FTS
 // tsvector), NOT the `term` table directly — a raw term INSERT is INVISIBLE to search. So we

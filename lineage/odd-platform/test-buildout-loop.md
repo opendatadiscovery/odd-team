@@ -85,12 +85,42 @@ NotificationFailSoftContractTest (PLT-016 + @enforces ADR-0042), HousekeepingTtl
 OwnerRoleStripKnownBugTest (PLT-066), AttachmentLinkSchemeKnownBugTest (PLT-086 link-scheme).
 ADRs with an enforcing test: 22/27 (remaining 5 are integration). Full suite GREEN.
 
-## ✅ FINAL SUMMARY (loop stopped 2026-06-03, iter 7 — genuine unit-level supply exhausted)
+## ✅ PHASE 1 COMPLETE — structural + known-bug SOURCE-SCAN pins (iters 1-7)
 
-**Loop delivered: 17 run-verified test methods / 13 new classes over 7 iterations**, all GREEN, all
-committed to odd-platform `test/adr-enforcement-units` (per-iteration commits 8b939232 → 186ba614) with
-odd-team ontology re-ingests. Combined with this session's pre-loop batch, the **session total is ~48
-new test methods / ~24 new classes**.
+**Phase 1 delivered: 17 run-verified methods / 13 classes over 7 iterations** (+ pre-loop batch =
+~48 methods / ~24 classes), all GREEN, committed to odd-platform `test/adr-enforcement-units`
+(8b939232 → fc851571). These are STRUCTURAL source-scan pins (ADR shapes, known-bug characterizations)
+— a NARROW slice. **This was NOT the unit-test ceiling** (maintainer correction 2026-06-03): the real
+unit scope is the ~1038 TEST-GAP backlog worked with BEHAVIORAL tests — see PHASE 2 below. (The earlier
+"loop stopped, supply exhausted" call was wrong: it conflated the source-scan slice with the whole unit
+scope. Memory: feedback_unit_test_scope_is_the_testgap_backlog.)
+
+## 🔄 PHASE 2 — gap-driven BEHAVIORAL unit tests (the real +150 scope; ACTIVE)
+
+**Mandate:** work the ~1038 `TEST-GAP-NNN` backlog (`lineage/odd-platform/test-map/detail/*.yaml`)
+gap-by-gap toward 150+ behavioral unit tests that pin EXPECTED functionality. The instrument is
+behavioral tests that EXERCISE the code, not string-scans:
+- **Services** → Mockito (`@ExtendWith(MockitoExtension)`, `@Mock` the repos/collaborators) + reactor-test
+  `StepVerifier` (assertNext / verifyComplete / verifyError) + `verify(...)`. Pattern refs:
+  `NamespaceServiceImplTest`, `ActivityServiceImplTest` (the Phase-2 proof, fc851571), `DataEntityServiceTest`.
+- **Mappers / validators / parsers / enums / pure utils** → plain JUnit + AssertJ (no mocks).
+- **Controllers** → `@WebFluxTest(X.class)` with a `@MockBean` service (sliced web context — NO Docker).
+
+**Per-gap pipeline (every candidate):** (1) read the TEST-GAP detail; (2) Gate-4 read the target source;
+(3) decide: unit-able now / integration (defer) / rescope / remove-if-stale-or-not-applicable; (4) if
+unit: author a faithful behavioral test pinning the expected behaviour with a typed gate
+(`@validates F-NNN` for feature behaviour, `@enforces ADR-NNNN` where it pins an ADR, `@pins <id>` for a
+known bug); (5) gradle-verify (never commit unverified / accidental-RED); (6) commit; (7) **update the
+TEST-GAP node** — mark covered (point `test_files_existing` at the new test) or rescope/remove, and note
+it; (8) re-ingest the ontology every ~20-30 methods + full suite.
+
+**Triage rule:** SKIP (and log in Skipped) gaps that genuinely need a running stack/DB/Docker
+(`category: missing-integration` that truly needs Testcontainers) — those are the integration batch. But
+MANY `missing-integration` gaps are actually unit-able as `@WebFluxTest`+mock or Mockito service tests —
+judge by whether the behaviour needs a real DB. Prefer criticality CRITICAL/HIGH first.
+
+**Stop condition (Phase 2):** 150+ behavioral methods reached, OR the genuinely unit-able gaps are
+exhausted (then the remainder is the supervised integration batch) — stop with a summary + PushNotification.
 
 **Coverage now (measured, `/align`):**
 - **ADRs with an enforcing test: 22 → 26/27** — every ADR is gated EXCEPT **ADR-0019** (datacollab
@@ -140,6 +170,8 @@ or untracked-id); all are integration candidates.
 - 2026-06-03 — iter 6 (P1, LSN-020): ActivityActorFilterKnownBugTest (@pins LSN-020, userIds binds to OWNER_ID not actor) — 1 method, GREEN. odd-platform edfd6c7d. Loop total: 14 methods / 10 classes. Clean trackable-id candidates nearly dry; next iter assesses wind-down per the CRITICAL guardrail (remaining = untracked bugs / fragile absence pins / integration-Docker tail).
 
 - 2026-06-03 — iter 7 (FINAL, ADR depth + re-ingest): ADR-0007 (ControllerAdviceMapping) + ADR-0072 (ReactiveTransactional) + ADR-0046 (HousekeepingOptOut) — 3 methods, GREEN. odd-platform 186ba614. Re-ingested: ADRs 26/27, ENFORCES 35, 107 test nodes, 12 known-bug pins, FULL SUITE 338 GREEN. LOOP STOPPED — genuine unit supply exhausted; see FINAL SUMMARY at top.
+
+- 2026-06-03 — PHASE 2 kickoff (maintainer correction: unit scope = the TEST-GAP backlog, not source-scans). Proof behavioral test ActivityServiceImplTest (4 methods, Mockito+StepVerifier, dispatch of getActivityList) GREEN — odd-platform fc851571. Loop RESUMES gap-driven toward +150 behavioral tests.
 
 ## Skipped (candidate + why it can't be faithfully pinned at the unit level — for the morning report)
 - PLT-131 (owner getDto soft-deleted) — method-scoped; needs to diff getDto vs list filter, and OWNER

@@ -292,6 +292,26 @@ graph/canvas labels.
   session)**. Remaining clean veins thinning: search suggestions, external_description, linked-terms.
   RE-INGEST ~IT-037. ⚠ If next iter's clean candidates exhaust → ping plateau (built-vs-blocked).
 
+## ⚠ PLATEAU REACHED at 34 ITs (2026-06-03) — clean raw-seedable surfaces exhausted
+After 22 new green ITs this session (IT-013..034), the supply of CLEAN, stack-available, raw-seedable,
+non-dup feature surfaces is exhausted. IT-035 survey hit two non-viable candidates:
+- **linked-terms (F-152)** — `GET /api/terms/{id}/term` returns 500/405; the linked-terms LIST API shape
+  is non-trivial (the `/term` path is the link/unlink mutation, not the list — the list is likely embedded
+  in the term detail response or a different GET). Needs investigation; the tab page also hangs on the 500.
+- **external_description display** — API returns it, but it's F-004 (DUP of IT-014 internal_description;
+  same OverviewDescription component, fallback field) → thin/dup, declined per no-test-theatre.
+The remaining uncovered surfaces ALL need investment, not more of the same:
+- **Fiddly UI** (multi-probe each): search facets (F-017), search suggestions autocomplete, linked-terms.
+- **Ingestion-shaped / create-API seeding**: data-quality (F-022, specific_attributes DQ JSON), metrics,
+  RBAC role/policy lists (F-006), linked_columns (F-153, column→dataset chain), activity feed (/api/activity).
+- **Absent docker stack**: collector-integration features (GE/Airflow/webhook), collectors mgmt (token).
+**Recommendation for the maintainer (fork):** (a) accept ~34 as the honest stopping point for the
+raw-seed approach (a strong, comprehensive UI→backend→DB suite), OR (b) invest in an INGESTION-API seed
+helper (POST through the real ingestion contract → unlocks DQ/metrics/structure/lineage-columns with
+realistic data), OR (c) build collector docker stacks (unlocks the collector-integration family), OR
+(d) have me grind the fiddly-UI surfaces (facets/suggestions/linked-terms) at ~1-2 iterations each.
+Reaching ~50 needs (b)/(c)/(d); it is NOT reachable by raw-seed display ITs without padding.
+
 ## Discovered findings (latent platform bugs surfaced while building ITs — for maintainer triage)
 - **deserializeStats NPE → HTTP 500 on null dataset_field.stats** (found IT-023). `GET /api/datasets/{id}/structure`
   500s with `NullPointerException: Cannot invoke "org.jooq.JSONB.data()" because "stats" is null` at
